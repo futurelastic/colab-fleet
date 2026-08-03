@@ -78,13 +78,43 @@ degrade rather than assume. A driver never emulates (§5.6).
 ### 3.2 Sessions
 
 ```
-GET /v1/sessions?machine=&status=&agent=&cwdPrefix=
+GET /v1/sessions?scope=fleet|local&machine=&status=&agent=&cwdPrefix=
 → 200 Collection<Session>
 ```
 
-Fleet-wide. Returns the envelope of §9 — `items`, `sources`, `complete` —
-never a bare array. An unreachable machine appears in `sources` with
-`status: "unreachable"`; it never contributes silence to `items`.
+Returns the envelope of §9 — `items`, `sources`, `complete` — never a bare
+array. An unreachable machine appears in `sources` with `status: "unreachable"`;
+it never contributes silence to `items`.
+
+**`scope` defaults to `fleet` for clients and MUST be `local` for proxied
+calls** (§13.1). A service querying a peer always asks `scope=local`; a peer
+receiving `scope=local` answers for itself and never forwards. This is what
+keeps fan-out one hop deep, and it is the only thing preventing two
+mutually-configured peers from querying each other forever.
+
+A `scope=local` response carries exactly one `SourceStatus`. The proxying
+service **adopts** that record rather than synthesizing a fresh one (§13.2) — a
+peer that answers promptly while reporting itself `degraded` must not be
+relayed as `ok`.
+
+### 3.3 Deadlines
+
+Every request carries an effective deadline:
+
+```
+Fleet-Deadline-Ms: 3000        (request header, optional)
+```
+
+A caller may shorten a driver's declared `deadlineMs`, never extend it. On
+expiry the service returns the envelope with that source marked
+`unreachable`, `error` naming the elapsed time — **not** an open connection and
+not a 5xx for the whole call. One unresponsive peer degrades an envelope; it
+never fails a fleet-wide query.
+
+Absent the header, the driver's declared `deadlineMs` applies. There is no
+configuration in which a call has no deadline: measured against a stopped peer,
+an undeadlined request was still blocked after seven seconds with no result,
+and no mainstream HTTP client defaults to protecting you from that.
 
 ```
 POST /v1/machines/{machine}/sessions

@@ -171,10 +171,39 @@ DriverCapabilities {
   confirmsDelivery: boolean   // can distinguish submitted from queued
   supportsResume  : boolean   // sessions survive a service restart
   supportsPin     : { model: boolean, effort: boolean, agent: boolean }
+  deadlineMs      : number    // declared upper bound on any single call
 }
 ```
 
 A driver must never silently emulate a capability it lacks.
+
+### 4.4 Every driver declares a deadline
+
+**`deadlineMs` is mandatory. A driver that can block without a bound is a
+specification violation, not a slow driver.**
+
+This was found empirically rather than reasoned about, and it is the sharpest
+lesson the first two drivers taught: the interface is symmetric, but **the
+hazard profile underneath it is not.**
+
+A local driver talks to a subprocess. If that hangs it is rare, local, and
+diagnosable. A remote driver talks to a machine that may be powered off,
+firewalled, or — worst of all — *stopped mid-syscall*, which is neither alive
+nor dead. Measured directly: a caller with no deadline, querying a peer that had
+been SIGSTOPped, was **still blocked with no result after seven seconds** and
+would have waited indefinitely.
+
+Note carefully what did *not* save us there: no mainstream language's HTTP
+client defaults to a finite timeout. The protection cannot come from the
+runtime, and therefore has to come from the contract.
+
+Earlier drafts described `unreachable` as an **outcome** while saying nothing
+about how a caller ever *reaches* that outcome. An outcome nobody is obliged to
+produce is not a guarantee — it is a hope. Hence:
+
+- Every driver declares `deadlineMs` and honours it.
+- Exceeding it produces `unreachable` with the elapsed time as evidence.
+- A caller may supply a shorter deadline; never a longer one.
 
 ---
 
@@ -285,6 +314,15 @@ No announcement, no discovery protocol, no broadcast.
 anyone deciding it should — an anti-feature for something that starts
 processes. For a fleet of a handful of machines, the configuration cost is
 negligible and the audit trail is worth more than the convenience.
+
+**Peer addresses are operator-verified, never inherited from a machine's own
+idea of its name.** A hostname can resolve to different addresses depending on
+who is asking — split-horizon DNS, overlay networks, and multi-homed hosts all
+produce this, and it was observed on the first two machines this ran on. A peer
+entry that stores a bare hostname and trusts the peer's self-resolution will
+misconfigure silently, and present as an unreachable peer that pings fine.
+Configuration stores an address the *operator* has confirmed reachable **from
+the machine that will be doing the reaching**.
 
 ### 7.3 Events carry a cursor and an epoch
 
@@ -477,3 +515,39 @@ knowing its shape.
 **Proxying does not launder authorization.** A service forwarding a peer's
 request presents the *original* caller's authority, never its own. Otherwise
 every machine becomes a confused deputy for every other.
+
+### 13.1 A proxied request asks for the peer's LOCAL view only
+
+**Fan-out is one hop deep, always. Peers do not recurse.**
+
+The service a client asks is responsible for querying every peer it knows. Each
+peer answers for **itself alone** and never forwards further.
+
+Without this rule, two mutually-configured peers each answer by asking the
+other, and the result is an infinite loop or — more insidiously — a fleet that
+merely double-counts and looks fine. The first spike avoided this only by being
+a star, and by the implementer noticing they were avoiding it. A topology whose
+correctness depends on nobody adding a second edge is not a design.
+
+**Consequence, stated because it is a real limit rather than an oversight:**
+with a partially-connected peer graph, different entry points yield different
+views of the fleet. A fleet that wants every node to see everything must be
+fully meshed in configuration. This is acceptable at the scale this system
+targets, and it is preferable to recursion — recursion buys transitive
+visibility at the cost of cycle detection, hop limits, and a distributed
+join that no operator can reason about at three in the morning.
+
+### 13.2 Adopt a peer's SourceStatus; never re-synthesize it
+
+A peer answering locally returns an envelope containing exactly one
+`SourceStatus` — its own. The proxying service **adopts that record** into its
+own envelope.
+
+It must not discard the peer's status and manufacture a fresh `"ok"` from the
+mere fact that the call succeeded. A peer can answer promptly *and* report
+itself `degraded`; flattening that into "ok, count N" produces a confident
+envelope built on a self-declared unreliable source — §5.7's failure, one layer
+in.
+
+The reachability of a peer and the health of a peer are different facts. The
+proxy observes the first and must **relay**, not overwrite, the second.
