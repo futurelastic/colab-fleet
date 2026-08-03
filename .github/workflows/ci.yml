@@ -15,10 +15,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Install gitleaks (pinned binary — gitleaks-action v2 đòi GITLEAKS_LICENSE khi repo thuộc org)
+      - name: Install gitleaks (pinned binary)
         run: |
-          # Chạy thẳng binary release thay vì gitleaks-action v2: action đòi license
-          # cho repo thuộc organization (repo cá nhân thì free). Binary MIT, không đòi gì.
+          # The pinned release binary is used instead of gitleaks-action v2,
+          # which requires GITLEAKS_LICENSE for repositories owned by an
+          # organization (personal repositories are free). The binary itself
+          # is MIT and requires nothing.
           curl -sSL -o gitleaks.tar.gz \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           tar -xzf gitleaks.tar.gz gitleaks
@@ -28,30 +30,40 @@ jobs:
       - name: gitleaks detect
         run: gitleaks detect --source . --no-banner
 
-  build:
-    name: Build (chỉ chạy nếu là repo Node)
+  go:
+    name: Build, vet and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Detect Node project
-        id: detect
-        run: |
-          if [ -f package.json ]; then
-            echo "node=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "node=false" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/setup-node@v4
-        if: steps.detect.outputs.node == 'true'
+      - uses: actions/setup-go@v5
         with:
-          node-version: 20
-      - name: Install & build
-        if: steps.detect.outputs.node == 'true'
+          # Tracks go.mod rather than pinning a duplicate version here, so
+          # the toolchain floor is stated in exactly one place.
+          go-version-file: go.mod
+
+      - name: gofmt
         run: |
-          if [ -f pnpm-lock.yaml ]; then
-            corepack enable && pnpm install --frozen-lockfile && pnpm run build --if-present
-          elif [ -f package-lock.json ]; then
-            npm ci && npm run build --if-present
-          else
-            npm install && npm run build --if-present
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
           fi
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      # -race because this codebase runs control-mode clients, pumps and an
+      # event engine concurrently; a data race there would surface as an
+      # event stream that is subtly wrong rather than one that crashes.
+      #
+      # The driver integration tests are opt-in via FLEET_TMUX_INTEGRATION
+      # and skip here: CI has no multiplexer and no sessions to look at.
+      # That is deliberate — those tests assert against a live machine, and
+      # a green CI run means the unit suite passed, not that the substrate
+      # behaved.
+      - name: go test -race
+        run: go test -race ./...
