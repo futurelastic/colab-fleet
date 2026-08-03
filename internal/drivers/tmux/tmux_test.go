@@ -388,16 +388,6 @@ func TestCapabilitiesAreHonest(t *testing.T) {
 	}
 }
 
-// §5.6 again, at the operation level: an unsupported capability is declared,
-// never emulated with a poll loop.
-func TestSubscribeIsUnsupportedRatherThanPolled(t *testing.T) {
-	d := newTestDriver(twoSessions())
-	_, err := d.Subscribe(context.Background(), driver.SubscribeFilter{})
-	if !errors.Is(err, driver.ErrUnsupported) {
-		t.Errorf("want ErrUnsupported, got %v", err)
-	}
-}
-
 // §12: reconciliation adopts and never destroys.
 func TestReconcileAdoptsAndDestroysNothing(t *testing.T) {
 	f := twoSessions()

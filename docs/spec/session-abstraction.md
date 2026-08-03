@@ -357,6 +357,30 @@ Federated callers may be many network round-trips away. An API that requires
 polling to stay current becomes unusable at exactly the distance federation is
 for. State is readable on demand; changes are pushed.
 
+**Amendment (first working driver): the filter's granularity is a cost
+parameter, not a convenience.**
+
+§3 writes `subscribe(filter?)` and never says what a filter can express. That
+looked like a detail to settle later. It is not, because a substrate may
+charge per subscribed session.
+
+Measured on the first driver's substrate: push notifications about a session's
+*content* are delivered only to a client attached to that session, while
+notifications about sessions *appearing and disappearing* are delivered
+fleet-wide to any attached client. So lifecycle costs one connection total,
+and content costs one connection per watched session. A subscription that can
+be narrowed to the sessions a caller actually cares about costs
+O(subscribers); one that cannot costs O(sessions).
+
+⇒ A filter must be able to name **sessions**, not only describe them by
+attribute. Describing them by working-directory prefix — the only mechanism
+this interface currently offers — makes a caller that wants one session ask
+for a directory and hope, which is a proxy for identity rather than identity
+(§5.4's lesson, in a different operation).
+
+Recorded rather than fixed, for the same reason as §5.4: it changes the wire
+shape of `subscribe`, and that deserves a decision.
+
 ### 5.6 Degrade, never emulate
 
 A driver that cannot observe state reports `inferred` or `unknown`. It does not
@@ -470,6 +494,32 @@ subscriber refetches state.
 *Rationale:* the alternative — silently resuming from the oldest available
 event — produces a subscriber that believes it has a complete history and does
 not. Announced gaps are recoverable; silent gaps are not.
+
+**Amendment (first working driver), two parts.**
+
+**A driver cannot fill these fields, and the type implies it should.** Cursor
+and epoch are assigned per *service instance*, by this section's own wording.
+A driver has access to neither, and two drivers under one service must not be
+minting competing cursor sequences. So a driver must leave them unset and the
+service must stamp them on the way out. This is easy to get wrong in the
+direction that fails silently: a driver that helpfully invented a cursor would
+produce a stream that looks correct until a subscriber reconnects, at which
+point the resync logic compares values from different sequences and misses a
+gap it was built to catch.
+
+**"Silent gaps are not recoverable" has a second instance, at subscribe
+time.** The rule above governs reconnection. The same failure is available at
+the *start* of a subscription: if the initial state snapshot is taken
+asynchronously, everything that happens between `subscribe` returning and that
+snapshot is folded into the baseline and never reported. The subscriber holds
+a stream it believes is complete, with a hole at the front. Nothing can
+announce that gap, because nothing knows it occurred — no cursor covers it and
+no epoch changed.
+
+⇒ **The baseline snapshot must be taken before `subscribe` returns.** Then the
+guarantee is stateable: every change after `subscribe` returns is either
+delivered or is a bug. Found by writing the race and then watching a test
+absorb the very change it was asserting on.
 
 ### 7.4 Plural responses are envelopes, never bare arrays
 

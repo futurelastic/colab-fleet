@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
+	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
@@ -14,11 +16,17 @@ import (
 // sessions. It is opt-in (FLEET_TMUX_INTEGRATION=1) because it depends on
 // the machine it runs on, and CI has no sessions to look at.
 //
-// It is READ-ONLY BY CONSTRUCTION, and that is a safety property, not a
-// scoping convenience: the sessions on a developer's machine are somebody's
-// live work. Nothing here creates, sends, interrupts or closes. The write
-// path is exercised against the fake in tmux_test.go and, when it is
-// exercised for real, must be against sessions the test created itself.
+// PRE-EXISTING SESSIONS ARE NEVER MUTATED, and that is a safety property
+// rather than a scoping convenience: the sessions on a developer's machine
+// are somebody's live work. Nothing here sends to, interrupts, or closes a
+// session it did not create. The one test that needs a session to act on
+// creates its own and destroys it.
+//
+// The single exception is deliberate and was measured before being accepted:
+// a live subscription's lifecycle control client attaches to whichever
+// session it finds, because control mode has no unattached form. Attaching
+// does not renegotiate session size (verified: 200x50 before, during and
+// after), and the client is detached when the stream closes.
 
 func requireLiveMux(t *testing.T) {
 	t.Helper()
@@ -165,4 +173,103 @@ func TestLiveCloseRefusesUnobservedTargetWithoutKilling(t *testing.T) {
 		t.Fatal("closing an unobserved id must refuse (§5.4)")
 	}
 	t.Logf("refused as required: %v", err)
+}
+
+// Live subscription against a real control-mode client.
+//
+// This asserts the architecture's central claim: that ONE control client,
+// attached to some arbitrary session, learns about sessions appearing and
+// disappearing anywhere on the machine. The subscription is filtered to a
+// directory only this test uses, so no pre-existing session gets a content
+// client — the only thing that can deliver this event is the global
+// lifecycle channel.
+//
+// An earlier version of this test asserted on a state change instead, and
+// was wrong twice over: the probe session runs a plain shell rather than the
+// agent TUI, so its classified status is unknown before AND after any output
+// (correctly — no composer, nothing to read), and the temp directory needed
+// symlink resolution before it could match a filter at all. Both failures
+// produced "no event", which is also what a genuinely broken subscription
+// produces. Recorded because it is the same trap as the marker bug: absence
+// of an event is a weak signal, and a test built on one is a test that
+// passes for the wrong reason just as easily as it fails for it.
+func TestLiveSubscribeSeesASessionAppearAndDisappear(t *testing.T) {
+	requireLiveMux(t)
+
+	dir, err := os.MkdirTemp("", "fleet-live-sub-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	// The multiplexer reports a pane's resolved path; on some systems the
+	// temp root is a symlink, and an unresolved prefix silently matches
+	// nothing.
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+
+	d := New("local")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	stream, err := d.Subscribe(ctx, driver.SubscribeFilter{CwdPrefix: dir})
+	if err != nil {
+		t.Fatalf("Subscribe against a live multiplexer failed: %v", err)
+	}
+	defer stream.Close()
+
+	name := "fleet-livetest-" + randomNonce()
+	if err := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", dir,
+		"bash", "--noprofile", "--norc").Run(); err != nil {
+		t.Skipf("could not create a probe session: %v", err)
+	}
+	killed := false
+	defer func() {
+		if !killed {
+			_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+		}
+	}()
+
+	ev := awaitKind(t, ctx, stream, fleet.EventSessionCreated, 15*time.Second)
+	sess, ok := ev.Payload.(fleet.Session)
+	if !ok || sess.ID != name {
+		t.Fatalf("created event carried %+v, want session %q", ev.Payload, name)
+	}
+	t.Logf("global lifecycle client saw a new session: %q", sess.ID)
+
+	// And going away again.
+	if err := exec.Command("tmux", "kill-session", "-t", name).Run(); err != nil {
+		t.Fatal(err)
+	}
+	killed = true
+
+	ev = awaitKind(t, ctx, stream, fleet.EventSessionClosed, 15*time.Second)
+	p, ok := ev.Payload.(fleet.SessionStatePayload)
+	if !ok || p.Ref.ID != name {
+		t.Fatalf("closed event carried %+v, want session %q", ev.Payload, name)
+	}
+	if p.State.Status != fleet.StatusDead {
+		t.Errorf("closed session reported %q, want dead", p.State.Status)
+	}
+	t.Logf("and saw it go: %q -> %s", p.Ref.ID, p.State.Status)
+}
+
+// awaitKind reads events until one of the wanted kind arrives. Other kinds
+// are legitimate traffic (a source.status from an unrelated hiccup, a state
+// change on another matching session) and must not fail the test.
+func awaitKind(t *testing.T, ctx context.Context, s driver.EventStream,
+	want fleet.EventKind, within time.Duration) fleet.Event {
+	t.Helper()
+	deadline, cancel := context.WithTimeout(ctx, within)
+	defer cancel()
+	for {
+		ev, err := s.Next(deadline)
+		if err != nil {
+			t.Fatalf("waiting for %q: %v", want, err)
+		}
+		if ev.Kind == want {
+			return ev
+		}
+		t.Logf("(skipping %q while waiting for %q)", ev.Kind, want)
+	}
 }

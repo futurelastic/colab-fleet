@@ -139,6 +139,7 @@ type Driver struct {
 	captureLines int
 	build        CommandBuilder
 	run          execFunc
+	dial         ctlDialer
 	now          func() time.Time
 	nonce        func() string
 
@@ -215,6 +216,7 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 		captureLines: defaultCaptureLines,
 		build:        claudeCodeCommand,
 		run:          runReal,
+		dial:         dialReal,
 		now:          time.Now,
 		nonce:        randomNonce,
 		observed:     map[string]observation{},
@@ -749,22 +751,6 @@ func (d *Driver) sweepIdemLocked(now time.Time) {
 			delete(d.idem, k)
 		}
 	}
-}
-
-// Subscribe is not implemented on this substrate yet.
-//
-// §5.5 forbids requiring callers to poll, and §5.6 forbids a driver
-// emulating a capability it lacks. A polling loop dressed as an event
-// stream would violate both at once — it would satisfy the type while
-// reintroducing exactly the cost federation cannot afford, and it would do
-// so invisibly, since the capability declaration would still say
-// "subscribe works".
-//
-// The multiplexer does have a real push mechanism (control mode), which is
-// the subject of the next piece of work. Until that is proven, this
-// returns unsupported, which is an honest answer a caller can act on.
-func (d *Driver) Subscribe(ctx context.Context, filter driver.SubscribeFilter) (driver.EventStream, error) {
-	return nil, driver.ErrUnsupported
 }
 
 // Reconcile performs §12's startup reconciliation: enumerate what exists,

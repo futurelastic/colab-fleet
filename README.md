@@ -18,11 +18,15 @@ other machines. Supervisors become clients.
 > fleet view — with differentiated per-session state — in ~30ms, using a
 > constant number of subprocess spawns rather than one per session.
 >
-> Event subscription remains `unsupported`, declared rather than emulated.
+> Event subscription is live too, over the substrate's own push channel — no
+> polling anywhere, and cost proportional to subscribers rather than to
+> sessions. Verified end to end: a session created after subscribing was
+> reported within half a second, and its death reported after it.
+>
 > Federation remains unproven: the design's central claim is that a remote peer
 > is just another driver, and until a second driver exists that claim is
 > untested. **The specification is still the primary artifact**, and building
-> this driver amended four sections of it.
+> this driver amended six sections of it.
 
 ## What it owns
 
@@ -160,6 +164,11 @@ Stated plainly so nobody rediscovers them the expensive way.
   read-only by construction, because the sessions available to test against are
   somebody's actual work. The refusal logic is no longer prose; the delivery
   path still is.
+- **`subscribe`'s filter cannot name a session.** It can only describe one by
+  working-directory prefix. That is a proxy for identity, not identity — and
+  here it is also a cost parameter, because watching a session's content costs
+  a connection per session on this substrate. A caller wanting one session must
+  ask for a directory and hope. See spec §5.5's amendment.
 - **Auth has no lifecycle.** A static bearer token is specified; issuance,
   rotation and scoping are not. This is the largest unaddressed surface.
 - **`SourceState` has no member for "reachable but unsupported"** — currently
@@ -183,9 +192,13 @@ Stated plainly so nobody rediscovers them the expensive way.
 1. ~~**A first working driver.**~~ Done, and it earned its keep: it amended
    four sections of the specification and found one defect the specification
    cannot fix on its own (see Known gaps).
-2. **Event subscription.** The multiplexer has a real push mechanism (control
-   mode). Until it is proven, `subscribe` returns `unsupported` — honest, and
-   the one operation §5.5 says federated callers cannot do without.
+2. ~~**Event subscription.**~~ Done, over control mode. The substrate turned
+   out to scope content notifications per attached session while broadcasting
+   lifecycle notifications fleet-wide, so one always-on client covers sessions
+   appearing and disappearing and per-session clients are opened only on
+   demand. Notifications are used as change *triggers*; the reads still go
+   through the same batched enumeration, so exactly one code path decides what
+   a status means.
 3. **A second driver — a remote peer.** This is the real test: the design says a
    remote peer is just another driver, and two implementations is the cheapest
    way to find out whether the interface actually holds. Note that the first
