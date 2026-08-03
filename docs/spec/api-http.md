@@ -143,20 +143,20 @@ GET /v1/machines/{machine}/sessions/{id}?runtime=
                    "evidence": "...", "since": "..." } }
 ```
 
-**Amendment (first Go transcription):** this URL shape, as originally
-written, carried no `runtime` component at all — but
-[`session-abstraction.md`](session-abstraction.md) §2.2 documents `id` as
-scoped to `(machine, runtime)`, not to `machine` alone: two different
-runtimes on one machine can legally reuse the same id. The URL alone cannot
-disambiguate that case, and this document's own header says the
-abstraction wins when the two disagree — "this document is the bug." Fixed
-here: `?runtime=` is an **optional** query parameter on every
-single-session endpoint (`GET`, the `input`/`interrupt` routes below, and
-`DELETE`), required only when the addressed machine runs more than one
-runtime and the bare id is ambiguous between them; a service that can
-resolve the id unambiguously without it (the common case — one runtime per
-machine) must not require it. An ambiguous request with `runtime` omitted
-is `invalid` (400), naming the ambiguity, not `not_found`.
+`runtime` is an **optional** query parameter on every single-session endpoint
+(`GET`, `input`, `interrupt`, `DELETE`). A session `id` is scoped to
+`(machine, runtime)` — not to `machine` alone (session-abstraction.md §2.2) —
+so two runtimes on one machine may legally reuse an id, which this URL cannot
+otherwise disambiguate.
+
+It is required only when the addressed machine runs more than one runtime and
+the bare id is ambiguous between them. A service that can resolve the id
+unambiguously must not require it; that is the common case, one runtime per
+machine. An ambiguous request with `runtime` omitted is `invalid` (400) naming
+the ambiguity — never `not_found`, which would assert something untrue about
+the fleet.
+
+> Origin: session-abstraction.md Appendix A, F1.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/input?runtime=

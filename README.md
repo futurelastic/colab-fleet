@@ -82,9 +82,20 @@ of them, not the other way round.
 3. [`doc.go`](doc.go) — an index of what transcription revealed, including the
    judgement calls that were left out of the spec on purpose.
 
-Both specs carry **amendment notes** where implementation contradicted them.
-Those notes are kept rather than smoothed over: knowing a design was wrong once,
-and how it was found out, is worth more than a clean document.
+If you are picking this up cold and want the short version: read the session
+spec's **§14** (five things that do not work) and **Appendix A's closing
+section** (the one pattern that recurred at four different altitudes).
+
+The session spec is organised so you can tell current truth from history:
+**§1–§13 are normative**, **§14 lists what the document requires but cannot
+enforce** — read it before trusting any guarantee, one of the five is a
+security defect — and **Appendix A is the findings log**, the measurements and
+bugs that produced the rules.
+
+That appendix is kept rather than smoothed away on purpose: knowing a design was
+wrong once, and how it was found out, is worth more than a clean document. A
+reader who knows only a rule will restate it; a reader who knows how it was
+violated will recognise the next instance.
 
 ## Layout
 
@@ -165,7 +176,7 @@ Stated plainly so nobody rediscovers them the expensive way.
   memory. A caller retrying a `create` across a restart therefore gets the
   §10 disaster — two sessions in one working directory — from a driver that
   looks compliant. `supportsResume` answers a question about sessions and was
-  being read as answering one about keys. See spec §10's amendment.
+  being read as answering one about keys. See spec §10 and §14 D5.
 - **The write path has never run against a live session.** `send`, `create`,
   `interrupt` and `close` are implemented and unit-tested, and §2.4's refusal
   now fires on real captured screens — but every live exercise so far has been
@@ -176,7 +187,7 @@ Stated plainly so nobody rediscovers them the expensive way.
   working-directory prefix. That is a proxy for identity, not identity — and
   here it is also a cost parameter, because watching a session's content costs
   a connection per session on this substrate. A caller wanting one session must
-  ask for a directory and hope. See spec §5.5's amendment.
+  ask for a directory and hope. See spec §14 D4.
 - **The operations have nowhere to carry the caller's authority — and the
   natural fallback is a security bug.** §13 requires a proxying service to
   present the *original caller's* credentials, never its own. No operation in
@@ -188,14 +199,14 @@ Stated plainly so nobody rediscovers them the expensive way.
   eventually notices; this one fails toward a **correct-looking answer with the
   authorization quietly widened.** The current driver refuses rather than
   substituting, which is a driver declining to do something the interface
-  cannot stop it doing. See spec §6's amendment.
+  cannot stop it doing. See spec §14 D1.
 - **Capability declaration cannot say "I don't know yet."** `Capabilities()` is
   synchronous and infallible — fine for a driver describing itself, impossible
   for one describing a peer across a network. An unreached peer is
   indistinguishable from a peer that genuinely supports nothing. Both degrade
   safely, so the cost is diagnostic rather than correctness: a misconfigured
   peer looks like a minimal one forever. This is §5.7 a third time; see spec
-  §4.3's amendment.
+  spec §14 D3.
 - **Auth has no lifecycle.** A static bearer token is specified; issuance,
   rotation and scoping are not.
 - **`SourceState` has no member for "reachable but unsupported"** — currently

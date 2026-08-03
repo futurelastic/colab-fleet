@@ -98,7 +98,7 @@ type Collection[T any] struct {
 // trusted at face value (§13.2), so treating it as "answered cleanly" would
 // reintroduce the exact confidence-flattening §5.6 forbids. The spec's
 // prose does not settle this explicitly; it is recorded as a decision here
-// and in session-abstraction.md §9's amendment.
+// and in session-abstraction.md §9.
 func NewCollection[T any](items []T, sources []SourceStatus) (Collection[T], error) {
 	if len(sources) == 0 {
 		return Collection[T]{}, ErrCollectionNeedsSources

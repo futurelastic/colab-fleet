@@ -1,31 +1,41 @@
 # Session abstraction — specification
 
-**Status:** draft. **Two drivers now satisfy this interface** — a local one
-over a terminal multiplexer, and a remote one that is an HTTP client to a peer
-service — which is the threshold this document set for itself below ("treat
-every claim as a proposal until at least two drivers satisfy it").
+**Status: two drivers satisfy this interface** — one local, over a terminal
+multiplexer running an interactive agent CLI; one remote, an HTTP client to a
+peer service. That was the threshold this document set for itself, and it is
+met: no claim here is now unexercised prose.
 
-§4.2's central claim survived: a remote peer really is just another driver.
-Proven end to end, caller through a service that holds no local drivers,
-through the remote driver, over HTTP, into a second service, into the
-multiplexer driver, and back with 22 real sessions — with `confidence:
-inferred` intact rather than flattened in transit. Neither service needed a
-special case, and the proxying service never learns that its peer is remote.
+§4.2's central claim survived. A remote peer really is just another driver,
+proven end to end with no special case in either service — a caller asked a
+service holding no local drivers, which proxied through the remote driver, over
+HTTP, into a second service, into the multiplexer driver, and back with 22 real
+sessions. `confidence: inferred` survived the round trip rather than being
+flattened to `observed`.
 
-The claims below have therefore been tested against a real substrate, and
-several did not survive intact. Those are marked **Amendment (first working driver)** in
-place: §5.4 is not implementable at the signature §3 gives it, §5.7 turns out
-to govern the inside of a driver as well as the space between machines, §10's
-retention rule is silently defeated by §4.3's `supportsResume` being read as
-covering it, and §2.3's `inferred`/`unknown` machinery is load-bearing in ways
-§2.3 undersells.
+Five things did **not** survive contact, and they are collected in **§14, Open
+defects**. Read that section before relying on any guarantee in this document:
+one of the five is a security defect, and its symptom is that everything
+appears to work.
 
-What the second driver found is a different class of problem from what the
-first one found. The first exposed places the model was **imprecise**. The
-second exposed places the interface has **no room for a concept it requires**
-— capability declaration that cannot say "unknown" (§4.3), and, more
-seriously, operations with nowhere to carry the caller's authority even
-though §13 requires exactly that (§6). Both are marked in place.
+### How to read this
+
+- **§1–§13 are normative.** They state the design as it is now, in the present
+  tense. Where a rule is known to be unenforceable, the section carries a short
+  blockquote naming the defect — the rule is left in place because it is still
+  what a driver should do.
+- **§14 is the list of things this document requires but cannot enforce.** Each
+  entry states the rule, why it fails, what that costs, and a proposed fix.
+  A proposed fix is not a decision.
+- **Appendix A is how any of this was learned.** Measurements, the bugs that
+  taught the rules, and the reasoning behind decisions that look arbitrary from
+  the outside. Sections above point into it by finding number (F1, F2, …).
+
+The separation is deliberate. Earlier revisions kept each discovery inline as
+an amendment, which preserved the reasoning but grew until a third of the
+document was archaeology and a first-time reader could not tell current truth
+from a record of having been wrong. Nothing was deleted in the consolidation —
+the narratives moved to Appendix A, and the rules they produced moved into the
+body.
 
 ---
 
@@ -125,41 +135,19 @@ exact advantage it exists to expose.
 **`evidence` is for humans.** It carries whatever the driver actually saw. It
 is never parsed by callers, and its format is not stable.
 
-**Amendment (first working driver): `inferred` is doing more work than the
-prose above suggests, and the first driver is the proof.**
+Two further rules follow from the first, and they are normative rather than
+advisory — a driver that violates either produces confident wrong answers:
 
-The three rules read as prudent hedging until you build a driver that has to
-obey them. This one infers a session's state by reading its terminal, and the
-signal it must read to distinguish *working* from *idle* is the grammatical
-tense of a **randomly chosen English verb**:
+**Reach `unknown` from unrecognised evidence, not only from absent evidence.**
+When a driver sees a signal it does not recognise, the answer is `unknown`.
+"No positive evidence of working" must never decay to `idle`: a wrong `idle`
+for a session that is working is silent, and an `unknown` is not.
 
-```
-✻ Zigzagging… (5m 57s · ↓ 21.3k tokens)   <- running
-✻ Worked for 2m 7s                         <- finished
-```
+**Fail toward `unknown`, never toward the plausible answer.** §5.6 states this
+for capabilities; it holds field by field.
 
-The verb is drawn at random from a large set per turn. The distinction is
-carried entirely by the suffix's shape, in a terminal UI with no compatibility
-contract, and it will break without warning and without erroring.
-
-Three consequences, all of which the existing model already handles — which is
-the actual finding:
-
-1. `confidence: inferred` is not a formality on this substrate. It is the
-   literal truth, and a caller that treats inferred and observed alike is
-   trusting a coin-flip verb.
-2. `unknown` must be reachable from *unrecognised evidence*, not only from
-   absent evidence. When the spinner appears in a shape the driver does not
-   know, the honest answer is `unknown` — not `idle`, which is what "no
-   running spinner found" naively decays to. A wrong `idle` for a working
-   session is silent; an `unknown` is not.
-3. A driver must fail toward `unknown`, never toward the plausible answer.
-   §5.6 says this about capabilities; it is equally true field by field.
-
-Recorded because the value of §2.3 is easy to underestimate from the prose.
-Its cost is one extra enum member and a nullable confidence; its benefit is
-that a substrate this unreliable can be represented **honestly** rather than
-being flattened into confident fiction at the interface boundary.
+> Why `inferred` is load-bearing rather than decorative on a real substrate,
+> and how these two rules were earned: Appendix A, F6.
 
 ### 2.4 DeliveryReceipt
 
@@ -190,14 +178,13 @@ Ack {
 }
 ```
 
-**Amendment (first Go transcription):** this type was named in §3's
-operations table (`interrupt(ref) -> Ack`, `close(ref) -> Ack`) but never
-given a shape, unlike `DeliveryReceipt` above. This is the shape settled on:
-`interrupt` and `close` express intent only (§3; the HTTP wire's 202
-Accepted, api-http.md §3.3). Confirmation of what actually happened arrives
-later as a state change on the event stream (§4) — an `Ack` that promised
-more would be a driver promising synchronous completion it may not be able
-to deliver, which §5.6 forbids.
+`interrupt` and `close` express intent only (§3; api-http.md §3.3's 202
+Accepted). Confirmation of what actually happened arrives later as a state
+change on the event stream (§4), never as this call's return value. An `Ack`
+carrying a status of its own would be a driver promising synchronous
+completion it may not be able to deliver, which §5.6 forbids.
+
+> Origin: Appendix A, F2.
 
 ---
 
@@ -216,20 +203,9 @@ subscribe(filter?)            -> EventStream
 `subscribe` is not optional garnish. Federated callers must be able to learn
 about state changes without polling — see §5.5.
 
-**Amendment (first Go transcription):** `list` was originally written here
-as `-> SessionRef[]`, a bare array of refs. That pseudocode does not survive
-being made to compile, for two reasons already stated elsewhere in this
-document: §9 requires every plural response to be a `Collection` envelope
-with `sources`, never a bare array — and this applies even to one machine
-answering for itself alone (api-http.md §3.2: a `scope=local` response
-still "carries exactly one `SourceStatus`"); and §13.2 requires a service
-proxying a peer's answer to *adopt* that peer's own self-reported
-`SourceStatus` rather than manufacture a fresh `"ok"`, which a driver
-returning a bare slice has no way to do — there is nowhere in a slice to
-carry a `SourceStatus` at all. The item type is `Session`, not
-`SessionRef`, for the same reason §4.4's cost measurement matters here: a
-batch operation whose natural shape is cheap must not force per-item
-follow-up calls for state.
+> The table above once read `list(filter?) -> SessionRef[]`. Why a bare array
+> cannot satisfy §9's envelope rule or §13.2's adopt-don't-resynthesize rule:
+> Appendix A, F3.
 
 ---
 
@@ -268,37 +244,10 @@ DriverCapabilities {
 
 A driver must never silently emulate a capability it lacks.
 
-**Amendment (second driver): this declaration is synchronous and infallible,
-and a remote driver's cannot be either.**
-
-A local driver describing itself always knows the answer. A remote driver is
-describing *somebody else*, and the answer lives on the peer, behind a network
-that may be down. There is no honest synchronous value for "the peer has never
-answered."
-
-Worse, the type cannot express it. `DriverCapabilities` with every flag false
-means "this driver supports nothing"; an unreached peer produces exactly that
-value, meaning "nobody has told me anything." A caller consulting
-`GET /v1/runtimes` — which api-http.md §3.1 says it MUST do before relying on
-a capability — cannot distinguish a genuinely minimal peer from an
-unreachable one.
-
-This is **§5.7 for a third time, in a third place**, and at this point the
-repetition is the finding: *every field in this API that can be absent needs
-to distinguish absent-because-no from absent-because-unknown.* §2.3 built that
-distinction for status (`unknown`) and §9 built it for plural responses
-(`sources`). Capability declaration did not get one, and it is the same gap.
-
-Mitigating factor, which is why this is recorded rather than urgent: both
-readings degrade identically — a caller that believes a capability is absent
-behaves safely whether it is absent or merely unknown. The cost is
-diagnostic, not correctness: a permanently misconfigured peer looks exactly
-like a deliberately minimal one, forever.
-
-⇒ Either `deadlineMs` is the only field a remote driver may answer for itself
-(it describes the transport, not the peer) and the rest need a third state,
-or capability declaration needs to be a fallible, context-taking operation
-like every other cross-machine question.
+> **Open defect D3.** This declaration is synchronous and infallible, which a
+> remote driver cannot be — its answer lives on the peer, behind a network.
+> And `DriverCapabilities` has no way to say "the peer has not answered yet":
+> that value is currently indistinguishable from "supports nothing". See §14.
 
 ### 4.4 Every driver declares a deadline
 
@@ -364,37 +313,13 @@ id is the session the caller meant — by corroborating at least one independent
 attribute (working directory, start time, name). Matching an id alone is not
 identification.
 
-**Amendment (first working driver). This rule is not implementable at the
-signature §3 gives `close`, and that is a defect in the interface, not in any
-driver.**
-
-`close(ref) -> Ack` hands the driver a `SessionRef`: machine, id, and a human
-label. To corroborate, a driver needs two things — what the session looks like
-now, and what the caller *believed* it looked like. It can read the first. The
-second never reaches it. So "corroborate against an independent attribute"
-has no second operand.
-
-What a driver can do at this signature, and what the first one does:
-
-- Keep its own record of each session it has observed, and refuse to destroy
-  an id whose start time or working directory has changed since. This closes
-  the window between **the driver's** observation and the destroy.
-- Refuse outright on an id it has never observed, rather than destroying on an
-  id match — which is the literal act this section forbids.
-
-What no driver can do at this signature: close the window between **the
-caller's** observation and the destroy. A supervisor that lists sessions,
-pauses, and then closes one gets no protection, because the driver's own
-sighting may have been refreshed during the pause. That window is the one that
-matters — it is the long one, and it is the one a human is inside of.
-
-**Proposed fix, not yet applied:** `SessionRef` (§2.2) gains an optional
-corroborating attribute — the start time the caller observed — so `close` can
-compare against the caller's belief instead of its own. Callers that omit it
-get today's weaker guarantee, explicitly, rather than a strong-sounding rule
-that silently degrades. This touches the wire type and therefore
-api-http.md §3.3; it is recorded here rather than applied, because the
-interface change deserves a decision rather than a patch.
+> **Open defect D2 — this rule is not enforceable at the signature §3 gives
+> `close`.** A `SessionRef` carries no attribute the caller observed, so a
+> driver has nothing to corroborate the live session *against*. A conforming
+> driver closes the window between its own last sighting and the destroy, and
+> refuses an id it has never observed; nothing at this signature closes the
+> window between the *caller's* sighting and the destroy, which is the long
+> one. See §14.
 
 ### 5.5 State and events, never polling
 
@@ -402,29 +327,11 @@ Federated callers may be many network round-trips away. An API that requires
 polling to stay current becomes unusable at exactly the distance federation is
 for. State is readable on demand; changes are pushed.
 
-**Amendment (first working driver): the filter's granularity is a cost
-parameter, not a convenience.**
-
-§3 writes `subscribe(filter?)` and never says what a filter can express. That
-looked like a detail to settle later. It is not, because a substrate may
-charge per subscribed session.
-
-Measured on the first driver's substrate: push notifications about a session's
-*content* are delivered only to a client attached to that session, while
-notifications about sessions *appearing and disappearing* are delivered
-fleet-wide to any attached client. So lifecycle costs one connection total,
-and content costs one connection per watched session. A subscription that can
-be narrowed to the sessions a caller actually cares about costs
-O(subscribers); one that cannot costs O(sessions).
-
-⇒ A filter must be able to name **sessions**, not only describe them by
-attribute. Describing them by working-directory prefix — the only mechanism
-this interface currently offers — makes a caller that wants one session ask
-for a directory and hope, which is a proxy for identity rather than identity
-(§5.4's lesson, in a different operation).
-
-Recorded rather than fixed, for the same reason as §5.4: it changes the wire
-shape of `subscribe`, and that deserves a decision.
+> **Open defect D4.** §3 writes `subscribe(filter?)` without saying what a
+> filter can express. On a substrate that charges one connection per watched
+> session, that decides whether a subscription costs O(subscribers) or
+> O(sessions) — so filter granularity is a cost parameter, not a convenience.
+> See §14.
 
 ### 5.6 Degrade, never emulate
 
@@ -446,30 +353,20 @@ plural response in this API. It is why §9 forbids returning a bare array from
 any operation that spans machines: there is nowhere in a bare array to say
 *"and one source didn't answer."*
 
-**Amendment (first working driver): this rule applies inside a driver, not
-only across machines.**
-
-Stated as above, §5.7 reads as a rule about federation — sources, machines,
-envelopes. It is not. The same collapse is available between a driver and a
-single session, and it is just as capable of manufacturing a confident wrong
-answer.
-
-Measured, not hypothesised. The first driver reads each session's state by
-capturing its screen. A bug misfiled every capture, so every session was
-classified from an empty string — and an empty screen and an unread screen
-both produced `unknown`. The result: a driver that could not read a single
-screen returned a complete, well-formed, error-free fleet view of 22 sessions,
-and passed its whole unit suite. Nothing anywhere in the response said *"the
-driver failed."* It said *"the sessions are unknowable,"* which is a claim
-about the fleet rather than about the driver, and it is false.
-
-⇒ A driver must distinguish **"I read this session and could not tell"** from
-**"I failed to read this session."** Both may surface as `unknown` status, but
-they must not carry the same `evidence`, because `evidence` is the only field
-in which the difference can survive (§2.3).
+**This rule applies inside a driver, not only across machines.** The wording
+above is about sources and envelopes, but the same collapse is available
+between a driver and a single session, and it manufactures the same confident
+wrong answer. A driver must distinguish **"I read this and could not tell"**
+from **"I failed to read this."** Both may surface as `unknown`, but they must
+not carry the same `evidence` — that field is the only place the difference can
+survive (§2.3).
 
 The general form, worth stating once: *a component that cannot report its own
 failure to observe will report its ignorance as the world's.*
+
+> How this was found — a driver that could read nothing returned a complete,
+> error-free view of 22 sessions and passed its entire test suite:
+> Appendix A, F5.
 
 ---
 
@@ -496,46 +393,11 @@ mourned.
 4. **Log every remote-originated mutation** — actor, verb, target, outcome.
    This is the audit trail that replaces "it could only ever have been me."
 
-**Amendment (second driver): the operations in §3 have nowhere to carry the
-caller's identity, so the rule below cannot be enforced by the interface.**
-
-§13 states it without ambiguity: *"a service forwarding a peer's request
-presents the ORIGINAL caller's authority, never its own. Otherwise every
-machine becomes a confused deputy for every other."* api-http.md §5 repeats
-it.
-
-Now look at §3's operations. Every one takes a context and its domain
-arguments. **Not one takes a principal, a credential, or a caller identity.**
-A remote driver — the only kind for which this rule exists — has no parameter
-in which the original caller's authority can arrive.
-
-That leaves an out-of-band channel (a context value): untyped, invisible at
-the call site, impossible to require, and silently absent when a service
-forgets to attach it.
-
-**And the natural fallback is the vulnerability.** A remote driver missing the
-caller's credentials will reach for the one credential it definitely has — its
-own, configured for transport. That works. The request succeeds. Tests pass.
-Every machine becomes a confused deputy for every other, and *nothing
-anywhere reports it*, because the symptom of this bug is that everything
-works.
-
-Note the asymmetry with every other defect in this document: the others fail
-toward a wrong answer a caller can eventually notice. This one fails toward a
-**correct-looking answer with the authorization silently widened**, which is
-the only failure mode here that is a security bug rather than a correctness
-bug.
-
-⇒ Interim rule, implemented by the first remote driver: **a mutating verb
-without the caller's authority is refused, never substituted.** The
-implementation returns an error rather than falling back to its own token.
-This is a driver refusing to do something the interface cannot stop it from
-doing, which is not a fix.
-
-⇒ Proper fix, not applied: caller authority must be a **parameter of the
-operations**, not an out-of-band value — so that a driver cannot compile
-without deciding what to do with it. Recorded rather than applied because it
-changes every signature in §3, and that is a decision rather than a patch.
+> **Open defect D1 — the most serious in this document, and the only one whose
+> failure mode is a security bug rather than a wrong answer.** Requirement 3
+> above, and §13's "proxying does not launder authorization", cannot be
+> enforced by the interface: no operation in §3 takes a principal, so the
+> original caller's authority has nowhere to travel. See §14.
 
 ---
 
@@ -581,31 +443,21 @@ subscriber refetches state.
 event — produces a subscriber that believes it has a complete history and does
 not. Announced gaps are recoverable; silent gaps are not.
 
-**Amendment (first working driver), two parts.**
+Two rules follow, both normative:
 
-**A driver cannot fill these fields, and the type implies it should.** Cursor
-and epoch are assigned per *service instance*, by this section's own wording.
-A driver has access to neither, and two drivers under one service must not be
-minting competing cursor sequences. So a driver must leave them unset and the
-service must stamp them on the way out. This is easy to get wrong in the
-direction that fails silently: a driver that helpfully invented a cursor would
-produce a stream that looks correct until a subscriber reconnects, at which
-point the resync logic compares values from different sequences and misses a
-gap it was built to catch.
+**Cursor and epoch are assigned by the service, never by a driver.** A driver
+has access to neither, and two drivers under one service must not mint
+competing sequences. A driver leaves them unset; the service stamps them on the
+way out.
 
-**"Silent gaps are not recoverable" has a second instance, at subscribe
-time.** The rule above governs reconnection. The same failure is available at
-the *start* of a subscription: if the initial state snapshot is taken
-asynchronously, everything that happens between `subscribe` returning and that
-snapshot is folded into the baseline and never reported. The subscriber holds
-a stream it believes is complete, with a hole at the front. Nothing can
-announce that gap, because nothing knows it occurred — no cursor covers it and
-no epoch changed.
+**The baseline snapshot is taken before `subscribe` returns.** If a
+subscription takes its first reading asynchronously, everything occurring
+between the call returning and that reading is folded into the baseline and
+never reported — a gap that cannot even be announced, because no cursor covers
+it and no epoch changed. Taking it synchronously makes the guarantee stateable:
+every change after `subscribe` returns is either delivered or is a bug.
 
-⇒ **The baseline snapshot must be taken before `subscribe` returns.** Then the
-guarantee is stateable: every change after `subscribe` returns is either
-delivered or is a bug. Found by writing the race and then watching a test
-absorb the very change it was asserting on.
+> Both were found the hard way: Appendix A, F8.
 
 ### 7.4 Plural responses are envelopes, never bare arrays
 
@@ -699,18 +551,15 @@ rather than an oversight.
 **Never** return `items: []` for a source that failed. An unreachable machine
 contributes a `SourceStatus`, not an absence.
 
-**Amendment (first Go transcription):** the prose above says `complete` is
-"false if any source failed to answer" but does not say who computes it, or
-whether a `degraded` source (answered, but reported itself unhealthy)
-counts as a failure the same way `unreachable` (didn't answer at all) does.
-Settled as follows: `complete` is **derived**, never independently
-supplied — true iff every `SourceStatus.status` is `ok`. A caller-supplied
-boolean is exactly the kind of value that can silently drift from what
-`sources` actually says, which is the same class of bug this field exists
-to catch, one level up. `degraded` also flips `complete` to `false`: a
-degraded source's data is present but not to be trusted at face value
-(§13.2), so treating it as "answered cleanly" would reintroduce the
-confidence-flattening §5.6 forbids.
+**`complete` is derived, never supplied.** It is true iff every
+`SourceStatus.status` is `ok`. A caller-supplied boolean is exactly the kind of
+value that drifts from what `sources` actually says — the same class of bug
+this field exists to catch, one level up. `degraded` flips `complete` to false
+on the same footing as `unreachable` and `unauthorized`: a degraded source's
+data is present but not to be trusted at face value (§13.2), and treating it as
+"answered cleanly" would reintroduce the confidence-flattening §5.6 forbids.
+
+> Origin: Appendix A, F4.
 
 ---
 
@@ -729,34 +578,19 @@ This is not a nicety. The failure it prevents is specific and expensive:
 
 Retention must outlive the caller's retry window. Keys are scoped per machine.
 
-**Amendment (first working driver): retention and `supportsResume` are
-different properties, and reading them as one produces the exact disaster
-above on a driver that looks compliant.**
+**Retention that does not outlive the *service* does not satisfy this rule**,
+because a service restart falls inside the caller's retry window — and is one
+very good reason a reply went missing in the first place. Either persist keys,
+or declare that they are not persisted.
 
-§4.3's `supportsResume` asks whether *sessions* survive a service restart. It
-says nothing about whether *idempotency keys* do. The first driver makes the
-gap concrete and is not unusual in doing so:
+§4.3's `supportsResume` does **not** answer this question. It asks whether
+*sessions* survive a restart, which is a different fact: a driver whose
+sessions are owned by an external process can honestly declare
+`supportsResume: true` while its idempotency keys live in memory and do not
+survive at all.
 
-- Sessions survive, genuinely. The multiplexer owns them, not the service, so
-  they outlive it being restarted, upgraded or killed. `supportsResume: true`
-  is the honest declaration.
-- Keys do not survive. They live in the service's memory.
-
-So a caller retrying a `create` across a service restart — precisely the
-partial-failure this section exists for, since a restart is one very good
-reason a reply went missing — gets a **second session in the same working
-directory**, from a driver that correctly declares `supportsResume: true`. The
-capability declaration was read as covering both, and it covers one.
-
-⇒ Retention that does not outlive the *service* does not satisfy "must
-outlive the caller's retry window", because a service restart is inside that
-window. Either persist keys, or declare that they are not persisted — a
-driver must not leave a caller to infer key durability from a field about
-session durability.
-
-`send` is **not** idempotent and must not pretend to be — repeat delivery of
-input is a legitimate caller intent. Callers needing exactly-once delivery must
-read the `DeliveryReceipt` (§2.4) rather than retrying blindly.
+> Known non-compliance in the current implementation, and how the two were
+> conflated: §14 D5, Appendix A, F7.
 
 ---
 
@@ -860,3 +694,294 @@ in.
 
 The reachability of a peer and the health of a peer are different facts. The
 proxy observes the first and must **relay**, not overwrite, the second.
+
+---
+
+## 14. Open defects in this specification
+
+Places where this document requires something it cannot enforce, or describes
+something the interface has no room for. Every one was found by an
+implementation, and none is fixed. They are listed here rather than left as
+marginal notes because a reader who takes the sections above at face value will
+believe guarantees that do not hold.
+
+Each entry states the rule, why it cannot be satisfied, what that costs, and
+the proposed fix. **A proposed fix is not a decision.** Each changes a shape
+that two implementations and an HTTP surface already depend on, which is
+exactly why they are written down instead of applied in passing.
+
+### D1 — Caller authority has nowhere to travel · §6, §13
+
+**Severity: this is the only defect here whose failure mode is a security bug
+rather than a wrong answer.**
+
+§6 requirement 3 and §13 both require a proxying service to present the
+**original caller's** authority to a peer, never its own. Every operation in §3
+takes a context and its domain arguments. None takes a principal.
+
+So the caller's identity can only travel out of band — untyped, invisible at
+the call site, impossible to require, silently absent when a service forgets to
+attach it.
+
+**The fallback is the vulnerability.** A remote driver missing the caller's
+credentials will reach for the one credential it certainly has: its own
+transport token. That works. The request succeeds. Tests pass. Authorization is
+silently widened to whatever the proxy is allowed to do, and nothing anywhere
+reports it — *the symptom of this bug is that everything works.*
+
+Note the asymmetry with every other entry here: the others fail toward a wrong
+answer somebody eventually notices. This one fails toward a correct-looking
+answer.
+
+- **Interim mitigation, implemented:** a remote driver refuses any mutating
+  verb that arrives without caller authority, rather than substituting its own.
+  This is a driver declining to do something the interface cannot stop it from
+  doing. It is not a fix, and a driver written by somebody else will not do it.
+- **Proposed fix:** caller authority becomes a parameter of the §3 operations,
+  so a driver cannot compile without deciding what to do with it.
+- **Cost of the fix:** every signature in §3, both drivers, the service, and
+  api-http.md §5.
+
+### D2 — `close` cannot corroborate · §5.4
+
+§5.4 requires corroborating an independent attribute before any destructive
+operation, because ids are recyclable. Corroboration needs two operands: what
+the session looks like now, and what the caller believed it looked like. A
+`SessionRef` carries machine, id and a human label. The second operand never
+arrives.
+
+What a conforming driver can do, and what both current drivers do:
+
+- refuse outright on an id it has never observed, rather than destroying on an
+  id match — the literal act §5.4 forbids;
+- refuse when its own last sighting disagrees with the live session.
+
+What no driver can do at this signature: close the window between the
+**caller's** sighting and the destroy. That is the long window, and the one a
+human is standing inside. It is worse across a network, where a round trip
+separates the two rather than a function call — and a remote driver has no
+sightings of its own to fall back on at all.
+
+- **Proposed fix:** `SessionRef` (§2.2) gains an optional caller-observed start
+  time, so `close` compares against the caller's belief instead of its own.
+  Callers that omit it get today's weaker guarantee explicitly, rather than a
+  strong-sounding rule that quietly degrades.
+- **Cost of the fix:** a wire type, api-http.md §3.3, both drivers.
+
+### D3 — Capability declaration cannot say "unknown" · §4.3
+
+`Capabilities()` is synchronous and infallible. For a driver describing itself
+that is correct. For a driver describing a **peer**, the answer lives across a
+network that may be down, and there is no honest synchronous value for "nobody
+has told me yet."
+
+The type cannot express it either. All-false already means "supports nothing";
+an unreached peer produces exactly that. A caller consulting `/v1/runtimes` —
+which api-http.md §3.1 says it MUST do before relying on a capability — cannot
+distinguish a deliberately minimal peer from an unreachable one.
+
+Both readings degrade identically, so the cost is **diagnostic rather than
+correctness**: a permanently misconfigured peer looks like a minimal one,
+forever, and nothing prompts anyone to look.
+
+- **Proposed fix:** either `deadlineMs` becomes the only field a remote driver
+  answers for itself — it describes the transport, not the peer — and the rest
+  gain a third state; or capability declaration becomes fallible and
+  context-taking like every other cross-machine question.
+
+### D4 — `subscribe`'s filter cannot name a session · §5.5
+
+§3 writes `subscribe(filter?)` and never says what a filter expresses. That
+looked like a detail to settle later. It is not, because a substrate may charge
+per subscribed session: measured on the first driver's substrate, content
+notifications require one connection per watched session while lifecycle
+notifications are fleet-wide and free.
+
+A filter that can name sessions costs O(subscribers). One that can only
+describe them by attribute costs O(sessions). The only mechanism currently
+available is a working-directory prefix, which makes a caller wanting one
+session ask for a directory and hope — a proxy for identity rather than
+identity, which is D2's lesson in a different operation.
+
+- **Proposed fix:** the filter can name session ids.
+- **Cost of the fix:** the wire shape of `subscribe`, api-http.md §4.
+
+### D5 — Idempotency retention does not outlive the service · §10
+
+Unlike D1–D4 this is a **known non-compliance of the current implementation**,
+not a gap in the interface. §10 as clarified is satisfiable; nothing satisfies
+it yet.
+
+The local driver's idempotency keys live in process memory. A caller retrying a
+`create` across a service restart therefore receives §10's exact disaster — two
+agents in one working directory — from a driver that correctly declares
+`supportsResume: true`, because that flag answers a question about *sessions*.
+
+- **Proposed fix:** persist keys, or declare that they are not persisted so a
+  caller can compensate.
+
+---
+
+## Appendix A. Findings log
+
+How the rules above were learned. This appendix exists because the reasoning is
+worth more than the conclusions: a reader who knows only the rule will restate
+it, while a reader who knows how it was violated will recognise the next
+instance.
+
+Kept deliberately, per this repository's standing preference — *knowing a
+design was wrong once, and how it was found out, is worth more than a clean
+document.*
+
+### Phase 1 — transcribing the spec into types
+
+Nothing ran yet. These are places the prose admitted more than one reading, or
+where the document's own pseudocode did not survive being made to compile.
+
+**F1 · A session id is scoped to `(machine, runtime)`, and the URL had no room
+for the runtime.** Two runtimes on one machine may legally reuse an id;
+`/machines/{machine}/sessions/{id}` cannot disambiguate. api-http.md gained an
+optional `?runtime=` parameter, on that document's own rule that where the two
+disagree, the abstraction wins and the wire document is the bug.
+
+**F2 · `Ack` was named but never shaped.** §3's table returned it from
+`interrupt` and `close`; unlike `DeliveryReceipt`, it was never defined. Shaped
+to carry acceptance only — anything more would be a driver promising
+synchronous completion it may not be able to deliver.
+
+**F3 · `list` could not return a bare array.** §3 wrote `-> SessionRef[]`. Two
+independent rules forbid it: §9 requires every plural response to be an
+envelope with `sources`, and §13.2 requires a proxy to adopt a peer's own
+`SourceStatus` — for which a slice has nowhere to put it. The item type became
+`Session` rather than `SessionRef` for a third reason, confirmed later by
+measurement (F10): a batch operation whose natural shape is cheap must not
+force per-item follow-up calls.
+
+**F4 · Nobody owned `complete`.** §9 said it was "false if any source failed to
+answer" without saying who computes it, or whether `degraded` counts. Settled
+as derived-never-supplied, with `degraded` flipping it false.
+
+### Phase 2 — the first working driver
+
+A local driver over a terminal multiplexer, developed against a machine running
+22 concurrent live sessions.
+
+**F5 · A driver that could read nothing reported a healthy fleet.** The batched
+screen-capture markers were built from pane identifiers, and the command
+emitting them passes its argument through `strftime` — which consumes `%`, the
+character every pane identifier begins with. Every capture was misfiled, so
+every session was classified from an empty string.
+
+The driver then returned a complete, well-formed, **error-free** view of 22
+sessions, all `unknown`, and passed its entire unit suite. Nothing anywhere
+said *"the driver failed to read."* It said *"the sessions are unknowable"* — a
+claim about the fleet rather than about itself, and false.
+
+This is §5.7 operating one level below where §5.7 states it, and it is why that
+section now governs the inside of a driver too.
+
+**F6 · The `working`/`idle` distinction rests on the tense of a randomly chosen
+verb.** The runtime's interface signals a turn in progress with a spinner whose
+verb is drawn at random per turn, distinguishing running from finished by that
+verb's grammatical tense and suffix shape:
+
+```
+✻ Zigzagging… (5m 57s · ↓ 21.3k tokens)   <- running
+✻ Worked for 2m 7s                         <- finished
+```
+
+A driver keying on that is keying on the tense of a random English word in an
+interface with no compatibility contract. It works today; it is one release
+note away from being wrong, and wrong *silently*, because a missing spinner
+reads exactly like a finished turn.
+
+`confidence: inferred` is therefore not modesty on this substrate — it is the
+literal truth, and §2.3's `unknown` earns its place as a first-class answer.
+
+**F7 · `supportsResume: true` was honest while idempotency keys evaporated.**
+Sessions here are owned by the multiplexer, so they genuinely survive a service
+restart. Keys lived in memory. The capability flag was being read as covering
+both. See D5.
+
+**F8 · Two silent gaps in the event stream.** First: `Event` carries `cursor`
+and `epoch`, which §7.3 assigns per service instance — a driver has neither,
+and one that helpfully invented a cursor would produce a stream that looks
+correct until a subscriber reconnects and the resync comparison misses the gap
+it exists to catch. Second: taking the baseline snapshot inside the engine
+goroutine let everything between `subscribe` returning and that snapshot be
+absorbed into the baseline, unreported and *unannounceable*. Found by writing
+the race and then watching a test absorb the very change it was asserting on.
+
+**F9 · Push exists, but is scoped per attachment.** Measured on the substrate
+rather than assumed:
+
+| notification | delivered to a client attached elsewhere? |
+|---|---|
+| content (`%output`) for the attached session | yes |
+| content for a sibling session | **no** |
+| format subscription, per-pane | attached only |
+| format subscription targeting a sibling's pane by id | **no** |
+| session appearing / disappearing | **yes — fleet-wide** |
+
+Content is per-attachment; lifecycle is global. One always-on client therefore
+covers every session appearing and disappearing, while watching a session's
+content costs a connection. That asymmetry is what makes filter granularity a
+cost parameter (D4), and it is why notifications are used as change *triggers*
+feeding the ordinary batched read rather than as a second interpretation of
+screen bytes — two sources of truth about status would disagree only under
+load.
+
+**F10 · Enumeration cost is structural, not incremental.** On 22 live sessions:
+
+| approach | subprocess spawns | wall clock |
+|---|---|---|
+| per-session capture loop | N+1 (23) | 119 ms |
+| one batched invocation | 1 | 18 ms |
+
+Constant in session count rather than linear — about 5 ms per session becomes
+about 0.15 ms. This is why `list` returns everything in one call, and why a
+driver that implements `list` by looping `state` has reproduced the cost the
+interface exists to avoid.
+
+### Phase 3 — the second driver
+
+An HTTP client to a peer service, satisfying the same interface. It found a
+different *class* of problem: where the first driver exposed places the model
+was imprecise, this one exposed places the interface has **no room for a
+concept it requires**.
+
+**F11 · The confused-deputy fallback.** See D1. Worth restating once here
+because of how it presents: the bug's symptom is that everything works.
+
+**F12 · A remote driver cannot answer a synchronous question about a peer.**
+See D3.
+
+**F13 · What did survive, and it is the point of the exercise.** §4.2's claim —
+that a remote peer is just another driver — held end to end, with no special
+case in either service: a caller asked a service holding no local drivers,
+which proxied through the remote driver, over HTTP, into a second service, into
+the multiplexer driver, and back with 22 real sessions. `confidence: inferred`
+survived the round trip rather than being flattened to `observed`, which is the
+single easiest thing for a federation layer to destroy and the one §5.6 exists
+to protect.
+
+### The pattern worth naming
+
+§5.7 — *absence and failure are different answers* — has now been discovered
+independently at four different altitudes:
+
+1. **A status field.** A driver that cannot determine state must say `unknown`,
+   not guess (§2.3).
+2. **A plural response.** A machine that did not answer contributes a
+   `SourceStatus`, not an absence from `items` (§9).
+3. **Inside a driver.** A pane that could not be read is not a pane that was
+   read and found empty (F5).
+4. **A capability declaration.** A peer that has not answered is not a peer
+   that supports nothing (D3).
+
+Four instances, found separately, each initially looking like a local detail.
+The generalisation is worth stating as a design rule for anything added later:
+
+> **Every field in this API that can be absent needs to distinguish
+> absent-because-no from absent-because-unknown — and if it cannot, it will
+> eventually report someone's ignorance as a fact about the world.**

@@ -30,7 +30,7 @@
 //     package derives Complete automatically from Sources — a caller
 //     cannot get it wrong because it never supplies it — and treats
 //     SourceDegraded as also flipping Complete false. See
-//     session-abstraction.md §9's amendment.
+//     session-abstraction.md §9.
 //   - SessionState.Since's coupling to Confidence for the unknown status
 //     (state.go, UnknownState): the spec doesn't say whether a StatusUnknown
 //     reading has a fixed Confidence. It doesn't — a driver can be certain
@@ -40,7 +40,7 @@
 //   - list()'s return shape (session-abstraction.md §3's operations table
 //     says `list(filter?) -> SessionRef[]`; internal/driver.Driver.List
 //     returns Collection[Session] instead. See that method's doc comment
-//     and the session-abstraction.md §3 amendment for why a bare slice of
+//     and session-abstraction.md §3 for why a bare slice of
 //     refs cannot satisfy §9's envelope rule or §13.2's "adopt, don't
 //     resynthesize a peer's SourceStatus" rule.
 //   - SourceState's closed set (ok/unreachable/unauthorized/degraded) has no
@@ -58,7 +58,7 @@
 //     wins when the two documents disagree and "this document is the bug";
 //     fixed there by adding an optional `runtime` query parameter. See
 //     internal/service's resolveSessionDriver and the api-http.md §3.3
-//     amendment.
+//     §3.3.
 //   - GET /v1/machines' per-machine reachability doesn't map onto any of
 //     the seven Driver operations (§3) — List is scoped to one runtime's
 //     sessions, not machine-level liveness. internal/service.ListMachines

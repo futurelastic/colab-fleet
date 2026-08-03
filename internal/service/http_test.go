@@ -183,7 +183,7 @@ func TestGetSession_AmbiguousRuntimeIs400(t *testing.T) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 — two local runtimes and no ?runtime= hint is genuinely ambiguous (api-http.md §3.3 amendment)", resp.StatusCode)
+		t.Fatalf("status = %d, want 400 — two local runtimes and no ?runtime= hint is genuinely ambiguous (api-http.md §3.3)", resp.StatusCode)
 	}
 
 	// The disambiguated form must succeed in routing (still 501, since the

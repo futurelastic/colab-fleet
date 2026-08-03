@@ -636,7 +636,7 @@ func (d *Driver) Interrupt(ctx context.Context, ref fleet.SessionRef) (fleet.Ack
 // attribute — a start time the caller observed — so that close can compare
 // against the caller's belief rather than the driver's. That is a change to
 // the specification, not to this file; it is recorded in the package doc's
-// FINDINGS and in the spec's §5.4 amendment.
+// FINDINGS and in the spec's §5.4 (open defect D2, §14).
 //
 // A ref this driver has never seen is refused outright rather than
 // destroyed on an id match, which is the literal thing §5.4 forbids.

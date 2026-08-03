@@ -282,7 +282,7 @@ func (s *Service) driverSummaries() []driverSummary {
 // runtime segment, but SessionRef.ID is scoped to (machine, runtime), not
 // machine alone (session-abstraction.md §2.2). Two runtimes on one machine
 // can legally reuse the same id.
-var ErrAmbiguousSession = errors.New("service: more than one local runtime is registered; pass ?runtime= to disambiguate (api-http.md §3.3 amendment)")
+var ErrAmbiguousSession = errors.New("service: more than one local runtime is registered; pass ?runtime= to disambiguate (api-http.md §3.3)")
 
 // resolveSessionDriver finds the Driver responsible for an existing or
 // about-to-be-created session addressed by (machine, runtimeHint).
