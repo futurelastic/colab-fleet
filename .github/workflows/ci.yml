@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks (pinned binary — gitleaks-action v2 đòi GITLEAKS_LICENSE khi repo thuộc org)
+        run: |
+          # Chạy thẳng binary release thay vì gitleaks-action v2: action đòi license
+          # cho repo thuộc organization (repo cá nhân thì free). Binary MIT, không đòi gì.
+          curl -sSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          chmod +x gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          rm -f gitleaks.tar.gz
+      - name: gitleaks detect
+        run: gitleaks detect --source . --no-banner
+
+  build:
+    name: Build (chỉ chạy nếu là repo Node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect Node project
+        id: detect
+        run: |
+          if [ -f package.json ]; then
+            echo "node=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "node=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.detect.outputs.node == 'true'
+        with:
+          node-version: 20
+      - name: Install & build
+        if: steps.detect.outputs.node == 'true'
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            corepack enable && pnpm install --frozen-lockfile && pnpm run build --if-present
+          elif [ -f package-lock.json ]; then
+            npm ci && npm run build --if-present
+          else
+            npm install && npm run build --if-present
+          fi
