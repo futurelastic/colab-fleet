@@ -224,6 +224,20 @@ A driver that cannot observe state reports `inferred` or `unknown`. It does not
 manufacture a plausible `observed`. Emulation makes capability differences
 invisible at precisely the layer built to expose them.
 
+### 5.7 Absence and failure are different answers
+
+**A failed read must never render as an empty result.**
+
+"There are no sessions on that machine" and "I could not reach that machine to
+ask" are different facts with opposite implications, and they are trivially
+easy to collapse into the same empty list — at which point every caller
+downstream draws a confident conclusion from a failure.
+
+This is the general form of the `unknown` status in §2.3, and it governs every
+plural response in this API. It is why §9 forbids returning a bare array from
+any operation that spans machines: there is nowhere in a bare array to say
+*"and one source didn't answer."*
+
 ---
 
 ## 6. Authorization
@@ -251,16 +265,215 @@ mourned.
 
 ---
 
-## 7. Open questions
+## 7. Resolved decisions
 
-- **Session naming across machines.** Is a fleet-wide name required, or is
-  `(machine, id)` sufficient addressing?
-- **Peer discovery.** Static configuration or announcement? Static is safer and
-  probably sufficient for small fleets.
-- **Event durability.** If a subscriber is disconnected during a state change,
-  is the event lost, or replayable from a cursor?
-- **Partial fleet visibility.** When a peer is unreachable, does `list()` return
-  a partial set, or fail? A partial set that looks complete is the more
-  dangerous of the two — cf. §5.2.
-- **Restart semantics.** When the service restarts, are running sessions
-  adopted, or orphaned? A driver may not get a choice.
+### 7.1 Addressing is `(machine, id)`
+
+No fleet-wide identifier. A session is addressed by the machine that runs it
+plus an id scoped to that machine. `name` is a human label — unique per machine
+by convention, never an identifier, never used for routing.
+
+*Rationale:* a fleet-wide id would need an allocator, and an allocator is a
+single point of failure for the one operation that must keep working when a
+peer is unreachable. `(machine, id)` needs no coordination at all.
+
+### 7.2 Peers are statically configured
+
+No announcement, no discovery protocol, no broadcast.
+
+*Rationale:* automatic discovery means a machine can join the fleet without
+anyone deciding it should — an anti-feature for something that starts
+processes. For a fleet of a handful of machines, the configuration cost is
+negligible and the audit trail is worth more than the convenience.
+
+### 7.3 Events carry a cursor and an epoch
+
+Each service instance assigns events a monotonic cursor and stamps them with an
+**epoch** identifying the instance. A subscriber reconnects with its last
+cursor. If the cursor is older than the retained buffer, or the epoch has
+changed (the service restarted), the service returns `resync_required` and the
+subscriber refetches state.
+
+*Rationale:* the alternative — silently resuming from the oldest available
+event — produces a subscriber that believes it has a complete history and does
+not. Announced gaps are recoverable; silent gaps are not.
+
+### 7.4 Plural responses are envelopes, never bare arrays
+
+Any operation that spans machines returns per-source status alongside the data,
+plus an explicit completeness flag. See §9.
+
+### 7.5 Restart adopts; it never silently drops
+
+On restart the service re-discovers sessions its drivers can still see and
+adopts them. Anything it finds but cannot confidently identify is surfaced as
+`unknown`, never dropped from listings and never destroyed. See §12.
+
+## 7a. Still open
+
+- **Input ordering under concurrency.** If two callers `send()` to one session
+  simultaneously, is ordering defined, or is that the caller's problem?
+- **Backpressure.** What happens when a subscriber cannot keep up with the
+  event stream — drop, buffer, or disconnect with `resync_required`?
+- **Whether `create` should be able to target "any machine"** under a policy,
+  rather than requiring the caller to name one. Deferred: it needs a scheduler,
+  and a scheduler is a supervisor concern (§1 non-goals).
+
+---
+
+## 8. Lifecycle
+
+Legal transitions. Anything not listed is a driver bug.
+
+```
+        ┌──────────┐
+        │ starting │
+        └────┬─────┘
+             ▼
+  ┌──────► working ◄────────┐
+  │          │  ▲           │
+  │          ▼  │           │
+  │    waiting_input        │
+  │          │              │
+  │          ▼              │
+  └──────── idle ───────────┘
+             │
+             ▼
+           dead
+```
+
+- `starting` → `working` | `idle` | `dead`
+- `working` → `waiting_input` | `idle` | `quota_blocked` | `dead`
+- `waiting_input` → `working` | `idle` | `dead`
+- `idle` → `working` | `dead`
+- `quota_blocked` → `working` | `idle` | `dead`
+- `dead` → terminal. A `dead` session never becomes live again; a resumed
+  session is a **new** session with a new id.
+
+`unknown` is **outside** this machine. It may be entered from any state and
+exited to any state, because it does not describe the session — it describes
+the driver's knowledge of it. A caller must not infer that a transition
+occurred merely because the state changed to or from `unknown`.
+
+**`since` is the time the status was first observed to hold**, not the time it
+began. For `inferred` states those differ, sometimes by a lot. A caller
+computing "how long has this been stuck" is computing a lower bound, and should
+present it as one.
+
+---
+
+## 9. Plural responses
+
+Every operation that spans more than one machine returns:
+
+```
+Collection<T> {
+  items    : T[]
+  sources  : SourceStatus[]
+  complete : boolean       // false if any source failed to answer
+}
+
+SourceStatus {
+  machine   : MachineId
+  status    : "ok" | "unreachable" | "unauthorized" | "degraded"
+  count?    : number
+  error?    : string
+  observedAt: Timestamp
+}
+```
+
+`complete` is redundant with `sources` and exists anyway, deliberately: the
+common bug is a caller that never looks at `sources`. A single boolean at the
+top level is hard to not notice, and a caller that ignores it has made a choice
+rather than an oversight.
+
+**Never** return `items: []` for a source that failed. An unreachable machine
+contributes a `SourceStatus`, not an absence.
+
+---
+
+## 10. Idempotency
+
+`create` accepts a caller-supplied **idempotency key**. A driver that receives
+a repeat key within the retention window returns the *existing* `SessionRef`
+instead of creating a second session.
+
+This is not a nicety. The failure it prevents is specific and expensive:
+
+> A federated `create` times out in transit. The caller cannot distinguish "the
+> session was never created" from "the session was created and the reply was
+> lost", so it retries. Two agent sessions are now running in the same working
+> directory, both writing to the same files, neither aware of the other.
+
+Retention must outlive the caller's retry window. Keys are scoped per machine.
+
+`send` is **not** idempotent and must not pretend to be — repeat delivery of
+input is a legitimate caller intent. Callers needing exactly-once delivery must
+read the `DeliveryReceipt` (§2.4) rather than retrying blindly.
+
+---
+
+## 11. Time
+
+Every machine stamps timestamps in **its own clock**, and every response
+carries that machine's current clock reading.
+
+Callers compute skew rather than assuming synchronisation. No attempt is made
+to establish a fleet-wide ordering of events across machines — there is no
+requirement for one, and providing a fake one would be worse than providing
+none.
+
+Durations reported by a machine (`since`, silence timers) are computed
+locally and are therefore internally consistent even when clocks disagree.
+Comparing durations across machines is safe; comparing timestamps is not.
+
+---
+
+## 12. Adoption and restart
+
+Sessions may outlive the service that manages them — a session inside a
+terminal multiplexer survives the supervisor being restarted, upgraded, or
+killed. The service must therefore treat startup as **reconciliation**, not
+initialisation.
+
+At startup, per driver:
+
+1. Enumerate what actually exists on the machine.
+2. Match against persisted records.
+3. Classify each into one of:
+   - **adopted** — matched with confidence; resumes normal management
+   - **orphaned** — exists but no record; surfaced with `confidence: inferred`
+     and whatever identifying evidence the driver has
+   - **vanished** — record exists but nothing found; marked `dead` with
+     evidence noting it disappeared while unobserved
+4. Never destroy anything during reconciliation. A session the service cannot
+   explain is a session for a human to look at, not one to clean up.
+
+Rule 4 is absolute. Automated destruction during a phase whose entire premise
+is *incomplete knowledge* is how a fleet eats its own work.
+
+---
+
+## 13. Federation topology
+
+A client talks to **one** service — normally the one on its own machine — and
+that service **proxies** to peers on the client's behalf.
+
+The rejected alternative is redirection, where the service tells the client
+which peer to ask and the client asks directly. Redirection is leaner, but it
+pushes topology, authentication and reachability into every client, which
+defeats the purpose: a supervisor should be able to ask about the fleet without
+knowing its shape.
+
+**Costs, accepted explicitly:**
+
+- The local service becomes a dependency for remote operations. It is already a
+  dependency for local ones.
+- Latency is additive. Acceptable for control-plane calls; this is another
+  reason §5.5 forbids polling.
+- Events from peers are multiplexed through the local service's stream, and
+  carry their originating machine.
+
+**Proxying does not launder authorization.** A service forwarding a peer's
+request presents the *original* caller's authority, never its own. Otherwise
+every machine becomes a confused deputy for every other.
