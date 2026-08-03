@@ -12,8 +12,14 @@ is thereby permanently bound to one runtime on one host.
 owns sessions, exposes them over HTTP, and federates with peer instances on
 other machines. Supervisors become clients.
 
-> **Status: design.** No implementation yet. The specification is the artifact.
-> See [`docs/spec/session-abstraction.md`](docs/spec/session-abstraction.md).
+> **Status: skeleton.** The types and the HTTP routing exist; no working
+> driver does. Every operation is served by a driver that always answers
+> `unsupported` — see [`internal/drivers/stub`](internal/drivers/stub) —
+> so what's here proves the interface shape and the wire error contract,
+> not any actual session management yet. The specification is still the
+> primary artifact: see
+> [`docs/spec/session-abstraction.md`](docs/spec/session-abstraction.md)
+> and [`docs/spec/api-http.md`](docs/spec/api-http.md).
 
 ## What it owns
 

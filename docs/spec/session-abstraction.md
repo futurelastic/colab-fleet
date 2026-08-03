@@ -123,6 +123,23 @@ input that would corrupt it — for example, injecting text into a prompt that
 already holds unsent input the human typed. That protection belongs in the
 contract, not in each caller's memory of a past incident.
 
+### 2.5 Ack
+
+```
+Ack {
+  accepted : boolean
+}
+```
+
+**Amendment (first Go transcription):** this type was named in §3's
+operations table (`interrupt(ref) -> Ack`, `close(ref) -> Ack`) but never
+given a shape, unlike `DeliveryReceipt` above. This is the shape settled on:
+`interrupt` and `close` express intent only (§3; the HTTP wire's 202
+Accepted, api-http.md §3.3). Confirmation of what actually happened arrives
+later as a state change on the event stream (§4) — an `Ack` that promised
+more would be a driver promising synchronous completion it may not be able
+to deliver, which §5.6 forbids.
+
 ---
 
 ## 3. Operations
@@ -133,12 +150,27 @@ send(ref, text, opts?)        -> DeliveryReceipt
 state(ref)                    -> SessionState
 interrupt(ref)                -> Ack
 close(ref)                    -> Ack
-list(filter?)                 -> SessionRef[]
+list(filter?)                 -> Collection<Session>
 subscribe(filter?)            -> EventStream
 ```
 
 `subscribe` is not optional garnish. Federated callers must be able to learn
 about state changes without polling — see §5.5.
+
+**Amendment (first Go transcription):** `list` was originally written here
+as `-> SessionRef[]`, a bare array of refs. That pseudocode does not survive
+being made to compile, for two reasons already stated elsewhere in this
+document: §9 requires every plural response to be a `Collection` envelope
+with `sources`, never a bare array — and this applies even to one machine
+answering for itself alone (api-http.md §3.2: a `scope=local` response
+still "carries exactly one `SourceStatus`"); and §13.2 requires a service
+proxying a peer's answer to *adopt* that peer's own self-reported
+`SourceStatus` rather than manufacture a fresh `"ok"`, which a driver
+returning a bare slice has no way to do — there is nowhere in a slice to
+carry a `SourceStatus` at all. The item type is `Session`, not
+`SessionRef`, for the same reason §4.4's cost measurement matters here: a
+batch operation whose natural shape is cheap must not force per-item
+follow-up calls for state.
 
 ---
 
@@ -427,6 +459,19 @@ rather than an oversight.
 
 **Never** return `items: []` for a source that failed. An unreachable machine
 contributes a `SourceStatus`, not an absence.
+
+**Amendment (first Go transcription):** the prose above says `complete` is
+"false if any source failed to answer" but does not say who computes it, or
+whether a `degraded` source (answered, but reported itself unhealthy)
+counts as a failure the same way `unreachable` (didn't answer at all) does.
+Settled as follows: `complete` is **derived**, never independently
+supplied — true iff every `SourceStatus.status` is `ok`. A caller-supplied
+boolean is exactly the kind of value that can silently drift from what
+`sources` actually says, which is the same class of bug this field exists
+to catch, one level up. `degraded` also flips `complete` to `false`: a
+degraded source's data is present but not to be trusted at face value
+(§13.2), so treating it as "answered cleanly" would reintroduce the
+confidence-flattening §5.6 forbids.
 
 ---
 

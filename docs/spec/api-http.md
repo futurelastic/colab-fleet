@@ -136,15 +136,30 @@ and the caller cannot detect it afterwards.
 reaches a command line (§5.3).
 
 ```
-GET /v1/machines/{machine}/sessions/{id}
+GET /v1/machines/{machine}/sessions/{id}?runtime=
 → 200 { "machine": "...", "id": "...", "name": "...", "runtime": "...",
         "cwd": "...", "agent": "...", "model": "...",
         "state": { "status": "working", "confidence": "inferred",
                    "evidence": "...", "since": "..." } }
 ```
 
+**Amendment (first Go transcription):** this URL shape, as originally
+written, carried no `runtime` component at all — but
+[`session-abstraction.md`](session-abstraction.md) §2.2 documents `id` as
+scoped to `(machine, runtime)`, not to `machine` alone: two different
+runtimes on one machine can legally reuse the same id. The URL alone cannot
+disambiguate that case, and this document's own header says the
+abstraction wins when the two disagree — "this document is the bug." Fixed
+here: `?runtime=` is an **optional** query parameter on every
+single-session endpoint (`GET`, the `input`/`interrupt` routes below, and
+`DELETE`), required only when the addressed machine runs more than one
+runtime and the bare id is ambiguous between them; a service that can
+resolve the id unambiguously without it (the common case — one runtime per
+machine) must not require it. An ambiguous request with `runtime` omitted
+is `invalid` (400), naming the ambiguity, not `not_found`.
+
 ```
-POST /v1/machines/{machine}/sessions/{id}/input
+POST /v1/machines/{machine}/sessions/{id}/input?runtime=
 { "text": "...", "submit": true }
 
 → 200 { "outcome": "submitted" | "queued" | "refused" | "unknown",
@@ -159,8 +174,8 @@ not be reached or the caller is not permitted; they never describe what the
 driver decided.
 
 ```
-POST   /v1/machines/{machine}/sessions/{id}/interrupt   → 202
-DELETE /v1/machines/{machine}/sessions/{id}             → 202
+POST   /v1/machines/{machine}/sessions/{id}/interrupt?runtime=   → 202
+DELETE /v1/machines/{machine}/sessions/{id}?runtime=              → 202
 ```
 
 Both are `202 Accepted`: they express intent, and confirmation arrives as a
