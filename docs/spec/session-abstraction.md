@@ -1,8 +1,18 @@
 # Session abstraction — specification
 
-**Status:** draft. Nothing here has been implemented; nothing here has been
-proven by a second driver yet. Treat every claim as a proposal until at least
-two drivers satisfy it.
+**Status:** draft. One working driver now exists (a terminal multiplexer
+running an interactive agent CLI), so the claims below have been tested once
+against a real substrate — 22 concurrent live sessions — and four of them did
+not survive intact. Those are marked **Amendment (first working driver)** in
+place: §5.4 is not implementable at the signature §3 gives it, §5.7 turns out
+to govern the inside of a driver as well as the space between machines, §10's
+retention rule is silently defeated by §4.3's `supportsResume` being read as
+covering it, and §2.3's `inferred`/`unknown` machinery is load-bearing in ways
+§2.3 undersells.
+
+Nothing here has been proven by a **second** driver yet, which is the test
+that matters for a federation design: until a remote peer satisfies this same
+interface, every claim about machine-to-machine operation remains a proposal.
 
 ---
 
@@ -101,6 +111,42 @@ exact advantage it exists to expose.
 
 **`evidence` is for humans.** It carries whatever the driver actually saw. It
 is never parsed by callers, and its format is not stable.
+
+**Amendment (first working driver): `inferred` is doing more work than the
+prose above suggests, and the first driver is the proof.**
+
+The three rules read as prudent hedging until you build a driver that has to
+obey them. This one infers a session's state by reading its terminal, and the
+signal it must read to distinguish *working* from *idle* is the grammatical
+tense of a **randomly chosen English verb**:
+
+```
+✻ Zigzagging… (5m 57s · ↓ 21.3k tokens)   <- running
+✻ Worked for 2m 7s                         <- finished
+```
+
+The verb is drawn at random from a large set per turn. The distinction is
+carried entirely by the suffix's shape, in a terminal UI with no compatibility
+contract, and it will break without warning and without erroring.
+
+Three consequences, all of which the existing model already handles — which is
+the actual finding:
+
+1. `confidence: inferred` is not a formality on this substrate. It is the
+   literal truth, and a caller that treats inferred and observed alike is
+   trusting a coin-flip verb.
+2. `unknown` must be reachable from *unrecognised evidence*, not only from
+   absent evidence. When the spinner appears in a shape the driver does not
+   know, the honest answer is `unknown` — not `idle`, which is what "no
+   running spinner found" naively decays to. A wrong `idle` for a working
+   session is silent; an `unknown` is not.
+3. A driver must fail toward `unknown`, never toward the plausible answer.
+   §5.6 says this about capabilities; it is equally true field by field.
+
+Recorded because the value of §2.3 is easy to underestimate from the prose.
+Its cost is one extra enum member and a nullable confidence; its benefit is
+that a substrate this unreliable can be represented **honestly** rather than
+being flattened into confident fiction at the interface boundary.
 
 ### 2.4 DeliveryReceipt
 
@@ -273,6 +319,38 @@ id is the session the caller meant — by corroborating at least one independent
 attribute (working directory, start time, name). Matching an id alone is not
 identification.
 
+**Amendment (first working driver). This rule is not implementable at the
+signature §3 gives `close`, and that is a defect in the interface, not in any
+driver.**
+
+`close(ref) -> Ack` hands the driver a `SessionRef`: machine, id, and a human
+label. To corroborate, a driver needs two things — what the session looks like
+now, and what the caller *believed* it looked like. It can read the first. The
+second never reaches it. So "corroborate against an independent attribute"
+has no second operand.
+
+What a driver can do at this signature, and what the first one does:
+
+- Keep its own record of each session it has observed, and refuse to destroy
+  an id whose start time or working directory has changed since. This closes
+  the window between **the driver's** observation and the destroy.
+- Refuse outright on an id it has never observed, rather than destroying on an
+  id match — which is the literal act this section forbids.
+
+What no driver can do at this signature: close the window between **the
+caller's** observation and the destroy. A supervisor that lists sessions,
+pauses, and then closes one gets no protection, because the driver's own
+sighting may have been refreshed during the pause. That window is the one that
+matters — it is the long one, and it is the one a human is inside of.
+
+**Proposed fix, not yet applied:** `SessionRef` (§2.2) gains an optional
+corroborating attribute — the start time the caller observed — so `close` can
+compare against the caller's belief instead of its own. Callers that omit it
+get today's weaker guarantee, explicitly, rather than a strong-sounding rule
+that silently degrades. This touches the wire type and therefore
+api-http.md §3.3; it is recorded here rather than applied, because the
+interface change deserves a decision rather than a patch.
+
 ### 5.5 State and events, never polling
 
 Federated callers may be many network round-trips away. An API that requires
@@ -298,6 +376,31 @@ This is the general form of the `unknown` status in §2.3, and it governs every
 plural response in this API. It is why §9 forbids returning a bare array from
 any operation that spans machines: there is nowhere in a bare array to say
 *"and one source didn't answer."*
+
+**Amendment (first working driver): this rule applies inside a driver, not
+only across machines.**
+
+Stated as above, §5.7 reads as a rule about federation — sources, machines,
+envelopes. It is not. The same collapse is available between a driver and a
+single session, and it is just as capable of manufacturing a confident wrong
+answer.
+
+Measured, not hypothesised. The first driver reads each session's state by
+capturing its screen. A bug misfiled every capture, so every session was
+classified from an empty string — and an empty screen and an unread screen
+both produced `unknown`. The result: a driver that could not read a single
+screen returned a complete, well-formed, error-free fleet view of 22 sessions,
+and passed its whole unit suite. Nothing anywhere in the response said *"the
+driver failed."* It said *"the sessions are unknowable,"* which is a claim
+about the fleet rather than about the driver, and it is false.
+
+⇒ A driver must distinguish **"I read this session and could not tell"** from
+**"I failed to read this session."** Both may surface as `unknown` status, but
+they must not carry the same `evidence`, because `evidence` is the only field
+in which the difference can survive (§2.3).
+
+The general form, worth stating once: *a component that cannot report its own
+failure to observe will report its ignorance as the world's.*
 
 ---
 
@@ -489,6 +592,31 @@ This is not a nicety. The failure it prevents is specific and expensive:
 > directory, both writing to the same files, neither aware of the other.
 
 Retention must outlive the caller's retry window. Keys are scoped per machine.
+
+**Amendment (first working driver): retention and `supportsResume` are
+different properties, and reading them as one produces the exact disaster
+above on a driver that looks compliant.**
+
+§4.3's `supportsResume` asks whether *sessions* survive a service restart. It
+says nothing about whether *idempotency keys* do. The first driver makes the
+gap concrete and is not unusual in doing so:
+
+- Sessions survive, genuinely. The multiplexer owns them, not the service, so
+  they outlive it being restarted, upgraded or killed. `supportsResume: true`
+  is the honest declaration.
+- Keys do not survive. They live in the service's memory.
+
+So a caller retrying a `create` across a service restart — precisely the
+partial-failure this section exists for, since a restart is one very good
+reason a reply went missing — gets a **second session in the same working
+directory**, from a driver that correctly declares `supportsResume: true`. The
+capability declaration was read as covering both, and it covers one.
+
+⇒ Retention that does not outlive the *service* does not satisfy "must
+outlive the caller's retry window", because a service restart is inside that
+window. Either persist keys, or declare that they are not persisted — a
+driver must not leave a caller to infer key durability from a field about
+session durability.
 
 `send` is **not** idempotent and must not pretend to be — repeat delivery of
 input is a legitimate caller intent. Callers needing exactly-once delivery must

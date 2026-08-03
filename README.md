@@ -12,10 +12,17 @@ is thereby permanently bound to one runtime on one host.
 owns sessions, exposes them over HTTP, and federates with peer instances on
 other machines. Supervisors become clients.
 
-> **Status: skeleton.** The types and the HTTP routing exist; no working driver
-> does. Every operation is served by a driver that answers `unsupported`, so
-> what exists proves the interface shape and the wire error contract — not any
-> actual session management. **The specification is still the primary artifact.**
+> **Status: one working driver.** A driver over a terminal multiplexer running
+> an interactive agent CLI now implements the read path and the write path, and
+> has been exercised against 22 concurrent live sessions. It reports a full
+> fleet view — with differentiated per-session state — in ~30ms, using a
+> constant number of subprocess spawns rather than one per session.
+>
+> Event subscription remains `unsupported`, declared rather than emulated.
+> Federation remains unproven: the design's central claim is that a remote peer
+> is just another driver, and until a second driver exists that claim is
+> untested. **The specification is still the primary artifact**, and building
+> this driver amended four sections of it.
 
 ## What it owns
 
@@ -75,6 +82,7 @@ and how it was found out, is worth more than a clean document.
 .                          wire and domain types only — importable by clients
 internal/driver            the Driver interface and capability declaration
 internal/drivers/stub      a driver that answers unsupported everywhere
+internal/drivers/tmux      the first working driver — multiplexer + agent CLI
 internal/service           registry, one-hop fan-out, HTTP routing
 cmd/colab-fleetd           the binary
 ```
@@ -131,28 +139,61 @@ zero; adding one is a decision to argue for, not a convenience.
 
 Stated plainly so nobody rediscovers them the expensive way.
 
-- **`send` and `DeliveryReceipt` are unvalidated.** The two-machine exercise that
-  tested the rest was read-only by construction, so the refusal semantics in
-  §2.4 are still prose that has never run.
+- **§5.4 cannot be satisfied at the signature §3 gives `close`.** The rule
+  requires corroborating an independent attribute before destroying a session,
+  but `close(ref)` gives a driver nothing to corroborate *against* — a
+  `SessionRef` carries no attribute the caller observed. A driver can close the
+  window between **its own** last sighting and the destroy; nothing at this
+  signature closes the window between **the caller's** sighting and the
+  destroy, which is the long one. Proposed fix (a corroborating attribute on
+  `SessionRef`) is recorded in spec §5.4 and deliberately **not applied** —
+  it changes a wire type and deserves a decision.
+- **Idempotency keys do not survive a service restart**, on a driver that
+  correctly declares `supportsResume: true`. Sessions survive; keys are in
+  memory. A caller retrying a `create` across a restart therefore gets the
+  §10 disaster — two sessions in one working directory — from a driver that
+  looks compliant. `supportsResume` answers a question about sessions and was
+  being read as answering one about keys. See spec §10's amendment.
+- **The write path has never run against a live session.** `send`, `create`,
+  `interrupt` and `close` are implemented and unit-tested, and §2.4's refusal
+  now fires on real captured screens — but every live exercise so far has been
+  read-only by construction, because the sessions available to test against are
+  somebody's actual work. The refusal logic is no longer prose; the delivery
+  path still is.
 - **Auth has no lifecycle.** A static bearer token is specified; issuance,
   rotation and scoping are not. This is the largest unaddressed surface.
 - **`SourceState` has no member for "reachable but unsupported"** — currently
   squeezed into `degraded`.
-- **Enumeration cost is the real scaling risk, not the network.** Measured on a
-  terminal-multiplexer host: per-session introspection dominated by roughly two
-  subprocess spawns per session, so listing ~80 sessions cost about a second
-  while the network round trip cost a third of that. Any driver written as
-  one-query-per-session will not scale past a few dozen. `List` returns
-  everything in one call for this reason.
+- **Enumeration cost is the real scaling risk, not the network** — and the fix
+  is structural rather than incremental. Re-measured on a host running 22 live
+  sessions:
+
+  | approach | spawns | wall clock |
+  |---|---|---|
+  | per-session capture loop (what the incumbent does) | N+1 (23) | 119 ms |
+  | one batched invocation | 1 | 18 ms |
+
+  The multiplexer accepts a command sequence in a single invocation, so a full
+  fleet view costs a constant number of spawns regardless of session count —
+  ~5 ms per session becomes ~0.15 ms per session, and the curve stops being a
+  curve. `List` returns everything in one call for this reason.
 
 ## Where this is going
 
-1. **A first working driver.** Until one exists, every claim here is
-   unfalsified rather than proven.
-2. **A second driver — a remote peer.** This is the real test: the design says a
+1. ~~**A first working driver.**~~ Done, and it earned its keep: it amended
+   four sections of the specification and found one defect the specification
+   cannot fix on its own (see Known gaps).
+2. **Event subscription.** The multiplexer has a real push mechanism (control
+   mode). Until it is proven, `subscribe` returns `unsupported` — honest, and
+   the one operation §5.5 says federated callers cannot do without.
+3. **A second driver — a remote peer.** This is the real test: the design says a
    remote peer is just another driver, and two implementations is the cheapest
-   way to find out whether the interface actually holds.
-3. **A supervisor as a client**, replacing direct terminal-multiplexer access.
+   way to find out whether the interface actually holds. Note that the first
+   driver has already exposed a hazard the second will feel more sharply —
+   §5.4's corroboration gap is worse across a network, where the caller's
+   sighting and the destroy are separated by a round trip rather than a
+   function call.
+4. **A supervisor as a client**, replacing direct terminal-multiplexer access.
 
 ## License
 
