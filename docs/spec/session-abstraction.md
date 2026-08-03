@@ -1,18 +1,31 @@
 # Session abstraction — specification
 
-**Status:** draft. One working driver now exists (a terminal multiplexer
-running an interactive agent CLI), so the claims below have been tested once
-against a real substrate — 22 concurrent live sessions — and four of them did
-not survive intact. Those are marked **Amendment (first working driver)** in
+**Status:** draft. **Two drivers now satisfy this interface** — a local one
+over a terminal multiplexer, and a remote one that is an HTTP client to a peer
+service — which is the threshold this document set for itself below ("treat
+every claim as a proposal until at least two drivers satisfy it").
+
+§4.2's central claim survived: a remote peer really is just another driver.
+Proven end to end, caller through a service that holds no local drivers,
+through the remote driver, over HTTP, into a second service, into the
+multiplexer driver, and back with 22 real sessions — with `confidence:
+inferred` intact rather than flattened in transit. Neither service needed a
+special case, and the proxying service never learns that its peer is remote.
+
+The claims below have therefore been tested against a real substrate, and
+several did not survive intact. Those are marked **Amendment (first working driver)** in
 place: §5.4 is not implementable at the signature §3 gives it, §5.7 turns out
 to govern the inside of a driver as well as the space between machines, §10's
 retention rule is silently defeated by §4.3's `supportsResume` being read as
 covering it, and §2.3's `inferred`/`unknown` machinery is load-bearing in ways
 §2.3 undersells.
 
-Nothing here has been proven by a **second** driver yet, which is the test
-that matters for a federation design: until a remote peer satisfies this same
-interface, every claim about machine-to-machine operation remains a proposal.
+What the second driver found is a different class of problem from what the
+first one found. The first exposed places the model was **imprecise**. The
+second exposed places the interface has **no room for a concept it requires**
+— capability declaration that cannot say "unknown" (§4.3), and, more
+seriously, operations with nowhere to carry the caller's authority even
+though §13 requires exactly that (§6). Both are marked in place.
 
 ---
 
@@ -255,6 +268,38 @@ DriverCapabilities {
 
 A driver must never silently emulate a capability it lacks.
 
+**Amendment (second driver): this declaration is synchronous and infallible,
+and a remote driver's cannot be either.**
+
+A local driver describing itself always knows the answer. A remote driver is
+describing *somebody else*, and the answer lives on the peer, behind a network
+that may be down. There is no honest synchronous value for "the peer has never
+answered."
+
+Worse, the type cannot express it. `DriverCapabilities` with every flag false
+means "this driver supports nothing"; an unreached peer produces exactly that
+value, meaning "nobody has told me anything." A caller consulting
+`GET /v1/runtimes` — which api-http.md §3.1 says it MUST do before relying on
+a capability — cannot distinguish a genuinely minimal peer from an
+unreachable one.
+
+This is **§5.7 for a third time, in a third place**, and at this point the
+repetition is the finding: *every field in this API that can be absent needs
+to distinguish absent-because-no from absent-because-unknown.* §2.3 built that
+distinction for status (`unknown`) and §9 built it for plural responses
+(`sources`). Capability declaration did not get one, and it is the same gap.
+
+Mitigating factor, which is why this is recorded rather than urgent: both
+readings degrade identically — a caller that believes a capability is absent
+behaves safely whether it is absent or merely unknown. The cost is
+diagnostic, not correctness: a permanently misconfigured peer looks exactly
+like a deliberately minimal one, forever.
+
+⇒ Either `deadlineMs` is the only field a remote driver may answer for itself
+(it describes the transport, not the peer) and the rest need a third state,
+or capability declaration needs to be a fallible, context-taking operation
+like every other cross-machine question.
+
 ### 4.4 Every driver declares a deadline
 
 **`deadlineMs` is mandatory. A driver that can block without a bound is a
@@ -450,6 +495,47 @@ mourned.
    `create` are opt-in per peer.
 4. **Log every remote-originated mutation** — actor, verb, target, outcome.
    This is the audit trail that replaces "it could only ever have been me."
+
+**Amendment (second driver): the operations in §3 have nowhere to carry the
+caller's identity, so the rule below cannot be enforced by the interface.**
+
+§13 states it without ambiguity: *"a service forwarding a peer's request
+presents the ORIGINAL caller's authority, never its own. Otherwise every
+machine becomes a confused deputy for every other."* api-http.md §5 repeats
+it.
+
+Now look at §3's operations. Every one takes a context and its domain
+arguments. **Not one takes a principal, a credential, or a caller identity.**
+A remote driver — the only kind for which this rule exists — has no parameter
+in which the original caller's authority can arrive.
+
+That leaves an out-of-band channel (a context value): untyped, invisible at
+the call site, impossible to require, and silently absent when a service
+forgets to attach it.
+
+**And the natural fallback is the vulnerability.** A remote driver missing the
+caller's credentials will reach for the one credential it definitely has — its
+own, configured for transport. That works. The request succeeds. Tests pass.
+Every machine becomes a confused deputy for every other, and *nothing
+anywhere reports it*, because the symptom of this bug is that everything
+works.
+
+Note the asymmetry with every other defect in this document: the others fail
+toward a wrong answer a caller can eventually notice. This one fails toward a
+**correct-looking answer with the authorization silently widened**, which is
+the only failure mode here that is a security bug rather than a correctness
+bug.
+
+⇒ Interim rule, implemented by the first remote driver: **a mutating verb
+without the caller's authority is refused, never substituted.** The
+implementation returns an error rather than falling back to its own token.
+This is a driver refusing to do something the interface cannot stop it from
+doing, which is not a fix.
+
+⇒ Proper fix, not applied: caller authority must be a **parameter of the
+operations**, not an out-of-band value — so that a driver cannot compile
+without deciding what to do with it. Recorded rather than applied because it
+changes every signature in §3, and that is a decision rather than a patch.
 
 ---
 

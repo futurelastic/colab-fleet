@@ -23,10 +23,16 @@ other machines. Supervisors become clients.
 > sessions. Verified end to end: a session created after subscribing was
 > reported within half a second, and its death reported after it.
 >
-> Federation remains unproven: the design's central claim is that a remote peer
-> is just another driver, and until a second driver exists that claim is
-> untested. **The specification is still the primary artifact**, and building
-> this driver amended six sections of it.
+> **Federation is proven.** A second driver — an HTTP client to a peer service —
+> satisfies the same interface, and the whole path runs end to end: a caller
+> asks a service that holds no local drivers, which proxies through the remote
+> driver, over HTTP, into a second service, into the multiplexer driver, and
+> back with 22 real sessions in ~30ms. `confidence: inferred` survives the round
+> trip rather than being flattened. Neither service needed a special case, and
+> the proxying one never learns its peer is remote.
+>
+> **The specification is still the primary artifact**, and building these two
+> drivers amended eight sections of it.
 
 ## What it owns
 
@@ -87,6 +93,7 @@ and how it was found out, is worth more than a clean document.
 internal/driver            the Driver interface and capability declaration
 internal/drivers/stub      a driver that answers unsupported everywhere
 internal/drivers/tmux      the first working driver — multiplexer + agent CLI
+internal/drivers/remote    the second — an HTTP client to a peer (federation)
 internal/service           registry, one-hop fan-out, HTTP routing
 cmd/colab-fleetd           the binary
 ```
@@ -130,6 +137,7 @@ evidence, not on taste.
 | Plural responses are envelopes, never bare arrays | spec §9 |
 | Restart reconciles and adopts; it never destroys | spec §12 |
 | Proxy topology, not redirect | spec §13 |
+| A remote peer is just another driver | proven — spec §4.2 |
 | Go, and zero dependencies | below |
 
 **Go, zero dependencies.** Chosen at zero lines of code, on the reasoning that
@@ -169,8 +177,27 @@ Stated plainly so nobody rediscovers them the expensive way.
   here it is also a cost parameter, because watching a session's content costs
   a connection per session on this substrate. A caller wanting one session must
   ask for a directory and hope. See spec §5.5's amendment.
+- **The operations have nowhere to carry the caller's authority — and the
+  natural fallback is a security bug.** §13 requires a proxying service to
+  present the *original caller's* credentials, never its own. No operation in
+  §3 takes a principal, so the only channel is an out-of-band context value
+  that a service can silently forget. A remote driver missing it will reach for
+  the credential it definitely has — its own — and then everything works,
+  every test passes, and every machine is a confused deputy for every other.
+  Note the asymmetry: every other gap here fails toward a wrong answer somebody
+  eventually notices; this one fails toward a **correct-looking answer with the
+  authorization quietly widened.** The current driver refuses rather than
+  substituting, which is a driver declining to do something the interface
+  cannot stop it doing. See spec §6's amendment.
+- **Capability declaration cannot say "I don't know yet."** `Capabilities()` is
+  synchronous and infallible — fine for a driver describing itself, impossible
+  for one describing a peer across a network. An unreached peer is
+  indistinguishable from a peer that genuinely supports nothing. Both degrade
+  safely, so the cost is diagnostic rather than correctness: a misconfigured
+  peer looks like a minimal one forever. This is §5.7 a third time; see spec
+  §4.3's amendment.
 - **Auth has no lifecycle.** A static bearer token is specified; issuance,
-  rotation and scoping are not. This is the largest unaddressed surface.
+  rotation and scoping are not.
 - **`SourceState` has no member for "reachable but unsupported"** — currently
   squeezed into `degraded`.
 - **Enumeration cost is the real scaling risk, not the network** — and the fix
@@ -199,14 +226,19 @@ Stated plainly so nobody rediscovers them the expensive way.
    demand. Notifications are used as change *triggers*; the reads still go
    through the same batched enumeration, so exactly one code path decides what
    a status means.
-3. **A second driver — a remote peer.** This is the real test: the design says a
-   remote peer is just another driver, and two implementations is the cheapest
-   way to find out whether the interface actually holds. Note that the first
-   driver has already exposed a hazard the second will feel more sharply —
-   §5.4's corroboration gap is worse across a network, where the caller's
-   sighting and the destroy are separated by a round trip rather than a
-   function call.
-4. **A supervisor as a client**, replacing direct terminal-multiplexer access.
+3. ~~**A second driver — a remote peer.**~~ Done, and it held. It also found a
+   different *class* of problem than the first: where the local driver exposed
+   places the model was imprecise, the remote one exposed places the interface
+   has no room for a concept it requires — caller authority, and "capabilities
+   unknown". §5.4's corroboration gap is also visibly worse here, exactly as
+   predicted: this driver has no sightings of its own to corroborate against.
+4. **Settle the three wire-shape decisions** now that two implementations exist
+   to weigh them against: caller authority as an operation parameter (§6),
+   a corroborating attribute on `SessionRef` (§5.4), and a filter that can name
+   sessions (§5.5).
+5. **A supervisor as a client**, replacing direct terminal-multiplexer access.
+   This is where the value actually lands: until it happens, this is a second
+   implementation of session management rather than a replacement for one.
 
 ## License
 
