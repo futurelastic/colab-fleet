@@ -167,7 +167,7 @@ func WithDeadline(dur time.Duration) Option {
 
 func withClock(f func() time.Time) Option { return func(d *Driver) { d.now = f } }
 
-// New builds a driver for the peer at base (e.g. "https://host:8775").
+// New builds a driver for the peer at base (e.g. "https://host:PORT").
 //
 // It deliberately does NOT probe the peer. §7.2 configures peers statically,
 // and §5.7 requires an unreachable peer to surface as a source reporting

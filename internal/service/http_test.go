@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	fleet "github.com/godx-jp/colab-fleet"
@@ -20,7 +21,7 @@ func newTestServer(t *testing.T) (*Service, *httptest.Server) {
 	if err := svc.RegisterLocalDriver("stub", &stub.Driver{DeadlineMs: 200}); err != nil {
 		t.Fatalf("RegisterLocalDriver: %v", err)
 	}
-	mux := NewMux(svc, Config{Token: testToken})
+	mux := NewMux(svc, Config{Token: testToken, AllowMutations: true})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return svc, srv
@@ -171,7 +172,7 @@ func TestGetSession_AmbiguousRuntimeIs400(t *testing.T) {
 	if err := svc.RegisterLocalDriver("stub-b", &stub.Driver{DeadlineMs: 200}); err != nil {
 		t.Fatalf("RegisterLocalDriver: %v", err)
 	}
-	mux := NewMux(svc, Config{Token: testToken})
+	mux := NewMux(svc, Config{Token: testToken, AllowMutations: true})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -266,4 +267,76 @@ func TestSendInput_RefusalIsNotAnHTTPError(t *testing.T) {
 	// refused} at all, which does not exist yet in this repo. Documented
 	// here as a known gap, not silently skipped.
 	t.Skip("no driver in this skeleton can produce a refused DeliveryReceipt; see comment")
+}
+
+// §6 requirement 3: mutations are opt-in. The default must be closed, because
+// a single shared token cannot distinguish a peer from a local supervisor, and
+// the first thing a fleet exposes across machines should not be the ability to
+// start processes.
+func TestMutationsAreDeniedByDefault(t *testing.T) {
+	svc := New("testbox")
+	if err := svc.RegisterLocalDriver("stub", &stub.Driver{DeadlineMs: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	// Note: no AllowMutations.
+	srv := httptest.NewServer(NewMux(svc, Config{Token: testToken}))
+	defer srv.Close()
+
+	cases := []struct {
+		name, method, path string
+	}{
+		{"create", http.MethodPost, "/v1/machines/testbox/sessions"},
+		{"input", http.MethodPost, "/v1/machines/testbox/sessions/s1/input"},
+		{"interrupt", http.MethodPost, "/v1/machines/testbox/sessions/s1/interrupt"},
+		{"close", http.MethodDelete, "/v1/machines/testbox/sessions/s1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, srv.URL+tc.path, strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			req.Header.Set("Idempotency-Key", "k")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 401 && resp.StatusCode != 403 {
+				t.Errorf("%s returned %d; a read-only instance must refuse mutating verbs",
+					tc.name, resp.StatusCode)
+			}
+			// Unauthorized, never unsupported: the driver is capable, this
+			// instance is configured not to permit it. Saying "unsupported"
+			// would tell a caller something false about the runtime.
+			if resp.StatusCode == 501 {
+				t.Errorf("%s reported unsupported; the capability exists, the permission does not", tc.name)
+			}
+		})
+	}
+}
+
+// Reads must stay open in the same configuration, or "read-only" would just
+// mean "off".
+func TestReadsStayOpenWhenMutationsAreDenied(t *testing.T) {
+	svc := New("testbox")
+	if err := svc.RegisterLocalDriver("stub", &stub.Driver{DeadlineMs: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewMux(svc, Config{Token: testToken}))
+	defer srv.Close()
+
+	for _, path := range []string{"/v1/health", "/v1/machines", "/v1/runtimes", "/v1/sessions"} {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			t.Errorf("%s returned %d; reads are permitted by default (§6)", path, resp.StatusCode)
+		}
+	}
 }

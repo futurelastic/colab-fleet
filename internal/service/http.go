@@ -17,6 +17,26 @@ type Config struct {
 	// unauthenticated mode (api-http.md §5) — every request must present
 	// Authorization: Bearer <Token>, loopback or not, dev or not.
 	Token string
+
+	// AllowMutations opens the verbs that change something: create, input,
+	// interrupt, close. It defaults to FALSE, and that default is §6
+	// requirement 3 taken literally — "`list` and `state` from a peer may
+	// be permitted by default; `close`, `interrupt` and `create` are opt-in
+	// per peer."
+	//
+	// The gate exists because authentication alone does not express this.
+	// A single shared token cannot distinguish a peer from a local
+	// supervisor, so without a verb gate, anything holding the token can
+	// start processes on this machine. §6 is explicit that "a service that
+	// can start processes and read files is a remote-execution surface
+	// regardless of intent", and the first thing a fleet exposes across
+	// machines should not be process creation.
+	//
+	// This is coarser than §6 asks for — it is per-service, not per-peer —
+	// and deliberately so: per-peer authorization needs more than one peer
+	// identity to distinguish, which a single shared token does not
+	// provide. Coarse and closed beats fine-grained and unimplemented.
+	AllowMutations bool
 }
 
 // NewMux builds the routing skeleton of api-http.md §3 over svc, using
@@ -32,11 +52,11 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux.HandleFunc("GET /v1/machines", withAuth(cfg, handleMachines(svc)))
 	mux.HandleFunc("GET /v1/runtimes", withAuth(cfg, handleRuntimes(svc)))
 	mux.HandleFunc("GET /v1/sessions", withAuth(cfg, handleListSessions(svc)))
-	mux.HandleFunc("POST /v1/machines/{machine}/sessions", withAuth(cfg, handleCreateSession(svc)))
+	mux.HandleFunc("POST /v1/machines/{machine}/sessions", withAuth(cfg, mutating(cfg, handleCreateSession(svc))))
 	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}", withAuth(cfg, handleGetSession(svc)))
-	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/input", withAuth(cfg, handleSendInput(svc)))
-	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/interrupt", withAuth(cfg, handleInterrupt(svc)))
-	mux.HandleFunc("DELETE /v1/machines/{machine}/sessions/{id}", withAuth(cfg, handleClose(svc)))
+	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/input", withAuth(cfg, mutating(cfg, handleSendInput(svc))))
+	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/interrupt", withAuth(cfg, mutating(cfg, handleInterrupt(svc))))
+	mux.HandleFunc("DELETE /v1/machines/{machine}/sessions/{id}", withAuth(cfg, mutating(cfg, handleClose(svc))))
 	mux.HandleFunc("GET /v1/events", withAuth(cfg, handleEvents(svc)))
 
 	return mux
@@ -55,6 +75,25 @@ func withAuth(cfg Config, next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, &fleet.Error{
 				Kind:    fleet.ErrorUnauthorized,
 				Message: "missing or invalid Authorization bearer token",
+			})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// mutating gates the verbs that change something behind Config.AllowMutations
+// (§6 requirement 3). A refusal here is unauthorized, not unsupported: the
+// driver is perfectly capable, and this instance is configured not to permit
+// it. Reporting "unsupported" would tell a caller something false about the
+// runtime and invite it to give up permanently on a capability that exists.
+func mutating(cfg Config, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !cfg.AllowMutations {
+			writeError(w, &fleet.Error{
+				Kind: fleet.ErrorUnauthorized,
+				Message: "this instance is configured read-only; create, input, " +
+					"interrupt and close are opt-in (§6)",
 			})
 			return
 		}

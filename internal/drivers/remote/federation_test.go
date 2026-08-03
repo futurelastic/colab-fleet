@@ -36,13 +36,20 @@ import (
 
 // peerService builds Service B: a real service, serving a real driver over
 // a real HTTP surface.
-func peerService(t *testing.T, self fleet.MachineId, runtime fleet.RuntimeId, d driver.Driver, token string) string {
+// allowMutations must be set explicitly by any test that exercises a
+// mutating verb: the service refuses them by default (§6 requirement 3).
+// Without it, a mutation is refused as "unauthorized" — the same wire kind a
+// genuine authority failure produces, which would make a test asserting on
+// authority propagation pass or fail for the wrong reason.
+func peerService(t *testing.T, self fleet.MachineId, runtime fleet.RuntimeId, d driver.Driver, token string, allowMutations bool) string {
 	t.Helper()
 	svcB := service.New(self)
 	if err := svcB.RegisterLocalDriver(runtime, d); err != nil {
 		t.Fatalf("registering driver on the peer: %v", err)
 	}
-	srv := httptest.NewServer(service.NewMux(svcB, service.Config{Token: token}))
+	srv := httptest.NewServer(service.NewMux(svcB, service.Config{
+		Token: token, AllowMutations: allowMutations,
+	}))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
@@ -63,7 +70,7 @@ func homeService(t *testing.T, self fleet.MachineId, peer fleet.MachineId, rd *D
 // as a generic failure. This runs everywhere, including CI.
 func TestFederatedUnsupportedSurvivesTheWholePath(t *testing.T) {
 	const token = "federation-token"
-	base := peerService(t, "peerbox", "stub", &stub.Driver{}, token)
+	base := peerService(t, "peerbox", "stub", &stub.Driver{}, token, false)
 
 	rd := New("peerbox", base, token, WithDeadline(2*time.Second))
 	svcA := homeService(t, "homebox", "peerbox", rd)
@@ -102,7 +109,7 @@ func TestFederatedUnsupportedSurvivesTheWholePath(t *testing.T) {
 // would otherwise succeed silently and make every machine a confused deputy.
 func TestFederatedMutationRequiresTheOriginalCallersAuthority(t *testing.T) {
 	const token = "federation-token"
-	base := peerService(t, "peerbox", "stub", &stub.Driver{}, token)
+	base := peerService(t, "peerbox", "stub", &stub.Driver{}, token, true) // exercises a mutating verb
 	rd := New("peerbox", base, token, WithDeadline(2*time.Second))
 
 	// No caller authority in context.
@@ -179,7 +186,7 @@ func TestFederatedListOfRealSessionsThroughARemoteDriver(t *testing.T) {
 
 	const token = "federation-token"
 	local := tmuxdrv.New("peerbox")
-	base := peerService(t, "peerbox", tmuxdrv.DefaultRuntime, local, token)
+	base := peerService(t, "peerbox", tmuxdrv.DefaultRuntime, local, token, false) // read-only
 
 	rd := New("peerbox", base, token, WithDeadline(10*time.Second))
 	svcA := homeService(t, "homebox", "peerbox", rd)
