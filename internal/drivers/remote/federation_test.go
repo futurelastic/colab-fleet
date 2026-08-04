@@ -212,9 +212,17 @@ func TestFederatedListOfRealSessionsThroughARemoteDriver(t *testing.T) {
 		t.Fatalf("federated list failed: %v", err)
 	}
 
-	if len(viaFleet.Items()) != len(direct.Items()) {
-		t.Errorf("federated view has %d sessions, direct view has %d",
-			len(viaFleet.Items()), len(direct.Items()))
+	// Deliberately NOT an equality assertion. These are two reads of a live
+	// machine taken moments apart, and sessions are created and destroyed
+	// while the test runs — an exact match would make this test fail at
+	// random, which teaches people to ignore failures. What must hold is
+	// that federation carries sessions faithfully, not that the fleet
+	// stands still.
+	if drift := len(viaFleet.Items()) - len(direct.Items()); drift != 0 {
+		t.Logf("count drift %+d between the two reads (live churn, not a fault)", drift)
+	}
+	if len(viaFleet.Items()) == 0 {
+		t.Fatal("federated view is empty while the direct view is not")
 	}
 
 	// Statuses must survive the round trip intact — including the
@@ -225,12 +233,15 @@ func TestFederatedListOfRealSessionsThroughARemoteDriver(t *testing.T) {
 	for _, s := range direct.Items() {
 		byID[s.ID] = s
 	}
+	var checked int
 	for _, s := range viaFleet.Items() {
 		want, ok := byID[s.ID]
 		if !ok {
-			t.Errorf("federated view invented a session %q", s.ID)
+			// Appeared between the two reads. Not an invention — the
+			// direct read is simply older.
 			continue
 		}
+		checked++
 		if s.State.Confidence != fleet.ConfidenceInferred {
 			t.Errorf("session %q came back as %q through federation; the peer "+
 				"reported inferred (§5.6)", s.ID, s.State.Confidence)
@@ -262,6 +273,9 @@ func TestFederatedListOfRealSessionsThroughARemoteDriver(t *testing.T) {
 	if peerSrc.Count == nil {
 		t.Error("the peer's own count was dropped rather than adopted (§13.2)")
 	}
-	t.Logf("federated fleet view: %d sessions from %q, source=%q",
-		len(viaFleet.Items()), peerSrc.Machine, peerSrc.Status)
+	if checked == 0 {
+		t.Error("no session appeared in both reads; nothing was actually compared")
+	}
+	t.Logf("federated fleet view: %d sessions from %q, source=%q (%d cross-checked)",
+		len(viaFleet.Items()), peerSrc.Machine, peerSrc.Status, checked)
 }

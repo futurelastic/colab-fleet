@@ -191,9 +191,14 @@ synchronous completion, and pretending otherwise would be emulation.
 ## 4. Events
 
 ```
-GET /v1/events?cursor=<last-seen>&epoch=<last-seen>
+GET /v1/events?cursor=<last-seen>&epoch=<last-seen>&session=&cwdPrefix=
 Accept: text/event-stream
 ```
+
+`session` may be repeated to name several sessions. Selectors narrow and
+compose with AND. Naming is not sugar over `cwdPrefix`: a substrate may charge
+per watched session, in which case a caller that can only describe what it
+wants pays for every match (§5.5).
 
 Server-sent events. Every event carries `cursor`, `epoch`, and the `machine` it
 originated from — including events proxied from peers (§13).

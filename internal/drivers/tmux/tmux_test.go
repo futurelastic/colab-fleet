@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,11 +16,53 @@ import (
 // invocation so tests can assert on subprocess count — the property
 // driver.Driver.List's doc comment calls a "correct-looking bug" if got
 // wrong — and on what never reached a command line (§5.3).
+// fakeMux is shared between the test goroutine and the driver's engine
+// goroutine whenever a subscription is live, so every field is guarded. An
+// earlier version was not, and the race detector found it the moment a test
+// mutated state while a stream was running — a fault in the harness rather
+// than the driver, but one that would have made every subscription test
+// quietly untrustworthy.
 type fakeMux struct {
+	mu       sync.Mutex
 	calls    [][]string
 	sessions []fakeSession
 	captures map[string]string
 	failList bool
+}
+
+func (f *fakeMux) setCapture(paneID, text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.captures[paneID] = text
+}
+
+func (f *fakeMux) addSession(s fakeSession, capture string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessions = append(f.sessions, s)
+	f.captures[s.paneID] = capture
+}
+
+func (f *fakeMux) dropLastSession() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	last := f.sessions[len(f.sessions)-1]
+	f.sessions = f.sessions[:len(f.sessions)-1]
+	delete(f.captures, last.paneID)
+}
+
+func (f *fakeMux) setFailList(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failList = v
+}
+
+func (f *fakeMux) callsSnapshot() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]string, len(f.calls))
+	copy(out, f.calls)
+	return out
 }
 
 type fakeSession struct {
@@ -40,6 +83,8 @@ const testNonce = "0badc0de"
 var testCaller = fleet.Request{Caller: fleet.Caller{Principal: "test:unit"}}
 
 func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, args)
 	switch args[0] {
 	case "list-panes":
@@ -136,10 +181,10 @@ func TestListCostsConstantSpawns(t *testing.T) {
 	if _, err := d.List(context.Background(), testCaller, driver.ListFilter{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.calls) != 2 {
+	if len(f.callsSnapshot()) != 2 {
 		t.Errorf("List made %d subprocess calls for %d sessions; must be constant (2), "+
 			"not proportional — see driver.Driver.List's contract",
-			len(f.calls), len(f.sessions))
+			len(f.callsSnapshot()), len(f.sessions))
 	}
 }
 
@@ -222,7 +267,7 @@ func TestSendDeliversWhenComposerIsEmpty(t *testing.T) {
 		t.Errorf("this substrate cannot confirm receipt, so queued is the honest outcome; got %q", got.Outcome)
 	}
 	// The payload must not appear in any argv (§5.3's rationale).
-	for _, c := range f.calls {
+	for _, c := range f.callsSnapshot() {
 		for _, a := range c {
 			if strings.Contains(a, "hello") {
 				t.Errorf("payload reached a command line: %v", c)
@@ -268,7 +313,7 @@ func TestCloseRefusesWhenTheIdWasRecycled(t *testing.T) {
 	if !errors.Is(err, ErrAmbiguousTarget) {
 		t.Fatalf("a recycled id must refuse, got %v", err)
 	}
-	for _, c := range f.calls {
+	for _, c := range f.callsSnapshot() {
 		if c[0] == "kill-session" {
 			t.Fatal("a refused close must not have killed anything")
 		}
@@ -286,7 +331,7 @@ func TestCloseProceedsWhenCorroborated(t *testing.T) {
 		t.Fatalf("corroborated close should proceed: ack=%+v err=%v", ack, err)
 	}
 	var killed bool
-	for _, c := range f.calls {
+	for _, c := range f.callsSnapshot() {
 		if c[0] == "kill-session" {
 			killed = true
 		}
@@ -344,7 +389,7 @@ func TestCreateKeepsPromptAndContextOutOfArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range f.calls {
+	for _, c := range f.callsSnapshot() {
 		for _, a := range c {
 			if strings.Contains(a, secret) {
 				t.Errorf("prompt reached a command line (§5.3): %v", c)
@@ -353,7 +398,7 @@ func TestCreateKeepsPromptAndContextOutOfArgv(t *testing.T) {
 	}
 	// The context path, by contrast, is exactly what SHOULD be in argv.
 	var sawContextPath bool
-	for _, c := range f.calls {
+	for _, c := range f.callsSnapshot() {
 		for _, a := range c {
 			if a == "/tmp/ctx.txt" {
 				sawContextPath = true
@@ -404,7 +449,7 @@ func TestReconcileAdoptsAndDestroysNothing(t *testing.T) {
 	if len(got.Items()) != 2 {
 		t.Errorf("reconciliation must surface everything found, got %d", len(got.Items()))
 	}
-	for _, c := range f.calls {
+	for _, c := range f.callsSnapshot() {
 		if c[0] == "kill-session" {
 			t.Fatal("§12 rule 4 is absolute: reconciliation destroys nothing")
 		}
@@ -428,7 +473,7 @@ func TestStateOfAMissingSessionIsDeadNotAnError(t *testing.T) {
 
 func countCalls(f *fakeMux, verb string) int {
 	n := 0
-	for _, c := range f.calls {
+	for _, c := range f.callsSnapshot() {
 		if len(c) > 0 && c[0] == verb {
 			n++
 		}
@@ -480,7 +525,7 @@ func TestStaleCallerExpectationRefusesEvenWhenTheDriversOwnSightingIsFresh(t *te
 	if !errors.Is(err, ErrAmbiguousTarget) {
 		t.Fatalf("a stale caller expectation must refuse; got %v", err)
 	}
-	for _, c := range f.calls {
+	for _, c := range f.callsSnapshot() {
 		if c[0] == "kill-session" {
 			t.Fatal("destroyed a session the caller did not mean — §5.4's exact failure")
 		}

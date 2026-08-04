@@ -414,11 +414,21 @@ Federated callers may be many network round-trips away. An API that requires
 polling to stay current becomes unusable at exactly the distance federation is
 for. State is readable on demand; changes are pushed.
 
-> **Open defect D4.** §3 writes `subscribe(filter?)` without saying what a
-> filter can express. On a substrate that charges one connection per watched
-> session, that decides whether a subscription costs O(subscribers) or
-> O(sessions) — so filter granularity is a cost parameter, not a convenience.
-> See §14.
+**A subscription filter can name sessions, not only describe them.** On a
+substrate that charges one connection per watched session, granularity is a
+cost parameter rather than a convenience: a caller that can only say
+"everything under this directory" makes a driver attach to every match, while a
+caller that can name what it means attaches to one.
+
+Selectors narrow and compose with AND, matching the rule plural reads already
+follow, so a caller does not carry two conventions.
+
+Naming an id inherits §5.4's recyclability — a subscription to an id that dies
+and is recreated will carry events for the new session. That is safe only
+because the discontinuity is **announced**: the subscriber sees `session.closed`
+then `session.created` and can tell. A stream that silently swapped subjects
+would be §7.3's silent gap in another costume. This was open defect D4; see
+Appendix A, F22.
 
 ### 5.6 Degrade, never emulate
 
@@ -859,22 +869,20 @@ proxy uses a floor it has no reason to believe.
   cross-machine question — fallible, context-taking, and refreshable — rather
   than a property read.
 
-### D4 — `subscribe`'s filter cannot name a session · §5.5
+### D4 — `subscribe`'s filter cannot name a session · §5.5 — **RESOLVED**
 
-§3 writes `subscribe(filter?)` and never says what a filter expresses. That
-looked like a detail to settle later. It is not, because a substrate may charge
-per subscribed session: measured on the first driver's substrate, content
-notifications require one connection per watched session while lifecycle
-notifications are fleet-wide and free.
+Kept for numbering stability.
 
-A filter that can name sessions costs O(subscribers). One that can only
-describe them by attribute costs O(sessions). The only mechanism currently
-available is a working-directory prefix, which makes a caller wanting one
-session ask for a directory and hope — a proxy for identity rather than
-identity, which is D2's lesson in a different operation.
+A filter may now name session ids as well as describe a working-directory
+prefix, and the two compose with AND. Measured on the first driver: naming two
+sessions out of forty that share a directory opens three connections
+(lifecycle plus one each) rather than forty-one.
 
-- **Proposed fix:** the filter can name session ids.
-- **Cost of the fix:** the wire shape of `subscribe`, api-http.md §4.
+The residual limitation is not this defect. A subscription still cannot span
+machines, because no service implements the event stream and the remote driver
+answers `unsupported` — so a filter naming sessions narrows what one machine
+watches, not what a fleet does. That is the event plane's missing federation
+design, not the filter's shape.
 
 ### D5 — Idempotency retention does not outlive the service · §10
 
@@ -1212,6 +1220,49 @@ The immediate payoff was in D7's fix, which derives a proxy's deadline from its
 peer's. Before provenance, "the peer declares 0ms" and "we have never asked"
 were the same reading, and the derivation could not tell whether it was
 applying a floor because the peer was minimal or because nobody had checked.
+
+**F22 · Naming a thing costs less than describing it, when watching is
+metered.** The filter originally carried only a working-directory prefix, which
+reads like a reasonable minimum until you notice what a driver must do with it:
+attach to every session that matches, because it cannot know which one the
+caller actually meant. Forty sessions sharing a directory cost forty
+connections to serve a caller interested in one.
+
+The general form is worth keeping. **Where an interface offers only a
+descriptive selector, the implementation must satisfy the description — and
+pays for the gap between what the caller said and what the caller wanted.** An
+identifying selector closes that gap. This is §5.4's lesson ("a proxy for
+identity is not identity") arriving in a second operation, where it costs
+connections rather than correctness.
+
+One consequence had to be reasoned about rather than measured: naming an id
+inherits recyclability, so a subscription can silently change subject when an
+id is reused. It is acceptable here only because the stream announces the
+change — closed, then created — which is the same property §7.3 demands of
+reconnection. Had the stream not already been obliged to announce, this fix
+would have introduced a silent gap while closing a cost problem.
+
+**F23 · Two harness faults found while proving F22, both of the same kind.**
+Neither was in the driver, and both would have quietly devalued the tests that
+guard it.
+
+A data race in the fake multiplexer: the test goroutine mutated it while a live
+subscription's engine goroutine read it. Latent for as long as subscriptions
+have been tested, and surfaced only when a new test shifted the timing. Every
+subscription test was therefore trustworthy by luck rather than by
+construction.
+
+And an equality assertion across two reads of a live machine — federated count
+versus direct count — on a host where sessions are created and destroyed while
+the test runs. It failed once, passed on retry, and that is the worst outcome
+available: a test that fails at random teaches people to ignore failures, which
+costs more than the test was ever worth.
+
+Recorded because the pattern generalises past this repository: **when a test
+asserts on a moving system, decide what must hold and assert that, not what
+happened to be true when it was written.** What matters here is that federation
+carries sessions faithfully; that the fleet stands still is not a property
+anyone claimed.
 
 ### The pattern worth naming
 

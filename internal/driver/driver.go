@@ -11,6 +11,7 @@ package driver
 import (
 	"context"
 	"errors"
+	"strings"
 
 	fleet "github.com/godx-jp/colab-fleet"
 )
@@ -35,11 +36,55 @@ type ListFilter struct {
 	CwdPrefix string
 }
 
-// SubscribeFilter narrows which events a subscription receives. Left
-// minimal: the spec does not detail an event-filtering shape beyond the
-// operations table naming subscribe(filter?) (§3).
+// SubscribeFilter narrows which events a subscription receives (§3, §5.5).
+//
+// # Granularity is a cost parameter, not a convenience
+//
+// §5.5's amendment records why this type has the shape it does. On a
+// substrate where watching a session's content costs a connection — as it
+// does on the first driver, where content notifications are delivered only
+// to a client attached to that session — the filter decides whether a
+// subscription costs O(subscribers) or O(sessions).
+//
+// Naming sessions is therefore not sugar over CwdPrefix. A caller that can
+// only describe what it wants ("everything under this directory") makes the
+// driver attach to every match; a caller that can name it attaches to one.
+// The earlier shape forced the first behaviour on every caller, including
+// those who knew exactly which session they meant.
+//
+// Both fields narrow, and they compose with AND — the same rule ListFilter
+// follows, so a caller does not have to remember two conventions. The zero
+// value means no filter.
 type SubscribeFilter struct {
+	// Sessions names specific session ids on this machine. Empty means no
+	// id constraint.
+	//
+	// Ids are recyclable (§5.4), and a subscription that names one inherits
+	// that: if the session at this id dies and a new one takes the name,
+	// the stream will carry events for the new one. This is safe rather
+	// than surprising only because the discontinuity is ANNOUNCED — the
+	// subscriber receives session.closed and then session.created, so it
+	// can tell the difference. A stream that silently swapped subjects
+	// would be §7.3's silent gap in another costume.
+	Sessions []string
+
 	CwdPrefix string
+}
+
+// Matches reports whether a session satisfies this filter.
+func (f SubscribeFilter) Matches(id, cwd string) bool {
+	if f.CwdPrefix != "" && !strings.HasPrefix(cwd, f.CwdPrefix) {
+		return false
+	}
+	if len(f.Sessions) == 0 {
+		return true
+	}
+	for _, want := range f.Sessions {
+		if want == id {
+			return true
+		}
+	}
+	return false
 }
 
 // EventStream is a driver-owned handle for a live subscription (§3, §4).

@@ -168,7 +168,7 @@ func TestSubscribeEmitsStateChangeOnTrigger(t *testing.T) {
 	defer s.Close()
 
 	// alpha was idle at subscribe time; make it working.
-	f.captures["%1"] = fixtureWorking
+	f.setCapture("%1", fixtureWorking)
 	fire(r.contentFor("alpha💬"), "output")
 
 	ev, ok := nextWithin(t, s, 3*time.Second)
@@ -195,7 +195,7 @@ func TestSubscribeLeavesCursorAndEpochToTheService(t *testing.T) {
 	s, _ := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
 	defer s.Close()
 
-	f.captures["%1"] = fixtureWorking
+	f.setCapture("%1", fixtureWorking)
 	fire(r.contentFor("alpha💬"), "output")
 
 	ev, ok := nextWithin(t, s, 3*time.Second)
@@ -227,10 +227,9 @@ func TestSubscribeEmitsCreatedAndClosed(t *testing.T) {
 
 	lifecycle := r.opened[0] // the first client opened is the lifecycle one
 
-	f.sessions = append(f.sessions, fakeSession{
+	f.addSession(fakeSession{
 		name: "gamma", paneID: "%9", cwd: "/work/gamma", pid: 300, created: 1785600002,
-	})
-	f.captures["%9"] = idleFixtureFor("gamma")
+	}, idleFixtureFor("gamma"))
 	fire(lifecycle, "sessions-changed")
 
 	ev, ok := nextWithin(t, s, 3*time.Second)
@@ -245,8 +244,7 @@ func TestSubscribeEmitsCreatedAndClosed(t *testing.T) {
 	}
 
 	// Now remove it.
-	f.sessions = f.sessions[:len(f.sessions)-1]
-	delete(f.captures, "%9")
+	f.dropLastSession()
 	fire(lifecycle, "sessions-changed")
 
 	ev, ok = nextWithin(t, s, 3*time.Second)
@@ -273,7 +271,7 @@ func TestSubscribeDoesNotReportClosedWhenTheReadFailed(t *testing.T) {
 	defer s.Close()
 
 	lifecycle := r.opened[0]
-	f.failList = true
+	f.setFailList(true)
 	fire(lifecycle, "sessions-changed")
 
 	ev, ok := nextWithin(t, s, 3*time.Second)
@@ -432,4 +430,94 @@ func TestLifecycleClientSurvivesItsHostSessionDying(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Errorf("no re-attach: still %d clients", r.count())
+}
+
+// D4's whole point: naming a session costs one connection, describing a
+// directory costs one per match. A caller that knows what it wants should not
+// pay for what it does not.
+func TestNamingSessionsCostsOneClientEach(t *testing.T) {
+	f := twoSessions()
+	for i := 0; i < 38; i++ {
+		id := "%" + intToStr(300+i)
+		f.sessions = append(f.sessions, fakeSession{
+			name: "bulk" + intToStr(i), paneID: id, cwd: "/work/alpha", pid: 700 + i, created: 1785600020,
+		})
+		f.captures[id] = idleFixtureFor("bulk")
+	}
+	// Every one of those 40 sessions shares /work/alpha, so a prefix filter
+	// would attach to all of them.
+	r := &ctlRegistry{}
+	d := newSubDriver(f, r)
+	s, err := d.Subscribe(context.Background(), testCaller,
+		driver.SubscribeFilter{Sessions: []string{"alpha💬", "bulk7"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if got := r.count(); got != 3 {
+		t.Errorf("opened %d clients for 2 named sessions out of 40; want 3 "+
+			"(lifecycle + one per named session). Filter granularity IS the cost", got)
+	}
+}
+
+// Events for sessions outside the filter must not be delivered, even though
+// lifecycle notifications arrive fleet-wide.
+func TestNamedSubscriptionIgnoresOtherSessions(t *testing.T) {
+	f := twoSessions()
+	r := &ctlRegistry{}
+	d := newSubDriver(f, r)
+	s, err := d.Subscribe(context.Background(), testCaller,
+		driver.SubscribeFilter{Sessions: []string{"alpha💬"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	lifecycle := r.opened[0]
+
+	// A session appears that the caller did not ask about.
+	f.addSession(fakeSession{
+		name: "unrelated", paneID: "%77", cwd: "/elsewhere", pid: 400, created: 1785600030,
+	}, idleFixtureFor("unrelated"))
+	fire(lifecycle, "sessions-changed")
+
+	if ev, ok := nextWithin(t, s, 1500*time.Millisecond); ok {
+		t.Errorf("delivered %q for a session outside the filter: %+v", ev.Kind, ev.Payload)
+	}
+
+	// ...and one it did ask about still comes through.
+	f.setCapture("%1", fixtureWorking)
+	fire(lifecycle, "sessions-changed")
+	ev, ok := nextWithin(t, s, 3*time.Second)
+	if !ok {
+		t.Fatal("no event for the named session")
+	}
+	if ev.Kind != fleet.EventSessionState {
+		t.Errorf("kind = %q, want session.state", ev.Kind)
+	}
+}
+
+// Both selectors narrow, and they compose with AND — the same rule ListFilter
+// follows, so callers do not have to remember two conventions.
+func TestFilterSelectorsCompose(t *testing.T) {
+	cases := []struct {
+		name   string
+		filter driver.SubscribeFilter
+		id     string
+		cwd    string
+		want   bool
+	}{
+		{"zero value matches everything", driver.SubscribeFilter{}, "a", "/x", true},
+		{"id only", driver.SubscribeFilter{Sessions: []string{"a"}}, "a", "/x", true},
+		{"id only, miss", driver.SubscribeFilter{Sessions: []string{"a"}}, "b", "/x", false},
+		{"prefix only", driver.SubscribeFilter{CwdPrefix: "/x"}, "a", "/x/y", true},
+		{"both, both satisfied", driver.SubscribeFilter{Sessions: []string{"a"}, CwdPrefix: "/x"}, "a", "/x/y", true},
+		{"both, prefix fails", driver.SubscribeFilter{Sessions: []string{"a"}, CwdPrefix: "/z"}, "a", "/x/y", false},
+		{"both, id fails", driver.SubscribeFilter{Sessions: []string{"a"}, CwdPrefix: "/x"}, "b", "/x/y", false},
+	}
+	for _, tc := range cases {
+		if got := tc.filter.Matches(tc.id, tc.cwd); got != tc.want {
+			t.Errorf("%s: Matches(%q,%q) = %v, want %v", tc.name, tc.id, tc.cwd, got, tc.want)
+		}
+	}
 }

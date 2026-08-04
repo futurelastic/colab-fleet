@@ -284,9 +284,12 @@ func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver
 	}
 	go s.superviseLifecycle(streamCtx, trigger, life)
 
-	// Content clients for the sessions this subscription cares about.
+	// Content clients for the sessions this subscription cares about — and
+	// only those. This is where filter granularity turns into cost: one
+	// connection per watched session, so a caller that named two sessions
+	// opens two, not one per session on the machine.
 	for _, r := range rows {
-		if filter.CwdPrefix != "" && !strings.HasPrefix(r.cwd, filter.CwdPrefix) {
+		if !filter.Matches(r.session, r.cwd) {
 			continue
 		}
 		conn, err := d.dial(streamCtx, d.bin, r.session)
@@ -317,6 +320,9 @@ func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver
 	seed := map[string]fleet.Session{}
 	if base, err := d.List(ctx, req, driver.ListFilter{CwdPrefix: filter.CwdPrefix}); err == nil {
 		for _, sess := range base.Items() {
+			if !filter.Matches(sess.ID, string(sess.Cwd)) {
+				continue
+			}
 			seed[sess.ID] = sess
 		}
 	}
@@ -484,6 +490,13 @@ func (s *eventStream) run(ctx context.Context, trigger <-chan struct{}, known ma
 
 		seen := map[string]bool{}
 		for _, sess := range cur.Items() {
+			// Attachments are filtered, but lifecycle notifications are
+			// fleet-wide, so the diff sees everything. Narrow here too or a
+			// subscription that named one session would still be told about
+			// every session appearing anywhere.
+			if !s.filter.Matches(sess.ID, string(sess.Cwd)) {
+				continue
+			}
 			seen[sess.ID] = true
 			prev, had := known[sess.ID]
 			switch {
@@ -542,6 +555,9 @@ func (s *eventStream) attachContent(ctx context.Context, sess fleet.Session) {
 		return
 	}
 	if _, ok := s.conns[sess.ID]; ok {
+		return
+	}
+	if !s.filter.Matches(sess.ID, string(sess.Cwd)) {
 		return
 	}
 	conn, err := s.d.dial(ctx, s.d.bin, sess.ID)
