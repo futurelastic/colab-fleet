@@ -228,16 +228,25 @@ func main() {
 	// rule 4 ("a session the service cannot explain is a session for a
 	// human to look at, not one to clean up").
 	if rec, ok := localDriver.(interface {
-		Reconcile(context.Context) (fleet.Collection[fleet.Session], error)
+		Reconcile(context.Context) (tmux.Reconciliation, error)
 	}); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		found, err := rec.Reconcile(ctx)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		got, err := rec.Reconcile(ctx)
 		cancel()
-		switch {
-		case err != nil:
+		if err != nil {
 			log.Printf("colab-fleetd: reconciliation failed: %v", err)
-		default:
-			log.Printf("colab-fleetd: adopted %d existing session(s)", len(found.Items()))
+		} else {
+			log.Printf("colab-fleetd: reconciled — %s", got)
+			// Orphans and disappearances are named individually. §12 rule 4
+			// forbids acting on them, which makes reporting them the entire
+			// value: a session this service cannot explain is one for a
+			// human to look at, and a human cannot look at a count.
+			for _, s := range got.Orphaned {
+				log.Printf("colab-fleetd:   orphaned %q cwd=%s (%s)", s.ID, s.Cwd, s.State.Evidence)
+			}
+			for _, s := range got.Vanished {
+				log.Printf("colab-fleetd:   vanished %q (%s)", s.ID, s.State.Evidence)
+			}
 		}
 	}
 

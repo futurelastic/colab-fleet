@@ -458,6 +458,8 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		return fleet.NewCollection([]fleet.Session{}, []fleet.SourceStatus{src})
 	}
 
+	d.noteSessionSet(rows)
+
 	sessions := make([]fleet.Session, 0, len(rows))
 	now := d.now()
 	d.mu.Lock()
@@ -833,22 +835,6 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		_, _ = d.Send(ctx, req, ref, spec.Prompt, driver.SendOptions{Submit: true})
 	}
 	return ref, nil
-}
-
-// Reconcile performs §12's startup reconciliation: enumerate what exists,
-// adopt it, and never destroy anything.
-//
-// With no persisted records — this driver keeps none across restarts — every
-// session found is by definition "exists but no record", which §12 calls
-// orphaned and requires be surfaced with inferred confidence and whatever
-// identifying evidence the driver has. That is not a degenerate case to fix
-// later; it is the correct classification given what this driver knows, and
-// the states it produces already carry inferred confidence for independent
-// reasons. The "vanished" class cannot arise here at all, because there are
-// no records for anything to vanish from.
-func (d *Driver) Reconcile(ctx context.Context) (fleet.Collection[fleet.Session], error) {
-	// Nobody asked for this; it is the service acting on its own behalf.
-	return d.List(ctx, fleet.SystemRequest(), driver.ListFilter{})
 }
 
 // claudeCodeCommand is the default CommandBuilder.

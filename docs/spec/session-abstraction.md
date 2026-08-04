@@ -766,6 +766,20 @@ At startup, per driver:
 Rule 4 is absolute. Automated destruction during a phase whose entire premise
 is *incomplete knowledge* is how a fleet eats its own work.
 
+**A recycled id is two facts, not one.** An id that is remembered but now holds
+a session started at a different time means the recorded session vanished AND a
+new one is present under its name. Reporting only "adopted" attributes one
+session's history to another — §5.4's recyclability, arriving in a third
+operation.
+
+**Records are written when the set changes, not on every read.** A read happens
+on every event trigger; persisting each would turn a cheap enumeration into a
+write amplifier for no benefit, since what reconciliation needs — which sessions
+exist and when they were first seen — only changes when one appears or leaves.
+
+See Appendix A, F30 for the ordering bug that made an earlier version report
+everything as adopted, always.
+
 ---
 
 ## 13. Federation topology
@@ -1466,6 +1480,23 @@ The general shape is worth keeping. **Durability decisions come in sets.** A
 field that identifies a sequence and a field that positions you within it are
 one decision wearing two names, and persisting either alone produces a service
 that describes itself incorrectly.
+
+**F30 · Reconciliation read the records its own first read had just written.**
+An ordinary read records the live set when it changes. Reconciliation enumerated
+first and loaded records afterwards, so it compared the world against a snapshot
+it had itself produced moments earlier: every session adopted, nothing ever
+orphaned or vanished.
+
+The classification still ran. It still produced an answer. The answer was that
+everything was fine, always — which is the shape of failure this project keeps
+meeting: not an error, but a confident report built on evidence the reporter
+manufactured.
+
+Fixed by reading what was remembered before looking at what exists. Worth
+stating as a rule, because the same trap is available anywhere state is both
+read and written on a common path: **a process that compares "before" against
+"after" must capture "before" prior to anything that can write it — including
+its own instrumentation.**
 
 ### The pattern worth naming
 

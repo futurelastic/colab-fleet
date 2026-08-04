@@ -452,8 +452,8 @@ func TestReconcileAdoptsAndDestroysNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Items()) != 2 {
-		t.Errorf("reconciliation must surface everything found, got %d", len(got.Items()))
+	if len(got.Live.Items()) != 2 {
+		t.Errorf("reconciliation must surface everything found, got %d", len(got.Live.Items()))
 	}
 	for _, c := range f.callsSnapshot() {
 		if c[0] == "kill-session" {
