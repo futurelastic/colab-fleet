@@ -44,7 +44,7 @@ type SubscribeFilter struct {
 
 // EventStream is a driver-owned handle for a live subscription (§3, §4).
 // Next blocks until an event is available, ctx is cancelled, or the stream
-// ends — a caller is never expected to poll (§5.5).
+// ends — a req is never expected to poll (§5.5).
 type EventStream interface {
 	Next(ctx context.Context) (fleet.Event, error)
 	Close() error
@@ -95,7 +95,7 @@ type EventStream interface {
 //     signature — which is exactly the bug §13.2 names.
 //
 // So List returns Collection[Session], not []SessionRef: full Session
-// values (state included) so a caller enumerating N sessions never has to
+// values (state included) so a req enumerating N sessions never has to
 // follow up with N State() calls — measurement on the first two drivers
 // found per-session subprocess spawns dominate cost at roughly 2 per
 // session — and a Collection so a local driver's single self-report and a
@@ -115,32 +115,32 @@ type Driver interface {
 	// key (§10, api-http.md §3.3: "Idempotency-Key is required, not
 	// optional") — a repeat key within the retention window must return
 	// the existing SessionRef rather than creating a second session.
-	Create(ctx context.Context, caller fleet.Caller, key string, spec fleet.SessionSpec) (fleet.SessionRef, error)
+	Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error)
 
 	// Send delivers input (§3). Unlike Create, Send is not idempotent and
 	// must not pretend to be (§10) — repeat delivery is a legitimate
-	// caller intent.
-	Send(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef, text string, opts SendOptions) (fleet.DeliveryReceipt, error)
+	// req intent.
+	Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts SendOptions) (fleet.DeliveryReceipt, error)
 
 	// State reads current state (§3). May return fleet.StatusUnknown as an
 	// ordinary, successful result (§2.3) — that is not the same thing as
 	// this method returning an error.
-	State(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.SessionState, error)
+	State(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionState, error)
 
 	// Interrupt and Close express intent only (§3, api-http.md §3.3: both
 	// wire to 202 Accepted); confirmation of what actually happened
 	// arrives later as a state change on the event stream (§4), never as
 	// this call's return value.
-	Interrupt(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error)
-	Close(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error)
+	Interrupt(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error)
+	Close(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error)
 
 	// List returns every session this driver knows about in one call —
 	// see the type-level doc comment above for why the signature is
 	// Collection[Session], not []SessionRef.
-	List(ctx context.Context, caller fleet.Caller, filter ListFilter) (fleet.Collection[fleet.Session], error)
+	List(ctx context.Context, req fleet.Request, filter ListFilter) (fleet.Collection[fleet.Session], error)
 
 	// Subscribe opens a live event stream (§3, §5.5). A driver that cannot
 	// support subscriptions returns ErrUnsupported rather than emulating
 	// one with polling underneath (§5.6).
-	Subscribe(ctx context.Context, caller fleet.Caller, filter SubscribeFilter) (EventStream, error)
+	Subscribe(ctx context.Context, req fleet.Request, filter SubscribeFilter) (EventStream, error)
 }

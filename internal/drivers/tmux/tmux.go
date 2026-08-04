@@ -41,7 +41,7 @@
 //     name)" before destroying a session — but SessionRef carries only
 //     machine, id and a human label, so a driver has nothing to corroborate
 //     the live session *against*. It can read the session's current start
-//     time; it cannot know which start time the caller meant. See
+//     time; it cannot know which start time the req meant. See
 //     Driver.Close, which implements the strongest form available at this
 //     signature and documents the window it cannot close.
 //
@@ -49,7 +49,7 @@
 //     properties, and the spec treats them as one concern. Sessions here
 //     genuinely survive a service restart — the multiplexer owns them, not
 //     this process — so SupportsResume is true. The idempotency key store
-//     does not survive, because it lives in this process's memory. A caller
+//     does not survive, because it lives in this process's memory. A req
 //     that retries a create across a service restart therefore gets a
 //     second session, which is precisely the §10 disaster, on a driver that
 //     honestly declares SupportsResume: true. See idempotency below.
@@ -83,7 +83,7 @@ const (
 	// DefaultRuntime is the runtime id this driver reports. It names both
 	// halves deliberately: the multiplexer supplies the session substrate,
 	// the CLI supplies the agent, and neither alone identifies what a
-	// caller is talking to.
+	// req is talking to.
 	DefaultRuntime = fleet.RuntimeId("claude-code-tmux")
 
 	// defaultDeadlineMs bounds any single call (§4.4). Local subprocess
@@ -107,7 +107,7 @@ const (
 // could not be corroborated (§5.4). It is deliberately not
 // driver.ErrUnsupported: the driver supports the operation, and is refusing
 // this particular invocation because it cannot establish that the session
-// it would destroy is the session the caller meant.
+// it would destroy is the session the req meant.
 var ErrAmbiguousTarget = errors.New("tmux: refusing a destructive operation on an uncorroborated target (§5.4)")
 
 // ErrNotFound is returned when no session matches a ref.
@@ -120,7 +120,7 @@ type execFunc func(ctx context.Context, name string, args ...string) ([]byte, er
 // CommandBuilder produces the argv the multiplexer should run for a new
 // session. contextFile is a path to the caller's context, already written
 // to disk — it is passed by path and must never be inlined into the
-// returned argv (§5.3). An empty contextFile means the caller supplied
+// returned argv (§5.3). An empty contextFile means the req supplied
 // none.
 //
 // This indirection keeps the multiplexer mechanics separate from the
@@ -272,7 +272,7 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 }
 
 // bounded applies this driver's declared deadline, or the caller's if the
-// caller's is shorter (§4.4: "a caller may supply a shorter deadline; never
+// caller's is shorter (§4.4: "a req may supply a shorter deadline; never
 // a longer one").
 func (d *Driver) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
 	own := d.now().Add(d.deadline)
@@ -416,7 +416,7 @@ func splitCaptures(out, mark string) map[string]string {
 // contract). The returned Collection always carries exactly one
 // SourceStatus — this machine's own — because even a single machine
 // answering for itself must say who answered (§9, api-http.md §3.2).
-func (d *Driver) List(ctx context.Context, caller fleet.Caller, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {
+func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -439,8 +439,10 @@ func (d *Driver) List(ctx context.Context, caller fleet.Caller, filter driver.Li
 	for _, r := range rows {
 		d.observed[r.session] = observation{created: r.created, cwd: r.cwd, at: now}
 		text, captured := captures[r.paneID]
+		started := r.created
 		s := fleet.Session{
 			SessionRef: fleet.SessionRef{Machine: d.machine, ID: r.session, Name: r.session},
+			StartedAt:  &started,
 			Runtime:    d.runtime,
 			Cwd:        fleet.AbsolutePath(r.cwd),
 			State:      classifyPane(text, captured, !r.dead),
@@ -480,7 +482,7 @@ func matchesFilter(s fleet.Session, f driver.ListFilter) bool {
 // fleet read is cheaper than the two subprocess spawns a targeted read
 // would need, and it keeps exactly one code path deciding what a status
 // means.
-func (d *Driver) State(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.SessionState, error) {
+func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionState, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -521,7 +523,7 @@ func (d *Driver) State(ctx context.Context, caller fleet.Caller, ref fleet.Sessi
 // caller's text against the multiplexer's key-name vocabulary, where a
 // message containing something like "C-c" is a live hazard; the paste
 // buffer takes bytes and interprets none of them.
-func (d *Driver) Send(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
+func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -595,7 +597,7 @@ func (d *Driver) Send(ctx context.Context, caller fleet.Caller, ref fleet.Sessio
 // Interrupt asks a session to stop what it is doing (§3). It expresses
 // intent only — the Ack says the request was accepted, never that the agent
 // stopped; that arrives later as a state change (§2.5).
-func (d *Driver) Interrupt(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
+func (d *Driver) Interrupt(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -620,7 +622,7 @@ func (d *Driver) Interrupt(ctx context.Context, caller fleet.Caller, ref fleet.S
 // §5.4 requires corroborating "at least one independent attribute (working
 // directory, start time, name)" before acting destructively, because ids
 // are recyclable. But close() receives only a SessionRef, which carries
-// machine, id and a human label. There is no field in which a caller can
+// machine, id and a human label. There is no field in which a req can
 // say *which* session it means beyond the id — so a driver has nothing to
 // compare the live session against except its own earlier sighting.
 //
@@ -632,58 +634,89 @@ func (d *Driver) Interrupt(ctx context.Context, caller fleet.Caller, ref fleet.S
 //     start time will differ and this refuses.
 //   - OPEN, and not closable here: the window between the *caller*
 //     observing a session and calling close. The caller's evidence never
-//     reaches the driver. A caller that listed sessions, went away, came
+//     reaches the driver. A req that listed sessions, went away, came
 //     back after a recycle and called close gets no protection from this
 //     check, because the driver's own sighting may have been refreshed in
 //     the meantime.
 //
 // Closing the second window needs SessionRef to carry a corroborating
-// attribute — a start time the caller observed — so that close can compare
+// attribute — a start time the req observed — so that close can compare
 // against the caller's belief rather than the driver's. That is a change to
 // the specification, not to this file; it is recorded in the package doc's
 // FINDINGS and in the spec's §5.4 (open defect D2, §14).
 //
 // A ref this driver has never seen is refused outright rather than
 // destroyed on an id match, which is the literal thing §5.4 forbids.
-func (d *Driver) Close(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
+func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
-
-	d.mu.Lock()
-	prior, seen := d.observed[ref.ID]
-	d.mu.Unlock()
-	if !seen {
-		return fleet.Ack{}, fmt.Errorf("%w: no prior observation of id %q to corroborate against",
-			ErrAmbiguousTarget, ref.ID)
-	}
 
 	rows, _, err := d.enumerate(ctx)
 	if err != nil {
 		return fleet.Ack{}, err
 	}
-	for _, r := range rows {
-		if r.session != ref.ID {
-			continue
+	var live *paneRow
+	for i := range rows {
+		if rows[i].session == ref.ID {
+			live = &rows[i]
+			break
 		}
-		if !r.created.Equal(prior.created) {
-			return fleet.Ack{}, fmt.Errorf(
-				"%w: id %q now holds a session created at %s, not the one observed at %s",
-				ErrAmbiguousTarget, ref.ID, r.created, prior.created)
-		}
-		if r.cwd != prior.cwd {
-			return fleet.Ack{}, fmt.Errorf(
-				"%w: id %q now has working directory %q, not %q",
-				ErrAmbiguousTarget, ref.ID, r.cwd, prior.cwd)
-		}
-		if _, err := d.run(ctx, d.bin, "kill-session", "-t", ref.ID); err != nil {
-			return fleet.Ack{}, fmt.Errorf("close: %w", err)
-		}
-		d.mu.Lock()
-		delete(d.observed, ref.ID)
-		d.mu.Unlock()
-		return fleet.Ack{Accepted: true}, nil
 	}
-	return fleet.Ack{}, ErrNotFound
+	if live == nil {
+		return fleet.Ack{}, ErrNotFound
+	}
+
+	// The strong guarantee: compare against what the CALLER observed.
+	//
+	// This is the window that matters. A driver comparing against its own
+	// last sighting only proves nothing changed since the driver looked,
+	// which says nothing about the interval the caller has been away — and
+	// across a network that interval contains a round trip at minimum.
+	if want := req.Expect.StartedAt; want != nil {
+		if !live.created.Equal(*want) {
+			return fleet.Ack{}, fmt.Errorf(
+				"%w: id %q now holds a session started at %s; the caller meant the one started at %s",
+				ErrAmbiguousTarget, ref.ID, live.created.Format(time.RFC3339), want.Format(time.RFC3339))
+		}
+		return d.killCorroborated(ctx, ref)
+	}
+
+	// The weak guarantee, applied only when the caller supplied nothing to
+	// corroborate against — and named as weak in any refusal, so nobody
+	// mistakes it for the rule above. It closes the window between this
+	// driver's own sighting and now, which is better than an id match and
+	// less than §5.4 asks for.
+	d.mu.Lock()
+	prior, seen := d.observed[ref.ID]
+	d.mu.Unlock()
+	if !seen {
+		return fleet.Ack{}, fmt.Errorf(
+			"%w: caller supplied no expected start time, and this driver has no prior "+
+				"observation of id %q either; nothing corroborates the target",
+			ErrAmbiguousTarget, ref.ID)
+	}
+	if !live.created.Equal(prior.created) {
+		return fleet.Ack{}, fmt.Errorf(
+			"%w: id %q was recycled since this driver last observed it (weak check: "+
+				"the caller supplied no expected start time)",
+			ErrAmbiguousTarget, ref.ID)
+	}
+	if live.cwd != prior.cwd {
+		return fleet.Ack{}, fmt.Errorf(
+			"%w: id %q now has working directory %q, not %q (weak check)",
+			ErrAmbiguousTarget, ref.ID, live.cwd, prior.cwd)
+	}
+	return d.killCorroborated(ctx, ref)
+}
+
+func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fleet.Ack, error) {
+	if _, err := d.run(ctx, d.bin, "kill-session", "-t", ref.ID); err != nil {
+		return fleet.Ack{}, fmt.Errorf("close: %w", err)
+	}
+	d.mu.Lock()
+	delete(d.observed, ref.ID)
+	d.mu.Unlock()
+	return fleet.Ack{Accepted: true}, nil
 }
 
 // Create starts a session (§3), honouring the caller's idempotency key
@@ -695,7 +728,7 @@ func (d *Driver) Close(ctx context.Context, caller fleet.Caller, ref fleet.Sessi
 // processes by name can match — and terminate — a session whose argv merely
 // contains the string it was hunting for. The prompt is written to a file
 // and delivered through the paste buffer once the session is up.
-func (d *Driver) Create(ctx context.Context, caller fleet.Caller, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
+func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -745,7 +778,7 @@ func (d *Driver) Create(ctx context.Context, caller fleet.Caller, key string, sp
 		// exists to make safe but which would now be answered from the
 		// idempotency store anyway. The prompt not landing is visible in
 		// the session's state; a phantom failure is not.
-		_, _ = d.Send(ctx, caller, ref, spec.Prompt, driver.SendOptions{Submit: true})
+		_, _ = d.Send(ctx, req, ref, spec.Prompt, driver.SendOptions{Submit: true})
 	}
 	return ref, nil
 }
@@ -771,7 +804,7 @@ func (d *Driver) sweepIdemLocked(now time.Time) {
 // no records for anything to vanish from.
 func (d *Driver) Reconcile(ctx context.Context) (fleet.Collection[fleet.Session], error) {
 	// Nobody asked for this; it is the service acting on its own behalf.
-	return d.List(ctx, fleet.SystemCaller(), driver.ListFilter{})
+	return d.List(ctx, fleet.SystemRequest(), driver.ListFilter{})
 }
 
 // claudeCodeCommand is the default CommandBuilder.

@@ -189,48 +189,68 @@ completion it may not be able to deliver, which §5.6 forbids.
 
 > Origin: Appendix A, F2.
 
-### 2.6 Caller
+### 2.6 Request
 
 ```
+Request {
+  caller : Caller
+  expect : Expectation
+}
+
 Caller {
-  principal  : string    // who is asking — audit trail (§6)
-  credential : string    // authority to present onward when proxying (§13)
+  principal  : string       // who is asking — audit trail (§6)
+  credential : string       // authority to present onward when proxying (§13)
+}
+
+Expectation {
+  startedAt? : Timestamp    // the session start time the CALLER observed (§5.4)
 }
 ```
 
-The authority an operation is performed on behalf of. It is a **parameter of
-every operation in §3**, not ambient context, and that is the whole of its
-design: §13 requires a proxying service to present the original caller's
-authority rather than its own, and a value that can be omitted will be.
+The caller-side context of an operation: everything about *who is asking and
+what they believe*, as opposed to what they are asking about. It is a
+parameter of every operation in §3.
 
-`principal` answers *who is asking* and exists for §6 requirement 4's audit
-trail. While a fleet authenticates with one shared token (§7.2), it cannot be
-a true identity — nothing distinguishes one bearer from another — so a service
-populates it with the most specific honest value it has, and callers read it
-as provenance. Real per-peer identity is §6's outstanding work and lands here
-when it exists.
+**Why one type rather than separate parameters.** Two defects in this document
+turned out to be the same defect. §13 needed operations to carry the caller's
+authority; §5.4 needed them to carry the caller's observation. Neither was
+expressible, for the same reason — the operations took domain arguments only.
+Both were then moved out of band, where one produced a silent security defect
+and the other produced a rule nobody could enforce.
 
-`credential` answers *with what authority*, and is what a remote driver
-presents to a peer. **A driver that finds it empty refuses the operation.** It
-must never substitute one of its own — and the strongest form of that rule,
-which the first remote driver adopts, is for a proxy to hold no credential at
-all, so there is nothing to substitute.
+So caller-side context is one parameter with room to grow. The next thing a
+caller must tell an operation is a field here, not another break of every
+signature in §3.
+
+`credential` is what a remote driver presents to a peer. **A driver that finds
+it empty refuses**, and never substitutes its own — the strongest form of that
+rule, which the first remote driver adopts, is to hold no credential at all.
+
+`expect` is optional, and its absence is meaningful. A caller that supplies
+`startedAt` gets §5.4's real guarantee: *destroy the session I looked at.* A
+caller that omits it gets whatever weaker check a driver can offer from its own
+sightings — and must be **told which it got** when the operation refuses, so a
+weak check is never mistaken for a strong one.
+
+**What does not belong here:** deadlines, which the context already carries and
+§4.4 already governs — a second field would be a second source of truth about
+the same fact. And anything about the *target*, which stays an argument.
 
 ---
 
 ## 3. Operations
 
 ```
-create(caller, spec)              -> SessionRef
-send(caller, ref, text, opts?)    -> DeliveryReceipt
-state(caller, ref)                -> SessionState
-interrupt(caller, ref)            -> Ack
-close(caller, ref)                -> Ack
-list(caller, filter?)             -> Collection<Session>
-subscribe(caller, filter?)        -> EventStream
+create(req, spec)              -> SessionRef
+send(req, ref, text, opts?)    -> DeliveryReceipt
+state(req, ref)                -> SessionState
+interrupt(req, ref)            -> Ack
+close(req, ref)                -> Ack
+list(req, filter?)             -> Collection<Session>
+subscribe(req, filter?)        -> EventStream
 ```
 
-Every operation carries a `Caller` (§2.6), reads included. A driver cannot
+Every operation carries a `Request` (§2.6), reads included. A driver cannot
 compile without deciding what to do with it, which is the point: the rule it
 serves — §13's "a proxy presents the original caller's authority, never its
 own" — is unenforceable if the operations have nowhere to carry a principal.
@@ -348,13 +368,23 @@ id is the session the caller meant — by corroborating at least one independent
 attribute (working directory, start time, name). Matching an id alone is not
 identification.
 
-> **Open defect D2 — this rule is not enforceable at the signature §3 gives
-> `close`.** A `SessionRef` carries no attribute the caller observed, so a
-> driver has nothing to corroborate the live session *against*. A conforming
-> driver closes the window between its own last sighting and the destroy, and
-> refuses an id it has never observed; nothing at this signature closes the
-> window between the *caller's* sighting and the destroy, which is the long
-> one. See §14.
+**The operand this rule needs is `Request.Expect.StartedAt` (§2.6).** A caller
+quotes the start time it observed; the driver compares the live session against
+that, and refuses on mismatch. This closes the window between the *caller's*
+observation and the destroy — the long one, the one a human is standing inside
+of, and the one that contains a round trip when the session is on another
+machine.
+
+A caller may omit it, and then a driver falls back to comparing against its own
+last sighting. That is strictly weaker: it proves only that nothing changed
+since the *driver* looked. A driver applying the weak check must say so when it
+refuses.
+
+A proxy forwards the expectation and corroborates nothing itself. Checking on
+the relaying machine would compare against something a third party believes,
+which puts one more layer between the caller's observation and the destroy —
+the opposite of what this section asks for. This was open defect D2; see
+Appendix A, F16.
 
 ### 5.5 State and events, never polling
 
@@ -768,31 +798,19 @@ unauthorized caller wants.
 Full account, including what the fix cost and what proving it required:
 Appendix A, F14.
 
-### D2 — `close` cannot corroborate · §5.4
+### D2 — `close` cannot corroborate · §5.4 — **RESOLVED**
 
-§5.4 requires corroborating an independent attribute before any destructive
-operation, because ids are recyclable. Corroboration needs two operands: what
-the session looks like now, and what the caller believed it looked like. A
-`SessionRef` carries machine, id and a human label. The second operand never
-arrives.
+Kept in place so the numbering the code cites stays stable.
 
-What a conforming driver can do, and what both current drivers do:
+`Request.Expect.StartedAt` (§2.6) is the missing operand: the caller quotes
+the start time it observed, and a driver refuses when the live session
+disagrees. Omitting it is permitted and yields an explicitly weaker check
+against the driver's own last sighting, named as such in any refusal.
 
-- refuse outright on an id it has never observed, rather than destroying on an
-  id match — the literal act §5.4 forbids;
-- refuse when its own last sighting disagrees with the live session.
-
-What no driver can do at this signature: close the window between the
-**caller's** sighting and the destroy. That is the long window, and the one a
-human is standing inside. It is worse across a network, where a round trip
-separates the two rather than a function call — and a remote driver has no
-sightings of its own to fall back on at all.
-
-- **Proposed fix:** `SessionRef` (§2.2) gains an optional caller-observed start
-  time, so `close` compares against the caller's belief instead of its own.
-  Callers that omit it get today's weaker guarantee explicitly, rather than a
-  strong-sounding rule that quietly degrades.
-- **Cost of the fix:** a wire type, api-http.md §3.3, both drivers.
+D1 and D2 were the same defect wearing different clothes — an operation
+needing caller-side context with nowhere to carry it — and the envelope in
+§2.6 is the fix for the class rather than for either instance. See
+Appendix A, F16.
 
 ### D3 — Capability declaration cannot say "unknown" · §4.3
 
@@ -1052,6 +1070,35 @@ Making both machines peers of each other also produced the first real test of
 returns one source and does not forward; a fleet query from either side returns
 identical counts. The document admits the first spike "avoided this only by
 being a star" — this one did not avoid it.
+
+**F16 · Two defects, one shape, one fix.** D1 (authority) and D2
+(corroboration) were logged separately and read as unrelated: one a security
+problem, one a correctness problem. Fixing D1 by adding a parameter made the
+similarity obvious — both were *an operation needing caller-side context with
+nowhere to carry it*, and both had been "solved" by moving the value out of
+band, where D1 could be silently forgotten and D2 could not be enforced at all.
+
+So the second fix generalised the first rather than repeating it: one envelope
+(§2.6) carrying authority now and expectation next, with room for whatever the
+third instance turns out to need. The test that matters is the one that was
+previously unwritable — a driver whose *own* sighting is current and would pass
+its weak check must still refuse when the *caller* is quoting a session that no
+longer exists at that id.
+
+Two smaller things fell out. Reads had to start returning `startedAt`, because
+a caller cannot quote a value it was never given — a guarantee is only as
+reachable as the data needed to invoke it. And a proxy had to be made to
+forward the expectation rather than evaluate it, since corroborating on the
+relaying machine would insert a third party's belief between the caller's
+observation and the destroy.
+
+**F17 · Deadlines were deliberately left out of the envelope.** They were in
+the first sketch and removed on the same principle the design applies
+elsewhere: the context already carries them, §4.4 already governs them, and a
+second field would be a second source of truth free to disagree with the first
+— the failure §9's `complete` and §13.2's source status both exist to prevent.
+Recorded because "we considered it and did not" is worth more than silence when
+the next reader wonders why the obvious field is missing.
 
 ### The pattern worth naming
 

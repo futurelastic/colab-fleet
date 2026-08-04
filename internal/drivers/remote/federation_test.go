@@ -111,7 +111,7 @@ func TestFederatedMutationCarriesTheOriginalCallersAuthority(t *testing.T) {
 
 	// No authority: refused before a request is ever made. There is no
 	// proxy credential to fall back to — that is the point of the fix.
-	_, err := rd.Send(context.Background(), fleet.Caller{Principal: "addr:test"},
+	_, err := rd.Send(context.Background(), fleet.Request{Caller: fleet.Caller{Principal: "addr:test"}},
 		fleet.SessionRef{Machine: "peerbox", ID: "x"}, "hello", driver.SendOptions{})
 	if !errors.Is(err, ErrNoCallerAuthority) {
 		t.Fatalf("want ErrNoCallerAuthority, got %v", err)
@@ -136,8 +136,8 @@ func TestFederatedMutationCarriesTheOriginalCallersAuthority(t *testing.T) {
 
 // fleetCaller is what a service derives from an inbound request: the
 // principal that asked, and the credential they presented.
-func fleetCaller(tok string) fleet.Caller {
-	return fleet.Caller{Principal: "addr:test", Credential: tok}
+func fleetCaller(tok string) fleet.Request {
+	return fleet.Request{Caller: fleet.Caller{Principal: "addr:test", Credential: tok}}
 }
 
 // A peer that is down must degrade the fleet view, never fail it, and never

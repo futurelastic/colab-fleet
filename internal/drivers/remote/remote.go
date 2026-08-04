@@ -28,7 +28,7 @@
 //
 // What this driver does: report a conservative floor until the peer has
 // answered, refresh the cache whenever it does, and never claim a capability
-// it has not been told about. What it cannot do is tell a caller which of
+// it has not been told about. What it cannot do is tell a req which of
 // those two situations it is in.
 //
 // # FINDING 2: DriverCapabilities has no way to say "I don't know yet"
@@ -40,7 +40,7 @@
 //
 // A DriverCapabilities of all-false means "this driver supports nothing".
 // An unreached peer produces exactly that value, meaning "nobody has told me
-// anything". A caller consulting GET /v1/runtimes (which api-http.md §3.1
+// anything". A req consulting GET /v1/runtimes (which api-http.md §3.1
 // says it MUST do before relying on a capability) cannot tell a peer that
 // genuinely observes nothing from a peer that has not been asked yet. It
 // degrades identically in both cases — which is safe, and is why this is
@@ -57,7 +57,7 @@
 // can forget to attach.
 //
 // The failure mode was the reason this was the most serious defect in the
-// design: a remote driver with no caller credentials would reach for the one
+// design: a remote driver with no req credentials would reach for the one
 // credential it certainly had, its own. The request then succeeds. The tests
 // pass. The authorization is silently widened, and nothing reports it,
 // because the symptom of the bug is that everything works.
@@ -71,7 +71,7 @@
 // Reads are included. An earlier revision let List and State fall back to
 // the driver's own token on the reasoning that reading is harmless — but
 // "which sessions exist, in which directories, on which machine" is exactly
-// the reconnaissance an unauthorized caller wants, and §6 grants read
+// the reconnaissance an unauthorized req wants, and §6 grants read
 // permission broadly rather than universally.
 package remote
 
@@ -100,7 +100,7 @@ const defaultDeadlineMs = 3000
 // included: this driver has no credential of its own to substitute, so an
 // empty one means the request simply cannot be made (§13).
 var ErrNoCallerAuthority = errors.New(
-	"remote: caller carries no credential; a proxied request presents the " +
+	"remote: req carries no credential; a proxied request presents the " +
 		"original caller's authority, and this proxy holds none of its own (§13)")
 
 // Driver is an HTTP client to one peer colab-fleet, presented as an
@@ -127,7 +127,7 @@ type Option func(*Driver)
 
 // WithHTTPClient replaces the HTTP client. The client's own Timeout is left
 // alone; deadlines are enforced per-call via context, because §4.4 requires
-// a caller to be able to shorten a deadline and a client-wide timeout
+// a req to be able to shorten a deadline and a client-wide timeout
 // cannot express that.
 func WithHTTPClient(c *http.Client) Option {
 	return func(d *Driver) {
@@ -195,12 +195,12 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 // be able to fail, and it needs to be callable again later. A method the
 // interface does not know about is a poor substitute for a signature that
 // admitted this in the first place (FINDING 1).
-func (d *Driver) RefreshCapabilities(ctx context.Context, caller fleet.Caller) error {
+func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) error {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	var body fleet.Collection[fleet.RuntimeInfo]
-	if err := d.do(ctx, caller, http.MethodGet, "/v1/runtimes", nil, &body); err != nil {
+	if err := d.do(ctx, req, http.MethodGet, "/v1/runtimes", nil, &body); err != nil {
 		return err
 	}
 	for _, ri := range body.Items() {
@@ -218,7 +218,7 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, caller fleet.Caller) e
 
 // CapabilitiesKnown reports whether the peer has ever answered. It is the
 // distinction DriverCapabilities itself cannot carry (FINDING 2), exposed
-// here so at least a caller holding the concrete type can ask.
+// here so at least a req holding the concrete type can ask.
 func (d *Driver) CapabilitiesKnown() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -226,7 +226,7 @@ func (d *Driver) CapabilitiesKnown() bool {
 }
 
 // bounded applies this driver's declared deadline, or the caller's if
-// shorter (§4.4: "a caller may supply a shorter deadline; never a longer
+// shorter (§4.4: "a req may supply a shorter deadline; never a longer
 // one").
 func (d *Driver) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
 	own := d.now().Add(d.deadline)
@@ -239,8 +239,8 @@ func (d *Driver) bounded(ctx context.Context) (context.Context, context.CancelFu
 // do performs one request. token, when non-empty, replaces this driver's own
 // credential — that is how a proxied call presents the original caller's
 // authority (§13).
-func (d *Driver) do(ctx context.Context, caller fleet.Caller, method, path string, body any, out any) error {
-	if !caller.HasCredential() {
+func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string, body any, out any) error {
+	if !req.Caller.HasCredential() {
 		return ErrNoCallerAuthority
 	}
 	var rdr io.Reader
@@ -252,26 +252,26 @@ func (d *Driver) do(ctx context.Context, caller fleet.Caller, method, path strin
 		rdr = bytes.NewReader(raw)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, d.base+path, rdr)
+	httpReq, err := http.NewRequestWithContext(ctx, method, d.base+path, rdr)
 	if err != nil {
 		return fmt.Errorf("remote: building request: %w", err)
 	}
 	// The caller's authority, never this driver's — it has none (§13).
-	req.Header.Set("Authorization", "Bearer "+caller.Credential)
+	httpReq.Header.Set("Authorization", "Bearer "+req.Caller.Credential)
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Content-Type", "application/json")
 	}
 	// Tell the peer the bound we are enforcing, so it can fail fast rather
 	// than working on a request we have already given up on (§3.3).
 	if dl, ok := ctx.Deadline(); ok {
 		ms := time.Until(dl).Milliseconds()
 		if ms > 0 {
-			req.Header.Set("Fleet-Deadline-Ms", strconv.FormatInt(ms, 10))
+			httpReq.Header.Set("Fleet-Deadline-Ms", strconv.FormatInt(ms, 10))
 		}
 	}
 
 	started := d.now()
-	resp, err := d.client.Do(req)
+	resp, err := d.client.Do(httpReq)
 	if err != nil {
 		// A transport failure is unreachable, never not_found. The peer did
 		// not answer, so nothing at all is known about the session
@@ -348,7 +348,7 @@ func decodeError(resp *http.Response, machine fleet.MachineId) error {
 //     "ok" from the mere fact that the HTTP call succeeded would flatten
 //     that into a confident envelope built on a self-declared unreliable
 //     source.
-func (d *Driver) List(ctx context.Context, caller fleet.Caller, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {
+func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -366,7 +366,7 @@ func (d *Driver) List(ctx context.Context, caller fleet.Caller, filter driver.Li
 
 	started := d.now()
 	var out fleet.Collection[fleet.Session]
-	if err := d.do(ctx, caller, http.MethodGet, "/v1/sessions?"+q.Encode(), nil, &out); err != nil {
+	if err := d.do(ctx, req, http.MethodGet, "/v1/sessions?"+q.Encode(), nil, &out); err != nil {
 		// §5.7: a failed read is never an empty list. The peer contributes a
 		// SourceStatus saying it did not answer.
 		src := fleet.SourceStatus{
@@ -405,14 +405,14 @@ func sourceStateFor(err error) fleet.SourceState {
 }
 
 // State reads one session from the peer.
-func (d *Driver) State(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.SessionState, error) {
+func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionState, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	var out fleet.Session
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s",
 		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
-	if err := d.do(ctx, caller, http.MethodGet, path, nil, &out); err != nil {
+	if err := d.do(ctx, req, http.MethodGet, path, nil, &out); err != nil {
 		return fleet.SessionState{}, err
 	}
 	return out.State, nil
@@ -440,7 +440,7 @@ type createBody struct {
 // proxy that minted its own key per attempt would defeat the mechanism
 // precisely when it is needed, since the retry would arrive carrying a
 // different key and read as a different request.
-func (d *Driver) Create(ctx context.Context, caller fleet.Caller, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
+func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -458,36 +458,36 @@ func (d *Driver) Create(ctx context.Context, caller fleet.Caller, key string, sp
 	}
 	var out fleet.Session
 	path := "/v1/machines/" + url.PathEscape(string(d.machine)) + "/sessions"
-	if err := d.doWithKey(ctx, caller, http.MethodPost, path, body, key, &out); err != nil {
+	if err := d.doWithKey(ctx, req, http.MethodPost, path, body, key, &out); err != nil {
 		return fleet.SessionRef{}, err
 	}
 	return out.SessionRef, nil
 }
 
 // doWithKey is do() plus the Idempotency-Key header.
-func (d *Driver) doWithKey(ctx context.Context, caller fleet.Caller, method, path string, body any, key string, out any) error {
-	if !caller.HasCredential() {
+func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path string, body any, key string, out any) error {
+	if !req.Caller.HasCredential() {
 		return ErrNoCallerAuthority
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("remote: encoding request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, d.base+path, bytes.NewReader(raw))
+	httpReq, err := http.NewRequestWithContext(ctx, method, d.base+path, bytes.NewReader(raw))
 	if err != nil {
 		return fmt.Errorf("remote: building request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+caller.Credential)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", key)
+	httpReq.Header.Set("Authorization", "Bearer "+req.Caller.Credential)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Idempotency-Key", key)
 	if dl, ok := ctx.Deadline(); ok {
 		if ms := time.Until(dl).Milliseconds(); ms > 0 {
-			req.Header.Set("Fleet-Deadline-Ms", strconv.FormatInt(ms, 10))
+			httpReq.Header.Set("Fleet-Deadline-Ms", strconv.FormatInt(ms, 10))
 		}
 	}
 
 	started := d.now()
-	resp, err := d.client.Do(req)
+	resp, err := d.client.Do(httpReq)
 	if err != nil {
 		return &fleet.Error{
 			Kind: fleet.ErrorUnreachable,
@@ -513,7 +513,7 @@ func (d *Driver) doWithKey(ctx context.Context, caller fleet.Caller, method, pat
 // driver must not "helpfully" convert it: mapping a refusal to an error
 // would train callers to retry it, which is exactly what the refusal exists
 // to stop.
-func (d *Driver) Send(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
+func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -525,20 +525,20 @@ func (d *Driver) Send(ctx context.Context, caller fleet.Caller, ref fleet.Sessio
 	var out fleet.DeliveryReceipt
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/input",
 		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
-	if err := d.do(ctx, caller, http.MethodPost, path, body, &out); err != nil {
+	if err := d.do(ctx, req, http.MethodPost, path, body, &out); err != nil {
 		return fleet.DeliveryReceipt{}, err
 	}
 	return out, nil
 }
 
 // Interrupt asks the peer to interrupt a session (202, intent only).
-func (d *Driver) Interrupt(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
+func (d *Driver) Interrupt(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/interrupt",
 		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
-	if err := d.do(ctx, caller, http.MethodPost, path, struct{}{}, nil); err != nil {
+	if err := d.do(ctx, req, http.MethodPost, path, struct{}{}, nil); err != nil {
 		return fleet.Ack{}, err
 	}
 	return fleet.Ack{Accepted: true}, nil
@@ -549,19 +549,28 @@ func (d *Driver) Interrupt(ctx context.Context, caller fleet.Caller, ref fleet.S
 // §5.4's corroboration cannot be performed here, and it is worse across a
 // network than it was locally. The local driver could at least compare
 // against its own recent sighting; this driver has no sightings of its own —
-// it has only the id the caller handed it, which is the one thing §5.4 says
+// it has only the id the req handed it, which is the one thing §5.4 says
 // is not identification. Whatever corroboration happens must happen on the
 // peer, against evidence that has no field to travel in.
 //
 // This is the same defect recorded in spec §5.4, observed from the side that
 // makes its cost obvious.
-func (d *Driver) Close(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
+func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s",
 		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
-	if err := d.do(ctx, caller, http.MethodDelete, path, nil, nil); err != nil {
+
+	// Forward the caller's expectation, so §5.4's corroboration happens on
+	// the machine that can actually see the session — against the caller's
+	// belief, not the far driver's own sighting. Dropping it here would
+	// silently downgrade every cross-machine destroy to the weak check,
+	// which is the failure this whole envelope exists to prevent.
+	if want := req.Expect.StartedAt; want != nil {
+		path += "?startedAt=" + url.QueryEscape(want.UTC().Format(time.RFC3339Nano))
+	}
+	if err := d.do(ctx, req, http.MethodDelete, path, nil, nil); err != nil {
 		return fleet.Ack{}, err
 	}
 	return fleet.Ack{Accepted: true}, nil
@@ -572,6 +581,6 @@ func (d *Driver) Close(ctx context.Context, caller fleet.Caller, ref fleet.Sessi
 // consume. Returning unsupported is the honest answer; a polling loop
 // dressed as a stream would violate §5.5 and §5.6 at once, and would do so
 // across a network, where §5.5's cost objection actually bites.
-func (d *Driver) Subscribe(ctx context.Context, caller fleet.Caller, filter driver.SubscribeFilter) (driver.EventStream, error) {
+func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver.SubscribeFilter) (driver.EventStream, error) {
 	return nil, driver.ErrUnsupported
 }

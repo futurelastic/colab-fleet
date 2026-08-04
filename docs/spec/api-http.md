@@ -138,7 +138,7 @@ reaches a command line (§5.3).
 ```
 GET /v1/machines/{machine}/sessions/{id}?runtime=
 → 200 { "machine": "...", "id": "...", "name": "...", "runtime": "...",
-        "cwd": "...", "agent": "...", "model": "...",
+        "cwd": "...", "agent": "...", "model": "...", "startedAt": "...",
         "state": { "status": "working", "confidence": "inferred",
                    "evidence": "...", "since": "..." } }
 ```

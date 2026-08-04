@@ -73,7 +73,7 @@ func New(self fleet.MachineId) *Service {
 // RegisterLocalDriver adds a driver for one runtime on this machine. It
 // rejects a driver whose declared capabilities fail Validate (§4.4) — an
 // undeadlined driver is refused at registration, not discovered by a
-// caller blocking forever.
+// req blocking forever.
 func (s *Service) RegisterLocalDriver(runtime fleet.RuntimeId, d driver.Driver) error {
 	if err := d.Capabilities().Validate(); err != nil {
 		return fmt.Errorf("service: registering local driver %q: %w", runtime, err)
@@ -116,12 +116,12 @@ func (s *Service) peerDrivers() map[fleet.MachineId]driver.Driver {
 	return out
 }
 
-// effectiveDeadline is api-http.md §3.3's rule: "a caller may shorten a
+// effectiveDeadline is api-http.md §3.3's rule: "a req may shorten a
 // driver's declared deadlineMs, never extend it."
-func effectiveDeadline(driverMs int64, caller time.Duration) time.Duration {
+func effectiveDeadline(driverMs int64, req time.Duration) time.Duration {
 	d := time.Duration(driverMs) * time.Millisecond
-	if caller > 0 && caller < d {
-		return caller
+	if req > 0 && req < d {
+		return req
 	}
 	return d
 }
@@ -129,19 +129,19 @@ func effectiveDeadline(driverMs int64, caller time.Duration) time.Duration {
 // ListSessions answers GET /v1/sessions (api-http.md §3.2). ScopeLocal
 // never touches peers (§13.1); ScopeFleet asks every local driver plus
 // every peer driver and merges the results into one envelope.
-func (s *Service) ListSessions(ctx context.Context, caller fleet.Caller, scope Scope, filter driver.ListFilter, callerDeadline time.Duration) (fleet.Collection[fleet.Session], error) {
+func (s *Service) ListSessions(ctx context.Context, req fleet.Request, scope Scope, filter driver.ListFilter, callerDeadline time.Duration) (fleet.Collection[fleet.Session], error) {
 	var items []fleet.Session
 	var sources []fleet.SourceStatus
 
 	for _, d := range s.localDrivers() {
-		its, srcs := s.callList(ctx, caller, s.self, d, filter, callerDeadline)
+		its, srcs := s.callList(ctx, req, s.self, d, filter, callerDeadline)
 		items = append(items, its...)
 		sources = append(sources, srcs...)
 	}
 
 	if scope == ScopeFleet {
 		for machine, d := range s.peerDrivers() {
-			its, srcs := s.callList(ctx, caller, machine, d, filter, callerDeadline)
+			its, srcs := s.callList(ctx, req, machine, d, filter, callerDeadline)
 			items = append(items, its...)
 			sources = append(sources, srcs...)
 		}
@@ -168,12 +168,12 @@ func (s *Service) ListSessions(ctx context.Context, caller fleet.Caller, scope S
 // returns a bare Go error instead of ever reaching a Collection: deadline
 // exceeded, unsupported, or anything else that short-circuited before
 // building an envelope of its own.
-func (s *Service) callList(ctx context.Context, caller fleet.Caller, machine fleet.MachineId, d driver.Driver, filter driver.ListFilter, callerDeadline time.Duration) ([]fleet.Session, []fleet.SourceStatus) {
+func (s *Service) callList(ctx context.Context, req fleet.Request, machine fleet.MachineId, d driver.Driver, filter driver.ListFilter, callerDeadline time.Duration) ([]fleet.Session, []fleet.SourceStatus) {
 	deadline := effectiveDeadline(d.Capabilities().DeadlineMs, callerDeadline)
 	callCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
-	col, err := d.List(callCtx, caller, filter)
+	col, err := d.List(callCtx, req, filter)
 	now := time.Now()
 
 	if err == nil {
@@ -221,7 +221,7 @@ func (s *Service) callList(ctx context.Context, caller fleet.Caller, machine fle
 // always errs fast still reads as reachable here, because reachability and
 // capability are different facts and this endpoint only ever asks about
 // the first. See the root package's doc comment findings list.
-func (s *Service) ListMachines(ctx context.Context, caller fleet.Caller, callerDeadline time.Duration) (fleet.Collection[fleet.MachineInfo], error) {
+func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDeadline time.Duration) (fleet.Collection[fleet.MachineInfo], error) {
 	now := time.Now()
 	items := []fleet.MachineInfo{{Machine: s.self, Self: true, Status: fleet.SourceOK, ObservedAt: now}}
 	sources := []fleet.SourceStatus{{Machine: s.self, Status: fleet.SourceOK, ObservedAt: now}}
@@ -229,7 +229,7 @@ func (s *Service) ListMachines(ctx context.Context, caller fleet.Caller, callerD
 	for machine, d := range s.peerDrivers() {
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, callerDeadline)
 		callCtx, cancel := context.WithTimeout(ctx, deadline)
-		_, err := d.List(callCtx, caller, driver.ListFilter{})
+		_, err := d.List(callCtx, req, driver.ListFilter{})
 		cancel()
 
 		status := fleet.SourceOK

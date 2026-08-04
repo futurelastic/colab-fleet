@@ -9,7 +9,7 @@ import (
 	"github.com/godx-jp/colab-fleet/internal/driver"
 )
 
-var testCaller = fleet.Caller{Principal: "test:unit"}
+var testCaller = fleet.Request{Caller: fleet.Caller{Principal: "test:unit"}}
 
 func TestDriver_CapabilitiesDefaultsToPositiveDeadline(t *testing.T) {
 	d := &Driver{}

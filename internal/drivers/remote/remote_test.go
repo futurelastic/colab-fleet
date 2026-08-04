@@ -20,11 +20,11 @@ const peerToken = "the-token-the-peer-accepts"
 const callerTok = "the-original-callers-token"
 
 // caller is what a service derives from an inbound request and hands down.
-var caller = fleet.Caller{Principal: "addr:198.51.100.7", Credential: callerTok}
+var caller = fleet.Request{Caller: fleet.Caller{Principal: "addr:198.51.100.7", Credential: callerTok}}
 
 // noAuthority is a caller with nothing to present. Every operation must
 // refuse it — this driver holds no credential of its own to fall back to.
-var noAuthority = fleet.Caller{Principal: "addr:198.51.100.7"}
+var noAuthority = fleet.Request{Caller: fleet.Caller{Principal: "addr:198.51.100.7"}}
 
 // capture records what the peer actually received, which is where most of
 // this driver's contract lives: the rules it must obey are about what goes
@@ -428,5 +428,41 @@ func TestSubscribeIsUnsupportedRatherThanPolled(t *testing.T) {
 	d := New("peerbox", "http://127.0.0.1:1")
 	if _, err := d.Subscribe(context.Background(), caller, driver.SubscribeFilter{}); !errors.Is(err, driver.ErrUnsupported) {
 		t.Errorf("want ErrUnsupported, got %v", err)
+	}
+}
+
+// The expectation must survive the wire, or every cross-machine destroy
+// silently downgrades to the weak check.
+func TestCloseForwardsTheCallersExpectation(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 202, nil, &rec)
+	d := New("peerbox", srv.URL)
+
+	ts := time.Unix(1785600000, 0)
+	req := fleet.Request{
+		Caller: fleet.Caller{Principal: "addr:test", Credential: callerTok},
+		Expect: fleet.Expectation{StartedAt: &ts},
+	}
+	if _, err := d.Close(context.Background(), req, fleet.SessionRef{ID: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rec.query, "startedAt=") {
+		t.Fatalf("query = %q, must carry the caller's expected start time (§5.4)", rec.query)
+	}
+	if rec.method != "DELETE" {
+		t.Errorf("method = %q", rec.method)
+	}
+}
+
+// And a caller that supplies none must not have one invented for it.
+func TestCloseWithoutExpectationSendsNone(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 202, nil, &rec)
+	d := New("peerbox", srv.URL)
+	if _, err := d.Close(context.Background(), caller, fleet.SessionRef{ID: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rec.query, "startedAt=") {
+		t.Errorf("query = %q; a proxy must not manufacture an expectation the caller did not have", rec.query)
 	}
 }

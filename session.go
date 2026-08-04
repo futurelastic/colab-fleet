@@ -70,5 +70,14 @@ type Session struct {
 	Agent   AgentId      `json:"agent,omitempty"`
 	Model   string       `json:"model,omitempty"`
 
+	// StartedAt is when this session began, as observed by the machine
+	// running it. It is what a caller sends back in Request.Expect to make
+	// a destroy corroborable (§5.4) — without it in the read, the caller
+	// has nothing to quote, and the strong guarantee is unreachable.
+	//
+	// Nil means the driver does not know, which is a real answer: not every
+	// substrate records it.
+	StartedAt *Timestamp `json:"startedAt,omitempty"`
+
 	State SessionState `json:"state"`
 }

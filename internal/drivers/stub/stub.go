@@ -46,30 +46,30 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 	}
 }
 
-func (d *Driver) Create(ctx context.Context, caller fleet.Caller, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
+func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
 	return fleet.SessionRef{}, driver.ErrUnsupported
 }
 
-func (d *Driver) Send(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
+func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
 	return fleet.DeliveryReceipt{}, driver.ErrUnsupported
 }
 
-func (d *Driver) State(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.SessionState, error) {
+func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionState, error) {
 	return fleet.SessionState{}, driver.ErrUnsupported
 }
 
-func (d *Driver) Interrupt(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
+func (d *Driver) Interrupt(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error) {
 	return fleet.Ack{}, driver.ErrUnsupported
 }
 
-func (d *Driver) Close(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
+func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error) {
 	return fleet.Ack{}, driver.ErrUnsupported
 }
 
-func (d *Driver) List(ctx context.Context, caller fleet.Caller, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {
+func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {
 	return fleet.Collection[fleet.Session]{}, driver.ErrUnsupported
 }
 
-func (d *Driver) Subscribe(ctx context.Context, caller fleet.Caller, filter driver.SubscribeFilter) (driver.EventStream, error) {
+func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver.SubscribeFilter) (driver.EventStream, error) {
 	return nil, driver.ErrUnsupported
 }

@@ -8,7 +8,7 @@ import (
 	fleet "github.com/godx-jp/colab-fleet"
 )
 
-var testCaller = fleet.Caller{Principal: "test:unit"}
+var testCaller = fleet.Request{Caller: fleet.Caller{Principal: "test:unit"}}
 
 // fakeDriver exists only to prove the Driver interface's shape compiles and
 // that a wrapped ErrUnsupported is still recognisable via errors.Is —
@@ -20,31 +20,31 @@ func (fakeDriver) Capabilities() fleet.DriverCapabilities {
 	return fleet.DriverCapabilities{DeadlineMs: 1000}
 }
 
-func (fakeDriver) Create(ctx context.Context, caller fleet.Caller, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
+func (fakeDriver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
 	return fleet.SessionRef{}, ErrUnsupported
 }
 
-func (fakeDriver) Send(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef, text string, opts SendOptions) (fleet.DeliveryReceipt, error) {
+func (fakeDriver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts SendOptions) (fleet.DeliveryReceipt, error) {
 	return fleet.DeliveryReceipt{}, ErrUnsupported
 }
 
-func (fakeDriver) State(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.SessionState, error) {
+func (fakeDriver) State(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionState, error) {
 	return fleet.SessionState{}, ErrUnsupported
 }
 
-func (fakeDriver) Interrupt(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
+func (fakeDriver) Interrupt(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error) {
 	return fleet.Ack{}, ErrUnsupported
 }
 
-func (fakeDriver) Close(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
+func (fakeDriver) Close(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error) {
 	return fleet.Ack{}, ErrUnsupported
 }
 
-func (fakeDriver) List(ctx context.Context, caller fleet.Caller, filter ListFilter) (fleet.Collection[fleet.Session], error) {
+func (fakeDriver) List(ctx context.Context, req fleet.Request, filter ListFilter) (fleet.Collection[fleet.Session], error) {
 	return fleet.Collection[fleet.Session]{}, ErrUnsupported
 }
 
-func (fakeDriver) Subscribe(ctx context.Context, caller fleet.Caller, filter SubscribeFilter) (EventStream, error) {
+func (fakeDriver) Subscribe(ctx context.Context, req fleet.Request, filter SubscribeFilter) (EventStream, error) {
 	return nil, ErrUnsupported
 }
 

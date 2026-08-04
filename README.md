@@ -162,15 +162,6 @@ zero; adding one is a decision to argue for, not a convenience.
 
 Stated plainly so nobody rediscovers them the expensive way.
 
-- **§5.4 cannot be satisfied at the signature §3 gives `close`.** The rule
-  requires corroborating an independent attribute before destroying a session,
-  but `close(ref)` gives a driver nothing to corroborate *against* — a
-  `SessionRef` carries no attribute the caller observed. A driver can close the
-  window between **its own** last sighting and the destroy; nothing at this
-  signature closes the window between **the caller's** sighting and the
-  destroy, which is the long one. Proposed fix (a corroborating attribute on
-  `SessionRef`) is recorded in spec §5.4 and deliberately **not applied** —
-  it changes a wire type and deserves a decision.
 - **Idempotency keys do not survive a service restart**, on a driver that
   correctly declares `supportsResume: true`. Sessions survive; keys are in
   memory. A caller retrying a `create` across a restart therefore gets the

@@ -37,7 +37,7 @@ const testNonce = "0badc0de"
 // testCaller is what a service would hand a local driver. Credential is
 // empty on purpose: a local driver has no peer to present it to, and a test
 // that supplied one would be asserting a behaviour this driver must not have.
-var testCaller = fleet.Caller{Principal: "test:unit"}
+var testCaller = fleet.Request{Caller: fleet.Caller{Principal: "test:unit"}}
 
 func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
@@ -434,4 +434,85 @@ func countCalls(f *fakeMux, verb string) int {
 		}
 	}
 	return n
+}
+
+// §5.4's real guarantee: corroborate against what the CALLER observed.
+//
+// alpha was created at 1785600000 in the fixture.
+func expectStarted(unix int64) fleet.Request {
+	ts := time.Unix(unix, 0)
+	return fleet.Request{
+		Caller: fleet.Caller{Principal: "test:unit"},
+		Expect: fleet.Expectation{StartedAt: &ts},
+	}
+}
+
+func TestCloseWithMatchingExpectationNeedsNoPriorSighting(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	// Deliberately no List first: the caller's own observation is enough,
+	// which is the point — the driver's sightings are not the authority.
+	ack, err := d.Close(context.Background(), expectStarted(1785600000),
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"})
+	if err != nil || !ack.Accepted {
+		t.Fatalf("a caller quoting the right start time should be able to close: ack=%+v err=%v", ack, err)
+	}
+	if countCalls(f, "kill-session") != 1 {
+		t.Error("expected exactly one kill-session")
+	}
+}
+
+// The test the whole envelope exists for. The driver's OWN sighting is
+// current and would pass the weak check — but the caller is quoting a session
+// that no longer exists at that id. Before Request.Expect this was
+// unexpressible, and the destroy would have proceeded.
+func TestStaleCallerExpectationRefusesEvenWhenTheDriversOwnSightingIsFresh(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+
+	// Driver observes the session as it is now — weak check would pass.
+	if _, err := d.List(context.Background(), testCaller, driver.ListFilter{}); err != nil {
+		t.Fatal(err)
+	}
+	// Caller, however, is talking about an earlier session at the same id.
+	_, err := d.Close(context.Background(), expectStarted(1785500000),
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"})
+	if !errors.Is(err, ErrAmbiguousTarget) {
+		t.Fatalf("a stale caller expectation must refuse; got %v", err)
+	}
+	for _, c := range f.calls {
+		if c[0] == "kill-session" {
+			t.Fatal("destroyed a session the caller did not mean — §5.4's exact failure")
+		}
+	}
+}
+
+// Omitting the expectation is allowed, but the caller must get the weaker
+// guarantee explicitly rather than silently.
+func TestCloseWithoutExpectationFallsBackAndSaysSo(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	_, err := d.Close(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"})
+	if !errors.Is(err, ErrAmbiguousTarget) {
+		t.Fatalf("no expectation and no prior sighting must refuse; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "no expected start time") {
+		t.Errorf("refusal should name which check it applied, got: %v", err)
+	}
+}
+
+// A caller cannot quote a start time it was never given, so reads must carry it.
+func TestListExposesStartedAtSoCallersCanCorroborate(t *testing.T) {
+	d := newTestDriver(twoSessions())
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range col.Items() {
+		if s.StartedAt == nil {
+			t.Errorf("session %q has no StartedAt; the caller has nothing to quote back "+
+				"and §5.4's strong check is unreachable", s.ID)
+		}
+	}
 }
