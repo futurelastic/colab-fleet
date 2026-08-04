@@ -582,8 +582,12 @@ adopts them. Anything it finds but cannot confidently identify is surfaced as
 
 - **Input ordering under concurrency.** If two callers `send()` to one session
   simultaneously, is ordering defined, or is that the caller's problem?
-- **Backpressure.** What happens when a subscriber cannot keep up with the
-  event stream — drop, buffer, or disconnect with `resync_required`?
+- ~~**Backpressure.**~~ Answered by implementing it, and the rest of the design
+  left only one option: a subscriber that cannot keep up is **marked and
+  resynced**, never silently skipped. Dropping quietly would hand a subscriber
+  a hole it has no way to detect, which is §7.3's silent gap; blocking would
+  let one slow reader stall the machine's whole event plane. Retention is a
+  bounded window, and falling off it is announced like any other gap.
 - **Whether `create` should be able to target "any machine"** under a policy,
   rather than requiring the caller to name one. Deferred: it needs a scheduler,
   and a scheduler is a supervisor concern (§1 non-goals).
@@ -762,6 +766,12 @@ knowing its shape.
   reason §5.5 forbids polling.
 - Events from peers are multiplexed through the local service's stream, and
   carry their originating machine.
+
+**The local half of this exists; the federated half does not.** A service now
+streams its own drivers' events with §7.3's cursor, epoch, retention and
+resync. A peer's events do not yet arrive, because a remote driver cannot
+subscribe — see §14 D8. Until it can, the event plane delivers push exactly
+where §5.5 says it matters least.
 
 **Proxying does not launder authorization.** A service forwarding a peer's
 request presents the *original* caller's authority, never its own. Otherwise
@@ -951,6 +961,38 @@ was healthy and answering throughout.
   the opposite direction from the one hop case — the two requirements are not
   obviously reconcilable, and §13.1's one-hop rule is currently what keeps the
   question from arising.
+
+### D8 — Events do not cross machines · §5.5, §13
+
+A service streams its own drivers' events, stamped and retained per §7.3. A
+peer's events do not arrive: the remote driver answers `unsupported` for
+`subscribe`, so nothing consumes a peer's stream and nothing multiplexes it.
+
+The asymmetry is worth stating plainly because it inverts the requirement.
+§5.5's entire rationale is that "federated callers may be many network
+round-trips away" and must not poll — yet push currently works only for callers
+that are already local, who are precisely the ones for whom polling would have
+been cheap.
+
+Nothing about the design blocks it; the pieces exist. What is missing is a
+decision about what a proxied subscription means, and it is not obvious:
+
+- **Cursor and epoch are per service instance (§7.3).** A peer's cursors belong
+  to the peer's sequence. A proxy must either re-stamp relayed events with its
+  own — losing the ability to resume against the peer directly — or carry both,
+  which makes "resume from cursor N" ambiguous about whose N.
+- **A peer's resync is not the proxy's resync.** When a peer says
+  `control.resync`, every subscriber downstream of the proxy has a gap in that
+  peer's events but not in anyone else's. A single stream carrying one resync
+  signal cannot express "resync this source only".
+- **§13.1's one-hop rule applies here too.** A proxied subscription must ask
+  for the peer's local events, or two mutually-configured peers relay each
+  other's events forever.
+
+- **Proposed:** relayed events keep the origin's `(machine, cursor, epoch)` as
+  provenance and receive the proxy's own cursor for local ordering — the same
+  "adopt what the peer said, add what only you can know" split that §13.2 uses
+  for source status, and F20 for errors.
 
 ---
 
@@ -1263,6 +1305,29 @@ asserts on a moving system, decide what must hold and assert that, not what
 happened to be true when it was written.** What matters here is that federation
 carries sessions faithfully; that the fleet stands still is not a property
 anyone claimed.
+
+**F24 · Implementing the stream answered two questions the document had left
+open, and both answers were forced rather than chosen.**
+
+The SSE framing question — does `kind` travel as the `event:` line, a JSON
+property, or both — turned out to have no defensible single answer. `event:`
+is what makes a browser `EventSource` able to listen by kind; the JSON property
+is what spares every other client from parsing SSE framing to learn what it
+received. Picking one makes the stream awkward for half its consumers, so it
+carries both, plus the cursor as `id:` so a reconnecting browser sends
+Last-Event-ID without any client code. Redundancy chosen deliberately, at the
+cost of a short string per event.
+
+Backpressure (§7a) had exactly one answer consistent with the rest of the
+design. Dropping silently hands a subscriber a hole it cannot detect, which is
+the failure this specification is organised against; blocking lets one slow
+reader stall the machine's event plane. So a subscriber that overflows is
+marked and resynced — the same announcement §7.3 already required for a cursor
+that falls off the retained window.
+
+Neither answer required a judgement call. Both were determined by rules already
+written down, which is the clearest sign so far that the design has become
+self-consistent enough to decide things on its own.
 
 ### The pattern worth naming
 

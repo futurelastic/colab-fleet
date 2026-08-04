@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strconv"
@@ -487,15 +488,116 @@ func handleClose(svc *Service) http.HandlerFunc {
 	}
 }
 
+// handleEvents streams events as Server-Sent Events (api-http.md §4).
+//
+// # The framing question, resolved
+//
+// fleet.Event's doc comment recorded an open question: does Kind travel as the
+// SSE "event:" line, as a JSON property inside "data:", or both? Both.
+//
+//   - "event:" so a browser EventSource can addEventListener by kind, which
+//     is the entire reason SSE has the field;
+//   - "kind" inside the payload so a client reading the stream as newline
+//     framed JSON — every non-browser consumer — does not have to parse SSE
+//     framing to learn what it received;
+//   - "id:" carries the cursor, so a reconnecting EventSource sends
+//     Last-Event-ID automatically and resumption works without the client
+//     writing any resumption code.
+//
+// Duplicating kind is redundancy chosen deliberately: the alternative is a
+// stream that is only usable from one kind of client, and the cost is a short
+// string per event.
 func handleEvents(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Real SSE streaming (§4) is not implemented in this skeleton: no
-		// driver here supports Subscribe (internal/drivers/stub always
-		// returns driver.ErrUnsupported), and the wire framing question
-		// noted on fleet.Event (does Kind travel as the SSE "event:" line,
-		// a JSON field, or both?) is unresolved. Routed and answers
-		// honestly rather than silently 404ing or hanging on an open
-		// connection that never sends anything.
-		writeError(w, &fleet.Error{Kind: fleet.ErrorUnsupported, Message: "event subscription is not implemented in this skeleton"})
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorUnsupported,
+				Message: "this server cannot stream"})
+			return
+		}
+
+		q := r.URL.Query()
+		filter := driver.SubscribeFilter{
+			Sessions:  q["session"],
+			CwdPrefix: q.Get("cwdPrefix"),
+		}
+		fromCursor, _ := strconv.ParseInt(q.Get("cursor"), 10, 64)
+		fromEpoch := q.Get("epoch")
+		// A browser reconnecting supplies Last-Event-ID rather than a query
+		// parameter; honour it so resumption needs no client code.
+		if lastID := r.Header.Get("Last-Event-ID"); lastID != "" && fromCursor == 0 {
+			fromCursor, _ = strconv.ParseInt(lastID, 10, 64)
+			if fromEpoch == "" {
+				fromEpoch = svc.Epoch()
+			}
+		}
+
+		ch, backlog, needResync, cancel := svc.Events(r.Context(), filter, fromCursor, fromEpoch)
+		defer cancel()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Fleet-Clock", time.Now().Format(time.RFC3339Nano))
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+
+		if needResync {
+			// §7.3: announce the gap. A subscriber told this refetches
+			// state; one silently resumed from an arbitrary point believes
+			// it has a complete history and does not.
+			reason := fleet.ResyncCursorExpired
+			if fromEpoch != svc.Epoch() {
+				reason = fleet.ResyncEpochChanged
+			}
+			writeSSE(w, flusher, fleet.Event{
+				Epoch: svc.Epoch(), Machine: svc.Self(), Kind: fleet.EventControlResync,
+				Payload: fleet.ControlResyncPayload{Reason: reason},
+			})
+		}
+		for _, ev := range backlog {
+			writeSSE(w, flusher, ev)
+		}
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case ev, open := <-ch:
+				if !open {
+					return
+				}
+				writeSSE(w, flusher, ev)
+			}
+		}
 	}
+}
+
+// writeSSE encodes one event. Encoding failure ends the stream rather than
+// emitting a partial frame: a truncated event is worse than a closed
+// connection, because the client cannot tell it happened.
+func writeSSE(w http.ResponseWriter, f http.Flusher, ev fleet.Event) {
+	body, err := json.Marshal(sseEnvelope{
+		Cursor: ev.Cursor, Epoch: ev.Epoch, Machine: ev.Machine,
+		Kind: ev.Kind, Payload: ev.Payload,
+	})
+	if err != nil {
+		return
+	}
+	if ev.Cursor > 0 {
+		fmt.Fprintf(w, "id: %d\n", ev.Cursor)
+	}
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Kind, body)
+	f.Flush()
+}
+
+// sseEnvelope is fleet.Event's wire form. It exists rather than marshalling
+// fleet.Event directly so the JSON shape of the stream is stated in one place
+// and cannot drift with the in-memory type.
+type sseEnvelope struct {
+	Cursor  int64           `json:"cursor"`
+	Epoch   string          `json:"epoch"`
+	Machine fleet.MachineId `json:"machine"`
+	Kind    fleet.EventKind `json:"kind"`
+	Payload any             `json:"payload,omitempty"`
 }

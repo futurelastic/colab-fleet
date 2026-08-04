@@ -203,6 +203,20 @@ wants pays for every match (§5.5).
 Server-sent events. Every event carries `cursor`, `epoch`, and the `machine` it
 originated from — including events proxied from peers (§13).
 
+Each frame carries the kind twice, deliberately:
+
+```
+id: 41
+event: session.state
+data: {"cursor":41,"epoch":"...","machine":"...","kind":"session.state","payload":{...}}
+```
+
+`event:` lets a browser `EventSource` listen by kind; the `kind` property lets
+every other client read the stream as framed JSON without parsing SSE; and
+`id:` makes a reconnecting browser send `Last-Event-ID` on its own, so
+resumption needs no client code. The server honours that header when no
+`cursor` parameter is given.
+
 | Event | Payload |
 |---|---|
 | `session.created` | full session |

@@ -46,6 +46,10 @@ type Service struct {
 	epoch     string
 	startedAt time.Time
 
+	// events is the service-wide event plane: §7.3's cursor and epoch live
+	// here because they are per service instance, not per driver.
+	events *hub
+
 	mu    sync.RWMutex
 	local map[fleet.RuntimeId]driver.Driver
 	peers map[fleet.MachineId]driver.Driver
@@ -67,8 +71,30 @@ func New(self fleet.MachineId) *Service {
 		startedAt: now,
 		local:     make(map[fleet.RuntimeId]driver.Driver),
 		peers:     make(map[fleet.MachineId]driver.Driver),
+		events:    newHub(now.UTC().Format(time.RFC3339Nano)),
 	}
 }
+
+// Events opens a subscription on this service's event plane (§7.3, §13).
+//
+// from* carry what the caller last saw. A caller resuming with a cursor this
+// service can no longer supply, or with another instance's epoch, is told to
+// resync rather than resumed from an arbitrary point — the whole of §7.3.
+//
+// The returned cancel must be called; it releases the subscriber and, when the
+// last one leaves, stops the driver-side stream so an idle service watches
+// nothing.
+func (s *Service) Events(ctx context.Context, filter driver.SubscribeFilter, fromCursor int64, fromEpoch string) (<-chan fleet.Event, []fleet.Event, bool, func()) {
+	sub, backlog, needResync := s.events.add(filter, fromCursor, fromEpoch)
+	s.ensureStream(ctx)
+	return sub.ch, backlog, needResync, func() {
+		s.events.remove(sub.id)
+		s.ensureStream(ctx)
+	}
+}
+
+// Epoch reports this instance's epoch (§7.3).
+func (s *Service) Epoch() string { return s.epoch }
 
 // Self reports this machine's own id. The HTTP layer needs it to tell a
 // request about this machine from one destined for a peer — two different

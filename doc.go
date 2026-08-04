@@ -67,8 +67,13 @@
 //     flagged rather than quietly assumed correct, since it means a machine
 //     is "reachable" here iff at least one of its drivers answers promptly,
 //     which is a proxy for liveness, not liveness itself.
-//   - Event's SSE line framing (events.go): the spec never states whether
+//   - Event's SSE line framing (events.go): the spec never stated whether
 //     Kind travels as the SSE `event:` field, a JSON `kind` property in
-//     `data:`, or both. Left unresolved — no SSE encoder/decoder exists in
-//     this skeleton (see internal/service's /v1/events handler).
+//     `data:`, or both. Resolved when the stream was implemented: both, plus
+//     the cursor as `id:`. The `event:` line is what makes a browser
+//     EventSource able to addEventListener by kind; the JSON property is what
+//     spares every non-browser client from parsing SSE framing to learn what
+//     it received; and `id:` makes a reconnecting EventSource send
+//     Last-Event-ID by itself, so resumption needs no client code. See
+//     internal/service's writeSSE.
 package fleet

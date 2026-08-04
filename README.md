@@ -18,9 +18,9 @@ other machines. Supervisors become clients.
 > fleet view — with differentiated per-session state — in ~30ms, using a
 > constant number of subprocess spawns rather than one per session.
 >
-> Event subscription is live too, over the substrate's own push channel — no
-> polling anywhere, and cost proportional to subscribers rather than to
-> sessions. Verified end to end: a session created after subscribing was
+> Event subscription is live over the substrate's own push channel and served
+> as SSE with cursors, epoch, retention and announced resync — no polling
+> anywhere, and watching costs what the subscribers actually asked for. Verified end to end: a session created after subscribing was
 > reported within half a second, and its death reported after it.
 >
 > **Federation is proven.** A second driver — an HTTP client to a peer service —
@@ -198,6 +198,12 @@ Stated plainly so nobody rediscovers them the expensive way.
   safely, so the cost is diagnostic rather than correctness: a misconfigured
   peer looks like a minimal one forever. This is §5.7 a third time; see spec
   spec §14 D3.
+- **Events do not cross machines.** A service streams its own drivers' events;
+  a peer's do not arrive, because the remote driver cannot subscribe. That
+  inverts §5.5's requirement — push works only for callers who are already
+  local. The blocker is a design decision, not code: whose cursor and epoch a
+  relayed event carries, and how one stream expresses "resync this source
+  only". See spec §14 D8.
 - **Auth has no lifecycle.** A static bearer token is specified; issuance,
   rotation and scoping are not.
 - **`SourceState` has no member for "reachable but unsupported"** — currently

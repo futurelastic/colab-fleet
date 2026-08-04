@@ -246,18 +246,30 @@ func TestListSessions_InvalidScopeIs400(t *testing.T) {
 	}
 }
 
-func TestEvents_UnimplementedIsUnsupported(t *testing.T) {
-	_, srv := newTestServer(t)
+// /v1/events used to answer "unsupported" honestly while no driver could
+// stream. It streams now; what must hold is that it opens as SSE rather than
+// buffering, since a buffered event stream is indistinguishable from a hung
+// one.
+func TestEventsOpensAsAStream(t *testing.T) {
+	svc := New("testbox")
+	srv := httptest.NewServer(NewMux(svc, Config{Token: testToken}))
+	defer srv.Close()
 
-	req := authedRequest(t, http.MethodGet, srv.URL+"/v1/events", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/events", nil)
+	req = req.WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("Do: %v", err)
+		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("content-type = %q, want text/event-stream", ct)
 	}
 }
 
