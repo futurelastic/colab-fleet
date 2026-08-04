@@ -22,6 +22,16 @@ type Config struct {
 	// Authorization: Bearer <Token>, loopback or not, dev or not.
 	Token string
 
+	// Principals is the per-identity authorization table (§6, auth.go).
+	// When non-empty it is authoritative and Token/AllowLocalMutations/
+	// AllowPeerRelay are ignored.
+	//
+	// The older fields remain for a single-machine or single-token
+	// deployment, where a principal table is ceremony without benefit. They
+	// are not a fallback that silently engages: if a table is configured,
+	// it decides everything.
+	Principals []Principal
+
 	// AllowLocalMutations permits create/input/interrupt/close against
 	// sessions ON THIS MACHINE. Defaults FALSE — §6 requirement 3 taken
 	// literally: reads may be granted broadly, mutations are opt-in.
@@ -80,6 +90,18 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 // future work once more than one peer identity exists to distinguish.
 func withAuth(cfg Config, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if len(cfg.Principals) > 0 {
+			p, ok := cfg.principalFor(r)
+			if !ok {
+				writeError(w, &fleet.Error{
+					Kind:    fleet.ErrorUnauthorized,
+					Message: "unrecognised credential",
+				})
+				return
+			}
+			next(w, r.WithContext(withPrincipal(r.Context(), p)))
+			return
+		}
 		want := "Bearer " + cfg.Token
 		if cfg.Token == "" || r.Header.Get("Authorization") != want {
 			writeError(w, &fleet.Error{
@@ -92,6 +114,18 @@ func withAuth(cfg Config, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+type principalKey struct{}
+
+func withPrincipal(ctx context.Context, p Principal) context.Context {
+	return context.WithValue(ctx, principalKey{}, p)
+}
+
+// principalOf returns the resolved principal, and whether a table was in use.
+func principalOf(r *http.Request) (Principal, bool) {
+	p, ok := r.Context().Value(principalKey{}).(Principal)
+	return p, ok
+}
+
 // mutating gates the verbs that change something behind Config.AllowMutations
 // (§6 requirement 3). A refusal here is unauthorized, not unsupported: the
 // driver is perfectly capable, and this instance is configured not to permit
@@ -100,6 +134,30 @@ func withAuth(cfg Config, next http.HandlerFunc) http.HandlerFunc {
 func mutating(svc *Service, cfg Config, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		target := fleet.MachineId(r.PathValue("machine"))
+
+		// With a principal table, §6 requirement 3 is expressible as
+		// written: per verb, per identity. D6's host/client split survives
+		// as the difference between a verb grant and GrantRelay.
+		if p, ok := principalOf(r); ok {
+			need := grantForVerb(r)
+			if target != "" && target != svc.Self() {
+				need = GrantRelay
+			}
+			if !p.Allows(need) {
+				logDenied(p, need, target, r)
+				writeError(w, &fleet.Error{
+					Kind: fleet.ErrorUnauthorized,
+					Message: "principal " + p.Name + " does not hold the " +
+						string(need) + " grant (§6)",
+					Machine: target,
+				})
+				return
+			}
+			logMutation(p, need, target, r)
+			next(w, r)
+			return
+		}
+
 		allowed, why := cfg.AllowLocalMutations,
 			"this host does not permit mutation of its own sessions (§6; FLEET_ALLOW_MUTATIONS)"
 		if target != "" && target != svc.Self() {
@@ -133,6 +191,11 @@ func mutating(svc *Service, cfg Config, next http.HandlerFunc) http.HandlerFunc 
 // per-peer identity is §6's outstanding work; when it arrives, it lands
 // here and nothing above this function changes.
 func callerFrom(r *http.Request) fleet.Caller {
+	// A resolved principal is an identity; the address below is only what
+	// is available when no table is configured.
+	if p, ok := principalOf(r); ok {
+		return callerFor(p, r)
+	}
 	origin := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(origin); err == nil {
 		origin = host

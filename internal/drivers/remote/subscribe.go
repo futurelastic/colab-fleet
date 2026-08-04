@@ -51,7 +51,7 @@ import (
 
 // Subscribe opens a stream of a peer's events (§3, §5.5).
 func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver.SubscribeFilter) (driver.EventStream, error) {
-	if !req.Caller.HasCredential() {
+	if _, _, ok := d.bearerFor(req); !ok {
 		return nil, ErrNoCallerAuthority
 	}
 	streamCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -145,7 +145,14 @@ func (s *peerStream) consume(ctx context.Context, fromCursor int64, fromEpoch st
 	if err != nil {
 		return 0, "", err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+s.req.Caller.Credential)
+	token, behalf, ok := s.d.bearerFor(s.req)
+	if !ok {
+		return 0, "", ErrNoCallerAuthority
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	if behalf != "" {
+		httpReq.Header.Set("Fleet-On-Behalf-Of", behalf)
+	}
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	// No deadline on the request itself: a subscription is meant to stay

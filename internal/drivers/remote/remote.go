@@ -114,9 +114,25 @@ type Driver struct {
 	margin   time.Duration
 	now      func() time.Time
 
-	// There is deliberately no credential field. See the package doc: a
-	// proxy that holds no identity of its own cannot present one by
-	// mistake.
+	// identity is the credential THIS machine holds ON THIS PEER (§6).
+	//
+	// An earlier revision deliberately had no credential field at all: with
+	// one shared secret, forwarding the caller's token was both possible and
+	// correct, and holding one of its own was how a proxy became a confused
+	// deputy.
+	//
+	// Per-peer credentials remove that coincidence. A caller's token means
+	// nothing on another machine, so there is nothing to forward, and a
+	// proxied request necessarily authenticates as the relaying machine. The
+	// caller's identity travels alongside as an assertion (onBehalfOf).
+	//
+	// What that costs is honest to state: the peer authorizes THIS MACHINE,
+	// not the original caller, and trusts our claim about who asked exactly
+	// as far as it trusts us. What it cannot do is manufacture authority — a
+	// relay never obtains more than it was granted, whatever principal it
+	// names. Empty means shared-token mode, where the caller's credential is
+	// forwarded as before.
+	identity string
 
 	mu       sync.RWMutex
 	caps     fleet.DriverCapabilities
@@ -191,7 +207,26 @@ func (d *Driver) effectiveDeadline() time.Duration {
 	return d.deadline
 }
 
+// WithIdentity sets the credential this machine presents to the peer (§6).
+// Without it the driver stays in shared-token mode and forwards the caller's
+// credential, which only works while every machine accepts the same secret.
+func WithIdentity(token string) Option {
+	return func(d *Driver) { d.identity = token }
+}
+
 func withClock(f func() time.Time) Option { return func(d *Driver) { d.now = f } }
+
+// bearerFor decides what a proxied request authenticates with, and whom it
+// names. See the identity field for why these are two different things.
+func (d *Driver) bearerFor(req fleet.Request) (token, onBehalfOf string, ok bool) {
+	if d.identity != "" {
+		return d.identity, req.Caller.Principal, true
+	}
+	if req.Caller.HasCredential() {
+		return req.Caller.Credential, req.Caller.Principal, true
+	}
+	return "", "", false
+}
 
 // New builds a driver for the peer at base (e.g. "https://host:PORT").
 //
@@ -308,7 +343,8 @@ func (d *Driver) bounded(ctx context.Context) (context.Context, context.CancelFu
 // credential — that is how a proxied call presents the original caller's
 // authority (§13).
 func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string, body any, out any) error {
-	if !req.Caller.HasCredential() {
+	token, behalf, ok := d.bearerFor(req)
+	if !ok {
 		return ErrNoCallerAuthority
 	}
 	var rdr io.Reader
@@ -325,7 +361,12 @@ func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string,
 		return fmt.Errorf("remote: building request: %w", err)
 	}
 	// The caller's authority, never this driver's — it has none (§13).
-	httpReq.Header.Set("Authorization", "Bearer "+req.Caller.Credential)
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	if behalf != "" {
+		// Who asked, for the peer's audit trail (§6 requirement 4). Never
+		// a substitute for the credential above.
+		httpReq.Header.Set("Fleet-On-Behalf-Of", behalf)
+	}
 	if body != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
@@ -534,7 +575,8 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 
 // doWithKey is do() plus the Idempotency-Key header.
 func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path string, body any, key string, out any) error {
-	if !req.Caller.HasCredential() {
+	token, behalf, ok := d.bearerFor(req)
+	if !ok {
 		return ErrNoCallerAuthority
 	}
 	raw, err := json.Marshal(body)
@@ -545,7 +587,10 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 	if err != nil {
 		return fmt.Errorf("remote: building request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+req.Caller.Credential)
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	if behalf != "" {
+		httpReq.Header.Set("Fleet-On-Behalf-Of", behalf)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Idempotency-Key", key)
 	if dl, ok := ctx.Deadline(); ok {

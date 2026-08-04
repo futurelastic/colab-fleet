@@ -497,15 +497,36 @@ and a proxy that holds no credential of its own has nothing to substitute.
 This was open defect D1; how it failed before, and what proving the fix
 required, is Appendix A, F14.
 
-**Two grants, not one.** Whether something may mutate sessions *on this
-machine* and whether this instance may *relay* a mutation to a peer are
-different questions with different blast radii, and both default closed. See
-§14 D6 for what conflating them cost.
+**Authorization is per principal, per verb.** Each caller — peer or client —
+presents its own credential and holds a set of grants: `read`, and one per
+mutating verb, plus `relay` for having a mutation forwarded to a peer on its
+behalf. Grants default to none, because requirement 3's default is denied.
 
-**Still coarse in one respect, and honestly so.** Requirement 3 says permission
-is per verb *per peer*. A shared token cannot distinguish peers, so both grants
-are per-service. Coarse and closed beats fine-grained and unimplemented; the
-missing piece is peer identity, which is this section's outstanding work.
+That granularity is what requirement 3 asked for and a shared secret could not
+express: "may watch my sessions" and "may kill my sessions" are exactly the
+distinction an operator wants when opening a machine to a peer at all, and one
+mutate bit forces them together. `relay` keeps §14 D6's host/client split, now
+per caller rather than per service.
+
+**Requirement 4 becomes implementable at the same moment.** An audit trail
+wants an actor, and the best a shared token can name is an address — which
+answers *where from* and never *who*. With principals the actor is a name, and
+a relayed request names both the original asker and the machine that relayed
+it, because a line reading "the peer did it" cannot answer who asked the peer.
+
+**How a proxied request presents authority, revised.** §13 requires the
+original caller's authority to reach the peer. Under one shared secret that was
+literal — forward the caller's credential, and the peer accepts it because it
+is the peer's credential too. Per-peer credentials remove that coincidence: a
+caller's token means nothing on another machine.
+
+So a proxied request carries authority in two parts. The relaying machine
+authenticates as **itself**, with the credential it holds on that peer, and
+that is what the peer authorizes. The original principal travels **as an
+assertion**, which the peer records. The peer trusts that assertion exactly as
+far as it trusts the relay, which is the honest bound: a relay can never obtain
+more than it was granted, whatever principal it names, and what the assertion
+buys is the audit trail requirement 4 asks for. See Appendix A, F27.
 
 ---
 
@@ -984,32 +1005,27 @@ reconnection, then resumed from the last cursor seen. Reconnecting quietly
 would leave a caller unable to distinguish "this peer has nothing to say" from
 "we stopped listening". See Appendix A, F25.
 
-### D9 — A shared stream cannot present per-caller authority · §6, §13
+### D9 — A shared stream cannot present per-caller authority · §6, §13 — **RESOLVED**
 
-Found by building D8, and it is the first place D1's fix does not reach.
+The observation stands and is now bounded rather than unbounded.
 
-§13 requires a proxied request to present the ORIGINAL caller's authority. That
-rule assumes one request has one caller. A multiplexed subscription has many at
-once and outlives any of them: the service keeps one stream per peer and fans
-it out, so there is no single original caller whose credential it could carry.
-Picking one subscriber's would be worse than acting openly — everyone else
-would be served under an authority they never presented.
+A multiplexed subscription still has many callers at once and outlives any of
+them, so it cannot present any one caller's authority; the service subscribes
+to peers as itself. What has changed is what "itself" means. It is now a
+distinct principal with its own credential and its own grants, so a peer can
+grant this service read access to its events without granting it anything else,
+and without that being the same authority every caller holds.
 
-So the service subscribes to peers **as itself**, with a credential used only
-for that. §6 permits reads broadly and gates mutations; a subscription is a
-read, and nothing mutating uses this path.
+Under one shared token the widening was total and invisible: "as the service"
+and "as any caller" were the same string. It is now explicit, bounded by the
+grants that principal was given, and visible in the peer's audit log.
 
-The widening is real and unresolved. With one shared token, "as the service"
-and "as any caller" are the same authority, so a subscriber effectively reads a
-peer with the service's permissions rather than its own. Nothing detects this,
-because there is currently nothing to detect it with.
-
-- **Proposed fix:** per-peer identity (§6's outstanding work) gives the service
-  a distinct principal with read-only peer scope, and makes the difference
-  between "the service is watching" and "this caller is watching" expressible
-  and auditable. Until then, the honest position is that a subscription's
-  authority is the service's, and this document says so rather than implying
-  otherwise.
+Residual, and inherent rather than fixable: a subscriber reads a peer under the
+service's authority rather than its own. Multiplexing means the stream cannot
+be per-caller without becoming per-caller streams, which reintroduces duplicate
+events with competing cursors (see the event plane's design). An operator who
+needs per-caller peer reads must give that caller its own service, which is a
+real answer even if it is not a cheap one.
 
 ---
 
@@ -1369,6 +1385,24 @@ something checks the two against each other. There is now a test that reads a
 frame off the wire and looks for the field. Worth generalising: **a type that
 mirrors another needs a test that crosses the boundary between them, or it
 mirrors it only until someone edits one side.**
+
+**F27 · D1 was right about where authority must travel, and its mechanism only
+worked by coincidence.** Forwarding the caller's literal credential to a peer
+was correct under one shared secret — and that shared secret was exactly what
+§6 requirement 3 needed removed. Introducing per-peer credentials therefore
+broke the fix for D1, which had been verified working across machines a few
+hours earlier.
+
+The rule survived; the implementation did not. Authority now travels as
+transport identity plus an asserted principal, which is what "present the
+original caller's authority" has to mean once the caller's credential is not
+meaningful on the far machine.
+
+Worth generalising, because it is easy to mistake one for the other: **a fix
+verified end to end proves the mechanism worked under the conditions that
+existed, not that the mechanism is what the rule requires.** The conditions
+here were a deployment convenience nobody had chosen deliberately, and removing
+it invalidated a working, tested, deployed path.
 
 ### The pattern worth naming
 

@@ -255,8 +255,13 @@ recoverable, a silent one is not.
 - Permissions are **per verb, per machine**. `list` and `state` may be granted
   broadly; `create`, `input`, `interrupt` and `close` are granted per peer and
   default to denied.
-- When proxying (§13), a service presents the **original caller's** authority,
-  not its own. A peer authorizes the principal who initiated the request. A
+- Each caller presents its own credential and holds per-verb grants (§6).
+- When proxying (§13), the relaying service authenticates as **itself** with the
+  credential it holds on that peer, and asserts the original principal in
+  `Fleet-On-Behalf-Of`. A caller's own credential is not meaningful on another
+  machine once credentials are per peer, so authority travels as identity plus
+  assertion; the peer trusts the assertion as far as it trusts the relay, and a
+  relay never obtains more than it was granted. A peer authorizes the principal who initiated the request. A
   service that substituted its own identity would make every machine a confused
   deputy for every other.
 - Every remote-originated mutation is logged: actor, verb, target, outcome.

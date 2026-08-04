@@ -25,6 +25,10 @@
 //	                       (§7.2), and the address is one the OPERATOR has
 //	                       confirmed reachable from THIS machine — never the
 //	                       peer's own idea of its name.
+//	FLEET_CONFIG           path to a JSON file carrying the principal table
+//	                       and per-peer credentials (§6). When present it is
+//	                       authoritative and FLEET_TOKEN / FLEET_ALLOW_* are
+//	                       ignored. Absent means single-token mode.
 //	FLEET_ALLOW_MUTATIONS  set to 1 to permit create/input/interrupt/close
 //	                       against sessions ON THIS MACHINE. Defaults OFF.
 //	FLEET_ALLOW_RELAY      set to 1 to permit forwarding a mutation to a
@@ -63,10 +67,22 @@ func main() {
 		log.Fatal("colab-fleetd: FLEET_TOKEN must be set — there is no unauthenticated mode (api-http.md §5)")
 	}
 
+	// A principal table, when configured, decides everything about who may
+	// do what (§6). Without one the service runs in single-token mode,
+	// which is honest for one machine and unstatable for a fleet.
+	var cfgFile *fileConfig
+	if path := os.Getenv("FLEET_CONFIG"); path != "" {
+		var err error
+		cfgFile, err = loadConfig(path)
+		if err != nil {
+			log.Fatalf("colab-fleetd: %v", err)
+		}
+	}
+
 	svc := service.New(self)
 	// The service's own authority for long-lived peer reads (event
-	// subscriptions). Never used for a proxied unary call — those carry the
-	// original caller's credential (§13).
+	// subscriptions, §14 D9). Never used for a proxied unary call — those
+	// authenticate as this machine and assert the caller (§6, §13).
 	svc.SetPeerCredential(token)
 
 	// --- local runtime -------------------------------------------------
@@ -103,7 +119,13 @@ func main() {
 	// §5.7 requires it to surface as a source reporting unreachable, not to
 	// vanish from the fleet because it happened to be down at startup. So
 	// registration never probes and never fails on reachability.
-	for _, spec := range splitList(os.Getenv("FLEET_PEERS")) {
+	peerSpecs := splitList(os.Getenv("FLEET_PEERS"))
+	if cfgFile != nil && len(peerSpecs) == 0 {
+		for _, p := range cfgFile.Peers {
+			peerSpecs = append(peerSpecs, p.Machine+"="+p.URL)
+		}
+	}
+	for _, spec := range peerSpecs {
 		name, base, ok := strings.Cut(spec, "=")
 		if !ok || name == "" || base == "" {
 			log.Fatalf("colab-fleetd: bad FLEET_PEERS entry %q (want name=url)", spec)
@@ -116,8 +138,17 @@ func main() {
 		// hand: it presents the authority of whoever made the request
 		// (§13). A proxy holding its own identity is the confused deputy
 		// this design forbids.
-		peer := remote.New(machine, strings.TrimSpace(base),
-			remote.WithDeadline(3*time.Second))
+		opts := []remote.Option{remote.WithDeadline(3 * time.Second)}
+		// The credential THIS machine holds on that peer. Distinct from
+		// anything a caller presents here, and distinct from the peer's
+		// own credential on us — conflating those is how a fleet ends up
+		// with one shared secret again by accident.
+		if cfgFile != nil {
+			if _, tok, ok := cfgFile.peerFor(machine); ok && tok != "" {
+				opts = append(opts, remote.WithIdentity(tok))
+			}
+		}
+		peer := remote.New(machine, strings.TrimSpace(base), opts...)
 		if err := svc.RegisterPeerDriver(machine, peer); err != nil {
 			log.Fatalf("colab-fleetd: registering peer %q: %v", machine, err)
 		}
@@ -147,11 +178,22 @@ func main() {
 	allowRelay := os.Getenv("FLEET_ALLOW_RELAY") == "1"
 	log.Printf("colab-fleetd: local mutations=%v · relay to peers=%v (§6; both default off)",
 		allowLocal, allowRelay)
-	mux := service.NewMux(svc, service.Config{
+	svcCfg := service.Config{
 		Token:               token,
 		AllowLocalMutations: allowLocal,
 		AllowPeerRelay:      allowRelay,
-	})
+	}
+	if cfgFile != nil {
+		principals, err := cfgFile.principals()
+		if err != nil {
+			log.Fatalf("colab-fleetd: %v", err)
+		}
+		svcCfg.Principals = principals
+		for _, p := range principals {
+			log.Printf("colab-fleetd: principal %q grants=%v", p.Name, p.Grants)
+		}
+	}
+	mux := service.NewMux(svc, svcCfg)
 
 	// --- reconciliation (§12) ------------------------------------------
 	//
