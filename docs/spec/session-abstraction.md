@@ -236,6 +236,20 @@ weak check is never mistaken for a strong one.
 §4.4 already governs — a second field would be a second source of truth about
 the same fact. And anything about the *target*, which stays an argument.
 
+### 2.7 Response
+
+```
+Response {
+  choice? : number     // 1-based option; absent means the highlighted default
+  cancel? : boolean    // dismiss rather than answer
+}
+```
+
+What `respond` (§3) delivers. Absent `choice` means "accept whatever is
+highlighted", which is what a human pressing Enter gets and what a caller
+usually means. `cancel` exists because a caller that likes none of the options
+needs a way to say so other than picking one anyway.
+
 ---
 
 ## 3. Operations
@@ -243,12 +257,25 @@ the same fact. And anything about the *target*, which stays an argument.
 ```
 create(req, spec)              -> SessionRef
 send(req, ref, text, opts?)    -> DeliveryReceipt
+respond(req, ref, response)    -> DeliveryReceipt
 state(req, ref)                -> SessionState
 interrupt(req, ref)            -> Ack
 close(req, ref)                -> Ack
 list(req, filter?)             -> Collection<Session>
 subscribe(req, filter?)        -> EventStream
 ```
+
+`respond` answers a prompt a session is blocked on, and is a separate
+operation rather than a flag on `send` for a reason that is not stylistic:
+`send` must guarantee it never produces a keystroke, so that a message
+containing something like `C-c` cannot interrupt the session receiving it. That
+guarantee is what makes a prompt unanswerable by `send`. A driver must refuse
+`respond` when nothing is being asked — a keypress delivered to a session that
+is not at a prompt is consumed by whatever it was doing.
+
+`Response` names a **choice**, not a key (§2.7). §5.1 says the interface
+expresses questions rather than mechanisms, and "press Enter" would bind every
+future driver to this substrate's idea of confirmation.
 
 Every operation carries a `Request` (§2.6), reads included. A driver cannot
 compile without deciding what to do with it, which is the point: the rule it
@@ -1497,6 +1524,46 @@ stating as a rule, because the same trap is available anywhere state is both
 read and written on a common path: **a process that compares "before" against
 "after" must capture "before" prior to anything that can write it — including
 its own instrumentation.**
+
+**F31 · A session can be lost to a dialog nobody can reach, and there were
+three of them.** In one working session a supervisor met a folder-trust
+question on every newly created session, a resume-from-summary question on a
+session being reattached, and a menu inside a running conversation. None could
+be answered, because `send` is built to guarantee it never produces a
+keystroke — the property that makes it safe for messages is exactly what makes
+it useless for control.
+
+The consequence was not a degraded session but an unreachable one: an agent
+could be started and then never got past its first question. §3 gained
+`respond` for this.
+
+Two detection failures compounded it. The menu detector knew one footer
+(`Enter to select`) and both real prompts used another (`Enter to confirm`), so
+they classified as `unknown` — which reads as "cannot determine" rather than
+"blocked on a human", and a supervisor waits forever on something that will
+never move by itself. And a fresh session renders a **placeholder hint** in its
+composer, which the composer detector read as typed input, refusing every send
+to a session nobody had ever spoken to.
+
+The placeholder is separable only by how it is painted: the hint is rendered
+dim (SGR 2) and typed input is not. Matching the hint's words would have
+repeated the spinner-verb mistake — prose in an interface with no compatibility
+contract. **Where an interface distinguishes two things visually, the
+distinction is in the rendering, and reading the text instead is guessing.**
+
+**F32 · Create manufactured the stuck session it exists to avoid.** §2.1 lets a
+spec carry an initial prompt; §4.4 bounds every call by the driver's declared
+deadline. On a runtime that takes far longer to paint its interface than any
+sane deadline, those two requirements do not fit — so Create delivered
+immediately, the paste landed, and the submit keystroke was swallowed during
+startup.
+
+The prompt then sat unsent in the composer, indistinguishable from a human's
+half-typed message, and every later send was refused to protect text the
+session had put there itself. Delivery now happens after Create returns,
+bounded, and only once the interface is ready — and stops if a prompt is
+waiting, because clicking through a trust question is a consent decision a
+driver must not make on a caller's behalf.
 
 ### The pattern worth naming
 

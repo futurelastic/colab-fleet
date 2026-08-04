@@ -313,3 +313,66 @@ func TestUnpaintedSessionHoldsNothing(t *testing.T) {
 		t.Errorf("status = %q, want unknown for an empty screen", got.Status)
 	}
 }
+
+// --- the two ways a session stops being reachable -------------------------
+//
+// Both were live, and both are how a fleet loses a session to a dialog nobody
+// can reach.
+
+// A brand-new session shows a dim placeholder hint in its composer. Read as
+// typed input, it refuses every send forever — to a session that has never
+// been spoken to at all.
+func TestDimPlaceholderIsNotTypedInput(t *testing.T) {
+	// Exactly as captured from a live newly-created session.
+	raw := rule + "\n\x1b[39m❯ \x1b[2mTry\x1b[0m \x1b[2m\"how\x1b[0m \x1b[2mdo\x1b[0m \x1b[2mI\x1b[0m \x1b[2mlog\x1b[0m \x1b[2man\x1b[0m \x1b[2merror?\"\x1b[0m\n" + rule
+	text, ok := composerText(newScreen(raw))
+	if !ok {
+		t.Fatal("composer not found")
+	}
+	if text != "" {
+		t.Errorf("placeholder read as pending input (%q); every send to a fresh "+
+			"session would be refused for text nobody typed", text)
+	}
+}
+
+// ...while real typed input is normal intensity and must still be protected.
+func TestNormalIntensityInputIsStillProtected(t *testing.T) {
+	raw := rule + "\n\x1b[39m❯ a half-typed thought\n" + rule
+	text, ok := composerText(newScreen(raw))
+	if !ok || text != "a half-typed thought" {
+		t.Errorf("composer = %q ok=%v; real input must not be mistaken for a placeholder", text, ok)
+	}
+}
+
+// Both menu footers block. Knowing only one classified a folder-trust prompt
+// and a resume prompt as unknown, which reads as "cannot determine" rather
+// than "blocked on a human" — so a supervisor waits forever.
+func TestBothMenuFootersAreRecognised(t *testing.T) {
+	for _, footer := range []string{
+		"Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+		"Enter to confirm · Esc to cancel",
+	} {
+		f := "  Some question?\n❯ 1. Yes, the recommended one\n  2. No\n" + footer
+		option, blocked := selectionPrompt(newScreen(f))
+		if !blocked {
+			t.Errorf("footer %q not recognised as blocking", footer)
+			continue
+		}
+		if option != "1. Yes, the recommended one" {
+			t.Errorf("highlighted option = %q; a supervisor deciding whether to accept "+
+				"the default needs to know what the default is", option)
+		}
+		if got := classify(f, true); got.Status != fleet.StatusWaitingInput {
+			t.Errorf("status = %q, want waiting_input", got.Status)
+		}
+	}
+}
+
+// The evidence must name what is being asked, not merely that something is.
+func TestBlockedStateNamesTheHighlightedOption(t *testing.T) {
+	f := "  Resume?\n❯ 1. Resume from summary (recommended)\n  2. Full\nEnter to confirm · Esc to cancel"
+	got := classify(f, true)
+	if !strings.Contains(got.Evidence, "Resume from summary") {
+		t.Errorf("evidence = %q; it should name the option a caller would be accepting", got.Evidence)
+	}
+}

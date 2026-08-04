@@ -28,6 +28,10 @@ func (fakeDriver) Send(ctx context.Context, req fleet.Request, ref fleet.Session
 	return fleet.DeliveryReceipt{}, ErrUnsupported
 }
 
+func (fakeDriver) Respond(ctx context.Context, req fleet.Request, ref fleet.SessionRef, resp fleet.Response) (fleet.DeliveryReceipt, error) {
+	return fleet.DeliveryReceipt{}, ErrUnsupported
+}
+
 func (fakeDriver) State(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionState, error) {
 	return fleet.SessionState{}, ErrUnsupported
 }

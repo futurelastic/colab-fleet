@@ -172,6 +172,13 @@ type Driver interface {
 	// this method returning an error.
 	State(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionState, error)
 
+	// Respond answers a prompt the session is blocked on (§3). A driver
+	// must REFUSE when no prompt is present: a keypress delivered to a
+	// session that is not asking anything is a stray input the caller never
+	// intended, and on this substrate it lands in whatever the session was
+	// doing.
+	Respond(ctx context.Context, req fleet.Request, ref fleet.SessionRef, resp fleet.Response) (fleet.DeliveryReceipt, error)
+
 	// Interrupt and Close express intent only (§3, api-http.md §3.3: both
 	// wire to 202 Accepted); confirmation of what actually happened
 	// arrives later as a state change on the event stream (§4), never as

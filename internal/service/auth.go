@@ -104,6 +104,11 @@ func grantForVerb(r *http.Request) Grant {
 		return GrantCreate
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/input"):
 		return GrantSend
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/respond"):
+		// Answering a prompt drives the session, same blast radius as
+		// delivering input, so it shares that grant rather than inventing a
+		// seventh one nobody would configure separately.
+		return GrantSend
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/interrupt"):
 		return GrantInterrupt
 	case r.Method == http.MethodDelete:

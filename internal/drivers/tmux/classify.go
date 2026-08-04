@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"strings"
+	"unicode"
 
 	fleet "github.com/godx-jp/colab-fleet"
 )
@@ -49,6 +50,19 @@ import (
 //     human choosing, which is unambiguously waiting_input.
 //   - process liveness comes from the OS, not the screen.
 
+// SGR 2 is "dim/faint". The TUI renders the composer's PLACEHOLDER hint dim
+// and real typed input at normal intensity, which is the only reliable way to
+// tell them apart.
+//
+// Matching the hint's words instead would repeat the spinner-verb mistake:
+// prose in an interface with no compatibility contract. Intensity is a
+// rendering attribute the TUI must use for the hint to look like a hint.
+const (
+	sgrDimOn  = "\x1b[2m"
+	sgrReset  = "\x1b[0m"
+	sgrEscape = '\x1b'
+)
+
 const (
 	// composerRuneMarker begins the composer (input) line of the TUI.
 	composerRuneMarker = "❯"
@@ -56,9 +70,14 @@ const (
 	// with. Matching a run of them, rather than an exact width, keeps this
 	// independent of terminal width.
 	ruleRune = '─'
-	// selectFooter is emitted by the TUI's menu widget. Matched as a
-	// substring because the surrounding text varies by menu.
-	selectFooter = "Enter to select"
+	// Menu footers. There is more than one, which cost a real incident: the
+	// detector knew only "Enter to select", so a folder-trust prompt and a
+	// session-resume prompt — both saying "Enter to confirm" — classified as
+	// unknown instead of waiting_input. A supervisor cannot tell "blocked on
+	// a question" from "I cannot read this screen", so it waits forever on
+	// something that will never move by itself.
+	selectFooter  = "Enter to select"
+	confirmFooter = "Enter to confirm"
 	// spinnerRune prefixes the status line in both its running and
 	// finished forms.
 	spinnerRune = "✻"
@@ -77,19 +96,103 @@ const (
 // to look like the TUI's own chrome.
 type screen struct {
 	lines []string
+	// raw keeps the escape sequences, because one signal cannot be read
+	// from the text alone: the composer's placeholder is rendered dim.
+	raw []string
 }
 
 func newScreen(raw string) screen {
 	all := strings.Split(raw, "\n")
 	out := make([]string, 0, len(all))
+	raws := make([]string, 0, len(all))
 	for _, l := range all {
-		out = append(out, strings.TrimRight(l, " \t\r"))
+		raws = append(raws, l)
+		out = append(out, strings.TrimRight(stripSGR(l), " \t\r"))
 	}
 	// Drop trailing blank lines: capture-pane pads to the pane height.
 	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
 		out = out[:len(out)-1]
+		raws = raws[:len(raws)-1]
 	}
-	return screen{lines: out}
+	return screen{lines: out, raw: raws}
+}
+
+// stripSGR removes ANSI select-graphic-rendition sequences so text matching
+// works on what a human sees rather than on how it is painted.
+func stripSGR(s string) string {
+	if !strings.ContainsRune(s, sgrEscape) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == sgrEscape && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && s[j] != 'm' && s[j] != 'K' && s[j] != 'H' {
+				j++
+			}
+			if j < len(s) {
+				i = j + 1
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// allDim reports whether every visible character of a raw fragment is
+// rendered dim — the signature of a placeholder rather than typed input.
+//
+// The caller passes the text AFTER the prompt marker, not the whole line: the
+// marker is painted at normal intensity even when the hint beside it is dim,
+// so including it makes every placeholder look partly real. That detail cost a
+// test, and would have cost the fix.
+//
+// Returns false for a fragment with no escape sequences: plain text is normal
+// intensity, which is what real input looks like.
+func allDim(raw string) bool {
+	if !strings.Contains(raw, sgrDimOn) {
+		return false
+	}
+	var visible, dim int
+	depth := 0
+	rs := []rune(raw)
+	for i := 0; i < len(rs); {
+		if rs[i] == sgrEscape && i+1 < len(rs) && rs[i+1] == '[' {
+			j := i + 2
+			for j < len(rs) && rs[j] != 'm' {
+				j++
+			}
+			if j < len(rs) {
+				switch string(rs[i : j+1]) {
+				case sgrDimOn:
+					depth++
+				case sgrReset:
+					depth = 0
+				}
+				i = j + 1
+				continue
+			}
+		}
+		if !unicode.IsSpace(rs[i]) {
+			visible++
+			if depth > 0 {
+				dim++
+			}
+		}
+		i++
+	}
+	return visible > 0 && dim == visible
+}
+
+// afterMarker returns the raw fragment following the composer prompt glyph,
+// escapes intact.
+func afterMarker(raw string) string {
+	if i := strings.Index(raw, composerRuneMarker); i >= 0 {
+		return raw[i+len(composerRuneMarker):]
+	}
+	return raw
 }
 
 // isRule reports whether a line is one of the TUI's horizontal rules. The
@@ -194,11 +297,22 @@ func composerText(s screen) (string, bool) {
 		return "", false
 	}
 
+	// A wholly dim composer is the TUI's placeholder hint, not something a
+	// human typed. Treating it as pending input refuses every send to a
+	// FRESH session, forever — a session the supervisor can never speak to,
+	// stuck for text nobody wrote. Observed live on a newly created session.
+	if prompt < len(s.raw) && allDim(afterMarker(s.raw[prompt])) {
+		return "", true
+	}
+
 	text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s.lines[prompt]), composerRuneMarker))
 	// Continuation lines: a long message wraps below the prompt and is still
 	// unsent input. Reading only the first line would under-report it, and
 	// under-reporting is the direction that corrupts a human's message.
 	for i := prompt + 1; i < last; i++ {
+		if i < len(s.raw) && allDim(s.raw[i]) {
+			continue
+		}
 		if seg := strings.TrimSpace(s.lines[i]); seg != "" {
 			text += " " + seg
 		}
@@ -209,12 +323,37 @@ func composerText(s screen) (string, bool) {
 // awaitingSelection reports whether the TUI is showing a menu that blocks
 // on a human keypress.
 func awaitingSelection(s screen) bool {
+	_, blocked := selectionPrompt(s)
+	return blocked
+}
+
+// selectionPrompt reports whether a blocking prompt is on screen and, if so,
+// what it is asking — the highlighted option, so a supervisor reading the
+// state knows what it would be agreeing to.
+//
+// Both footers are matched. Knowing only one was a real incident: a
+// folder-trust prompt and a session-resume prompt both say "Enter to confirm",
+// and both classified as unknown, which reads as "cannot determine" rather
+// than "blocked on a human".
+func selectionPrompt(s screen) (string, bool) {
+	found := false
 	for i := len(s.lines) - 1; i >= 0 && i > len(s.lines)-6; i-- {
-		if strings.Contains(s.lines[i], selectFooter) {
-			return true
+		if strings.Contains(s.lines[i], selectFooter) || strings.Contains(s.lines[i], confirmFooter) {
+			found = true
+			break
 		}
 	}
-	return false
+	if !found {
+		return "", false
+	}
+	// The highlighted option carries the prompt marker.
+	for i := len(s.lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(s.lines[i])
+		if strings.HasPrefix(line, composerRuneMarker) {
+			return strings.TrimSpace(strings.TrimPrefix(line, composerRuneMarker)), true
+		}
+	}
+	return "", true
 }
 
 // spinner reports the most recent status line and whether it indicates a
@@ -288,9 +427,14 @@ func classify(raw string, alive bool) fleet.SessionState {
 		return fleet.UnknownState(fleet.ConfidenceInferred, "pane captured empty")
 	}
 
-	if awaitingSelection(s) {
-		return fleet.InferredState(fleet.StatusWaitingInput,
-			"TUI selection menu present ("+selectFooter+")", nil)
+	if option, blocked := selectionPrompt(s); blocked {
+		evidence := "blocked on a prompt awaiting a keypress"
+		if option != "" {
+			// Name what it is asking. A supervisor deciding whether to
+			// accept the default needs to know what the default IS.
+			evidence += "; highlighted option: " + option
+		}
+		return fleet.InferredState(fleet.StatusWaitingInput, evidence, nil)
 	}
 
 	running, foundSpinner := spinner(s)

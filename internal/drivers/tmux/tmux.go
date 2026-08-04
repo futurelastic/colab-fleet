@@ -99,6 +99,16 @@ const (
 	// above it.
 	defaultCaptureLines = 24
 
+	// promptDeliveryWindow bounds how long §2.1's initial prompt waits for
+	// the runtime to become ready. Generous, because starting an agent is
+	// slow and a prompt arriving late is better than one arriving into a
+	// terminal that is not listening.
+	promptDeliveryWindow = 90 * time.Second
+	// promptPollInterval is how often readiness is checked. This is not the
+	// polling §5.5 forbids: that rule is about callers learning of state
+	// changes, and this is one driver waiting for a process it just started.
+	promptPollInterval = 1500 * time.Millisecond
+
 	// defaultIdempotencyRetention is how long a create key is honoured
 	// (§10: "retention must outlive the caller's retry window").
 	defaultIdempotencyRetention = 30 * time.Minute
@@ -379,7 +389,11 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 		}
 		capArgs = append(capArgs,
 			"display-message", "-p", mark+strconv.Itoa(i), ";",
-			"capture-pane", "-p", "-t", r.paneID, "-S", "-"+strconv.Itoa(d.captureLines),
+			// -e keeps escape sequences: the composer's placeholder is
+			// distinguishable from typed input only by being rendered dim,
+			// and stripping colour here would discard the one signal that
+			// separates "nobody typed anything" from "do not overwrite me".
+			"capture-pane", "-p", "-e", "-t", r.paneID, "-S", "-"+strconv.Itoa(d.captureLines),
 		)
 	}
 	capOut, err := d.run(ctx, d.bin, capArgs...)
@@ -827,12 +841,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	}
 
 	if spec.Prompt != "" {
-		// Best effort, and deliberately not fatal: the session exists,
-		// and reporting create as failed would invite a retry that §10
-		// exists to make safe but which would now be answered from the
-		// idempotency store anyway. The prompt not landing is visible in
-		// the session's state; a phantom failure is not.
-		_, _ = d.Send(ctx, req, ref, spec.Prompt, driver.SendOptions{Submit: true})
+		go d.deliverInitialPrompt(req, ref, spec.Prompt)
 	}
 	return ref, nil
 }
@@ -856,4 +865,162 @@ func claudeCodeCommand(spec fleet.SessionSpec, contextFile string) []string {
 		argv = append(argv, "--append-system-prompt-file", contextFile)
 	}
 	return argv
+}
+
+// Respond answers a prompt the session is blocked on (§3).
+//
+// # It refuses when nothing is being asked
+//
+// A keypress delivered to a session that is not at a prompt lands in whatever
+// that session was doing. Unlike a message — which at worst appears in a
+// composer where a human can see and delete it — a stray keypress is consumed
+// invisibly, and "Enter" against a composer holding a half-typed thought
+// submits it.
+//
+// So this checks for a prompt first and refuses otherwise, which is §2.4's
+// reasoning applied to control rather than to text.
+//
+// # Why this operation had to exist
+//
+// Three real prompts in one session made the case: a folder-trust question on
+// every newly created session, a resume-from-summary question on a session
+// being reattached, and a menu inside a running conversation. None could be
+// answered through send(), because send() is built to guarantee it never
+// produces a keystroke. A supervisor could start an agent and then not get
+// past its first question — which is how a fleet loses a session to a dialog
+// nobody can reach.
+func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.SessionRef, resp fleet.Response) (fleet.DeliveryReceipt, error) {
+	ctx, cancel := d.bounded(ctx)
+	defer cancel()
+
+	rows, captures, err := d.enumerate(ctx)
+	if err != nil {
+		return fleet.DeliveryReceipt{}, err
+	}
+	var target *paneRow
+	for i := range rows {
+		if rows[i].session == ref.ID {
+			target = &rows[i]
+			break
+		}
+	}
+	if target == nil {
+		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: "no session with this id"}, nil
+	}
+	if target.dead {
+		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: "session process has exited"}, nil
+	}
+
+	option, blocked := selectionPrompt(newScreen(captures[target.paneID]))
+	if !blocked {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "session is not waiting on a prompt; a keypress would be " +
+				"consumed by whatever it is doing instead",
+		}, nil
+	}
+
+	keys := []string{"Enter"}
+	switch {
+	case resp.Cancel:
+		keys = []string{"Escape"}
+	case resp.Choice > 0:
+		// Type the option number, then confirm. Accepting the highlighted
+		// default is the zero value precisely because it is the common case
+		// and needs no arithmetic about which option is where.
+		keys = []string{strconv.Itoa(resp.Choice), "Enter"}
+	}
+	args := []string{"send-keys", "-t", target.paneID}
+	args = append(args, keys...)
+	if _, err := d.run(ctx, d.bin, args...); err != nil {
+		return fleet.DeliveryReceipt{}, fmt.Errorf("respond: %w", err)
+	}
+
+	answered := "accepted the highlighted option"
+	switch {
+	case resp.Cancel:
+		answered = "cancelled the prompt"
+	case resp.Choice > 0:
+		answered = "chose option " + strconv.Itoa(resp.Choice)
+	}
+	if option != "" {
+		answered += " (was: " + option + ")"
+	}
+	return fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued, Reason: answered}, nil
+}
+
+// deliverInitialPrompt waits for the runtime to be ready, then sends §2.1's
+// initial prompt.
+//
+// # Why this cannot happen inside Create
+//
+// §2.1 says a spec may carry an initial prompt, and §4.4 says every call is
+// bounded by the driver's declared deadline. On this substrate those two do
+// not fit: the runtime takes far longer to paint its interface than any sane
+// per-call deadline, so a Create that waited would violate its own
+// declaration, and a Create that did not wait delivered into a terminal that
+// was not listening.
+//
+// The second is what happened, and it is worse than it sounds. The paste
+// landed but the submit keystroke was swallowed during startup, leaving the
+// prompt sitting UNSENT in the composer — indistinguishable from a human's
+// half-typed message, so every later send to that session was refused in order
+// to protect text the session had put there itself. Create manufactured
+// exactly the stuck session this driver exists to avoid.
+//
+// So delivery happens after Create returns, bounded, and only once the
+// interface is ready to receive. Failure is not silent: the prompt is simply
+// absent, and the session's state says what it is doing instead.
+func (d *Driver) deliverInitialPrompt(req fleet.Request, ref fleet.SessionRef, prompt string) {
+	ctx, cancel := context.WithTimeout(context.Background(), promptDeliveryWindow)
+	defer cancel()
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		ready, blocked := d.promptReadiness(ctx, ref.ID)
+		if blocked {
+			// A prompt is waiting for a human — commonly the trust question
+			// a newly created session asks about its working directory.
+			// Answering it is a decision (§6 grants it separately), and a
+			// driver that clicked through it would be consenting to
+			// something nobody asked it to consent to.
+			return
+		}
+		if ready {
+			_, _ = d.Send(ctx, req, ref, prompt, driver.SendOptions{Submit: true})
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(promptPollInterval):
+		}
+	}
+}
+
+// promptReadiness reports whether the session can receive input, and whether
+// it is instead blocked on a prompt.
+func (d *Driver) promptReadiness(ctx context.Context, id string) (ready, blocked bool) {
+	callCtx, cancel := d.bounded(ctx)
+	defer cancel()
+	rows, captures, err := d.enumerate(callCtx)
+	if err != nil {
+		return false, false
+	}
+	for _, r := range rows {
+		if r.session != id {
+			continue
+		}
+		sc := newScreen(captures[r.paneID])
+		if _, b := selectionPrompt(sc); b {
+			return false, true
+		}
+		text, found := composerText(sc)
+		// Ready means the composer exists and is empty: the interface has
+		// painted, and nothing is already sitting in it.
+		return found && text == "", false
+	}
+	return false, false
 }

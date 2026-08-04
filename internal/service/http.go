@@ -75,6 +75,7 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions", withAuth(cfg, mutating(svc, cfg, handleCreateSession(svc))))
 	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}", withAuth(cfg, handleGetSession(svc)))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/input", withAuth(cfg, mutating(svc, cfg, handleSendInput(svc))))
+	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/respond", withAuth(cfg, mutating(svc, cfg, handleRespond(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/interrupt", withAuth(cfg, mutating(svc, cfg, handleInterrupt(svc))))
 	mux.HandleFunc("DELETE /v1/machines/{machine}/sessions/{id}", withAuth(cfg, mutating(svc, cfg, handleClose(svc))))
 	mux.HandleFunc("GET /v1/events", withAuth(cfg, handleEvents(svc)))
@@ -497,6 +498,38 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		// api-http.md §3.3: a refusal is 200, not an HTTP error — this is
 		// the same 200 whether Outcome is submitted, queued, refused, or
 		// unknown.
+		writeJSON(w, http.StatusOK, receipt)
+	}
+}
+
+// handleRespond answers a prompt a session is blocked on (§3).
+//
+// A refusal is a 200 carrying an outcome, exactly as for input (api-http.md
+// §3.3): "this session is not at a prompt" is a fact about the session, not a
+// fault in the request, and mapping it to 4xx would train callers to retry it.
+func handleRespond(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		machine := fleet.MachineId(r.PathValue("machine"))
+		id := r.PathValue("id")
+		d, ferr := svc.resolveSessionDriver(machine, fleet.RuntimeId(r.URL.Query().Get("runtime")))
+		if ferr != nil {
+			writeError(w, ferr)
+			return
+		}
+		var body fleet.Response
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "malformed body: " + err.Error()})
+			return
+		}
+		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
+		ctx, cancel := context.WithTimeout(r.Context(), deadline)
+		defer cancel()
+
+		receipt, err := d.Respond(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id}, body)
+		if err != nil {
+			writeDriverError(w, machine, deadline, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, receipt)
 	}
 }

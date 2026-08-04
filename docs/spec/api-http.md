@@ -180,6 +180,22 @@ not be reached or the caller is not permitted; they never describe what the
 driver decided.
 
 ```
+POST /v1/machines/{machine}/sessions/{id}/respond?runtime=
+{ "choice": 1 }          // or {} to accept the highlighted option
+                         // or { "cancel": true } to dismiss
+
+→ 200 { "outcome": "queued" | "refused", "reason": "..." }
+```
+
+Answers a prompt the session is blocked on. Refused as an ordinary 200 when the
+session is not at a prompt — a keypress delivered to a session that is not
+asking anything is consumed by whatever it is doing.
+
+This is not a flag on `input`, because `input` must guarantee it never produces
+a keystroke: a message containing `C-c` must not interrupt the session
+receiving it (§3 of the abstraction).
+
+```
 POST   /v1/machines/{machine}/sessions/{id}/interrupt?runtime=   → 202
 DELETE /v1/machines/{machine}/sessions/{id}?runtime=              → 202
 ```

@@ -55,6 +55,10 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	return fleet.DeliveryReceipt{}, driver.ErrUnsupported
 }
 
+func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.SessionRef, resp fleet.Response) (fleet.DeliveryReceipt, error) {
+	return fleet.DeliveryReceipt{}, driver.ErrUnsupported
+}
+
 func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionState, error) {
 	return fleet.SessionState{}, driver.ErrUnsupported
 }

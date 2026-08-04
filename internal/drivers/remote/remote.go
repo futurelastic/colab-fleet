@@ -688,3 +688,21 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 	}
 	return fleet.Ack{Accepted: true}, nil
 }
+
+// Respond answers a prompt on a session belonging to the peer (§3).
+//
+// Like Send, a refusal comes back as an ordinary 200 carrying an outcome and
+// is returned as a value: the peer decided the session was not at a prompt,
+// which is information rather than a fault.
+func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.SessionRef, resp fleet.Response) (fleet.DeliveryReceipt, error) {
+	ctx, cancel := d.bounded(ctx)
+	defer cancel()
+
+	var out fleet.DeliveryReceipt
+	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/respond",
+		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
+	if err := d.do(ctx, req, http.MethodPost, path, resp, &out); err != nil {
+		return fleet.DeliveryReceipt{}, err
+	}
+	return out, nil
+}
