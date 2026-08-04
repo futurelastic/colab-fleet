@@ -1565,6 +1565,35 @@ bounded, and only once the interface is ready — and stops if a prompt is
 waiting, because clicking through a trust question is a consent decision a
 driver must not make on a caller's behalf.
 
+**F33 · A sibling project had already measured this family, and two of its
+findings were bugs here.** A supervisor built on the same substrate has been
+tracking "text arrived but was never submitted" for months. Reading its issue
+tracker was worth more than any amount of further testing, because it had
+counted things a single session cannot: eight stranded operator instructions in
+one day, and 37 of 39 panes fleet-wide holding the same unsent line.
+
+Two of its results applied directly:
+
+- **Submitting immediately after delivering loses a race.** The submit can win,
+  the prompt is submitted empty, and the text lands afterwards — where it sits
+  unsent forever. Delivery is now confirmed on screen before submitting, and a
+  failure to confirm is reported as `unknown` naming the stranded text rather
+  than silently dropped.
+- **`Enter` is not reliably the same as `C-m`.** The same pane, seconds apart,
+  ignored `Enter` and submitted on `C-m`. Both are "the same character" in
+  principle; only one has been observed to work when the other did not.
+
+Also worth recording: that project found a prompt whose highlighted default is
+`No, exit`. A caller that reflexively accepts the default would kill the
+session it was trying to start — which is why §2.7's `choice` is explicit, and
+why §2.3's evidence now names the highlighted option rather than merely
+reporting that something is blocked.
+
+**The general lesson is about where to look.** A design can be argued about
+indefinitely; a system that has been run in anger has counted its failures. When
+one exists next door, its bug tracker is evidence, and evidence outranks
+reasoning.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

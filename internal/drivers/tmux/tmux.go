@@ -99,6 +99,12 @@ const (
 	// above it.
 	defaultCaptureLines = 24
 
+	// submitConfirmWindow bounds the wait for delivered text to render before
+	// it is submitted. Generous on purpose: a slow render and a stuck pane
+	// look identical over a short budget, and failing early strands the text.
+	submitConfirmWindow   = 4 * time.Second
+	submitConfirmInterval = 150 * time.Millisecond
+
 	// promptDeliveryWindow bounds how long §2.1's initial prompt waits for
 	// the runtime to become ready. Generous, because starting an agent is
 	// slow and a prompt arriving late is better than one arriving into a
@@ -632,11 +638,46 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		"load-buffer", "-b", bufName, f.Name(), ";",
 		"paste-buffer", "-b", bufName, "-t", target.paneID, "-d",
 	}
-	if opts.Submit {
-		args = append(args, ";", "send-keys", "-t", target.paneID, "Enter")
-	}
 	if _, err := d.run(ctx, d.bin, args...); err != nil {
 		return fleet.DeliveryReceipt{}, fmt.Errorf("send: delivering: %w", err)
+	}
+
+	if !opts.Submit {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeQueued,
+			Reason:  "placed in the composer, not submitted",
+		}, nil
+	}
+
+	// CONFIRM THE TEXT LANDED BEFORE SUBMITTING, and submit with C-m.
+	//
+	// Both halves come from a sibling project that measured this family of
+	// failures over months, and both are the difference between "the message
+	// arrived" and "the message was received".
+	//
+	// The race: pasting and submitting back-to-back lets the submit win, so
+	// the prompt is submitted EMPTY and the text lands a moment later — where
+	// it then sits unsent forever. That signature was counted at eight
+	// stranded operator instructions in a single day, and separately at 37 of
+	// 39 panes fleet-wide.
+	//
+	// The keystroke: `Enter` was observed being silently dropped on a pane
+	// where `C-m` submitted immediately, same text, seconds apart. They are
+	// the same character in principle; they are not the same in practice, and
+	// only one of them has been seen to work when the other did not.
+	if !d.confirmLanded(ctx, target.paneID, text) {
+		// The text is in the composer and was not submitted. Say so plainly:
+		// the caller must decide whether to retry or clear it, and silence
+		// here is how a session ends up holding an instruction nobody knows
+		// about.
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeUnknown,
+			Reason: "text was delivered to the composer but did not render in time " +
+				"to be submitted safely; it is sitting there unsent",
+		}, nil
+	}
+	if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "C-m"); err != nil {
+		return fleet.DeliveryReceipt{}, fmt.Errorf("send: submitting: %w", err)
 	}
 
 	// Queued, not submitted: see Capabilities. The bytes were handed to
@@ -920,7 +961,10 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		}, nil
 	}
 
-	keys := []string{"Enter"}
+	// C-m rather than Enter — see confirmLanded for the measurement behind
+	// this. A prompt that swallows the keypress leaves the session blocked,
+	// which is the failure this operation exists to end.
+	keys := []string{"C-m"}
 	switch {
 	case resp.Cancel:
 		keys = []string{"Escape"}
@@ -928,7 +972,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		// Type the option number, then confirm. Accepting the highlighted
 		// default is the zero value precisely because it is the common case
 		// and needs no arithmetic about which option is where.
-		keys = []string{strconv.Itoa(resp.Choice), "Enter"}
+		keys = []string{strconv.Itoa(resp.Choice), "C-m"}
 	}
 	args := []string{"send-keys", "-t", target.paneID}
 	args = append(args, keys...)
@@ -1023,4 +1067,42 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) (ready, blocked
 		return found && text == "", false
 	}
 	return false, false
+}
+
+// confirmLanded waits until the composer actually shows the delivered text.
+//
+// A render can lag a busy TUI by longer than a naive fixed pause, and giving
+// up too early is not free: the text is already in the box, so a premature
+// failure strands an instruction rather than losing it. The loop therefore
+// keeps reading while there is budget, rather than sampling a fixed number of
+// times — a sibling project measured a legitimate delivery failing a ~360 ms
+// verification budget while the text was, seconds later, fully and correctly
+// rendered.
+//
+// Matching is on a prefix of the delivered text: the composer wraps long
+// input across lines and may decorate it, so requiring an exact whole-string
+// match would fail on precisely the long instructions that matter most.
+func (d *Driver) confirmLanded(ctx context.Context, paneID, text string) bool {
+	needle := strings.TrimSpace(text)
+	if needle == "" {
+		return true
+	}
+	if len(needle) > 24 {
+		needle = needle[:24]
+	}
+	deadline := d.now().Add(submitConfirmWindow)
+	for {
+		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID, "-S", "-6")
+		if err == nil && strings.Contains(stripSGR(string(out)), needle) {
+			return true
+		}
+		if d.now().After(deadline) || ctx.Err() != nil {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(submitConfirmInterval):
+		}
+	}
 }

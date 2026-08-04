@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,13 @@ type fakeMux struct {
 	captures   map[string]string
 	failList   bool
 	failCreate bool
+	// buffers/pasted make the fake behave like a terminal: text delivered
+	// through the paste buffer becomes visible in a later capture. Without
+	// that, send() can never confirm its own delivery and the confirmation
+	// path is untestable.
+	buffers map[string]string
+	pasted  map[string]string
+	noEcho  bool // simulate a pane that never renders what was pasted
 }
 
 func (f *fakeMux) setCapture(paneID, text string) {
@@ -87,7 +95,45 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, args)
+	if f.buffers == nil {
+		f.buffers = map[string]string{}
+	}
+	if f.pasted == nil {
+		f.pasted = map[string]string{}
+	}
 	switch args[0] {
+	case "load-buffer":
+		// One invocation carries both halves, separated by a literal ";":
+		//   load-buffer -b <name> <file> ; paste-buffer -b <name> -t <pane> -d
+		var content, pane string
+		for i, a := range args {
+			switch a {
+			case "load-buffer":
+				if i+3 < len(args) {
+					if raw, err := os.ReadFile(args[i+3]); err == nil {
+						content = string(raw)
+					}
+				}
+			case "paste-buffer":
+				for j := i; j < len(args)-1; j++ {
+					if args[j] == "-t" {
+						pane = args[j+1]
+					}
+				}
+			}
+		}
+		if pane != "" && !f.noEcho {
+			f.pasted[pane] += content
+		}
+		return nil, nil
+	case "capture-pane":
+		// Single-pane capture, as used to confirm delivery.
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "-t" {
+				return []byte(f.captures[args[i+1]] + "\n" + f.pasted[args[i+1]]), nil
+			}
+		}
+		return nil, nil
 	case "list-panes":
 		if f.failList {
 			return nil, errors.New("multiplexer server not running")
@@ -564,6 +610,92 @@ func TestListExposesStartedAtSoCallersCanCorroborate(t *testing.T) {
 		if s.StartedAt == nil {
 			t.Errorf("session %q has no StartedAt; the caller has nothing to quote back "+
 				"and §5.4's strong check is unreachable", s.ID)
+		}
+	}
+}
+
+// The submit race, from a sibling project's measurements: pasting and
+// submitting back-to-back lets the submit win, the prompt is submitted EMPTY,
+// and the text lands afterwards where it sits unsent forever. Counted there at
+// eight stranded operator instructions in one day.
+func TestSubmitOnlyAfterTheTextIsVisible(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "do the thing", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeQueued {
+		t.Fatalf("outcome = %q, want queued", got.Outcome)
+	}
+	// The capture must happen between the paste and the submit.
+	var pasteAt, captureAt, submitAt = -1, -1, -1
+	for i, c := range f.callsSnapshot() {
+		switch c[0] {
+		case "load-buffer":
+			pasteAt = i
+		case "capture-pane":
+			if captureAt < 0 && pasteAt >= 0 {
+				captureAt = i
+			}
+		case "send-keys":
+			submitAt = i
+		}
+	}
+	if pasteAt < 0 || captureAt < 0 || submitAt < 0 {
+		t.Fatalf("expected paste, capture and submit; got %d/%d/%d", pasteAt, captureAt, submitAt)
+	}
+	if !(pasteAt < captureAt && captureAt < submitAt) {
+		t.Errorf("order was paste=%d capture=%d submit=%d; the confirmation must sit "+
+			"between them or the submit can win the race", pasteAt, captureAt, submitAt)
+	}
+}
+
+// `Enter` was observed being silently dropped on a pane where `C-m` submitted
+// immediately — same text, seconds apart. Only one of them has been seen to
+// work when the other did not.
+func TestSubmitUsesControlM(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	if _, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "x", driver.SendOptions{Submit: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f.callsSnapshot() {
+		if c[0] == "send-keys" {
+			last := c[len(c)-1]
+			if last == "Enter" {
+				t.Error("submitted with Enter; C-m is the form measured to work where Enter did not")
+			}
+			if last != "C-m" {
+				t.Errorf("submit key = %q, want C-m", last)
+			}
+		}
+	}
+}
+
+// A pane that never renders the delivered text must not be submitted blind,
+// and the caller must be TOLD the text is sitting there — silence is how a
+// session ends up holding an instruction nobody knows about.
+func TestUnrenderedTextIsReportedNotSubmitted(t *testing.T) {
+	f := twoSessions()
+	f.noEcho = true
+	d := newTestDriver(f)
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "never renders", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeUnknown {
+		t.Errorf("outcome = %q, want unknown — delivered but not confirmed", got.Outcome)
+	}
+	if !strings.Contains(got.Reason, "unsent") {
+		t.Errorf("reason = %q; it must say the text is sitting in the composer", got.Reason)
+	}
+	for _, c := range f.callsSnapshot() {
+		if c[0] == "send-keys" {
+			t.Error("submitted without confirming the text had rendered")
 		}
 	}
 }
