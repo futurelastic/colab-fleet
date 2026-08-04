@@ -56,4 +56,29 @@ type Event struct {
 	Machine MachineId `json:"machine"`
 	Kind    EventKind `json:"kind"`
 	Payload any       `json:"payload"`
+
+	// Origin carries the sequence coordinates the ORIGINATING service gave
+	// this event, when it reached the caller through a proxy. Nil for
+	// events a service produced itself.
+	//
+	// Cursor and Epoch above always belong to the service the caller is
+	// talking to, so "resume from cursor N" is never ambiguous about whose
+	// N. Origin preserves what the peer said about its own sequence, so a
+	// caller that later talks to that peer directly can resume there
+	// instead of refetching.
+	//
+	// This is the same split §13.2 uses for source status and F20 for error
+	// kinds: adopt what the peer said about itself, add only what the
+	// relaying service is uniquely positioned to know — here, the ordering
+	// of this event against everything else the caller is receiving.
+	//
+	// The originating machine is Event.Machine and is not repeated here.
+	Origin *EventOrigin `json:"origin,omitempty"`
+}
+
+// EventOrigin is a relayed event's coordinates in its originating service's
+// own sequence (§7.3, §13).
+type EventOrigin struct {
+	Cursor int64  `json:"cursor"`
+	Epoch  string `json:"epoch"`
 }

@@ -532,7 +532,14 @@ func handleEvents(svc *Service) http.HandlerFunc {
 			}
 		}
 
-		ch, backlog, needResync, cancel := svc.Events(r.Context(), filter, fromCursor, fromEpoch)
+		// §13.1: a proxied subscription asks for the peer's LOCAL view, and
+		// a peer receiving it answers for itself without forwarding. The
+		// default is fleet, matching plural reads (api-http.md §3.2).
+		scope := ScopeFleet
+		if q.Get("scope") == string(ScopeLocal) {
+			scope = ScopeLocal
+		}
+		ch, backlog, needResync, cancel := svc.Events(r.Context(), scope, filter, fromCursor, fromEpoch)
 		defer cancel()
 
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -579,7 +586,7 @@ func handleEvents(svc *Service) http.HandlerFunc {
 func writeSSE(w http.ResponseWriter, f http.Flusher, ev fleet.Event) {
 	body, err := json.Marshal(sseEnvelope{
 		Cursor: ev.Cursor, Epoch: ev.Epoch, Machine: ev.Machine,
-		Kind: ev.Kind, Payload: ev.Payload,
+		Kind: ev.Kind, Payload: ev.Payload, Origin: ev.Origin,
 	})
 	if err != nil {
 		return
@@ -600,4 +607,10 @@ type sseEnvelope struct {
 	Machine fleet.MachineId `json:"machine"`
 	Kind    fleet.EventKind `json:"kind"`
 	Payload any             `json:"payload,omitempty"`
+	// Origin is the relayed event's coordinates in its originating
+	// service's sequence. Omitting it here once cost a live test its
+	// provenance while every unit test still passed — a separate wire type
+	// keeps the stream's shape in one place, but only if it is kept in step
+	// with what it encodes.
+	Origin *fleet.EventOrigin `json:"origin,omitempty"`
 }

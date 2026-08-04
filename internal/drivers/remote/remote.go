@@ -643,12 +643,3 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 	}
 	return fleet.Ack{Accepted: true}, nil
 }
-
-// Subscribe is not implemented: the peer's event stream is SSE
-// (api-http.md §4) and no service implements it yet, so there is nothing to
-// consume. Returning unsupported is the honest answer; a polling loop
-// dressed as a stream would violate §5.5 and §5.6 at once, and would do so
-// across a network, where §5.5's cost objection actually bites.
-func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver.SubscribeFilter) (driver.EventStream, error) {
-	return nil, driver.ErrUnsupported
-}

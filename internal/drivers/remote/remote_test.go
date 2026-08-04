@@ -425,13 +425,6 @@ func TestRefreshCapabilitiesAdoptsWhatThePeerReports(t *testing.T) {
 	}
 }
 
-func TestSubscribeIsUnsupportedRatherThanPolled(t *testing.T) {
-	d := New("peerbox", "http://127.0.0.1:1")
-	if _, err := d.Subscribe(context.Background(), caller, driver.SubscribeFilter{}); !errors.Is(err, driver.ErrUnsupported) {
-		t.Errorf("want ErrUnsupported, got %v", err)
-	}
-}
-
 // The expectation must survive the wire, or every cross-machine destroy
 // silently downgrades to the weak check.
 func TestCloseForwardsTheCallersExpectation(t *testing.T) {

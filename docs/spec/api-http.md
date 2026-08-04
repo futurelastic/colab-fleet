@@ -211,6 +211,18 @@ event: session.state
 data: {"cursor":41,"epoch":"...","machine":"...","kind":"session.state","payload":{...}}
 ```
 
+An event relayed from a peer additionally carries `origin`:
+
+```
+data: {"cursor":41,"epoch":"<this service>","machine":"<peer>","kind":"session.state",
+       "origin":{"cursor":7,"epoch":"<the peer>"},"payload":{...}}
+```
+
+`cursor` and `epoch` always belong to the service being talked to, so
+resumption is never ambiguous; `origin` preserves the peer's own coordinates so
+a caller that later talks to that peer directly can resume there. Proxied
+subscriptions ask the peer for `scope=local` (§13.1).
+
 `event:` lets a browser `EventSource` listen by kind; the `kind` property lets
 every other client read the stream as framed JSON without parsing SSE; and
 `id:` makes a reconnecting browser send `Last-Event-ID` on its own, so

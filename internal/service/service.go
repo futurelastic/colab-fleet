@@ -46,6 +46,26 @@ type Service struct {
 	epoch     string
 	startedAt time.Time
 
+	// peerCredential authorizes this service's OWN long-lived reads from
+	// peers — specifically the event subscriptions the hub multiplexes.
+	//
+	// This is deliberately not the confused deputy D1 removed, and the
+	// difference is worth being precise about. A unary proxied call has
+	// exactly one caller, so it must present that caller's authority, and a
+	// proxy holding its own credential could silently substitute it. A
+	// multiplexed subscription has MANY callers at once and outlives any of
+	// them: there is no single original caller whose authority it could
+	// carry, so pretending otherwise would mean picking one subscriber's
+	// credential and serving everyone else under it — which is worse than
+	// acting openly as the service.
+	//
+	// So the service subscribes as itself. §6 permits reads broadly and
+	// gates mutations, and a subscription is a read; nothing mutating ever
+	// uses this. The residual widening is real and recorded as §14 D9: with
+	// one shared token, "as itself" and "as any caller" are the same
+	// authority, and only per-peer identity can separate them.
+	peerCredential string
+
 	// events is the service-wide event plane: §7.3's cursor and epoch live
 	// here because they are per service instance, not per driver.
 	events *hub
@@ -71,7 +91,7 @@ func New(self fleet.MachineId) *Service {
 		startedAt: now,
 		local:     make(map[fleet.RuntimeId]driver.Driver),
 		peers:     make(map[fleet.MachineId]driver.Driver),
-		events:    newHub(now.UTC().Format(time.RFC3339Nano)),
+		events:    newHub(self, now.UTC().Format(time.RFC3339Nano)),
 	}
 }
 
@@ -84,13 +104,31 @@ func New(self fleet.MachineId) *Service {
 // The returned cancel must be called; it releases the subscriber and, when the
 // last one leaves, stops the driver-side stream so an idle service watches
 // nothing.
-func (s *Service) Events(ctx context.Context, filter driver.SubscribeFilter, fromCursor int64, fromEpoch string) (<-chan fleet.Event, []fleet.Event, bool, func()) {
-	sub, backlog, needResync := s.events.add(filter, fromCursor, fromEpoch)
+func (s *Service) Events(ctx context.Context, scope Scope, filter driver.SubscribeFilter, fromCursor int64, fromEpoch string) (<-chan fleet.Event, []fleet.Event, bool, func()) {
+	sub, backlog, needResync := s.events.add(scope, filter, fromCursor, fromEpoch)
 	s.ensureStream(ctx)
 	return sub.ch, backlog, needResync, func() {
 		s.events.remove(sub.id)
 		s.ensureStream(ctx)
 	}
+}
+
+// SetPeerCredential supplies the authority for this service's own peer
+// subscriptions. See the field comment; without it, peer streams are refused
+// and the fleet's event plane is silently local-only.
+func (s *Service) SetPeerCredential(tok string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.peerCredential = tok
+}
+
+func (s *Service) peerRequest() fleet.Request {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return fleet.Request{Caller: fleet.Caller{
+		Principal:  "system:" + string(s.self),
+		Credential: s.peerCredential,
+	}}
 }
 
 // Epoch reports this instance's epoch (§7.3).

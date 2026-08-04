@@ -962,37 +962,54 @@ was healthy and answering throughout.
   obviously reconcilable, and §13.1's one-hop rule is currently what keeps the
   question from arising.
 
-### D8 — Events do not cross machines · §5.5, §13
+### D8 — Events do not cross machines · §5.5, §13 — **RESOLVED**
 
-A service streams its own drivers' events, stamped and retained per §7.3. A
-peer's events do not arrive: the remote driver answers `unsupported` for
-`subscribe`, so nothing consumes a peer's stream and nothing multiplexes it.
+A relayed event keeps the originating machine and the origin's own
+`(cursor, epoch)` as provenance, and receives the relaying service's cursor for
+local ordering. So "resume from cursor N" is never ambiguous about whose N,
+while a caller that later talks to that peer directly can still resume there
+rather than refetch. This is the same "adopt what the peer said, add only what
+you are uniquely positioned to know" split §13.2 uses for source status and F20
+for error kinds.
 
-The asymmetry is worth stating plainly because it inverts the requirement.
-§5.5's entire rationale is that "federated callers may be many network
-round-trips away" and must not poll — yet push currently works only for callers
-that are already local, who are precisely the ones for whom polling would have
-been cheap.
+A proxied subscription asks the peer for `scope=local`, and a service serving a
+`scope=local` subscription neither streams from its own peers nor delivers peer
+events. §13.1 applies to subscriptions, and violating it here is worse than in
+a unary call: two mutually-configured machines would each hold an open stream
+to the other indefinitely, and a long-lived loop does not announce itself the
+way a failed request does.
 
-Nothing about the design blocks it; the pieces exist. What is missing is a
-decision about what a proxied subscription means, and it is not obvious:
+An interrupted peer stream is announced with a `source.status` before any
+reconnection, then resumed from the last cursor seen. Reconnecting quietly
+would leave a caller unable to distinguish "this peer has nothing to say" from
+"we stopped listening". See Appendix A, F25.
 
-- **Cursor and epoch are per service instance (§7.3).** A peer's cursors belong
-  to the peer's sequence. A proxy must either re-stamp relayed events with its
-  own — losing the ability to resume against the peer directly — or carry both,
-  which makes "resume from cursor N" ambiguous about whose N.
-- **A peer's resync is not the proxy's resync.** When a peer says
-  `control.resync`, every subscriber downstream of the proxy has a gap in that
-  peer's events but not in anyone else's. A single stream carrying one resync
-  signal cannot express "resync this source only".
-- **§13.1's one-hop rule applies here too.** A proxied subscription must ask
-  for the peer's local events, or two mutually-configured peers relay each
-  other's events forever.
+### D9 — A shared stream cannot present per-caller authority · §6, §13
 
-- **Proposed:** relayed events keep the origin's `(machine, cursor, epoch)` as
-  provenance and receive the proxy's own cursor for local ordering — the same
-  "adopt what the peer said, add what only you can know" split that §13.2 uses
-  for source status, and F20 for errors.
+Found by building D8, and it is the first place D1's fix does not reach.
+
+§13 requires a proxied request to present the ORIGINAL caller's authority. That
+rule assumes one request has one caller. A multiplexed subscription has many at
+once and outlives any of them: the service keeps one stream per peer and fans
+it out, so there is no single original caller whose credential it could carry.
+Picking one subscriber's would be worse than acting openly — everyone else
+would be served under an authority they never presented.
+
+So the service subscribes to peers **as itself**, with a credential used only
+for that. §6 permits reads broadly and gates mutations; a subscription is a
+read, and nothing mutating uses this path.
+
+The widening is real and unresolved. With one shared token, "as the service"
+and "as any caller" are the same authority, so a subscriber effectively reads a
+peer with the service's permissions rather than its own. Nothing detects this,
+because there is currently nothing to detect it with.
+
+- **Proposed fix:** per-peer identity (§6's outstanding work) gives the service
+  a distinct principal with read-only peer scope, and makes the difference
+  between "the service is watching" and "this caller is watching" expressible
+  and auditable. Until then, the honest position is that a subscription's
+  authority is the service's, and this document says so rather than implying
+  otherwise.
 
 ---
 
@@ -1328,6 +1345,30 @@ that falls off the retained window.
 Neither answer required a judgement call. Both were determined by rules already
 written down, which is the clearest sign so far that the design has become
 self-consistent enough to decide things on its own.
+
+**F25 · D1's rule met a case it did not anticipate, and the failure was
+silent.** The hub's peer pump called `subscribe` with a system request carrying
+no credential; the remote driver correctly refused, the pump returned, and the
+event plane was local-only with nothing logged and every test passing. The
+first symptom was a live cross-machine subscription that simply produced
+nothing.
+
+The lesson is not "add a credential". It is that **a rule phrased in terms of
+"the original caller" quietly assumes one caller per request**, and a
+multiplexed stream violates that assumption without violating the words. See
+D9.
+
+**F26 · A field was added to the event type and forgotten in its wire form.**
+`Origin` existed in memory, survived every unit test, and vanished at the
+encoder — the live cross-machine test showed events arriving correctly
+attributed with `origin: null`.
+
+The separate wire envelope exists precisely so the stream's shape is stated in
+one place, and it still drifted, because "stated in one place" only helps if
+something checks the two against each other. There is now a test that reads a
+frame off the wire and looks for the field. Worth generalising: **a type that
+mirrors another needs a test that crosses the boundary between them, or it
+mirrors it only until someone edits one side.**
 
 ### The pattern worth naming
 

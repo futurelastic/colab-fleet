@@ -23,6 +23,12 @@ other machines. Supervisors become clients.
 > anywhere, and watching costs what the subscribers actually asked for. Verified end to end: a session created after subscribing was
 > reported within half a second, and its death reported after it.
 >
+> **Events cross machines.** A relayed event keeps its originating machine and
+> the origin's own cursor and epoch as provenance, and takes the relaying
+> service's cursor for local ordering — so resumption is never ambiguous about
+> whose sequence. Verified live: a session created on one machine appeared on
+> the other's stream in under a second, with both sets of coordinates intact.
+>
 > **Federation is proven.** A second driver — an HTTP client to a peer service —
 > satisfies the same interface, and the whole path runs end to end: a caller
 > asks a service that holds no local drivers, which proxies through the remote
@@ -198,12 +204,12 @@ Stated plainly so nobody rediscovers them the expensive way.
   safely, so the cost is diagnostic rather than correctness: a misconfigured
   peer looks like a minimal one forever. This is §5.7 a third time; see spec
   spec §14 D3.
-- **Events do not cross machines.** A service streams its own drivers' events;
-  a peer's do not arrive, because the remote driver cannot subscribe. That
-  inverts §5.5's requirement — push works only for callers who are already
-  local. The blocker is a design decision, not code: whose cursor and epoch a
-  relayed event carries, and how one stream expresses "resync this source
-  only". See spec §14 D8.
+- **A subscription's authority is the service's, not the subscriber's.** A
+  multiplexed stream serves many callers at once and outlives any of them, so
+  there is no single "original caller" whose credential it could present — the
+  assumption §13's rule was written on. The service subscribes to peers as
+  itself, using a read-only path, and with one shared token that is a real
+  widening nothing can currently detect. See spec §14 D9.
 - **Auth has no lifecycle.** A static bearer token is specified; issuance,
   rotation and scoping are not.
 - **`SourceState` has no member for "reachable but unsupported"** — currently

@@ -49,6 +49,7 @@ const defaultRetention = 512
 // fans out to subscribers.
 type hub struct {
 	epoch     string
+	self      fleet.MachineId
 	retention int
 
 	mu     sync.Mutex
@@ -67,13 +68,19 @@ type subscriber struct {
 	id     int
 	ch     chan fleet.Event
 	filter driver.SubscribeFilter
+	// scope decides whether this subscriber's existence justifies streaming
+	// from peers. A peer asking us for scope=local must NOT cause us to open
+	// streams to our own peers — that is §13.1 in the event plane, and
+	// violating it makes two mutually-configured machines each hold an open
+	// stream to the other forever.
+	scope Scope
 	// dropped records that this subscriber fell behind. Its next read gets
 	// a resync rather than a hole it cannot detect.
 	dropped bool
 }
 
-func newHub(epoch string) *hub {
-	return &hub{epoch: epoch, retention: defaultRetention, subs: map[int]*subscriber{}}
+func newHub(self fleet.MachineId, epoch string) *hub {
+	return &hub{epoch: epoch, self: self, retention: defaultRetention, subs: map[int]*subscriber{}}
 }
 
 // publish stamps an event and fans it out. Called by whatever is pumping a
@@ -92,6 +99,13 @@ func (h *hub) publish(ev fleet.Event) {
 	}
 
 	for _, s := range h.subs {
+		// A local-scoped subscriber must not receive a peer's events —
+		// otherwise "scope=local" would be a description of what this
+		// service asks for rather than of what it answers with, and a
+		// proxied subscription would carry the fleet back to the peer.
+		if s.scope == ScopeLocal && ev.Machine != "" && ev.Machine != h.self {
+			continue
+		}
 		if !matchesEvent(s.filter, ev) {
 			continue
 		}
@@ -110,11 +124,11 @@ func (h *hub) publish(ev fleet.Event) {
 
 // add registers a subscriber resuming from (cursor, epoch). It returns the
 // backlog to replay and whether the subscriber must resync first.
-func (h *hub) add(filter driver.SubscribeFilter, fromCursor int64, fromEpoch string) (*subscriber, []fleet.Event, bool) {
+func (h *hub) add(scope Scope, filter driver.SubscribeFilter, fromCursor int64, fromEpoch string) (*subscriber, []fleet.Event, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	s := &subscriber{id: h.nextID, ch: make(chan fleet.Event, 64), filter: filter}
+	s := &subscriber{id: h.nextID, ch: make(chan fleet.Event, 64), filter: filter, scope: scope}
 	h.nextID++
 	h.subs[s.id] = s
 
@@ -158,6 +172,20 @@ func (h *hub) subscriberCount() int {
 	return len(h.subs)
 }
 
+// wantsPeers reports whether any subscriber asked for a fleet-wide view. See
+// subscriber.scope for why this gates peer streams rather than always running
+// them.
+func (h *hub) wantsPeers() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, s := range h.subs {
+		if s.scope == ScopeFleet {
+			return true
+		}
+	}
+	return false
+}
+
 // unionFilter computes what the driver must watch to satisfy everyone.
 //
 // If every active subscriber names sessions, the union names them and the
@@ -185,9 +213,9 @@ func (h *hub) unionFilter() driver.SubscribeFilter {
 
 // matchesEvent applies a subscriber's filter to an already-stamped event.
 func matchesEvent(f driver.SubscribeFilter, ev fleet.Event) bool {
-	// Control events are never filtered out: a subscriber that filtered
-	// away its own resync notice would be told nothing precisely when it
-	// most needs telling.
+	// Control events are never filtered out by session: a subscriber that
+	// filtered away its own resync notice would be told nothing precisely
+	// when it most needs telling.
 	if ev.Kind == fleet.EventControlResync || ev.Kind == fleet.EventSourceStatus {
 		return true
 	}
@@ -245,15 +273,26 @@ func (s *Service) ensureStream(ctx context.Context) {
 	h.mu.Unlock()
 
 	for _, d := range s.localDrivers() {
-		go s.pump(streamCtx, d, want)
+		go s.pump(streamCtx, d, fleet.SystemRequest(), want)
+	}
+	// Peers only when somebody actually asked for the fleet. See
+	// subscriber.scope: a peer's own scope=local subscription must not make
+	// us open streams back to our peers (§13.1).
+	if h.wantsPeers() {
+		for _, d := range s.peerDrivers() {
+			// Peers need an authority a local driver does not: see
+			// Service.peerCredential for why this is the service's own and
+			// not some subscriber's.
+			go s.pump(streamCtx, d, s.peerRequest(), want)
+		}
 	}
 }
 
 // pump feeds one driver's events into the hub. A driver that cannot stream
 // says so once; it is not retried in a loop, because ErrUnsupported is a
 // statement about the substrate rather than a transient failure.
-func (s *Service) pump(ctx context.Context, d driver.Driver, filter driver.SubscribeFilter) {
-	stream, err := d.Subscribe(ctx, fleet.SystemRequest(), filter)
+func (s *Service) pump(ctx context.Context, d driver.Driver, req fleet.Request, filter driver.SubscribeFilter) {
+	stream, err := d.Subscribe(ctx, req, filter)
 	if err != nil {
 		return
 	}

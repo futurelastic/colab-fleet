@@ -64,6 +64,10 @@ func main() {
 	}
 
 	svc := service.New(self)
+	// The service's own authority for long-lived peer reads (event
+	// subscriptions). Never used for a proxied unary call — those carry the
+	// original caller's credential (§13).
+	svc.SetPeerCredential(token)
 
 	// --- local runtime -------------------------------------------------
 	var (
