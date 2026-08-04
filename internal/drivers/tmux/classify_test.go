@@ -194,3 +194,122 @@ func TestIsRuleToleratesLabelsAndWidths(t *testing.T) {
 		t.Error("empty line is not a rule")
 	}
 }
+
+// --- extreme cases -------------------------------------------------------
+//
+// Every one of these was either observed on a live machine or is a direct
+// neighbour of one that was. The failure mode they guard against is specific:
+// a composer detector that is wrong in one direction refuses every send to a
+// session forever (the session looks stuck for no visible reason), and wrong
+// in the other direction concatenates into a message a human was still typing.
+
+// The one that was live. A selection menu marks its highlighted option with
+// the same glyph as the composer prompt, and sits above a rule — so it is a
+// composer to anything that does not require the OPENING fence too.
+const fixtureMenuSelected = `  Which name should it use?
+
+❯ 1. the-first-option (Recommended)
+     An explanatory line under the option.
+  2. the-second-option
+     Another explanation.
+  4. Type something.
+` + rule + `
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel`
+
+func TestSelectedMenuItemIsNotTreatedAsUnsentInput(t *testing.T) {
+	text, ok := composerText(newScreen(fixtureMenuSelected))
+	if ok || text != "" {
+		t.Fatalf("menu selection read as composer input (%q); every send to this "+
+			"session would be refused forever, for text nobody typed", text)
+	}
+	// It is still blocked on a human, which is a different statement.
+	if got := classify(fixtureMenuSelected, true); got.Status != fleet.StatusWaitingInput {
+		t.Errorf("status = %q, want waiting_input", got.Status)
+	}
+}
+
+// A long message wraps below the prompt and is still unsent. Reading only the
+// first line under-reports it — the direction that corrupts a message.
+func TestWrappedComposerCapturesEveryLine(t *testing.T) {
+	f := rule + "\n❯ this is a long message that the human\n  wrapped onto a second line and a\n  third\n" + rule
+	text, ok := composerText(newScreen(f))
+	if !ok {
+		t.Fatal("fenced composer not found")
+	}
+	for _, want := range []string{"long message", "second line", "third"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("wrapped composer lost %q: got %q", want, text)
+		}
+	}
+}
+
+// A labelled opening fence in a narrow pane leaves few rule characters. If
+// that is not recognised as a rule, the composer is not fenced and unsent
+// input goes undetected.
+func TestNarrowPaneWithLongSessionNameStillFences(t *testing.T) {
+	narrow := "── a-very-long-session-name-here ──"
+	if !isRule(narrow) {
+		t.Fatal("labelled fence in a narrow pane not recognised; unsent input would go undetected")
+	}
+	f := narrow + "\n❯ half-typed thought\n" + narrow
+	text, ok := composerText(newScreen(f))
+	if !ok || text != "half-typed thought" {
+		t.Errorf("composer = %q ok=%v, want the typed text", text, ok)
+	}
+}
+
+// ...and prose must still not be mistaken for a fence.
+func TestProseIsNotAFence(t *testing.T) {
+	for _, line := range []string{
+		"the design — as discussed — is settled",
+		"a-b-c-d-e-f-g-h",
+		"",
+		"   ",
+		"1. option — with an em dash",
+	} {
+		if isRule(line) {
+			t.Errorf("prose treated as a rule: %q", line)
+		}
+	}
+}
+
+// Whitespace-only input is not input. Refusing on it would stick a session on
+// a stray space.
+func TestWhitespaceOnlyComposerIsEmpty(t *testing.T) {
+	f := rule + "\n❯      \n" + rule
+	text, ok := composerText(newScreen(f))
+	if !ok {
+		t.Fatal("composer not found")
+	}
+	if text != "" {
+		t.Errorf("composer = %q, want empty; a stray space must not block a session", text)
+	}
+}
+
+// A pane that is not the TUI at all yields no composer — and therefore no
+// refusal on composer grounds, which is correct: we know nothing about it.
+func TestNonTUIPaneYieldsNoComposer(t *testing.T) {
+	for _, f := range []string{
+		"$ ls -la\ntotal 8\ndrwxr-xr-x  2 user  staff",
+		"",
+		"\n\n\n",
+		"❯ a bare prompt with no fences at all",
+	} {
+		if _, ok := composerText(newScreen(f)); ok {
+			t.Errorf("claimed a composer in non-TUI output: %q", f)
+		}
+	}
+}
+
+// A fresh session that has not painted its chrome yet must not be read as
+// holding input.
+func TestUnpaintedSessionHoldsNothing(t *testing.T) {
+	if _, ok := composerText(newScreen("\n\n")); ok {
+		t.Error("unpainted pane reported a composer")
+	}
+	if got := classify("", true); got.Status != fleet.StatusUnknown {
+		t.Errorf("status = %q, want unknown for an empty screen", got.Status)
+	}
+}

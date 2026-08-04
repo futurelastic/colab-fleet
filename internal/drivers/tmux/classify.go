@@ -101,15 +101,32 @@ func isRule(line string) bool {
 	if trimmed == "" {
 		return false
 	}
-	n := 0
+	rules := 0
 	for _, r := range trimmed {
 		if r == ruleRune {
-			n++
+			rules++
 		}
 	}
-	// A labelled rule is still overwhelmingly rule; a sentence containing
-	// an em-dash is not.
-	return n >= 8
+	// A small absolute count, and nothing proportional.
+	//
+	// Both stricter rules were tried and both failed on real screens. An
+	// absolute width (eight) missed the ONE fence that carries content: the
+	// opening rule is labelled with the session name, so a long name in a
+	// narrow pane leaves few rule characters. Requiring rule characters to
+	// outnumber the label failed for the same reason — the label is often
+	// longer than the dashes around it.
+	//
+	// Failing to recognise a fence is the damaging direction. It means the
+	// composer is not fenced, so unsent input goes undetected and gets
+	// concatenated into a message a human was still typing — invisible when
+	// it happens. Over-recognising merely refuses a send, which is visible
+	// and recoverable.
+	//
+	// This character is box-drawing (U+2500); prose does not contain it, and
+	// an em dash is a different rune entirely. Transcript tables do contain
+	// it, which is harmless: the composer is anchored from the bottom of the
+	// screen, and a table is always above it.
+	return rules >= 3
 }
 
 // composerText returns the text a human has typed into the input box but
@@ -122,8 +139,7 @@ func isRule(line string) bool {
 // commands the human already ran (see the /remote-control fixture). Those
 // are history. Only the fenced one is live input.
 func composerText(s screen) (string, bool) {
-	// Walk backwards to the last rule; the composer is the line above the
-	// final rule and below the one before it.
+	// Walk back to the closing rule.
 	last := -1
 	for i := len(s.lines) - 1; i >= 0; i-- {
 		if isRule(s.lines[i]) {
@@ -134,19 +150,60 @@ func composerText(s screen) (string, bool) {
 	if last <= 0 {
 		return "", false
 	}
+
+	// Find a prompt-marked line above it, stopping at another rule.
+	prompt := -1
 	for i := last - 1; i >= 0; i-- {
-		line := s.lines[i]
-		if isRule(line) {
-			// Reached the opening rule without finding a composer.
-			return "", false
+		if isRule(s.lines[i]) {
+			return "", false // opening rule reached with no composer between
 		}
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, composerRuneMarker) {
-			text := strings.TrimSpace(strings.TrimPrefix(trimmed, composerRuneMarker))
-			return text, true
+		if strings.HasPrefix(strings.TrimSpace(s.lines[i]), composerRuneMarker) {
+			prompt = i
+			break
 		}
 	}
-	return "", false
+	if prompt < 0 {
+		return "", false
+	}
+
+	// THE COMPOSER MUST BE FENCED, and this check is the whole reason this
+	// function is not two lines long.
+	//
+	// The prompt glyph is not unique to the composer: the TUI marks the
+	// SELECTED ITEM of a menu with the same character. A menu therefore
+	// presents a ❯-prefixed line above a rule, which is indistinguishable
+	// from a composer unless the opening fence is also required.
+	//
+	// Observed on a live session: a selection menu whose highlighted option
+	// was read as pending input. Every send to that session would have been
+	// refused, forever, with a reason naming input a human never typed —
+	// a session stopped by text that was never there.
+	//
+	// So: the first non-blank line above the prompt must be a rule. A menu's
+	// preceding line is menu text and fails this; a real composer's is its
+	// opening fence.
+	fenced := false
+	for i := prompt - 1; i >= 0; i-- {
+		if strings.TrimSpace(s.lines[i]) == "" {
+			continue
+		}
+		fenced = isRule(s.lines[i])
+		break
+	}
+	if !fenced {
+		return "", false
+	}
+
+	text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s.lines[prompt]), composerRuneMarker))
+	// Continuation lines: a long message wraps below the prompt and is still
+	// unsent input. Reading only the first line would under-report it, and
+	// under-reporting is the direction that corrupts a human's message.
+	for i := prompt + 1; i < last; i++ {
+		if seg := strings.TrimSpace(s.lines[i]); seg != "" {
+			text += " " + seg
+		}
+	}
+	return strings.TrimSpace(text), true
 }
 
 // awaitingSelection reports whether the TUI is showing a menu that blocks

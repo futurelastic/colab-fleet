@@ -58,6 +58,11 @@ type hub struct {
 	subs   map[int]*subscriber
 	nextID int
 
+	// persist records the cursor high-water mark so a restart continues the
+	// sequence rather than reusing numbers (§7.3). Called under the lock and
+	// therefore kept cheap; nil when running without durable state.
+	persist func(int64)
+
 	// driver-side stream, kept alive only while somebody is listening
 	streamCancel context.CancelFunc
 	streamFilter driver.SubscribeFilter
@@ -92,6 +97,9 @@ func (h *hub) publish(ev fleet.Event) {
 	h.cursor++
 	ev.Cursor = h.cursor
 	ev.Epoch = h.epoch
+	if h.persist != nil {
+		h.persist(h.cursor)
+	}
 
 	h.ring = append(h.ring, ev)
 	if len(h.ring) > h.retention {

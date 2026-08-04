@@ -20,7 +20,27 @@ import (
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/godx-jp/colab-fleet/internal/state"
 )
+
+// eventSequence is what §7.3 needs to survive a restart.
+//
+// Persisting the epoch is only honest if the cursor continues with it. An
+// epoch says "this is the same sequence"; a service that kept its epoch while
+// restarting its cursor at zero would hand subscribers numbers it had already
+// used, which is worse than announcing a new instance.
+//
+// The retained event WINDOW is deliberately not persisted. A subscriber
+// resuming from an old cursor therefore gets resync_required — correct, and
+// announced as cursor_expired rather than epoch_changed, which is the truthful
+// reason: the sequence continued, this service simply cannot replay that far
+// back. Persisting the window would buy transparent restarts at the cost of
+// durably storing every event, which is a much larger mechanism than the
+// problem justifies.
+type eventSequence struct {
+	Epoch  string `json:"epoch"`
+	Cursor int64  `json:"cursor"`
+}
 
 // Scope selects how far a plural query reaches (api-http.md §3.2).
 type Scope string
@@ -66,6 +86,8 @@ type Service struct {
 	// authority, and only per-peer identity can separate them.
 	peerCredential string
 
+	state *state.Store
+
 	// events is the service-wide event plane: §7.3's cursor and epoch live
 	// here because they are per service instance, not per driver.
 	events *hub
@@ -75,10 +97,48 @@ type Service struct {
 	peers map[fleet.MachineId]driver.Driver
 }
 
-// New constructs a Service. self is this machine's own identity, used to
-// stamp SourceStatus entries this service produces directly — as opposed
-// to adopting a peer's own self-report (§13.2).
+// New constructs a Service without durable state. See NewWithState.
 func New(self fleet.MachineId) *Service {
+	svc, _ := NewWithState(self, nil)
+	return svc
+}
+
+// NewWithState constructs a Service that remembers across restarts (§7.3,
+// §10, §12). A nil store means in-memory only, which is a legitimate
+// configuration and not a degraded one.
+//
+// self is this machine's own identity, used to stamp SourceStatus entries this
+// service produces directly — as opposed to adopting a peer's own self-report
+// (§13.2).
+func NewWithState(self fleet.MachineId, st *state.Store) (*Service, error) {
+	svc := newService(self)
+	svc.state = st
+	if st == nil {
+		return svc, nil
+	}
+
+	var seq eventSequence
+	found, err := st.Load("events", &seq)
+	if err != nil {
+		return nil, err
+	}
+	if found && seq.Epoch != "" {
+		svc.epoch = seq.Epoch
+		svc.events.epoch = seq.Epoch
+		svc.events.cursor = seq.Cursor
+		svc.events.persist = func(c int64) {
+			_ = st.Save("events", eventSequence{Epoch: seq.Epoch, Cursor: c})
+		}
+		return svc, nil
+	}
+	epoch := svc.epoch
+	svc.events.persist = func(c int64) {
+		_ = st.Save("events", eventSequence{Epoch: epoch, Cursor: c})
+	}
+	return svc, st.Save("events", eventSequence{Epoch: epoch})
+}
+
+func newService(self fleet.MachineId) *Service {
 	now := time.Now()
 	return &Service{
 		self: self,

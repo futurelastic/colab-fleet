@@ -558,7 +558,20 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		}, nil
 	}
 
-	if pending, ok := composerText(newScreen(captures[target.paneID])); ok && pending != "" {
+	screenNow := newScreen(captures[target.paneID])
+
+	// A blocking menu is its own refusal, named honestly. Pasting text into a
+	// selection prompt does not deliver a message — it drives the menu, which
+	// is a different and worse kind of corruption than concatenation.
+	if awaitingSelection(screenNow) {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "session is showing a selection menu; delivered text would " +
+				"drive the menu rather than be received as input (§2.4)",
+		}, nil
+	}
+
+	if pending, ok := composerText(screenNow); ok && pending != "" {
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: "composer holds unsent input; delivering would concatenate " +

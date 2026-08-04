@@ -1404,6 +1404,37 @@ existed, not that the mechanism is what the rule requires.** The conditions
 here were a deployment convenience nobody had chosen deliberately, and removing
 it invalidated a working, tested, deployed path.
 
+**F28 · The refusal that protects a session can also strand it, and the same
+function failed both ways.** §2.4's refusal exists so input is never
+concatenated into a message a human was still typing. Its detector reads a
+terminal, and a detector that reads terminals is wrong in two directions with
+very different consequences:
+
+- **False positive** — text that is not pending input is read as pending, so
+  every send to that session is refused, permanently, for text nobody typed.
+  The session simply stops responding to its supervisor, with no error anywhere
+  and a reason that names input that does not exist.
+- **False negative** — real pending input is missed, and the next delivery
+  concatenates into a half-typed message. Invisible when it happens.
+
+Both were live. A selection menu marks its highlighted option with the same
+glyph as the composer prompt, so a session sitting on a menu read as holding
+input — found by running the detector across every session on a real machine
+rather than by reasoning about it. And the fix for that (requiring the composer
+to be fenced by rules on both sides) then depended on recognising a fence whose
+label can be longer than its dashes, where two successive thresholds failed on
+real screens.
+
+The rule that survived is deliberately generous about what counts as a fence,
+because the two errors are not symmetric: **a refused send is visible and
+recoverable; a corrupted message is neither.** Where a detector must be wrong,
+it should be wrong in the direction somebody notices.
+
+Recorded at length because the failure mode generalises past this driver: any
+component that infers intent from a rendered interface will eventually read
+that interface's own furniture as content, and the first symptom is a
+correctly-functioning system that has quietly stopped doing anything.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered
