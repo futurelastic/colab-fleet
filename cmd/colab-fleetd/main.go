@@ -25,6 +25,11 @@
 //	                       (§7.2), and the address is one the OPERATOR has
 //	                       confirmed reachable from THIS machine — never the
 //	                       peer's own idea of its name.
+//	FLEET_STATE_DIR        directory for durable state: idempotency keys
+//	                       (§10) and the event sequence (§7.3). Absent means
+//	                       in-memory only, which is honest for a throwaway
+//	                       instance and is the defect D5 described for a real
+//	                       one. Created if missing, mode 0700.
 //	FLEET_CONFIG           path to a JSON file carrying the principal table
 //	                       and per-peer credentials (§6). When present it is
 //	                       authoritative and FLEET_TOKEN / FLEET_ALLOW_* are
@@ -54,6 +59,7 @@ import (
 	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
 	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
 	"github.com/godx-jp/colab-fleet/internal/service"
+	"github.com/godx-jp/colab-fleet/internal/state"
 )
 
 func main() {
@@ -79,7 +85,21 @@ func main() {
 		}
 	}
 
-	svc := service.New(self)
+	// Durable state (§7.3, §10, §12). Nil is a valid configuration; a
+	// configured directory that cannot be opened is not, because starting
+	// anyway would silently be the in-memory behaviour this replaces.
+	store, err := state.Open(os.Getenv("FLEET_STATE_DIR"))
+	if err != nil {
+		log.Fatalf("colab-fleetd: %v", err)
+	}
+	if store != nil {
+		log.Printf("colab-fleetd: state directory %s", store.Dir())
+	}
+
+	svc, err := service.NewWithState(self, store)
+	if err != nil {
+		log.Fatalf("colab-fleetd: %v", err)
+	}
 	// The service's own authority for long-lived peer reads (event
 	// subscriptions, §14 D9). Never used for a proxied unary call — those
 	// authenticate as this machine and assert the caller (§6, §13).
@@ -98,11 +118,16 @@ func main() {
 		// prefix that differs by architecture. Relying on PATH resolution
 		// here fails only under remote invocation, which is precisely how
 		// this service gets deployed.
-		var opts []tmux.Option
+		opts := []tmux.Option{tmux.WithState(store)}
 		if bin := os.Getenv("FLEET_TMUX_BIN"); bin != "" {
 			opts = append(opts, tmux.WithBinary(bin))
 		}
 		d := tmux.New(self, opts...)
+		// An unreadable key table is surfaced, never absorbed: continuing
+		// with an empty one is exactly the behaviour §10 calls a disaster.
+		if err := d.StateError(); err != nil {
+			log.Fatalf("colab-fleetd: %v", err)
+		}
 		localDriver, runtimeID = d, tmux.DefaultRuntime
 	case "stub":
 		localDriver, runtimeID = &stub.Driver{DeadlineMs: 5000}, "stub"

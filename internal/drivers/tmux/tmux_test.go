@@ -23,11 +23,12 @@ import (
 // than the driver, but one that would have made every subscription test
 // quietly untrustworthy.
 type fakeMux struct {
-	mu       sync.Mutex
-	calls    [][]string
-	sessions []fakeSession
-	captures map[string]string
-	failList bool
+	mu         sync.Mutex
+	calls      [][]string
+	sessions   []fakeSession
+	captures   map[string]string
+	failList   bool
+	failCreate bool
 }
 
 func (f *fakeMux) setCapture(paneID, text string) {
@@ -104,6 +105,11 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			b.WriteString("\n")
 		}
 		return []byte(b.String()), nil
+	case "new-session":
+		if f.failCreate {
+			return nil, errors.New("cannot create session")
+		}
+		return nil, nil
 	case "display-message":
 		// The batched capture call: emit marker + capture for each pane.
 		mark := testNonce + "P"

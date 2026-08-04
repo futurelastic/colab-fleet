@@ -915,19 +915,30 @@ answers `unsupported` — so a filter naming sessions narrows what one machine
 watches, not what a fleet does. That is the event plane's missing federation
 design, not the filter's shape.
 
-### D5 — Idempotency retention does not outlive the service · §10
+### D5 — Idempotency retention does not outlive the service · §10 — **RESOLVED**
 
-Unlike D1–D4 this is a **known non-compliance of the current implementation**,
-not a gap in the interface. §10 as clarified is satisfiable; nothing satisfies
-it yet.
+Keys are durable when a state directory is configured, so a caller retrying a
+`create` across a restart receives the session it already has rather than a
+second one.
 
-The local driver's idempotency keys live in process memory. A caller retrying a
-`create` across a service restart therefore receives §10's exact disaster — two
-agents in one working directory — from a driver that correctly declares
-`supportsResume: true`, because that flag answers a question about *sessions*.
+**Intent is recorded before the side effect**, which is the part worth stating.
+Persisting a key after starting the session closes the restart window and
+leaves a narrower one: crash in between, and a retry starts a second agent in
+the same working directory — the same disaster through a smaller door. So a key
+is reserved first, and completed with the resulting reference afterwards.
 
-- **Proposed fix:** persist keys, or declare that they are not persisted so a
-  caller can compensate.
+A reservation found at startup means exactly one thing, and the response is to
+look rather than assume. If a session matching the recorded name **and working
+directory** exists, it is adopted and the record completed; if nothing matches,
+the create did not take effect and proceeding is safe because there is nothing
+to duplicate. Both branches are safe, which is the property worth having.
+Matching on the name alone would adopt a recycled name — §5.4's lesson, in a
+new operation.
+
+In-memory remains a legitimate configuration for a throwaway instance. What is
+no longer possible is a service that looks durable and is not: an unreadable
+key table is fatal at startup rather than absorbed into an empty one, because
+starting fresh silently discards precisely what §10 exists to keep.
 
 ### D6 — Mutation permission cannot distinguish host from client · §6 — **RESOLVED**
 
@@ -1434,6 +1445,27 @@ Recorded at length because the failure mode generalises past this driver: any
 component that infers intent from a rendered interface will eventually read
 that interface's own furniture as content, and the first symptom is a
 correctly-functioning system that has quietly stopped doing anything.
+
+**F29 · Persisting the epoch is only honest if the cursor persists with it.**
+§7.3's epoch tells a subscriber whether its cursors still mean anything. The
+obvious way to stop every restart resyncing every subscriber is to keep the
+epoch — and doing only that would be a lie, because a service reusing numbers
+it had already issued is worse than one announcing a new instance.
+
+So the cursor high-water mark is persisted alongside. The retained event
+*window* deliberately is not: a subscriber resuming from an old cursor still
+gets `resync_required`, but now with the truthful reason — the sequence
+continued, this service simply cannot replay that far back. Persisting the
+window would buy transparent restarts at the cost of durably storing every
+event, a much larger mechanism than the problem justifies.
+
+Verified across a real restart: same epoch, and the next events issued cursors
+3 and 4 rather than starting again at 1.
+
+The general shape is worth keeping. **Durability decisions come in sets.** A
+field that identifies a sequence and a field that positions you within it are
+one decision wearing two names, and persisting either alone produces a service
+that describes itself incorrectly.
 
 ### The pattern worth naming
 

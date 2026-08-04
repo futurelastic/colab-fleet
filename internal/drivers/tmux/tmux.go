@@ -77,6 +77,7 @@ import (
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/godx-jp/colab-fleet/internal/state"
 )
 
 const (
@@ -146,14 +147,18 @@ type Driver struct {
 	now          func() time.Time
 	nonce        func() string
 
+	store   *state.Store
+	idemErr error
+
 	mu sync.Mutex
 	// observed is this driver's most recent sighting of each session id,
 	// keyed by id. It is what Close corroborates against (§5.4) and what
 	// startup reconciliation adopts into (§12).
 	observed map[string]observation
-	// idem maps an idempotency key to the ref it produced (§10). In
-	// memory only — see FINDINGS 2.
-	idem      map[string]idemEntry
+	// idem is the durable idempotency table (§10). Backed by a file when a
+	// state store is configured; in-memory otherwise, which is honest for a
+	// throwaway instance and was the defect (D5) for a real one.
+	idem      *idemStore
 	retention time.Duration
 }
 
@@ -161,11 +166,6 @@ type observation struct {
 	created time.Time
 	cwd     string
 	at      time.Time
-}
-
-type idemEntry struct {
-	ref fleet.SessionRef
-	at  time.Time
 }
 
 // Option configures a Driver.
@@ -223,14 +223,32 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 		now:          time.Now,
 		nonce:        randomNonce,
 		observed:     map[string]observation{},
-		idem:         map[string]idemEntry{},
 		retention:    defaultIdempotencyRetention,
 	}
 	for _, o := range opts {
 		o(d)
 	}
+	// Constructed after options so a configured state store and retention
+	// are both in effect. An unreadable table is fatal rather than silently
+	// discarded: losing keys quietly is how §10's disaster arrives dressed
+	// as a clean start.
+	idem, err := newIdemStore(d.store, d.retention, d.now)
+	if err != nil {
+		d.idemErr = err
+		idem, _ = newIdemStore(nil, d.retention, d.now)
+	}
+	d.idem = idem
 	return d
 }
+
+// WithState makes this driver remember idempotency keys across a restart
+// (§10, defect D5).
+func WithState(st *state.Store) Option { return func(d *Driver) { d.store = st } }
+
+// StateError reports a failure to load durable state, if any. A caller that
+// ignores it gets a working driver with an empty key table, which is the
+// behaviour that made D5 a defect — so cmd surfaces it at startup.
+func (d *Driver) StateError() error { return d.idemErr }
 
 var _ driver.Driver = (*Driver)(nil)
 
@@ -755,15 +773,19 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if key == "" {
 		return fleet.SessionRef{}, errors.New("create: idempotency key is required (§10)")
 	}
-	now := d.now()
-
-	d.mu.Lock()
-	d.sweepIdemLocked(now)
-	if e, ok := d.idem[key]; ok {
-		d.mu.Unlock()
-		return e.ref, nil
+	// A completed key returns what it produced; a pending one means this
+	// driver was interrupted mid-create and must find out what happened
+	// before doing anything (§10, see idempotency.go).
+	if ref, rec, found := d.idem.lookup(key); found {
+		if rec.Phase == idemComplete {
+			return ref, nil
+		}
+		if adopted, ok := d.resolvePending(ctx, key, rec); ok {
+			return adopted, nil
+		}
+		// Nothing was started, or nothing survives. Safe to proceed.
+		_ = d.idem.release(key)
 	}
-	d.mu.Unlock()
 
 	name := spec.Name
 	if name == "" {
@@ -778,19 +800,29 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		return fleet.SessionRef{}, fmt.Errorf("create: contextRef must be absolute, got %q", contextFile)
 	}
 
+	// Intent first. A crash between here and the session starting leaves a
+	// pending record, which the next attempt resolves by looking rather
+	// than guessing.
+	if err := d.idem.reserve(key, name, string(spec.Cwd)); err != nil {
+		return fleet.SessionRef{}, fmt.Errorf("create: recording intent: %w", err)
+	}
+
 	argv := d.build(spec, contextFile)
 	args := append([]string{
 		"new-session", "-d", "-s", name, "-c", string(spec.Cwd), "--",
 	}, argv...)
 	if _, err := d.run(ctx, d.bin, args...); err != nil {
+		// The create demonstrably failed, so the reservation describes
+		// nothing. Releasing it keeps a retry from being answered with a
+		// session that was never started.
+		_ = d.idem.release(key)
 		return fleet.SessionRef{}, fmt.Errorf("create: %w", err)
 	}
 
 	ref := fleet.SessionRef{Machine: d.machine, ID: name, Name: name}
-
-	d.mu.Lock()
-	d.idem[key] = idemEntry{ref: ref, at: now}
-	d.mu.Unlock()
+	if err := d.idem.complete(key, ref); err != nil {
+		return fleet.SessionRef{}, fmt.Errorf("create: recording result: %w", err)
+	}
 
 	if spec.Prompt != "" {
 		// Best effort, and deliberately not fatal: the session exists,
@@ -801,14 +833,6 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		_, _ = d.Send(ctx, req, ref, spec.Prompt, driver.SendOptions{Submit: true})
 	}
 	return ref, nil
-}
-
-func (d *Driver) sweepIdemLocked(now time.Time) {
-	for k, e := range d.idem {
-		if now.Sub(e.at) > d.retention {
-			delete(d.idem, k)
-		}
-	}
 }
 
 // Reconcile performs §12's startup reconciliation: enumerate what exists,
