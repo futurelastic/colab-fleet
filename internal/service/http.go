@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"strconv"
@@ -20,25 +21,31 @@ type Config struct {
 	// Authorization: Bearer <Token>, loopback or not, dev or not.
 	Token string
 
-	// AllowMutations opens the verbs that change something: create, input,
-	// interrupt, close. It defaults to FALSE, and that default is §6
-	// requirement 3 taken literally — "`list` and `state` from a peer may
-	// be permitted by default; `close`, `interrupt` and `create` are opt-in
-	// per peer."
+	// AllowLocalMutations permits create/input/interrupt/close against
+	// sessions ON THIS MACHINE. Defaults FALSE — §6 requirement 3 taken
+	// literally: reads may be granted broadly, mutations are opt-in.
 	//
-	// The gate exists because authentication alone does not express this.
-	// A single shared token cannot distinguish a peer from a local
-	// supervisor, so without a verb gate, anything holding the token can
-	// start processes on this machine. §6 is explicit that "a service that
-	// can start processes and read files is a remote-execution surface
-	// regardless of intent", and the first thing a fleet exposes across
-	// machines should not be process creation.
+	// The gate exists because authentication alone cannot express it. A
+	// single shared token cannot distinguish a peer from a local
+	// supervisor, so without a verb gate anything holding the token can
+	// start processes here. §6: "a service that can start processes and
+	// read files is a remote-execution surface regardless of intent."
+	AllowLocalMutations bool
+
+	// AllowPeerRelay permits forwarding a mutation to a PEER. Also
+	// defaults FALSE, but it is a different question, and conflating the
+	// two was defect D6.
 	//
-	// This is coarser than §6 asks for — it is per-service, not per-peer —
-	// and deliberately so: per-peer authorization needs more than one peer
-	// identity to distinguish, which a single shared token does not
-	// provide. Coarse and closed beats fine-grained and unimplemented.
-	AllowMutations bool
+	// "May something mutate sessions on my machine" is about what this host
+	// exposes. "May I relay a mutation to a peer" is about what this
+	// instance may do as a client, and exposes nothing here — the peer is
+	// the one taking the risk, and the peer already has its own gate.
+	//
+	// With one flag governing both, a hardened host could not act as a
+	// full-featured client: relaying required opening this machine's own
+	// sessions to mutation. That is backwards, and it was found by
+	// deploying rather than by reasoning.
+	AllowPeerRelay bool
 }
 
 // NewMux builds the routing skeleton of api-http.md §3 over svc, using
@@ -54,11 +61,11 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux.HandleFunc("GET /v1/machines", withAuth(cfg, handleMachines(svc)))
 	mux.HandleFunc("GET /v1/runtimes", withAuth(cfg, handleRuntimes(svc)))
 	mux.HandleFunc("GET /v1/sessions", withAuth(cfg, handleListSessions(svc)))
-	mux.HandleFunc("POST /v1/machines/{machine}/sessions", withAuth(cfg, mutating(cfg, handleCreateSession(svc))))
+	mux.HandleFunc("POST /v1/machines/{machine}/sessions", withAuth(cfg, mutating(svc, cfg, handleCreateSession(svc))))
 	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}", withAuth(cfg, handleGetSession(svc)))
-	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/input", withAuth(cfg, mutating(cfg, handleSendInput(svc))))
-	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/interrupt", withAuth(cfg, mutating(cfg, handleInterrupt(svc))))
-	mux.HandleFunc("DELETE /v1/machines/{machine}/sessions/{id}", withAuth(cfg, mutating(cfg, handleClose(svc))))
+	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/input", withAuth(cfg, mutating(svc, cfg, handleSendInput(svc))))
+	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/interrupt", withAuth(cfg, mutating(svc, cfg, handleInterrupt(svc))))
+	mux.HandleFunc("DELETE /v1/machines/{machine}/sessions/{id}", withAuth(cfg, mutating(svc, cfg, handleClose(svc))))
 	mux.HandleFunc("GET /v1/events", withAuth(cfg, handleEvents(svc)))
 
 	return mux
@@ -89,14 +96,19 @@ func withAuth(cfg Config, next http.HandlerFunc) http.HandlerFunc {
 // driver is perfectly capable, and this instance is configured not to permit
 // it. Reporting "unsupported" would tell a req something false about the
 // runtime and invite it to give up permanently on a capability that exists.
-func mutating(cfg Config, next http.HandlerFunc) http.HandlerFunc {
+func mutating(svc *Service, cfg Config, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !cfg.AllowMutations {
-			writeError(w, &fleet.Error{
-				Kind: fleet.ErrorUnauthorized,
-				Message: "this instance is configured read-only; create, input, " +
-					"interrupt and close are opt-in (§6)",
-			})
+		target := fleet.MachineId(r.PathValue("machine"))
+		allowed, why := cfg.AllowLocalMutations,
+			"this host does not permit mutation of its own sessions (§6; FLEET_ALLOW_MUTATIONS)"
+		if target != "" && target != svc.Self() {
+			allowed, why = cfg.AllowPeerRelay,
+				"this instance does not relay mutations to peers (§6; FLEET_ALLOW_RELAY). "+
+					"Note this is a separate grant from mutating local sessions: a hardened "+
+					"host may still be a full-featured client"
+		}
+		if !allowed {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorUnauthorized, Message: why, Machine: target})
 			return
 		}
 		next(w, r)
@@ -181,7 +193,26 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // refusal (DeliveryReceipt.Outcome == "refused") is not an error at all
 // and is written as an ordinary 200 by its own handler.
 func writeDriverError(w http.ResponseWriter, machine fleet.MachineId, deadline time.Duration, err error) {
+	// A peer that already classified this failure has said something this
+	// service cannot improve on: adopt its kind rather than re-deriving one.
+	//
+	// This is §13.2's rule — "adopt a peer's SourceStatus; never
+	// re-synthesize it" — applied to errors, and it was found the same way,
+	// by watching a correct answer get worse in transit. The peer returned
+	// conflict (§5.4: the caller's belief is stale); re-classification here
+	// turned it into invalid, telling the caller to fix its syntax when what
+	// it should do is re-read and decide.
+	var relayed *fleet.Error
+	if errors.As(err, &relayed) && relayed.Kind != "" {
+		writeError(w, relayed)
+		return
+	}
+
 	switch {
+	case errors.Is(err, fleet.ErrAmbiguousTarget):
+		// §5.4: the caller's belief and the world disagree. Well-formed
+		// request, conflicting state — 409, not 400.
+		writeError(w, &fleet.Error{Kind: fleet.ErrorConflict, Message: err.Error(), Machine: machine})
 	case isUnsupported(err):
 		writeError(w, &fleet.Error{Kind: fleet.ErrorUnsupported, Message: err.Error(), Machine: machine})
 	case isDeadlineExceeded(err):

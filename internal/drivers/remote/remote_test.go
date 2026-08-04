@@ -466,3 +466,51 @@ func TestCloseWithoutExpectationSendsNone(t *testing.T) {
 		t.Errorf("query = %q; a proxy must not manufacture an expectation the caller did not have", rec.query)
 	}
 }
+
+// §14 D7: a proxy that waits less time than its peer declared abandons calls
+// the peer would have completed, and reports a healthy machine as unreachable.
+func TestProxyWaitsAtLeastAsLongAsThePeerDeclared(t *testing.T) {
+	runtimes := map[string]any{
+		"items": []fleet.RuntimeInfo{{
+			Machine: "peerbox", Runtime: "claude-code-tmux",
+			Capabilities: fleet.DriverCapabilities{SupportsResume: true, DeadlineMs: 5000},
+		}},
+		"sources":  []fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
+		"complete": true,
+	}
+	srv := peerServing(t, 200, runtimes, nil)
+	d := New("peerbox", srv.URL, WithDeadline(3*time.Second), WithTransitMargin(2*time.Second))
+
+	if got := d.Capabilities().DeadlineMs; got != 3000 {
+		t.Fatalf("before the peer answers, the floor applies: got %dms", got)
+	}
+	if err := d.RefreshCapabilities(context.Background(), caller); err != nil {
+		t.Fatal(err)
+	}
+	// 5s declared by the peer + 2s transit; never the 3s floor.
+	if got := d.Capabilities().DeadlineMs; got != 7000 {
+		t.Errorf("deadline = %dms, want 7000 (peer's 5000 + 2000 transit). A proxy "+
+			"waiting less than its peer declared turns a healthy machine into an "+
+			"unreachable one", got)
+	}
+}
+
+// The floor still wins when it is the larger of the two — a caller that
+// configured a generous proxy deadline does not get it silently reduced.
+func TestPeerDeadlineNeverShortensTheConfiguredFloor(t *testing.T) {
+	runtimes := map[string]any{
+		"items": []fleet.RuntimeInfo{{
+			Machine: "peerbox", Capabilities: fleet.DriverCapabilities{DeadlineMs: 500},
+		}},
+		"sources":  []fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
+		"complete": true,
+	}
+	srv := peerServing(t, 200, runtimes, nil)
+	d := New("peerbox", srv.URL, WithDeadline(9*time.Second))
+	if err := d.RefreshCapabilities(context.Background(), caller); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Capabilities().DeadlineMs; got != 9000 {
+		t.Errorf("deadline = %dms, want the 9000 floor", got)
+	}
+}

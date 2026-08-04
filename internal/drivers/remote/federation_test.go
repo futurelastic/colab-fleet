@@ -48,7 +48,7 @@ func peerService(t *testing.T, self fleet.MachineId, runtime fleet.RuntimeId, d 
 		t.Fatalf("registering driver on the peer: %v", err)
 	}
 	srv := httptest.NewServer(service.NewMux(svcB, service.Config{
-		Token: token, AllowMutations: allowMutations,
+		Token: token, AllowLocalMutations: allowMutations,
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL

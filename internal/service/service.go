@@ -70,6 +70,11 @@ func New(self fleet.MachineId) *Service {
 	}
 }
 
+// Self reports this machine's own id. The HTTP layer needs it to tell a
+// request about this machine from one destined for a peer — two different
+// permissions (§6, §14 D6).
+func (s *Service) Self() fleet.MachineId { return s.self }
+
 // RegisterLocalDriver adds a driver for one runtime on this machine. It
 // rejects a driver whose declared capabilities fail Validate (§4.4) — an
 // undeadlined driver is refused at registration, not discovered by a

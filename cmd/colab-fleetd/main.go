@@ -25,8 +25,12 @@
 //	                       (§7.2), and the address is one the OPERATOR has
 //	                       confirmed reachable from THIS machine — never the
 //	                       peer's own idea of its name.
-//	FLEET_ALLOW_MUTATIONS  set to 1 to permit create/input/interrupt/close.
-//	                       Defaults OFF (§6 requirement 3).
+//	FLEET_ALLOW_MUTATIONS  set to 1 to permit create/input/interrupt/close
+//	                       against sessions ON THIS MACHINE. Defaults OFF.
+//	FLEET_ALLOW_RELAY      set to 1 to permit forwarding a mutation to a
+//	                       PEER. Defaults OFF. Separate from the above on
+//	                       purpose: a hardened host can still be a
+//	                       full-featured client (§6, defect D6).
 package main
 
 import (
@@ -114,13 +118,36 @@ func main() {
 			log.Fatalf("colab-fleetd: registering peer %q: %v", machine, err)
 		}
 		log.Printf("colab-fleetd: peer %s configured", machine)
+
+		// Learn the peer's declared deadline so this driver does not
+		// abandon calls the peer would have completed (§14 D7). Best
+		// effort: a peer that is down stays configured (§5.7), and the
+		// driver falls back to its floor until the peer answers.
+		go func(p *remote.Driver, m fleet.MachineId) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := p.RefreshCapabilities(ctx, fleet.Request{
+				Caller: fleet.Caller{Principal: "system:self", Credential: token},
+			}); err != nil {
+				log.Printf("colab-fleetd: peer %s capabilities unknown for now: %v", m, err)
+				return
+			}
+			log.Printf("colab-fleetd: peer %s deadline learned: %dms",
+				m, p.Capabilities().DeadlineMs)
+		}(peer, machine)
 	}
 
-	allowMutations := os.Getenv("FLEET_ALLOW_MUTATIONS") == "1"
-	if !allowMutations {
-		log.Print("colab-fleetd: read-only — create/input/interrupt/close are refused (§6; set FLEET_ALLOW_MUTATIONS=1 to permit)")
-	}
-	mux := service.NewMux(svc, service.Config{Token: token, AllowMutations: allowMutations})
+	// Two independent grants (§6, and defect D6 for why one was not enough):
+	// what this HOST exposes, and what this instance may do as a CLIENT.
+	allowLocal := os.Getenv("FLEET_ALLOW_MUTATIONS") == "1"
+	allowRelay := os.Getenv("FLEET_ALLOW_RELAY") == "1"
+	log.Printf("colab-fleetd: local mutations=%v · relay to peers=%v (§6; both default off)",
+		allowLocal, allowRelay)
+	mux := service.NewMux(svc, service.Config{
+		Token:               token,
+		AllowLocalMutations: allowLocal,
+		AllowPeerRelay:      allowRelay,
+	})
 
 	// --- reconciliation (§12) ------------------------------------------
 	//

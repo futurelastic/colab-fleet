@@ -38,7 +38,7 @@ is not stable and will change without ceremony until a driver has proven it.
 | `invalid` | 400 | Malformed request |
 | `unauthorized` | 401 / 403 | Caller not permitted for this verb on this machine |
 | `not_found` | 404 | The machine answered, and there is no such session |
-| `conflict` | 409 | Idempotency key reused with a different body |
+| `conflict` | 409 | Idempotency key reused with a different body; or a destructive request whose `startedAt` disagrees with the live session (§5.4) — the request is well formed, the caller's belief is stale |
 | `unsupported` | 501 | Driver lacks the capability (§4.3 of the model) |
 | `unreachable` | 504 | **The machine did not answer.** Nothing is known. |
 

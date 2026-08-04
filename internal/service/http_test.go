@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
@@ -21,7 +22,7 @@ func newTestServer(t *testing.T) (*Service, *httptest.Server) {
 	if err := svc.RegisterLocalDriver("stub", &stub.Driver{DeadlineMs: 200}); err != nil {
 		t.Fatalf("RegisterLocalDriver: %v", err)
 	}
-	mux := NewMux(svc, Config{Token: testToken, AllowMutations: true})
+	mux := NewMux(svc, Config{Token: testToken, AllowLocalMutations: true})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return svc, srv
@@ -172,7 +173,7 @@ func TestGetSession_AmbiguousRuntimeIs400(t *testing.T) {
 	if err := svc.RegisterLocalDriver("stub-b", &stub.Driver{DeadlineMs: 200}); err != nil {
 		t.Fatalf("RegisterLocalDriver: %v", err)
 	}
-	mux := NewMux(svc, Config{Token: testToken, AllowMutations: true})
+	mux := NewMux(svc, Config{Token: testToken, AllowLocalMutations: true})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -338,5 +339,76 @@ func TestReadsStayOpenWhenMutationsAreDenied(t *testing.T) {
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
 			t.Errorf("%s returned %d; reads are permitted by default (§6)", path, resp.StatusCode)
 		}
+	}
+}
+
+// §6 / defect D6: "may mutate sessions on this machine" and "may relay a
+// mutation to a peer" are different grants. A hardened host must still be
+// able to act as a full-featured client, and vice versa.
+func TestHostAndRelayPermissionsAreIndependent(t *testing.T) {
+	newSrv := func(local, relay bool) *httptest.Server {
+		svc := New("testbox")
+		if err := svc.RegisterLocalDriver("stub", &stub.Driver{DeadlineMs: 1000}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.RegisterPeerDriver("otherbox", &stub.Driver{DeadlineMs: 1000}); err != nil {
+			t.Fatal(err)
+		}
+		srv := httptest.NewServer(NewMux(svc, Config{
+			Token: testToken, AllowLocalMutations: local, AllowPeerRelay: relay,
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	post := func(srv *httptest.Server, machine string) int {
+		req, err := http.NewRequest(http.MethodPost,
+			srv.URL+"/v1/machines/"+machine+"/sessions/s1/input", strings.NewReader(`{"text":"x"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	denied := func(code int) bool { return code == 401 || code == 403 }
+
+	// The configuration D6 made impossible: hardened host, full client.
+	s := newSrv(false, true)
+	if !denied(post(s, "testbox")) {
+		t.Error("host is read-only but accepted a mutation of its own session")
+	}
+	if denied(post(s, "otherbox")) {
+		t.Error("relay is permitted, yet forwarding to a peer was refused — this is D6")
+	}
+
+	// And the mirror: mutate locally, refuse to be a relay.
+	s = newSrv(true, false)
+	if denied(post(s, "testbox")) {
+		t.Error("local mutations permitted but refused")
+	}
+	if !denied(post(s, "otherbox")) {
+		t.Error("relay is not permitted, yet the mutation was forwarded")
+	}
+
+	// Both closed is still the default posture.
+	s = newSrv(false, false)
+	if !denied(post(s, "testbox")) || !denied(post(s, "otherbox")) {
+		t.Error("with both grants closed, nothing mutating may pass")
+	}
+}
+
+// §13.2's principle applied to errors: a peer's classification is relayed,
+// never re-derived. Found by watching a correct 409 become a 400 in transit.
+func TestPeerErrorKindIsRelayedNotReclassified(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeDriverError(rec, "peerbox", time.Second,
+		&fleet.Error{Kind: fleet.ErrorConflict, Message: "stale expectation", Machine: "peerbox"})
+	if rec.Code != 409 {
+		t.Errorf("status = %d, want 409; the peer had already classified this and "+
+			"re-deriving a kind here can only lose information", rec.Code)
 	}
 }

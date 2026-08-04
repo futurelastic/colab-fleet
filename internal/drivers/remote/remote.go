@@ -111,6 +111,7 @@ type Driver struct {
 	base     string
 	client   *http.Client
 	deadline time.Duration
+	margin   time.Duration
 	now      func() time.Time
 
 	// There is deliberately no credential field. See the package doc: a
@@ -137,13 +138,57 @@ func WithHTTPClient(c *http.Client) Option {
 	}
 }
 
-// WithDeadline sets the declared per-call deadline (§4.4).
+// WithDeadline sets the FLOOR for this driver's per-call deadline (§4.4).
+//
+// It is a floor rather than the value because a proxy's deadline is not its
+// own to choose freely — see effectiveDeadline.
 func WithDeadline(dur time.Duration) Option {
 	return func(d *Driver) {
 		if dur > 0 {
 			d.deadline = dur
 		}
 	}
+}
+
+// WithTransitMargin sets the allowance added to a peer's declared deadline to
+// cover the network. Default 2s.
+func WithTransitMargin(dur time.Duration) Option {
+	return func(d *Driver) {
+		if dur > 0 {
+			d.margin = dur
+		}
+	}
+}
+
+// effectiveDeadline is how long this driver will actually wait.
+//
+// # A proxy's deadline is not independent of its peer's
+//
+// §4.4 governs a *caller* shortening a driver's deadline. It says nothing
+// about composing deadlines across a hop, and the omission has a sharp edge:
+// if a proxy waits less time than the peer has declared it may take, the
+// proxy abandons calls the peer would have completed. Every such call is
+// reported as "unreachable" — a machine that answered, described as one that
+// did not, which is §5.7's confusion produced by a timer.
+//
+// Measured, which is why this exists: a peer declaring 5s, behind a proxy
+// waiting 3s, on a host under enough load that a subprocess spawn took over a
+// second. The peer was healthy and answering; the proxy timed out.
+//
+// So once the peer's capabilities are known, this driver waits at least as
+// long as the peer said it might take, plus transit. Before they are known it
+// falls back to the configured floor — and that gap is one more consequence
+// of §14 D3, capability declaration being unable to say "not yet known".
+func (d *Driver) effectiveDeadline() time.Duration {
+	d.mu.RLock()
+	seen, peerMs := d.capsSeen, d.caps.DeadlineMs
+	d.mu.RUnlock()
+	if seen && peerMs > 0 {
+		if peer := time.Duration(peerMs)*time.Millisecond + d.margin; peer > d.deadline {
+			return peer
+		}
+	}
+	return d.deadline
 }
 
 func withClock(f func() time.Time) Option { return func(d *Driver) { d.now = f } }
@@ -162,6 +207,7 @@ func New(machine fleet.MachineId, base string, opts ...Option) *Driver {
 		base:     strings.TrimRight(base, "/"),
 		client:   &http.Client{},
 		deadline: defaultDeadlineMs * time.Millisecond,
+		margin:   2 * time.Second,
 		now:      time.Now,
 	}
 	for _, o := range opts {
@@ -185,7 +231,9 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	caps := d.caps
-	caps.DeadlineMs = d.deadline.Milliseconds()
+	d.mu.RUnlock()
+	caps.DeadlineMs = d.effectiveDeadline().Milliseconds()
+	d.mu.RLock()
 	return caps
 }
 
@@ -196,9 +244,20 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 // interface does not know about is a poor substitute for a signature that
 // admitted this in the first place (FINDING 1).
 func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) error {
-	ctx, cancel := d.bounded(ctx)
-	defer cancel()
-
+	// Deliberately NOT bounded by this driver's own deadline.
+	//
+	// The bootstrap is circular: the deadline this driver should enforce is
+	// derived from the peer's declared one (see effectiveDeadline), but
+	// learning it requires a call — and bounding that call by the floor is
+	// exactly the too-short value the derivation exists to correct. Observed
+	// directly: the probe timed out at the 3s floor against a loaded peer,
+	// so the deadline was never learned and every later call kept using the
+	// floor.
+	//
+	// §4.4 governs *session operations*, whose whole point is that they must
+	// not block unboundedly. This is an out-of-band metadata probe made by
+	// an operator at startup, and it honours the caller's context — which is
+	// where the bound belongs for a call whose purpose is to discover bounds.
 	var body fleet.Collection[fleet.RuntimeInfo]
 	if err := d.do(ctx, req, http.MethodGet, "/v1/runtimes", nil, &body); err != nil {
 		return err
@@ -229,7 +288,7 @@ func (d *Driver) CapabilitiesKnown() bool {
 // shorter (§4.4: "a req may supply a shorter deadline; never a longer
 // one").
 func (d *Driver) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
-	own := d.now().Add(d.deadline)
+	own := d.now().Add(d.effectiveDeadline())
 	if dl, ok := ctx.Deadline(); ok && dl.Before(own) {
 		return context.WithCancel(ctx)
 	}

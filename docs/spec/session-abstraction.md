@@ -465,11 +465,15 @@ and a proxy that holds no credential of its own has nothing to substitute.
 This was open defect D1; how it failed before, and what proving the fix
 required, is Appendix A, F14.
 
-**Still coarse, and honestly so.** Requirement 3 says permission is per verb
-*per peer*. A shared token cannot distinguish peers, so the first
-implementation gates mutation per *service* instead — closed by default, which
-is the right direction to be wrong in. See §14 D6 for the second thing that
-coarseness costs.
+**Two grants, not one.** Whether something may mutate sessions *on this
+machine* and whether this instance may *relay* a mutation to a peer are
+different questions with different blast radii, and both default closed. See
+§14 D6 for what conflating them cost.
+
+**Still coarse in one respect, and honestly so.** Requirement 3 says permission
+is per verb *per peer*. A shared token cannot distinguish peers, so both grants
+are per-service. Coarse and closed beats fine-grained and unimplemented; the
+missing piece is peer identity, which is this section's outstanding work.
 
 ---
 
@@ -864,32 +868,59 @@ agents in one working directory — from a driver that correctly declares
 - **Proposed fix:** persist keys, or declare that they are not persisted so a
   caller can compensate.
 
-### D6 — Mutation permission cannot distinguish host from client · §6
+### D6 — Mutation permission cannot distinguish host from client · §6 — **RESOLVED**
 
-Found by deploying, not by reasoning.
+Two independent grants, decided by whether the request targets this machine or
+a peer:
 
-§6 requirement 3 grants mutation "opt-in per peer". With a single shared token
-no peer identity exists, so the first implementation gates mutation **per
-service**: an instance either performs create/input/interrupt/close, or it does
-not.
+- **host** — may mutate sessions on this machine (what this host exposes);
+- **relay** — may forward a mutation to a peer (what this instance may do as a
+  client, which exposes nothing here — the peer takes the risk, and the peer
+  has its own gate).
 
-That conflates two permissions the specification never separates:
+Both default closed. The configuration that was previously unreachable, and is
+the one a fleet actually wants, is now expressible: a hardened host that is
+still a full-featured client.
 
-- **may mutate sessions on this machine** — what §6 is actually about, and what
-  an operator wants closed on a machine holding real work;
-- **may relay a mutation to a peer** — a question about being a *client*, which
-  has nothing to do with exposing this machine.
+Found by deploying, not by reasoning — the first cross-machine mutation was
+refused by the wrong machine. See Appendix A, F18.
 
-The consequence is concrete and was hit immediately: a read-only instance
-refuses to proxy a mutation to a peer that would happily accept it. The refusal
-comes from the wrong machine, and the only way to relay is to open this
-machine's own sessions to mutation as well. An operator who wants a hardened
-host that is still a full-featured client cannot express it.
+### D7 — Deadline composition across a hop is unspecified · §4.4
 
-- **Proposed fix:** separate the two permissions. Inbound mutation on own
-  sessions, and outbound relay to peers, are different grants and should be
-  configured independently — with inbound closed by default and relay
-  following the peer's own answer, since the peer is the one exposing anything.
+§4.4 makes a deadline mandatory and governs a *caller* shortening a driver's
+declared bound: "a caller may supply a shorter deadline; never a longer one."
+It says nothing about what happens when the caller is itself a proxy.
+
+The gap has a sharp edge. If a proxy waits less time than a peer has declared
+it may take, the proxy abandons calls the peer would have completed — and
+reports each one as `unreachable`. A machine that answered is described as one
+that did not, which is §5.7's confusion produced by a timer rather than by a
+missing field.
+
+Measured, not reasoned: a peer declaring 5s, behind a proxy waiting 3s, on a
+host loaded enough that a single subprocess spawn cost over a second. The peer
+was healthy and answering throughout.
+
+- **Mitigation, implemented:** a remote driver treats its configured deadline
+  as a *floor*, and once the peer's capabilities are known waits at least the
+  peer's declared deadline plus a transit margin. Before they are known it can
+  only use the floor — which is one more consequence of D3, capability
+  declaration being unable to say "not yet known".
+- **A second edge, found while fixing the first:** the bootstrap is circular.
+  The deadline a proxy should enforce is derived from the peer's declared one,
+  but learning it requires a call — and bounding that call by the too-short
+  floor is exactly what the derivation exists to correct. Resolved by treating
+  capability discovery as out-of-band metadata that honours only the caller's
+  context: §4.4 governs *session operations*, whose point is that they must
+  not block unboundedly, and a probe whose purpose is to discover bounds is
+  not one of them.
+- **Still open:** the general rule. A fleet more than two machines deep, or
+  one where a peer raises its deadline at runtime, needs deadline composition
+  stated in this document rather than implemented in one driver. Note also
+  that a chain of proxies would need each hop's budget to *shrink*, which is
+  the opposite direction from the one hop case — the two requirements are not
+  obviously reconcilable, and §13.1's one-hop rule is currently what keeps the
+  question from arising.
 
 ---
 
@@ -1099,6 +1130,50 @@ second field would be a second source of truth free to disagree with the first
 — the failure §9's `complete` and §13.2's source status both exist to prevent.
 Recorded because "we considered it and did not" is worth more than silence when
 the next reader wonders why the obvious field is missing.
+
+**F18 · The first cross-machine mutation was refused by the wrong machine.**
+Sending input from one host to a session on another returned "this instance is
+configured read-only" — from the *relaying* machine, which was not being asked
+to mutate anything of its own.
+
+One flag had been governing two questions: what this host exposes, and what
+this instance may do as a client. The only way to relay was to open this
+machine's own sessions to mutation, which is precisely backwards — the machine
+taking no risk had to accept all of it.
+
+Worth recording as a category, not an incident: a permission that reads
+naturally as one sentence ("may this service mutate?") can still be two
+questions, and deployment is what separates them. No amount of reading the
+specification produced this; one `curl` did.
+
+**F19 · Subprocess spawn cost is not constant; it degrades with load.** The
+enumeration measurements in F10 were taken on an idle machine. On a peer
+carrying 79 agent sessions at load average 63, the raw multiplexer work still
+took 0.24s — but the same read through the service took 1.87s. The difference
+is fork/exec latency under load, not the driver.
+
+Two consequences. It strengthens the case for minimising spawns rather than
+weakening it: the machines that most need fleet visibility are exactly the busy
+ones, and that is where per-session spawning would be most catastrophic. And it
+is what exposed D7 — deadlines tuned against an idle machine are not deadlines
+at all.
+
+**F20 · A proxy was quietly downgrading its peer's error classification.** The
+peer correctly answered `conflict` for a destroy whose expectation was stale
+(§5.4). The relaying service re-derived a kind from the Go error it held and
+produced `invalid` — telling the caller to fix its syntax when what it should
+do is re-read and decide.
+
+This is §13.2 — "adopt a peer's SourceStatus; never re-synthesize it" — applied
+to errors, and nobody had noticed the rule generalised. The peer had already
+classified the failure; a second opinion downstream can only lose information.
+A proxying service now relays a classified error verbatim.
+
+Three instances of the same rule now exist (source status, error kind, and the
+peer's `count`), which is enough to state it generally: **a proxy relays what a
+peer said about itself and derives nothing.** The reachability of a peer is the
+proxy's observation to make; everything the peer reported about its own answer
+is the peer's.
 
 ### The pattern worth naming
 

@@ -1,6 +1,9 @@
 package fleet
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrorKind is the closed set of wire error kinds (api-http.md §2).
 type ErrorKind string
@@ -19,6 +22,20 @@ const (
 	// unreachable host.
 	ErrorUnreachable ErrorKind = "unreachable"
 )
+
+// ErrAmbiguousTarget is returned by a destructive operation whose target
+// could not be corroborated (§5.4): the caller's expectation disagrees with
+// the live session, or nothing was supplied to corroborate against at all.
+//
+// It lives in this package rather than in a driver so the service can map it
+// to a wire kind without importing one — the mapping is part of the contract,
+// not of any substrate.
+//
+// It maps to "conflict", not "invalid". The request was well formed; what
+// failed is that the caller's belief about the world and the world itself
+// disagree, which is exactly what 409 means. Reporting it as 400 tells a
+// caller to fix its syntax when what it should do is re-read and decide.
+var ErrAmbiguousTarget = errors.New("fleet: destructive operation on an uncorroborated target (§5.4)")
 
 // DefaultHTTPStatus is the api-http.md §2 table, kept next to the kind it
 // describes so a Go client never has to hardcode it separately from the

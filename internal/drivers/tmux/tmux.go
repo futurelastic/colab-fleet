@@ -108,7 +108,10 @@ const (
 // driver.ErrUnsupported: the driver supports the operation, and is refusing
 // this particular invocation because it cannot establish that the session
 // it would destroy is the session the req meant.
-var ErrAmbiguousTarget = errors.New("tmux: refusing a destructive operation on an uncorroborated target (§5.4)")
+// ErrAmbiguousTarget wraps the package-level sentinel so callers can match on
+// either, and so the service can map it to a wire kind without importing this
+// driver.
+var ErrAmbiguousTarget = fmt.Errorf("tmux: refusing a destructive operation: %w", fleet.ErrAmbiguousTarget)
 
 // ErrNotFound is returned when no session matches a ref.
 var ErrNotFound = errors.New("tmux: no such session")
