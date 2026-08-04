@@ -12,10 +12,13 @@ HTTP, into a second service, into the multiplexer driver, and back with 22 real
 sessions. `confidence: inferred` survived the round trip rather than being
 flattened to `observed`.
 
-Five things did **not** survive contact, and they are collected in **§14, Open
-defects**. Read that section before relying on any guarantee in this document:
-one of the five is a security defect, and its symptom is that everything
-appears to work.
+Things that did **not** survive contact are collected in **§14, Open defects**.
+Read that section before relying on any guarantee in this document.
+
+The one security-shaped defect among them — caller authority having nowhere to
+travel, whose symptom was that everything appeared to work — **is now fixed**
+(§2.6, §6). Fixing it also proved the cross-machine write path end to end.
+Four remain open, and deployment added a fifth.
 
 ### How to read this
 
@@ -186,19 +189,51 @@ completion it may not be able to deliver, which §5.6 forbids.
 
 > Origin: Appendix A, F2.
 
+### 2.6 Caller
+
+```
+Caller {
+  principal  : string    // who is asking — audit trail (§6)
+  credential : string    // authority to present onward when proxying (§13)
+}
+```
+
+The authority an operation is performed on behalf of. It is a **parameter of
+every operation in §3**, not ambient context, and that is the whole of its
+design: §13 requires a proxying service to present the original caller's
+authority rather than its own, and a value that can be omitted will be.
+
+`principal` answers *who is asking* and exists for §6 requirement 4's audit
+trail. While a fleet authenticates with one shared token (§7.2), it cannot be
+a true identity — nothing distinguishes one bearer from another — so a service
+populates it with the most specific honest value it has, and callers read it
+as provenance. Real per-peer identity is §6's outstanding work and lands here
+when it exists.
+
+`credential` answers *with what authority*, and is what a remote driver
+presents to a peer. **A driver that finds it empty refuses the operation.** It
+must never substitute one of its own — and the strongest form of that rule,
+which the first remote driver adopts, is for a proxy to hold no credential at
+all, so there is nothing to substitute.
+
 ---
 
 ## 3. Operations
 
 ```
-create(spec)                  -> SessionRef
-send(ref, text, opts?)        -> DeliveryReceipt
-state(ref)                    -> SessionState
-interrupt(ref)                -> Ack
-close(ref)                    -> Ack
-list(filter?)                 -> Collection<Session>
-subscribe(filter?)            -> EventStream
+create(caller, spec)              -> SessionRef
+send(caller, ref, text, opts?)    -> DeliveryReceipt
+state(caller, ref)                -> SessionState
+interrupt(caller, ref)            -> Ack
+close(caller, ref)                -> Ack
+list(caller, filter?)             -> Collection<Session>
+subscribe(caller, filter?)        -> EventStream
 ```
+
+Every operation carries a `Caller` (§2.6), reads included. A driver cannot
+compile without deciding what to do with it, which is the point: the rule it
+serves — §13's "a proxy presents the original caller's authority, never its
+own" — is unenforceable if the operations have nowhere to carry a principal.
 
 `subscribe` is not optional garnish. Federated callers must be able to learn
 about state changes without polling — see §5.5.
@@ -393,11 +428,18 @@ mourned.
 4. **Log every remote-originated mutation** — actor, verb, target, outcome.
    This is the audit trail that replaces "it could only ever have been me."
 
-> **Open defect D1 — the most serious in this document, and the only one whose
-> failure mode is a security bug rather than a wrong answer.** Requirement 3
-> above, and §13's "proxying does not launder authorization", cannot be
-> enforced by the interface: no operation in §3 takes a principal, so the
-> original caller's authority has nowhere to travel. See §14.
+**Caller authority is a parameter of every operation (§2.6, §3).** Requirement
+3 above and §13's "proxying does not launder authorization" are enforceable
+because the authority cannot be omitted: a driver does not compile without it,
+and a proxy that holds no credential of its own has nothing to substitute.
+This was open defect D1; how it failed before, and what proving the fix
+required, is Appendix A, F14.
+
+**Still coarse, and honestly so.** Requirement 3 says permission is per verb
+*per peer*. A shared token cannot distinguish peers, so the first
+implementation gates mutation per *service* instead — closed by default, which
+is the right direction to be wrong in. See §14 D6 for the second thing that
+coarseness costs.
 
 ---
 
@@ -710,37 +752,21 @@ the proposed fix. **A proposed fix is not a decision.** Each changes a shape
 that two implementations and an HTTP surface already depend on, which is
 exactly why they are written down instead of applied in passing.
 
-### D1 — Caller authority has nowhere to travel · §6, §13
+### D1 — Caller authority has nowhere to travel · §6, §13 — **RESOLVED**
 
-**Severity: this is the only defect here whose failure mode is a security bug
-rather than a wrong answer.**
+Kept in place, rather than deleted, so the numbering the code cites stays
+stable and so the entry that once said "this cannot be enforced" now says how
+it was.
 
-§6 requirement 3 and §13 both require a proxying service to present the
-**original caller's** authority to a peer, never its own. Every operation in §3
-takes a context and its domain arguments. None takes a principal.
+`Caller` (§2.6) is a parameter of every operation in §3. A driver cannot
+compile without deciding what to do with it, and the first remote driver holds
+no credential of its own — so the confused-deputy fallback is not merely
+forbidden, it is unrepresentable. Reads are included, because "which sessions
+exist, in which directories, on which machine" is exactly the reconnaissance an
+unauthorized caller wants.
 
-So the caller's identity can only travel out of band — untyped, invisible at
-the call site, impossible to require, silently absent when a service forgets to
-attach it.
-
-**The fallback is the vulnerability.** A remote driver missing the caller's
-credentials will reach for the one credential it certainly has: its own
-transport token. That works. The request succeeds. Tests pass. Authorization is
-silently widened to whatever the proxy is allowed to do, and nothing anywhere
-reports it — *the symptom of this bug is that everything works.*
-
-Note the asymmetry with every other entry here: the others fail toward a wrong
-answer somebody eventually notices. This one fails toward a correct-looking
-answer.
-
-- **Interim mitigation, implemented:** a remote driver refuses any mutating
-  verb that arrives without caller authority, rather than substituting its own.
-  This is a driver declining to do something the interface cannot stop it from
-  doing. It is not a fix, and a driver written by somebody else will not do it.
-- **Proposed fix:** caller authority becomes a parameter of the §3 operations,
-  so a driver cannot compile without deciding what to do with it.
-- **Cost of the fix:** every signature in §3, both drivers, the service, and
-  api-http.md §5.
+Full account, including what the fix cost and what proving it required:
+Appendix A, F14.
 
 ### D2 — `close` cannot corroborate · §5.4
 
@@ -819,6 +845,33 @@ agents in one working directory — from a driver that correctly declares
 
 - **Proposed fix:** persist keys, or declare that they are not persisted so a
   caller can compensate.
+
+### D6 — Mutation permission cannot distinguish host from client · §6
+
+Found by deploying, not by reasoning.
+
+§6 requirement 3 grants mutation "opt-in per peer". With a single shared token
+no peer identity exists, so the first implementation gates mutation **per
+service**: an instance either performs create/input/interrupt/close, or it does
+not.
+
+That conflates two permissions the specification never separates:
+
+- **may mutate sessions on this machine** — what §6 is actually about, and what
+  an operator wants closed on a machine holding real work;
+- **may relay a mutation to a peer** — a question about being a *client*, which
+  has nothing to do with exposing this machine.
+
+The consequence is concrete and was hit immediately: a read-only instance
+refuses to proxy a mutation to a peer that would happily accept it. The refusal
+comes from the wrong machine, and the only way to relay is to open this
+machine's own sessions to mutation as well. An operator who wants a hardened
+host that is still a full-featured client cannot express it.
+
+- **Proposed fix:** separate the two permissions. Inbound mutation on own
+  sessions, and outbound relay to peers, are different grants and should be
+  configured independently — with inbound closed by default and relay
+  following the peer's own answer, since the peer is the one exposing anything.
 
 ---
 
@@ -964,6 +1017,41 @@ the multiplexer driver, and back with 22 real sessions. `confidence: inferred`
 survived the round trip rather than being flattened to `observed`, which is the
 single easiest thing for a federation layer to destroy and the one §5.6 exists
 to protect.
+
+### Phase 4 — fixing the security defect, and deploying
+
+**F14 · Caller authority became a parameter, and the fix is the type rather
+than the policy.** D1's failure had a specific shape: authority travelled in an
+out-of-band context value, a service could forget to attach it, and a remote
+driver missing it reached for the one credential it certainly had — its own.
+The request succeeded. The tests passed. Authorization silently widened.
+
+Two changes, and the second matters more than the first. Authority is now an
+argument of every §3 operation, so it cannot be omitted. And the remote driver
+was stripped of any credential of its own, so there is nothing left to
+substitute — a policy a driver could get wrong became a property of the type.
+
+The compiler is the enforcement: changing the interface broke every driver, the
+service, and every test in one pass, and each break was a place that had to
+decide what authority it was acting under. That is exactly what an out-of-band
+value cannot do.
+
+Proven on two machines afterwards, because a fix to an authorization path that
+has never carried a real request is a hypothesis. Input sent from one machine
+landed in a pane on the other; a session was destroyed across the network; and
+§5.4's corroboration refused an id the far side had never observed, which is
+the protection working at the exact distance it is hardest to get right.
+
+**F15 · The reverse direction needed a bind change, not a config change.** One
+machine bound loopback, so it was unreachable regardless of how the other was
+configured — a reminder that "can A call B" and "can B call A" are independent
+facts, and only one of them had been tested.
+
+Making both machines peers of each other also produced the first real test of
+§13.1. With a genuine 2-cycle in the configuration, a `scope=local` query
+returns one source and does not forward; a fleet query from either side returns
+identical counts. The document admits the first spike "avoided this only by
+being a star" — this one did not avoid it.
 
 ### The pattern worth naming
 

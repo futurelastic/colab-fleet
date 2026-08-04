@@ -104,7 +104,11 @@ func main() {
 		if machine == self {
 			log.Fatalf("colab-fleetd: peer %q is this machine; fan-out is one hop and peers never recurse (§13.1)", machine)
 		}
-		peer := remote.New(machine, strings.TrimSpace(base), token,
+		// No credential is handed to the peer driver, and none exists to
+		// hand: it presents the authority of whoever made the request
+		// (§13). A proxy holding its own identity is the confused deputy
+		// this design forbids.
+		peer := remote.New(machine, strings.TrimSpace(base),
 			remote.WithDeadline(3*time.Second))
 		if err := svc.RegisterPeerDriver(machine, peer); err != nil {
 			log.Fatalf("colab-fleetd: registering peer %q: %v", machine, err)

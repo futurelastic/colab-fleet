@@ -252,6 +252,11 @@ func runReal(ctx context.Context, name string, args ...string) ([]byte, error) {
 // outright: sessions belong to the multiplexer, not to this process, so
 // they survive it being restarted, upgraded or killed. Note FINDINGS 2 —
 // this is not the same as the idempotency store surviving.
+// A note on fleet.Caller, which every operation below now takes: this is a
+// LOCAL driver, so it has no peer to present credentials to and ignores
+// Caller.Credential entirely. It must still never invent a Principal it was
+// not handed — the audit trail §6 requires is only worth having if nothing
+// in the chain manufactures an actor.
 func (d *Driver) Capabilities() fleet.DriverCapabilities {
 	return fleet.DriverCapabilities{
 		ObservesState:    false,
@@ -411,7 +416,7 @@ func splitCaptures(out, mark string) map[string]string {
 // contract). The returned Collection always carries exactly one
 // SourceStatus — this machine's own — because even a single machine
 // answering for itself must say who answered (§9, api-http.md §3.2).
-func (d *Driver) List(ctx context.Context, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {
+func (d *Driver) List(ctx context.Context, caller fleet.Caller, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -475,7 +480,7 @@ func matchesFilter(s fleet.Session, f driver.ListFilter) bool {
 // fleet read is cheaper than the two subprocess spawns a targeted read
 // would need, and it keeps exactly one code path deciding what a status
 // means.
-func (d *Driver) State(ctx context.Context, ref fleet.SessionRef) (fleet.SessionState, error) {
+func (d *Driver) State(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.SessionState, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -516,7 +521,7 @@ func (d *Driver) State(ctx context.Context, ref fleet.SessionRef) (fleet.Session
 // caller's text against the multiplexer's key-name vocabulary, where a
 // message containing something like "C-c" is a live hazard; the paste
 // buffer takes bytes and interprets none of them.
-func (d *Driver) Send(ctx context.Context, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
+func (d *Driver) Send(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -590,7 +595,7 @@ func (d *Driver) Send(ctx context.Context, ref fleet.SessionRef, text string, op
 // Interrupt asks a session to stop what it is doing (§3). It expresses
 // intent only — the Ack says the request was accepted, never that the agent
 // stopped; that arrives later as a state change (§2.5).
-func (d *Driver) Interrupt(ctx context.Context, ref fleet.SessionRef) (fleet.Ack, error) {
+func (d *Driver) Interrupt(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -640,7 +645,7 @@ func (d *Driver) Interrupt(ctx context.Context, ref fleet.SessionRef) (fleet.Ack
 //
 // A ref this driver has never seen is refused outright rather than
 // destroyed on an id match, which is the literal thing §5.4 forbids.
-func (d *Driver) Close(ctx context.Context, ref fleet.SessionRef) (fleet.Ack, error) {
+func (d *Driver) Close(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -690,7 +695,7 @@ func (d *Driver) Close(ctx context.Context, ref fleet.SessionRef) (fleet.Ack, er
 // processes by name can match — and terminate — a session whose argv merely
 // contains the string it was hunting for. The prompt is written to a file
 // and delivered through the paste buffer once the session is up.
-func (d *Driver) Create(ctx context.Context, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
+func (d *Driver) Create(ctx context.Context, caller fleet.Caller, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -740,7 +745,7 @@ func (d *Driver) Create(ctx context.Context, key string, spec fleet.SessionSpec)
 		// exists to make safe but which would now be answered from the
 		// idempotency store anyway. The prompt not landing is visible in
 		// the session's state; a phantom failure is not.
-		_, _ = d.Send(ctx, ref, spec.Prompt, driver.SendOptions{Submit: true})
+		_, _ = d.Send(ctx, caller, ref, spec.Prompt, driver.SendOptions{Submit: true})
 	}
 	return ref, nil
 }
@@ -765,7 +770,8 @@ func (d *Driver) sweepIdemLocked(now time.Time) {
 // reasons. The "vanished" class cannot arise here at all, because there are
 // no records for anything to vanish from.
 func (d *Driver) Reconcile(ctx context.Context) (fleet.Collection[fleet.Session], error) {
-	return d.List(ctx, driver.ListFilter{})
+	// Nobody asked for this; it is the service acting on its own behalf.
+	return d.List(ctx, fleet.SystemCaller(), driver.ListFilter{})
 }
 
 // claudeCodeCommand is the default CommandBuilder.

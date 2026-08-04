@@ -47,7 +47,7 @@ func TestLiveListParsesRealSessions(t *testing.T) {
 	requireLiveMux(t)
 	d := New("local")
 
-	got, err := d.List(context.Background(), driver.ListFilter{})
+	got, err := d.List(context.Background(), testCaller, driver.ListFilter{})
 	if err != nil {
 		t.Fatalf("List against a live multiplexer failed: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestLiveListFilterNarrows(t *testing.T) {
 	d := New("local")
 	ctx := context.Background()
 
-	all, err := d.List(ctx, driver.ListFilter{})
+	all, err := d.List(ctx, testCaller, driver.ListFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestLiveListFilterNarrows(t *testing.T) {
 	}
 	prefix := string(all.Items()[0].Cwd)
 
-	narrowed, err := d.List(ctx, driver.ListFilter{CwdPrefix: prefix})
+	narrowed, err := d.List(ctx, testCaller, driver.ListFilter{CwdPrefix: prefix})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestLiveStateAgreesWithList(t *testing.T) {
 	d := New("local")
 	ctx := context.Background()
 
-	all, err := d.List(ctx, driver.ListFilter{})
+	all, err := d.List(ctx, testCaller, driver.ListFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestLiveStateAgreesWithList(t *testing.T) {
 		}
 	}
 
-	st, err := d.State(ctx, target.SessionRef)
+	st, err := d.State(ctx, testCaller, target.SessionRef)
 	if err != nil {
 		t.Fatalf("State(%q) failed: %v", target.ID, err)
 	}
@@ -167,7 +167,7 @@ func TestLiveCloseRefusesUnobservedTargetWithoutKilling(t *testing.T) {
 	requireLiveMux(t)
 	d := New("local")
 
-	_, err := d.Close(context.Background(),
+	_, err := d.Close(context.Background(), testCaller,
 		fleet.SessionRef{Machine: "local", ID: "a-session-id-this-driver-has-never-seen"})
 	if err == nil {
 		t.Fatal("closing an unobserved id must refuse (§5.4)")
@@ -212,7 +212,7 @@ func TestLiveSubscribeSeesASessionAppearAndDisappear(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	stream, err := d.Subscribe(ctx, driver.SubscribeFilter{CwdPrefix: dir})
+	stream, err := d.Subscribe(ctx, testCaller, driver.SubscribeFilter{CwdPrefix: dir})
 	if err != nil {
 		t.Fatalf("Subscribe against a live multiplexer failed: %v", err)
 	}

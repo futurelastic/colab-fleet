@@ -141,7 +141,7 @@ func TestSubscribeOpensOneClientPerMatchingSessionPlusLifecycle(t *testing.T) {
 	r := &ctlRegistry{}
 	d := newSubDriver(f, r)
 
-	s, err := d.Subscribe(context.Background(), driver.SubscribeFilter{CwdPrefix: "/work/alpha"})
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{CwdPrefix: "/work/alpha"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestSubscribeEmitsStateChangeOnTrigger(t *testing.T) {
 	r := &ctlRegistry{}
 	d := newSubDriver(f, r)
 
-	s, err := d.Subscribe(context.Background(), driver.SubscribeFilter{})
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestSubscribeLeavesCursorAndEpochToTheService(t *testing.T) {
 	f := twoSessions()
 	r := &ctlRegistry{}
 	d := newSubDriver(f, r)
-	s, _ := d.Subscribe(context.Background(), driver.SubscribeFilter{})
+	s, _ := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
 	defer s.Close()
 
 	f.captures["%1"] = fixtureWorking
@@ -219,7 +219,7 @@ func TestSubscribeEmitsCreatedAndClosed(t *testing.T) {
 	r := &ctlRegistry{}
 	d := newSubDriver(f, r)
 
-	s, err := d.Subscribe(context.Background(), driver.SubscribeFilter{})
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestSubscribeDoesNotReportClosedWhenTheReadFailed(t *testing.T) {
 	r := &ctlRegistry{}
 	d := newSubDriver(f, r)
 
-	s, err := d.Subscribe(context.Background(), driver.SubscribeFilter{})
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestCloseReapsEveryControlClient(t *testing.T) {
 	r := &ctlRegistry{}
 	d := newSubDriver(f, r)
 
-	s, err := d.Subscribe(context.Background(), driver.SubscribeFilter{})
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestSubscribeRefusesWhenThereIsNothingToAttachTo(t *testing.T) {
 	r := &ctlRegistry{}
 	d := newSubDriver(f, r)
 
-	_, err := d.Subscribe(context.Background(), driver.SubscribeFilter{})
+	_, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
 	if err == nil {
 		t.Fatal("want an error when there is no session to attach to")
 	}
@@ -399,7 +399,7 @@ func TestLifecycleClientSurvivesItsHostSessionDying(t *testing.T) {
 	r := &ctlRegistry{}
 	d := newSubDriver(f, r)
 
-	s, err := d.Subscribe(context.Background(), driver.SubscribeFilter{})
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}

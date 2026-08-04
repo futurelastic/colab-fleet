@@ -50,6 +50,25 @@ type EventStream interface {
 	Close() error
 }
 
+// # Every operation carries the caller's authority
+//
+// Each method takes a fleet.Caller as its second argument, and that position
+// is not cosmetic. §13 requires a proxying service to present the ORIGINAL
+// caller's authority to a peer, never its own; §6 requires every
+// remote-originated mutation to be logged with its actor. Neither is
+// satisfiable if the operations have nowhere to carry a principal.
+//
+// An earlier revision passed this out of band in a context value, which a
+// service could silently forget to attach — whereupon a remote driver's
+// natural fallback was its own credential, the request succeeded, and the
+// authorization was quietly widened. As a parameter it cannot be omitted,
+// and a driver cannot compile without deciding what to do with it. That is
+// the entire point of the position it occupies.
+//
+// A local driver may legitimately ignore Credential; it must still not
+// invent a Principal it was not given. A remote driver must refuse rather
+// than substitute — see internal/drivers/remote.
+//
 // Driver implements the §3 operations for one runtime on one machine (§4).
 // A driver whose implementation is an HTTP client to a peer colab-fleet
 // (§4.2, "the remote driver") satisfies this exact same interface — that
@@ -96,32 +115,32 @@ type Driver interface {
 	// key (§10, api-http.md §3.3: "Idempotency-Key is required, not
 	// optional") — a repeat key within the retention window must return
 	// the existing SessionRef rather than creating a second session.
-	Create(ctx context.Context, key string, spec fleet.SessionSpec) (fleet.SessionRef, error)
+	Create(ctx context.Context, caller fleet.Caller, key string, spec fleet.SessionSpec) (fleet.SessionRef, error)
 
 	// Send delivers input (§3). Unlike Create, Send is not idempotent and
 	// must not pretend to be (§10) — repeat delivery is a legitimate
 	// caller intent.
-	Send(ctx context.Context, ref fleet.SessionRef, text string, opts SendOptions) (fleet.DeliveryReceipt, error)
+	Send(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef, text string, opts SendOptions) (fleet.DeliveryReceipt, error)
 
 	// State reads current state (§3). May return fleet.StatusUnknown as an
 	// ordinary, successful result (§2.3) — that is not the same thing as
 	// this method returning an error.
-	State(ctx context.Context, ref fleet.SessionRef) (fleet.SessionState, error)
+	State(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.SessionState, error)
 
 	// Interrupt and Close express intent only (§3, api-http.md §3.3: both
 	// wire to 202 Accepted); confirmation of what actually happened
 	// arrives later as a state change on the event stream (§4), never as
 	// this call's return value.
-	Interrupt(ctx context.Context, ref fleet.SessionRef) (fleet.Ack, error)
-	Close(ctx context.Context, ref fleet.SessionRef) (fleet.Ack, error)
+	Interrupt(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error)
+	Close(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error)
 
 	// List returns every session this driver knows about in one call —
 	// see the type-level doc comment above for why the signature is
 	// Collection[Session], not []SessionRef.
-	List(ctx context.Context, filter ListFilter) (fleet.Collection[fleet.Session], error)
+	List(ctx context.Context, caller fleet.Caller, filter ListFilter) (fleet.Collection[fleet.Session], error)
 
 	// Subscribe opens a live event stream (§3, §5.5). A driver that cannot
 	// support subscriptions returns ErrUnsupported rather than emulating
 	// one with polling underneath (§5.6).
-	Subscribe(ctx context.Context, filter SubscribeFilter) (EventStream, error)
+	Subscribe(ctx context.Context, caller fleet.Caller, filter SubscribeFilter) (EventStream, error)
 }

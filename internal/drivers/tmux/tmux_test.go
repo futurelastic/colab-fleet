@@ -34,6 +34,11 @@ type fakeSession struct {
 
 const testNonce = "0badc0de"
 
+// testCaller is what a service would hand a local driver. Credential is
+// empty on purpose: a local driver has no peer to present it to, and a test
+// that supplied one would be asserting a behaviour this driver must not have.
+var testCaller = fleet.Caller{Principal: "test:unit"}
+
 func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
 	switch args[0] {
@@ -128,7 +133,7 @@ func TestListCostsConstantSpawns(t *testing.T) {
 		f.captures[id] = idleFixtureFor("s" + intToStr(i))
 	}
 	d := newTestDriver(f)
-	if _, err := d.List(context.Background(), driver.ListFilter{}); err != nil {
+	if _, err := d.List(context.Background(), testCaller, driver.ListFilter{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.calls) != 2 {
@@ -140,7 +145,7 @@ func TestListCostsConstantSpawns(t *testing.T) {
 
 func TestListCarriesExactlyOneSourceAndRealStatuses(t *testing.T) {
 	d := newTestDriver(twoSessions())
-	got, err := d.List(context.Background(), driver.ListFilter{})
+	got, err := d.List(context.Background(), testCaller, driver.ListFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +179,7 @@ func TestListFailureIsNotAnEmptyList(t *testing.T) {
 	f := twoSessions()
 	f.failList = true
 	d := newTestDriver(f)
-	got, err := d.List(context.Background(), driver.ListFilter{})
+	got, err := d.List(context.Background(), testCaller, driver.ListFilter{})
 	if err != nil {
 		t.Fatalf("a source failure belongs in the envelope, not in err: %v", err)
 	}
@@ -192,7 +197,7 @@ func TestListFailureIsNotAnEmptyList(t *testing.T) {
 // §2.4's refusal, which the README listed as "prose that has never run".
 func TestSendRefusesWhenComposerHoldsUnsentInput(t *testing.T) {
 	d := newTestDriver(twoSessions())
-	got, err := d.Send(context.Background(),
+	got, err := d.Send(context.Background(), testCaller,
 		fleet.SessionRef{Machine: "testbox", ID: "beta"}, "hello", driver.SendOptions{Submit: true})
 	if err != nil {
 		t.Fatalf("a refusal is a domain outcome, not an error: %v", err)
@@ -208,7 +213,7 @@ func TestSendRefusesWhenComposerHoldsUnsentInput(t *testing.T) {
 func TestSendDeliversWhenComposerIsEmpty(t *testing.T) {
 	f := twoSessions()
 	d := newTestDriver(f)
-	got, err := d.Send(context.Background(),
+	got, err := d.Send(context.Background(), testCaller,
 		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
 	if err != nil {
 		t.Fatal(err)
@@ -230,12 +235,12 @@ func TestSendRefusesDeadAndMissingSessions(t *testing.T) {
 	f := twoSessions()
 	f.sessions[0].dead = true
 	d := newTestDriver(f)
-	got, _ := d.Send(context.Background(),
+	got, _ := d.Send(context.Background(), testCaller,
 		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "x", driver.SendOptions{})
 	if got.Outcome != fleet.OutcomeRefused {
 		t.Errorf("dead session: want refused, got %q", got.Outcome)
 	}
-	got, _ = d.Send(context.Background(),
+	got, _ = d.Send(context.Background(), testCaller,
 		fleet.SessionRef{Machine: "testbox", ID: "nope"}, "x", driver.SendOptions{})
 	if got.Outcome != fleet.OutcomeRefused {
 		t.Errorf("missing session: want refused, got %q", got.Outcome)
@@ -245,7 +250,7 @@ func TestSendRefusesDeadAndMissingSessions(t *testing.T) {
 // §5.4: never act destructively on an id match alone.
 func TestCloseRefusesAnUncorroboratedTarget(t *testing.T) {
 	d := newTestDriver(twoSessions())
-	_, err := d.Close(context.Background(), fleet.SessionRef{Machine: "testbox", ID: "alpha💬"})
+	_, err := d.Close(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"})
 	if !errors.Is(err, ErrAmbiguousTarget) {
 		t.Fatalf("closing a never-observed id must refuse (§5.4); got %v", err)
 	}
@@ -254,12 +259,12 @@ func TestCloseRefusesAnUncorroboratedTarget(t *testing.T) {
 func TestCloseRefusesWhenTheIdWasRecycled(t *testing.T) {
 	f := twoSessions()
 	d := newTestDriver(f)
-	if _, err := d.List(context.Background(), driver.ListFilter{}); err != nil {
+	if _, err := d.List(context.Background(), testCaller, driver.ListFilter{}); err != nil {
 		t.Fatal(err)
 	}
 	// Same name, different session: the exact hazard §5.4 describes.
 	f.sessions[0].created = 1785699999
-	_, err := d.Close(context.Background(), fleet.SessionRef{Machine: "testbox", ID: "alpha💬"})
+	_, err := d.Close(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"})
 	if !errors.Is(err, ErrAmbiguousTarget) {
 		t.Fatalf("a recycled id must refuse, got %v", err)
 	}
@@ -273,10 +278,10 @@ func TestCloseRefusesWhenTheIdWasRecycled(t *testing.T) {
 func TestCloseProceedsWhenCorroborated(t *testing.T) {
 	f := twoSessions()
 	d := newTestDriver(f)
-	if _, err := d.List(context.Background(), driver.ListFilter{}); err != nil {
+	if _, err := d.List(context.Background(), testCaller, driver.ListFilter{}); err != nil {
 		t.Fatal(err)
 	}
-	ack, err := d.Close(context.Background(), fleet.SessionRef{Machine: "testbox", ID: "alpha💬"})
+	ack, err := d.Close(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"})
 	if err != nil || !ack.Accepted {
 		t.Fatalf("corroborated close should proceed: ack=%+v err=%v", ack, err)
 	}
@@ -297,12 +302,12 @@ func TestCreateIsIdempotentPerKey(t *testing.T) {
 	d := newTestDriver(f)
 	spec := fleet.SessionSpec{Machine: "testbox", Cwd: "/work/new", Name: "gamma"}
 
-	first, err := d.Create(context.Background(), "key-1", spec)
+	first, err := d.Create(context.Background(), testCaller, "key-1", spec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	before := countCalls(f, "new-session")
-	second, err := d.Create(context.Background(), "key-1", spec)
+	second, err := d.Create(context.Background(), testCaller, "key-1", spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +321,7 @@ func TestCreateIsIdempotentPerKey(t *testing.T) {
 
 func TestCreateRequiresAnIdempotencyKey(t *testing.T) {
 	d := newTestDriver(twoSessions())
-	_, err := d.Create(context.Background(), "", fleet.SessionSpec{Cwd: "/w"})
+	_, err := d.Create(context.Background(), testCaller, "", fleet.SessionSpec{Cwd: "/w"})
 	if err == nil {
 		t.Error("§10 makes the key required, not optional")
 	}
@@ -327,7 +332,7 @@ func TestCreateKeepsPromptAndContextOutOfArgv(t *testing.T) {
 	f := twoSessions()
 	d := newTestDriver(f)
 	secret := "a-prompt-that-must-not-be-greppable"
-	_, err := d.Create(context.Background(), "k", fleet.SessionSpec{
+	_, err := d.Create(context.Background(), testCaller, "k", fleet.SessionSpec{
 		Machine:    "testbox",
 		Cwd:        "/work/new",
 		Name:       "gamma",
@@ -362,7 +367,7 @@ func TestCreateKeepsPromptAndContextOutOfArgv(t *testing.T) {
 
 func TestCreateRejectsRelativeContextRef(t *testing.T) {
 	d := newTestDriver(twoSessions())
-	_, err := d.Create(context.Background(), "k", fleet.SessionSpec{
+	_, err := d.Create(context.Background(), testCaller, "k", fleet.SessionSpec{
 		Cwd: "/w", ContextRef: "relative/path.txt",
 	})
 	if err == nil {
@@ -409,7 +414,7 @@ func TestReconcileAdoptsAndDestroysNothing(t *testing.T) {
 // §5.7 for a singular read: "looked, not there" is an answer, not an error.
 func TestStateOfAMissingSessionIsDeadNotAnError(t *testing.T) {
 	d := newTestDriver(twoSessions())
-	got, err := d.State(context.Background(), fleet.SessionRef{Machine: "testbox", ID: "ghost"})
+	got, err := d.State(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "ghost"})
 	if err != nil {
 		t.Fatalf("absence is an answer: %v", err)
 	}

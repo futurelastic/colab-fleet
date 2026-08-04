@@ -222,6 +222,7 @@ func isContentNote(name string) bool {
 // eventStream implements driver.EventStream over control-mode clients.
 type eventStream struct {
 	d       *Driver
+	caller  fleet.Caller
 	filter  driver.SubscribeFilter
 	cancel  context.CancelFunc
 	out     chan fleet.Event
@@ -240,7 +241,7 @@ type eventStream struct {
 // sessions that appear later and match are picked up as the lifecycle client
 // reports them. Both kinds of notification are triggers for the same
 // enumerate-and-diff.
-func (d *Driver) Subscribe(ctx context.Context, filter driver.SubscribeFilter) (driver.EventStream, error) {
+func (d *Driver) Subscribe(ctx context.Context, caller fleet.Caller, filter driver.SubscribeFilter) (driver.EventStream, error) {
 	// The lifecycle client must attach to *some* session, because there is
 	// no unattached control-mode form that receives notifications. With no
 	// sessions on the machine there is nothing to attach to — and also
@@ -262,6 +263,7 @@ func (d *Driver) Subscribe(ctx context.Context, filter driver.SubscribeFilter) (
 	streamCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	s := &eventStream{
 		d:       d,
+		caller:  caller,
 		filter:  filter,
 		cancel:  cancel,
 		out:     make(chan fleet.Event, 64),
@@ -313,7 +315,7 @@ func (d *Driver) Subscribe(ctx context.Context, filter driver.SubscribeFilter) (
 	// Seeding synchronously makes the guarantee stateable: every change
 	// after Subscribe returns is either delivered or is a bug.
 	seed := map[string]fleet.Session{}
-	if base, err := d.List(ctx, driver.ListFilter{CwdPrefix: filter.CwdPrefix}); err == nil {
+	if base, err := d.List(ctx, caller, driver.ListFilter{CwdPrefix: filter.CwdPrefix}); err == nil {
 		for _, sess := range base.Items() {
 			seed[sess.ID] = sess
 		}
@@ -460,7 +462,7 @@ func (s *eventStream) run(ctx context.Context, trigger <-chan struct{}, known ma
 		}
 		drain(trigger)
 
-		cur, err := s.d.List(ctx, driver.ListFilter{CwdPrefix: s.filter.CwdPrefix})
+		cur, err := s.d.List(ctx, s.caller, driver.ListFilter{CwdPrefix: s.filter.CwdPrefix})
 		if err != nil {
 			continue
 		}

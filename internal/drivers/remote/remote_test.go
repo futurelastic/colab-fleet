@@ -16,8 +16,15 @@ import (
 	"github.com/godx-jp/colab-fleet/internal/driver"
 )
 
-const peerToken = "peer-transport-token"
+const peerToken = "the-token-the-peer-accepts"
 const callerTok = "the-original-callers-token"
+
+// caller is what a service derives from an inbound request and hands down.
+var caller = fleet.Caller{Principal: "addr:198.51.100.7", Credential: callerTok}
+
+// noAuthority is a caller with nothing to present. Every operation must
+// refuse it — this driver holds no credential of its own to fall back to.
+var noAuthority = fleet.Caller{Principal: "addr:198.51.100.7"}
 
 // capture records what the peer actually received, which is where most of
 // this driver's contract lives: the rules it must obey are about what goes
@@ -70,8 +77,8 @@ func TestListAsksForThePeersLocalViewOnly(t *testing.T) {
 		[]fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
 		nil), &rec)
 
-	d := New("peerbox", srv.URL, peerToken)
-	if _, err := d.List(context.Background(), driver.ListFilter{}); err != nil {
+	d := New("peerbox", srv.URL)
+	if _, err := d.List(context.Background(), caller, driver.ListFilter{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(rec.query, "scope=local") {
@@ -91,8 +98,8 @@ func TestListAdoptsADegradedPeersOwnSourceStatus(t *testing.T) {
 			Error: "one runtime is not answering", ObservedAt: time.Now(),
 		}}, nil), nil)
 
-	d := New("peerbox", srv.URL, peerToken)
-	got, err := d.List(context.Background(), driver.ListFilter{})
+	d := New("peerbox", srv.URL)
+	got, err := d.List(context.Background(), caller, driver.ListFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,8 +126,8 @@ func TestUnreachablePeerIsASourceNotAnEmptyList(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 
-	d := New("peerbox", url, peerToken)
-	got, err := d.List(context.Background(), driver.ListFilter{})
+	d := New("peerbox", url)
+	got, err := d.List(context.Background(), caller, driver.ListFilter{})
 	if err != nil {
 		t.Fatalf("an unreachable peer belongs in the envelope, not in err: %v", err)
 	}
@@ -158,8 +165,8 @@ func TestNotFoundAndUnreachableStaySeparate(t *testing.T) {
 			srv := peerServing(t, tc.status, fleet.ErrorEnvelope{
 				Error: fleet.Error{Kind: tc.kind, Message: "from the peer", Machine: "peerbox"},
 			}, nil)
-			d := New("peerbox", srv.URL, peerToken)
-			_, err := d.State(context.Background(), fleet.SessionRef{ID: "s1"})
+			d := New("peerbox", srv.URL)
+			_, err := d.State(context.Background(), caller, fleet.SessionRef{ID: "s1"})
 			if err == nil {
 				t.Fatal("expected an error")
 			}
@@ -175,42 +182,66 @@ func TestNotFoundAndUnreachableStaySeparate(t *testing.T) {
 }
 
 // §13 / api-http.md §5: a proxy presents the ORIGINAL caller's authority.
-// The dangerous failure is silent success using the proxy's own credential.
-func TestMutatingVerbsPresentTheCallersAuthorityNotTheProxys(t *testing.T) {
+//
+// This used to be the design's most serious defect: authority travelled in a
+// context value a service could forget, and a remote driver missing it fell
+// back to its own token — succeeding, passing tests, and silently widening
+// authorization. Authority is now a parameter, and this driver holds no
+// credential at all, so the fallback has nothing to fall back to.
+func TestEveryOperationPresentsTheCallersCredential(t *testing.T) {
 	var rec capture
 	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
-	d := New("peerbox", srv.URL, peerToken)
+	d := New("peerbox", srv.URL)
 
-	ctx := WithCallerToken(context.Background(), callerTok)
-	if _, err := d.Send(ctx, fleet.SessionRef{ID: "s1"}, "hello", driver.SendOptions{}); err != nil {
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "hello", driver.SendOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if rec.auth != "Bearer "+callerTok {
-		t.Errorf("Authorization = %q, want the caller's token; a proxy that "+
-			"substitutes its own identity makes every machine a confused "+
-			"deputy for every other (§13)", rec.auth)
-	}
-	if strings.Contains(rec.auth, peerToken) {
-		t.Error("the proxy's own transport credential leaked onto a proxied mutation")
+		t.Errorf("Authorization = %q, want the caller's own credential (§13)", rec.auth)
 	}
 }
 
-func TestMutatingVerbsRefuseWithoutCallerAuthority(t *testing.T) {
-	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, nil)
-	d := New("peerbox", srv.URL, peerToken)
-	ctx := context.Background() // no caller token attached
+// Reads included. "Which sessions exist, in which directories, on which
+// machine" is exactly the reconnaissance an unauthorized caller wants, and §6
+// grants read permission broadly rather than universally.
+func TestNoOperationProceedsWithoutCallerAuthority(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, collectionJSON(
+		[]fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
+		nil), &rec)
+	d := New("peerbox", srv.URL)
+	ctx := context.Background()
 
-	if _, err := d.Send(ctx, fleet.SessionRef{ID: "s1"}, "x", driver.SendOptions{}); !errors.Is(err, ErrNoCallerAuthority) {
+	// A read returns its refusal inside the envelope (§5.7), not as an error.
+	col, err := d.List(ctx, noAuthority, driver.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if col.Complete() {
+		t.Error("List without authority must not report a complete envelope")
+	}
+
+	if _, err := d.State(ctx, noAuthority, fleet.SessionRef{ID: "s1"}); !errors.Is(err, ErrNoCallerAuthority) {
+		t.Errorf("State: want ErrNoCallerAuthority, got %v", err)
+	}
+	if _, err := d.Send(ctx, noAuthority, fleet.SessionRef{ID: "s1"}, "x", driver.SendOptions{}); !errors.Is(err, ErrNoCallerAuthority) {
 		t.Errorf("Send: want ErrNoCallerAuthority, got %v", err)
 	}
-	if _, err := d.Create(ctx, "k", fleet.SessionSpec{Cwd: "/w"}); !errors.Is(err, ErrNoCallerAuthority) {
+	if _, err := d.Create(ctx, noAuthority, "k", fleet.SessionSpec{Cwd: "/w"}); !errors.Is(err, ErrNoCallerAuthority) {
 		t.Errorf("Create: want ErrNoCallerAuthority, got %v", err)
 	}
-	if _, err := d.Close(ctx, fleet.SessionRef{ID: "s1"}); !errors.Is(err, ErrNoCallerAuthority) {
+	if _, err := d.Close(ctx, noAuthority, fleet.SessionRef{ID: "s1"}); !errors.Is(err, ErrNoCallerAuthority) {
 		t.Errorf("Close: want ErrNoCallerAuthority, got %v", err)
 	}
-	if _, err := d.Interrupt(ctx, fleet.SessionRef{ID: "s1"}); !errors.Is(err, ErrNoCallerAuthority) {
+	if _, err := d.Interrupt(ctx, noAuthority, fleet.SessionRef{ID: "s1"}); !errors.Is(err, ErrNoCallerAuthority) {
 		t.Errorf("Interrupt: want ErrNoCallerAuthority, got %v", err)
+	}
+
+	// The strongest form of the assertion: not one request was attempted.
+	// A driver that reached the peer at all would have had to present
+	// something, and there is nothing it could honestly present.
+	if rec.auth != "" {
+		t.Errorf("a request was made without caller authority, presenting %q", rec.auth)
 	}
 }
 
@@ -228,10 +259,9 @@ func TestCreateForwardsTheCallersIdempotencyKeyUnchanged(t *testing.T) {
 		Runtime:    "claude-code-tmux",
 		State:      fleet.InferredState(fleet.StatusStarting, "just created", nil),
 	}, &rec)
-	d := New("peerbox", srv.URL, peerToken)
+	d := New("peerbox", srv.URL)
 
-	ctx := WithCallerToken(context.Background(), callerTok)
-	ref, err := d.Create(ctx, "caller-key-42", fleet.SessionSpec{Cwd: "/w", Name: "n"})
+	ref, err := d.Create(context.Background(), caller, "caller-key-42", fleet.SessionSpec{Cwd: "/w", Name: "n"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,10 +281,9 @@ func TestRefusalSurvivesAsAValueNotAnError(t *testing.T) {
 		Outcome: fleet.OutcomeRefused,
 		Reason:  "composer holds unsent input",
 	}, nil)
-	d := New("peerbox", srv.URL, peerToken)
+	d := New("peerbox", srv.URL)
 
-	ctx := WithCallerToken(context.Background(), callerTok)
-	got, err := d.Send(ctx, fleet.SessionRef{ID: "s1"}, "hi", driver.SendOptions{})
+	got, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "hi", driver.SendOptions{})
 	if err != nil {
 		t.Fatalf("a refusal must not surface as an error: %v", err)
 	}
@@ -272,12 +301,12 @@ func TestDeadlineIsAnnouncedAndCallersMayOnlyShortenIt(t *testing.T) {
 		[]fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
 		nil), &rec)
 
-	d := New("peerbox", srv.URL, peerToken, WithDeadline(5*time.Second))
+	d := New("peerbox", srv.URL, WithDeadline(5*time.Second))
 
 	// A shorter caller deadline wins.
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	if _, err := d.List(ctx, driver.ListFilter{}); err != nil {
+	if _, err := d.List(ctx, caller, driver.ListFilter{}); err != nil {
 		t.Fatal(err)
 	}
 	if rec.dline == "" {
@@ -291,7 +320,7 @@ func TestDeadlineIsAnnouncedAndCallersMayOnlyShortenIt(t *testing.T) {
 	// A longer caller deadline does NOT win.
 	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel2()
-	if _, err := d.List(ctx2, driver.ListFilter{}); err != nil {
+	if _, err := d.List(ctx2, caller, driver.ListFilter{}); err != nil {
 		t.Fatal(err)
 	}
 	if ms := parseMs(t, rec.dline); ms > 6000 {
@@ -318,9 +347,9 @@ func TestAHungPeerBecomesUnreachableWithinTheDeadline(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("peerbox", srv.URL, peerToken, WithDeadline(300*time.Millisecond))
+	d := New("peerbox", srv.URL, WithDeadline(300*time.Millisecond))
 	started := time.Now()
-	got, err := d.List(context.Background(), driver.ListFilter{})
+	got, err := d.List(context.Background(), caller, driver.ListFilter{})
 	elapsed := time.Since(started)
 
 	if err != nil {
@@ -345,7 +374,7 @@ func TestCapabilitiesAreConservativeUntilThePeerAnswers(t *testing.T) {
 		nil), nil)
 	_ = srv
 
-	d := New("peerbox", "http://127.0.0.1:1", peerToken, WithDeadline(200*time.Millisecond))
+	d := New("peerbox", "http://127.0.0.1:1", WithDeadline(200*time.Millisecond))
 
 	caps := d.Capabilities()
 	if d.CapabilitiesKnown() {
@@ -379,8 +408,8 @@ func TestRefreshCapabilitiesAdoptsWhatThePeerReports(t *testing.T) {
 	}
 	srv2 := peerServing(t, 200, runtimes, nil)
 
-	d := New("peerbox", srv2.URL, peerToken)
-	if err := d.RefreshCapabilities(context.Background()); err != nil {
+	d := New("peerbox", srv2.URL)
+	if err := d.RefreshCapabilities(context.Background(), caller); err != nil {
 		t.Fatal(err)
 	}
 	if !d.CapabilitiesKnown() {
@@ -396,8 +425,8 @@ func TestRefreshCapabilitiesAdoptsWhatThePeerReports(t *testing.T) {
 }
 
 func TestSubscribeIsUnsupportedRatherThanPolled(t *testing.T) {
-	d := New("peerbox", "http://127.0.0.1:1", peerToken)
-	if _, err := d.Subscribe(context.Background(), driver.SubscribeFilter{}); !errors.Is(err, driver.ErrUnsupported) {
+	d := New("peerbox", "http://127.0.0.1:1")
+	if _, err := d.Subscribe(context.Background(), caller, driver.SubscribeFilter{}); !errors.Is(err, driver.ErrUnsupported) {
 		t.Errorf("want ErrUnsupported, got %v", err)
 	}
 }

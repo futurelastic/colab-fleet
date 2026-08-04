@@ -7,8 +7,8 @@
 // it, and "if the interface cannot express 'a session on another machine,'
 // the interface is wrong."
 //
-// It mostly can. Three places it cannot are recorded below, and all three
-// share a shape worth naming up front: the interface was designed against a
+// It mostly can. Two places it cannot are recorded below, plus one that has
+// since been fixed. All three share a shape worth naming up front: the interface was designed against a
 // local driver, where certain things are free — knowing your own
 // capabilities, knowing who is asking, never being unreachable. None of
 // those are free across a network, and the interface has nowhere to put the
@@ -47,32 +47,32 @@
 // recorded rather than treated as urgent — but it also means a permanently
 // misconfigured peer is indistinguishable from a deliberately minimal one.
 //
-// # FINDING 3: the interface has nowhere to carry the caller's authority
+// # RESOLVED: the caller's authority is now a parameter
 //
-// This is the serious one.
+// This driver previously took the original caller's credentials from a
+// context value, because no operation in §3 had anywhere to put them. §13
+// requires a proxying service to present the ORIGINAL caller's authority to
+// a peer, never its own — "otherwise every machine becomes a confused deputy
+// for every other" — and an out-of-band value is exactly the kind a service
+// can forget to attach.
 //
-// §13 and api-http.md §5 both state the rule without ambiguity: "when
-// proxying, a service presents the ORIGINAL caller's authority, not its
-// own. A peer authorizes the principal who initiated the request. A service
-// that substituted its own identity would make every machine a confused
-// deputy for every other."
+// The failure mode was the reason this was the most serious defect in the
+// design: a remote driver with no caller credentials would reach for the one
+// credential it certainly had, its own. The request then succeeds. The tests
+// pass. The authorization is silently widened, and nothing reports it,
+// because the symptom of the bug is that everything works.
 //
-// Every Driver method takes (ctx, ...domain arguments). None takes a
-// principal, a credential, or a caller identity. So the only vehicle for the
-// original caller's authority is a context value — untyped, invisible at the
-// call site, impossible to require, and silently absent if a service forgets
-// to attach it.
+// fleet.Caller is now a parameter of every operation, and this driver holds
+// NO credential of its own. That second half matters more than the first:
+// refusing to fall back is a policy a driver can get wrong, whereas having
+// nothing to fall back TO is a property of the type. The confused deputy is
+// not prevented here; it is unrepresentable.
 //
-// And "silently absent" is precisely the failure mode that matters, because
-// the natural fallback is for the remote driver to use its own configured
-// token. That fallback works. Every test passes. Every request succeeds. The
-// fleet becomes a confused deputy, and nothing anywhere reports it.
-//
-// This driver therefore does NOT silently fall back: WithCallerToken must be
-// present in the context for any mutating verb, and its absence is an error
-// rather than a quiet substitution. See callerToken. The proper fix is a
-// change to the Driver interface, recorded in the spec rather than applied
-// here.
+// Reads are included. An earlier revision let List and State fall back to
+// the driver's own token on the reasoning that reading is harmless — but
+// "which sessions exist, in which directories, on which machine" is exactly
+// the reconnaissance an unauthorized caller wants, and §6 grants read
+// permission broadly rather than universally.
 package remote
 
 import (
@@ -95,31 +95,13 @@ import (
 
 const defaultDeadlineMs = 3000
 
-// ErrNoCallerAuthority is returned when a mutating operation is attempted
-// without the original caller's token in context (FINDING 3). It is
-// deliberately loud: the alternative — falling back to this driver's own
-// credentials — is the confused-deputy bug §13 exists to forbid, and it
-// fails silently by succeeding.
+// ErrNoCallerAuthority is returned when an operation arrives with no
+// credential to present to the peer. Every operation checks it, reads
+// included: this driver has no credential of its own to substitute, so an
+// empty one means the request simply cannot be made (§13).
 var ErrNoCallerAuthority = errors.New(
-	"remote: no caller authority in context; a proxied request must present the " +
-		"original caller's credentials, never the proxy's own (§13)")
-
-type callerTokenKey struct{}
-
-// WithCallerToken attaches the original caller's bearer token to a context
-// so a proxied request can present it (§13, api-http.md §5).
-//
-// That this is a context value rather than a parameter is the compromise
-// FINDING 3 describes: the Driver interface has no argument for caller
-// identity, so there is nowhere else to put it.
-func WithCallerToken(ctx context.Context, token string) context.Context {
-	return context.WithValue(ctx, callerTokenKey{}, token)
-}
-
-func callerToken(ctx context.Context) (string, bool) {
-	tok, ok := ctx.Value(callerTokenKey{}).(string)
-	return tok, ok && tok != ""
-}
+	"remote: caller carries no credential; a proxied request presents the " +
+		"original caller's authority, and this proxy holds none of its own (§13)")
 
 // Driver is an HTTP client to one peer colab-fleet, presented as an
 // ordinary driver.Driver. The service registers it with RegisterPeerDriver
@@ -131,10 +113,9 @@ type Driver struct {
 	deadline time.Duration
 	now      func() time.Time
 
-	// selfToken authenticates THIS service to the peer as a transport
-	// credential. It is not, and must never become, a substitute for the
-	// caller's authority on a mutating verb (FINDING 3).
-	selfToken string
+	// There is deliberately no credential field. See the package doc: a
+	// proxy that holds no identity of its own cannot present one by
+	// mistake.
 
 	mu       sync.RWMutex
 	caps     fleet.DriverCapabilities
@@ -175,14 +156,13 @@ func withClock(f func() time.Time) Option { return func(d *Driver) { d.now = f }
 // registered because it happened to be down at startup would be exactly that
 // absence. Registration therefore always succeeds; reachability is a
 // per-call fact, reported per call.
-func New(machine fleet.MachineId, base, selfToken string, opts ...Option) *Driver {
+func New(machine fleet.MachineId, base string, opts ...Option) *Driver {
 	d := &Driver{
-		machine:   machine,
-		base:      strings.TrimRight(base, "/"),
-		client:    &http.Client{},
-		deadline:  defaultDeadlineMs * time.Millisecond,
-		now:       time.Now,
-		selfToken: selfToken,
+		machine:  machine,
+		base:     strings.TrimRight(base, "/"),
+		client:   &http.Client{},
+		deadline: defaultDeadlineMs * time.Millisecond,
+		now:      time.Now,
 	}
 	for _, o := range opts {
 		o(d)
@@ -215,12 +195,12 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 // be able to fail, and it needs to be callable again later. A method the
 // interface does not know about is a poor substitute for a signature that
 // admitted this in the first place (FINDING 1).
-func (d *Driver) RefreshCapabilities(ctx context.Context) error {
+func (d *Driver) RefreshCapabilities(ctx context.Context, caller fleet.Caller) error {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	var body fleet.Collection[fleet.RuntimeInfo]
-	if err := d.do(ctx, http.MethodGet, "/v1/runtimes", nil, "", &body); err != nil {
+	if err := d.do(ctx, caller, http.MethodGet, "/v1/runtimes", nil, &body); err != nil {
 		return err
 	}
 	for _, ri := range body.Items() {
@@ -259,7 +239,10 @@ func (d *Driver) bounded(ctx context.Context) (context.Context, context.CancelFu
 // do performs one request. token, when non-empty, replaces this driver's own
 // credential — that is how a proxied call presents the original caller's
 // authority (§13).
-func (d *Driver) do(ctx context.Context, method, path string, body any, token string, out any) error {
+func (d *Driver) do(ctx context.Context, caller fleet.Caller, method, path string, body any, out any) error {
+	if !caller.HasCredential() {
+		return ErrNoCallerAuthority
+	}
 	var rdr io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -273,11 +256,8 @@ func (d *Driver) do(ctx context.Context, method, path string, body any, token st
 	if err != nil {
 		return fmt.Errorf("remote: building request: %w", err)
 	}
-	auth := token
-	if auth == "" {
-		auth = d.selfToken
-	}
-	req.Header.Set("Authorization", "Bearer "+auth)
+	// The caller's authority, never this driver's — it has none (§13).
+	req.Header.Set("Authorization", "Bearer "+caller.Credential)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -368,7 +348,7 @@ func decodeError(resp *http.Response, machine fleet.MachineId) error {
 //     "ok" from the mere fact that the HTTP call succeeded would flatten
 //     that into a confident envelope built on a self-declared unreliable
 //     source.
-func (d *Driver) List(ctx context.Context, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {
+func (d *Driver) List(ctx context.Context, caller fleet.Caller, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -386,8 +366,7 @@ func (d *Driver) List(ctx context.Context, filter driver.ListFilter) (fleet.Coll
 
 	started := d.now()
 	var out fleet.Collection[fleet.Session]
-	tok, _ := callerToken(ctx) // read verbs may fall back to the transport credential
-	if err := d.do(ctx, http.MethodGet, "/v1/sessions?"+q.Encode(), nil, tok, &out); err != nil {
+	if err := d.do(ctx, caller, http.MethodGet, "/v1/sessions?"+q.Encode(), nil, &out); err != nil {
 		// §5.7: a failed read is never an empty list. The peer contributes a
 		// SourceStatus saying it did not answer.
 		src := fleet.SourceStatus{
@@ -426,15 +405,14 @@ func sourceStateFor(err error) fleet.SourceState {
 }
 
 // State reads one session from the peer.
-func (d *Driver) State(ctx context.Context, ref fleet.SessionRef) (fleet.SessionState, error) {
+func (d *Driver) State(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.SessionState, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	var out fleet.Session
-	tok, _ := callerToken(ctx)
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s",
 		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
-	if err := d.do(ctx, http.MethodGet, path, nil, tok, &out); err != nil {
+	if err := d.do(ctx, caller, http.MethodGet, path, nil, &out); err != nil {
 		return fleet.SessionState{}, err
 	}
 	return out.State, nil
@@ -462,7 +440,7 @@ type createBody struct {
 // proxy that minted its own key per attempt would defeat the mechanism
 // precisely when it is needed, since the retry would arrive carrying a
 // different key and read as a different request.
-func (d *Driver) Create(ctx context.Context, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
+func (d *Driver) Create(ctx context.Context, caller fleet.Caller, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -473,11 +451,6 @@ func (d *Driver) Create(ctx context.Context, key string, spec fleet.SessionSpec)
 			Machine: d.machine,
 		}
 	}
-	tok, ok := callerToken(ctx)
-	if !ok {
-		return fleet.SessionRef{}, ErrNoCallerAuthority
-	}
-
 	body := createBody{
 		Runtime: spec.Runtime, Cwd: spec.Cwd, Agent: spec.Agent,
 		Model: spec.Model, Effort: spec.Effort, Name: spec.Name,
@@ -485,14 +458,17 @@ func (d *Driver) Create(ctx context.Context, key string, spec fleet.SessionSpec)
 	}
 	var out fleet.Session
 	path := "/v1/machines/" + url.PathEscape(string(d.machine)) + "/sessions"
-	if err := d.doWithKey(ctx, http.MethodPost, path, body, tok, key, &out); err != nil {
+	if err := d.doWithKey(ctx, caller, http.MethodPost, path, body, key, &out); err != nil {
 		return fleet.SessionRef{}, err
 	}
 	return out.SessionRef, nil
 }
 
 // doWithKey is do() plus the Idempotency-Key header.
-func (d *Driver) doWithKey(ctx context.Context, method, path string, body any, token, key string, out any) error {
+func (d *Driver) doWithKey(ctx context.Context, caller fleet.Caller, method, path string, body any, key string, out any) error {
+	if !caller.HasCredential() {
+		return ErrNoCallerAuthority
+	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("remote: encoding request: %w", err)
@@ -501,7 +477,7 @@ func (d *Driver) doWithKey(ctx context.Context, method, path string, body any, t
 	if err != nil {
 		return fmt.Errorf("remote: building request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+caller.Credential)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", key)
 	if dl, ok := ctx.Deadline(); ok {
@@ -537,14 +513,9 @@ func (d *Driver) doWithKey(ctx context.Context, method, path string, body any, t
 // driver must not "helpfully" convert it: mapping a refusal to an error
 // would train callers to retry it, which is exactly what the refusal exists
 // to stop.
-func (d *Driver) Send(ctx context.Context, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
+func (d *Driver) Send(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
-
-	tok, ok := callerToken(ctx)
-	if !ok {
-		return fleet.DeliveryReceipt{}, ErrNoCallerAuthority
-	}
 
 	body := struct {
 		Text   string `json:"text"`
@@ -554,24 +525,20 @@ func (d *Driver) Send(ctx context.Context, ref fleet.SessionRef, text string, op
 	var out fleet.DeliveryReceipt
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/input",
 		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
-	if err := d.do(ctx, http.MethodPost, path, body, tok, &out); err != nil {
+	if err := d.do(ctx, caller, http.MethodPost, path, body, &out); err != nil {
 		return fleet.DeliveryReceipt{}, err
 	}
 	return out, nil
 }
 
 // Interrupt asks the peer to interrupt a session (202, intent only).
-func (d *Driver) Interrupt(ctx context.Context, ref fleet.SessionRef) (fleet.Ack, error) {
+func (d *Driver) Interrupt(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
-	tok, ok := callerToken(ctx)
-	if !ok {
-		return fleet.Ack{}, ErrNoCallerAuthority
-	}
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/interrupt",
 		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
-	if err := d.do(ctx, http.MethodPost, path, struct{}{}, tok, nil); err != nil {
+	if err := d.do(ctx, caller, http.MethodPost, path, struct{}{}, nil); err != nil {
 		return fleet.Ack{}, err
 	}
 	return fleet.Ack{Accepted: true}, nil
@@ -588,17 +555,13 @@ func (d *Driver) Interrupt(ctx context.Context, ref fleet.SessionRef) (fleet.Ack
 //
 // This is the same defect recorded in spec §5.4, observed from the side that
 // makes its cost obvious.
-func (d *Driver) Close(ctx context.Context, ref fleet.SessionRef) (fleet.Ack, error) {
+func (d *Driver) Close(ctx context.Context, caller fleet.Caller, ref fleet.SessionRef) (fleet.Ack, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
-	tok, ok := callerToken(ctx)
-	if !ok {
-		return fleet.Ack{}, ErrNoCallerAuthority
-	}
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s",
 		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
-	if err := d.do(ctx, http.MethodDelete, path, nil, tok, nil); err != nil {
+	if err := d.do(ctx, caller, http.MethodDelete, path, nil, nil); err != nil {
 		return fleet.Ack{}, err
 	}
 	return fleet.Ack{Accepted: true}, nil
@@ -609,6 +572,6 @@ func (d *Driver) Close(ctx context.Context, ref fleet.SessionRef) (fleet.Ack, er
 // consume. Returning unsupported is the honest answer; a polling loop
 // dressed as a stream would violate §5.5 and §5.6 at once, and would do so
 // across a network, where §5.5's cost objection actually bites.
-func (d *Driver) Subscribe(ctx context.Context, filter driver.SubscribeFilter) (driver.EventStream, error) {
+func (d *Driver) Subscribe(ctx context.Context, caller fleet.Caller, filter driver.SubscribeFilter) (driver.EventStream, error) {
 	return nil, driver.ErrUnsupported
 }

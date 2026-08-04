@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
@@ -101,6 +103,45 @@ func mutating(cfg Config, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// callerFrom derives the authority a request is made on behalf of (§6, §13).
+//
+// Credential is the bearer token the caller actually presented — not this
+// service's own. That is the whole of §13's "proxying does not launder
+// authorization": when this service forwards to a peer, the peer sees the
+// token of whoever started the request, and authorizes them rather than the
+// machine that relayed it.
+//
+// Principal is provenance, not identity, and the difference is worth being
+// honest about. While the fleet authenticates with one shared token (§7.2),
+// nothing distinguishes one bearer from another, so the most specific true
+// statement available is where the request came from. It is recorded for the
+// audit trail §6 requirement 4 asks for — "actor, verb, target, outcome" —
+// and it should be read as an address, because that is all it is. Real
+// per-peer identity is §6's outstanding work; when it arrives, it lands
+// here and nothing above this function changes.
+func callerFrom(r *http.Request) fleet.Caller {
+	origin := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(origin); err == nil {
+		origin = host
+	}
+	return fleet.Caller{
+		Principal:  "addr:" + origin,
+		Credential: bearerOf(r),
+	}
+}
+
+// bearerOf extracts the presented token. It deliberately does not validate —
+// withAuth has already done that, and a second opinion here could only
+// disagree.
+func bearerOf(r *http.Request) string {
+	const p = "Bearer "
+	v := r.Header.Get("Authorization")
+	if len(v) > len(p) && strings.EqualFold(v[:len(p)], p) {
+		return v[len(p):]
+	}
+	return ""
+}
+
 func writeError(w http.ResponseWriter, e *fleet.Error) {
 	w.Header().Set("Fleet-Clock", time.Now().Format(time.RFC3339Nano))
 	w.Header().Set("Content-Type", "application/json")
@@ -166,7 +207,7 @@ func handleHealth(svc *Service) http.HandlerFunc {
 
 func handleMachines(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		col, err := svc.ListMachines(r.Context(), parseDeadline(r))
+		col, err := svc.ListMachines(r.Context(), callerFrom(r), parseDeadline(r))
 		if err != nil {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error()})
 			return
@@ -205,7 +246,7 @@ func handleListSessions(svc *Service) http.HandlerFunc {
 			CwdPrefix: q.Get("cwdPrefix"),
 		}
 
-		col, err := svc.ListSessions(r.Context(), scope, filter, parseDeadline(r))
+		col, err := svc.ListSessions(r.Context(), callerFrom(r), scope, filter, parseDeadline(r))
 		if err != nil {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error()})
 			return
@@ -264,13 +305,13 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		ref, err := d.Create(ctx, key, spec)
+		ref, err := d.Create(ctx, callerFrom(r), key, spec)
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return
 		}
 
-		state, _ := d.State(ctx, ref)
+		state, _ := d.State(ctx, callerFrom(r), ref)
 		writeJSON(w, http.StatusCreated, fleet.Session{
 			SessionRef: ref, Runtime: spec.Runtime, Cwd: spec.Cwd,
 			Agent: spec.Agent, Model: spec.Model, State: state,
@@ -295,7 +336,7 @@ func handleGetSession(svc *Service) http.HandlerFunc {
 		defer cancel()
 
 		ref := fleet.SessionRef{Machine: machine, ID: id}
-		state, err := d.State(ctx, ref)
+		state, err := d.State(ctx, callerFrom(r), ref)
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return
@@ -329,7 +370,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Send(ctx, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit})
+		receipt, err := d.Send(ctx, callerFrom(r), fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit})
 		if err != nil {
 			// A refusal from the driver is not this branch — Send returns
 			// it as a DeliveryReceipt value, not an error. Only a
@@ -361,7 +402,7 @@ func handleInterrupt(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		ack, err := d.Interrupt(ctx, fleet.SessionRef{Machine: machine, ID: id})
+		ack, err := d.Interrupt(ctx, callerFrom(r), fleet.SessionRef{Machine: machine, ID: id})
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return
@@ -386,7 +427,7 @@ func handleClose(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		ack, err := d.Close(ctx, fleet.SessionRef{Machine: machine, ID: id})
+		ack, err := d.Close(ctx, callerFrom(r), fleet.SessionRef{Machine: machine, ID: id})
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return

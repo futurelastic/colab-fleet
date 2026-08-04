@@ -72,10 +72,10 @@ func TestFederatedUnsupportedSurvivesTheWholePath(t *testing.T) {
 	const token = "federation-token"
 	base := peerService(t, "peerbox", "stub", &stub.Driver{}, token, false)
 
-	rd := New("peerbox", base, token, WithDeadline(2*time.Second))
+	rd := New("peerbox", base, WithDeadline(2*time.Second))
 	svcA := homeService(t, "homebox", "peerbox", rd)
 
-	got, err := svcA.ListSessions(context.Background(), service.ScopeFleet,
+	got, err := svcA.ListSessions(context.Background(), fleetCaller(token), service.ScopeFleet,
 		driver.ListFilter{}, 0)
 	if err != nil {
 		t.Fatalf("fleet-scoped list failed outright: %v", err)
@@ -103,47 +103,52 @@ func TestFederatedUnsupportedSurvivesTheWholePath(t *testing.T) {
 	}
 }
 
-// The authority rule, end to end. A mutating verb proxied to a peer must
-// carry the ORIGINAL caller's credentials. Without a caller in context the
-// remote driver refuses rather than substituting its own — the failure that
-// would otherwise succeed silently and make every machine a confused deputy.
-func TestFederatedMutationRequiresTheOriginalCallersAuthority(t *testing.T) {
+// The authority rule, end to end and through a real HTTP surface.
+func TestFederatedMutationCarriesTheOriginalCallersAuthority(t *testing.T) {
 	const token = "federation-token"
 	base := peerService(t, "peerbox", "stub", &stub.Driver{}, token, true) // exercises a mutating verb
-	rd := New("peerbox", base, token, WithDeadline(2*time.Second))
+	rd := New("peerbox", base)
 
-	// No caller authority in context.
-	_, err := rd.Send(context.Background(), fleet.SessionRef{Machine: "peerbox", ID: "x"},
-		"hello", driver.SendOptions{})
+	// No authority: refused before a request is ever made. There is no
+	// proxy credential to fall back to — that is the point of the fix.
+	_, err := rd.Send(context.Background(), fleet.Caller{Principal: "addr:test"},
+		fleet.SessionRef{Machine: "peerbox", ID: "x"}, "hello", driver.SendOptions{})
 	if !errors.Is(err, ErrNoCallerAuthority) {
 		t.Fatalf("want ErrNoCallerAuthority, got %v", err)
 	}
 
-	// With it, the request reaches the peer's driver and gets that driver's
-	// honest answer (the stub supports nothing) rather than an auth failure.
-	ctx := WithCallerToken(context.Background(), token)
-	_, err = rd.Send(ctx, fleet.SessionRef{Machine: "peerbox", ID: "x"},
-		"hello", driver.SendOptions{})
+	// With the caller's own credential, the request reaches the peer's
+	// driver and gets that driver's honest answer rather than an auth
+	// failure.
+	_, err = rd.Send(context.Background(), fleetCaller(token),
+		fleet.SessionRef{Machine: "peerbox", ID: "x"}, "hello", driver.SendOptions{})
 	var fe *fleet.Error
 	if !errors.As(err, &fe) {
 		t.Fatalf("want a typed wire error, got %v", err)
 	}
 	if fe.Kind == fleet.ErrorUnauthorized {
-		t.Errorf("the caller's own token was rejected; authority did not survive proxying")
+		t.Errorf("the caller's credential was rejected; authority did not survive proxying")
 	}
 	if fe.Kind != fleet.ErrorUnsupported {
 		t.Logf("note: peer answered %q (%s)", fe.Kind, fe.Message)
 	}
 }
 
+// fleetCaller is what a service derives from an inbound request: the
+// principal that asked, and the credential they presented.
+func fleetCaller(tok string) fleet.Caller {
+	return fleet.Caller{Principal: "addr:test", Credential: tok}
+}
+
 // A peer that is down must degrade the fleet view, never fail it, and never
 // vanish from it (§5.7, §4.4).
 func TestFederatedUnreachablePeerDegradesRatherThanFails(t *testing.T) {
-	rd := New("peerbox", "http://127.0.0.1:1", "tok", WithDeadline(300*time.Millisecond))
+	const token = "federation-token"
+	rd := New("peerbox", "http://127.0.0.1:1", WithDeadline(300*time.Millisecond))
 	svcA := homeService(t, "homebox", "peerbox", rd)
 
 	started := time.Now()
-	got, err := svcA.ListSessions(context.Background(), service.ScopeFleet, driver.ListFilter{}, 0)
+	got, err := svcA.ListSessions(context.Background(), fleetCaller(token), service.ScopeFleet, driver.ListFilter{}, 0)
 	elapsed := time.Since(started)
 
 	if err != nil {
@@ -188,11 +193,11 @@ func TestFederatedListOfRealSessionsThroughARemoteDriver(t *testing.T) {
 	local := tmuxdrv.New("peerbox")
 	base := peerService(t, "peerbox", tmuxdrv.DefaultRuntime, local, token, false) // read-only
 
-	rd := New("peerbox", base, token, WithDeadline(10*time.Second))
+	rd := New("peerbox", base, WithDeadline(10*time.Second))
 	svcA := homeService(t, "homebox", "peerbox", rd)
 
 	// What the driver sees directly, on the machine it runs on.
-	direct, err := local.List(context.Background(), driver.ListFilter{})
+	direct, err := local.List(context.Background(), fleetCaller(token), driver.ListFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +206,7 @@ func TestFederatedListOfRealSessionsThroughARemoteDriver(t *testing.T) {
 	}
 
 	// What a caller sees through service -> remote driver -> HTTP -> service.
-	viaFleet, err := svcA.ListSessions(context.Background(), service.ScopeFleet,
+	viaFleet, err := svcA.ListSessions(context.Background(), fleetCaller(token), service.ScopeFleet,
 		driver.ListFilter{}, 0)
 	if err != nil {
 		t.Fatalf("federated list failed: %v", err)
