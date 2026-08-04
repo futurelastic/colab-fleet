@@ -99,6 +99,11 @@ const (
 	// above it.
 	defaultCaptureLines = 24
 
+	// unsentAgeWorthMentioning is when a composer holding text stops looking
+	// like someone typing. Below it the age is noise; above it, it is the
+	// whole story.
+	unsentAgeWorthMentioning = 10 * time.Minute
+
 	// submitConfirmWindow bounds the wait for delivered text to render before
 	// it is submitted. Generous on purpose: a slow render and a stuck pane
 	// look identical over a short budget, and failing early strands the text.
@@ -182,6 +187,24 @@ type observation struct {
 	created time.Time
 	cwd     string
 	at      time.Time
+
+	// status and statusSince implement §8's "`since` is the time the status
+	// was first observed to hold, not the time it began".
+	//
+	// This is what separates a wedged pane from an operator mid-thought. A
+	// sibling project measured a session holding the same unsent line for
+	// fourteen hours while its supervisor's veto — "an operator has text
+	// pending, do not evict" — stayed correct policy applied to a premise
+	// that had stopped being true. The veto assumes a human will come back;
+	// on a wedged pane none can, because typing does nothing.
+	//
+	// Nothing here probes the pane to find out. The discriminator that
+	// project used was to type a character and see whether it appeared,
+	// which is not something to do to a live session. Duration is the same
+	// signal read passively: text unchanged for hours is not a sentence
+	// somebody is still composing.
+	status      fleet.Status
+	statusSince time.Time
 }
 
 // Option configures a Driver.
@@ -484,15 +507,19 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	now := d.now()
 	d.mu.Lock()
 	for _, r := range rows {
-		d.observed[r.session] = observation{created: r.created, cwd: r.cwd, at: now}
 		text, captured := captures[r.paneID]
+		st := d.stampSinceLocked(r.session, classifyPane(text, captured, !r.dead), now)
+		d.observed[r.session] = observation{
+			created: r.created, cwd: r.cwd, at: now,
+			status: st.Status, statusSince: *st.Since,
+		}
 		started := r.created
 		s := fleet.Session{
 			SessionRef: fleet.SessionRef{Machine: d.machine, ID: r.session, Name: r.session},
 			StartedAt:  &started,
 			Runtime:    d.runtime,
 			Cwd:        fleet.AbsolutePath(r.cwd),
-			State:      classifyPane(text, captured, !r.dead),
+			State:      st,
 		}
 		if !matchesFilter(s, filter) {
 			continue
@@ -541,11 +568,16 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		if r.session != ref.ID {
 			continue
 		}
-		d.mu.Lock()
-		d.observed[r.session] = observation{created: r.created, cwd: r.cwd, at: d.now()}
-		d.mu.Unlock()
+		now := d.now()
 		text, captured := captures[r.paneID]
-		return classifyPane(text, captured, !r.dead), nil
+		d.mu.Lock()
+		st := d.stampSinceLocked(r.session, classifyPane(text, captured, !r.dead), now)
+		d.observed[r.session] = observation{
+			created: r.created, cwd: r.cwd, at: now,
+			status: st.Status, statusSince: *st.Since,
+		}
+		d.mu.Unlock()
+		return st, nil
 	}
 	// §5.7 applied to a singular read: "I looked and it is not there" is a
 	// real answer, and it is not the same as a failure to look. A session
@@ -1105,4 +1137,26 @@ func (d *Driver) confirmLanded(ctx context.Context, paneID, text string) bool {
 		case <-time.After(submitConfirmInterval):
 		}
 	}
+}
+
+// stampSinceLocked fills §2.3's Since: when this status was FIRST observed to
+// hold, not when it began. Caller holds d.mu.
+//
+// For a session holding unsent input the evidence also gains the age, because
+// that is the number a human needs and the one that distinguishes "somebody is
+// typing" from "nobody is ever coming back". A caller reading `since` can
+// compute it; a caller reading a log line cannot.
+func (d *Driver) stampSinceLocked(id string, st fleet.SessionState, now time.Time) fleet.SessionState {
+	since := now
+	if prior, ok := d.observed[id]; ok && prior.status == st.Status && !prior.statusSince.IsZero() {
+		since = prior.statusSince
+	}
+	st.Since = &since
+
+	if st.Status == fleet.StatusWaitingInput && strings.Contains(st.Evidence, "unsent input") {
+		if age := now.Sub(since); age > unsentAgeWorthMentioning {
+			st.Evidence += "; unchanged for " + age.Round(time.Minute).String()
+		}
+	}
+	return st
 }

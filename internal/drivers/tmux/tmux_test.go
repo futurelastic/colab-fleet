@@ -699,3 +699,88 @@ func TestUnrenderedTextIsReportedNotSubmitted(t *testing.T) {
 		}
 	}
 }
+
+// §8: "`since` is the time the status was first observed to hold, not the time
+// it began." Holding it steady across reads is what makes duration meaningful.
+func TestSinceHoldsWhileTheStatusDoesAndResetsWhenItChanges(t *testing.T) {
+	f := twoSessions()
+	clock := time.Unix(1785760000, 0)
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return clock }))
+
+	first, err := d.State(context.Background(), testCaller, fleet.SessionRef{ID: "alpha💬"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Since == nil {
+		t.Fatal("no since recorded")
+	}
+	t0 := *first.Since
+
+	clock = clock.Add(2 * time.Hour)
+	again, err := d.State(context.Background(), testCaller, fleet.SessionRef{ID: "alpha💬"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Since.Equal(t0) {
+		t.Errorf("since moved to %v while the status was unchanged; duration is only "+
+			"meaningful if the clock does not restart on every read", *again.Since)
+	}
+
+	// A real change restarts it.
+	f.setCapture("%1", fixtureWorking)
+	clock = clock.Add(time.Minute)
+	changed, err := d.State(context.Background(), testCaller, fleet.SessionRef{ID: "alpha💬"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Since.Equal(t0) {
+		t.Error("since survived a status change; it marks when THIS status began")
+	}
+}
+
+// The discriminator a sibling project could only get by typing into the pane —
+// available passively as duration. Text unchanged for hours is not a sentence
+// somebody is still composing.
+func TestLongHeldUnsentInputSaysHowLong(t *testing.T) {
+	f := twoSessions()
+	clock := time.Unix(1785760000, 0)
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return clock }))
+
+	// beta holds unsent input in the fixture.
+	if _, err := d.State(context.Background(), testCaller, fleet.SessionRef{ID: "beta"}); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(14 * time.Hour)
+	got, err := d.State(context.Background(), testCaller, fleet.SessionRef{ID: "beta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != fleet.StatusWaitingInput {
+		t.Fatalf("status = %q", got.Status)
+	}
+	if !strings.Contains(got.Evidence, "unchanged for") {
+		t.Errorf("evidence = %q; a human reading this needs the age, which is the "+
+			"whole difference between 'someone is typing' and 'nobody is coming back'", got.Evidence)
+	}
+	if age := clock.Sub(*got.Since); age < 13*time.Hour {
+		t.Errorf("since implies %v; want the full holding period", age)
+	}
+}
+
+// A brief hold is noise, not a story.
+func TestRecentUnsentInputDoesNotShoutAboutAge(t *testing.T) {
+	f := twoSessions()
+	clock := time.Unix(1785760000, 0)
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return clock }))
+	if _, err := d.State(context.Background(), testCaller, fleet.SessionRef{ID: "beta"}); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(30 * time.Second)
+	got, _ := d.State(context.Background(), testCaller, fleet.SessionRef{ID: "beta"})
+	if strings.Contains(got.Evidence, "unchanged for") {
+		t.Errorf("evidence = %q; thirty seconds is somebody typing", got.Evidence)
+	}
+}

@@ -681,6 +681,24 @@ began. For `inferred` states those differ, sometimes by a lot. A caller
 computing "how long has this been stuck" is computing a lower bound, and should
 present it as one.
 
+**It must not restart on every read.** A driver that stamps the current time
+each time it looks makes `since` useless — it would always read "just now", and
+the field's only purpose is duration. A driver therefore carries the timestamp
+forward while the status is unchanged and resets it when the status changes.
+
+**Duration is the passive discriminator for a class of stall that otherwise
+requires touching the session.** A pane holding unsent input looks identical
+whether a human is mid-sentence or the pane has stopped accepting input
+entirely — and the correct policy for the first ("do not evict, an operator has
+text pending") becomes permanent for the second, because no human can come
+back to a pane that ignores typing. A sibling project measured exactly that:
+fourteen hours of the same unsent line behind a veto that never expired.
+
+Its discriminator was to type a character and see whether it appeared, which is
+not something to do to a live session. `since` gives the same answer without
+touching anything: text unchanged for hours is not a sentence somebody is still
+composing. See Appendix A, F34.
+
 ---
 
 ## 9. Plural responses
@@ -1593,6 +1611,22 @@ reporting that something is blocked.
 indefinitely; a system that has been run in anger has counted its failures. When
 one exists next door, its bug tracker is evidence, and evidence outranks
 reasoning.
+
+**F34 · The field that had been filled with nil the whole time was the answer.**
+`since` existed in §2.3 from the first draft and every driver passed nil, because
+nothing had needed it. It turns out to resolve a stall that a sibling project
+could only diagnose by typing into the pane to see whether characters appeared.
+
+Duration distinguishes "an operator is mid-sentence" from "this pane stopped
+accepting input", and those demand opposite responses while presenting
+identically in a single reading. One reading cannot tell them apart; two
+readings and a clock can.
+
+Two things worth carrying forward. **A spec field that every implementation
+fills with nil is not necessarily unnecessary — it may be unused because
+nothing has yet needed the question it answers.** And the cheapest new signal
+is usually not a new probe but a second look: this needed no extra call, no
+extra permission, and nothing done to the session at all.
 
 ### The pattern worth naming
 
