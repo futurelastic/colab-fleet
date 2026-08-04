@@ -99,6 +99,15 @@ const (
 	// above it.
 	defaultCaptureLines = 24
 
+	// promptClearWindow bounds the wait for an answered prompt to disappear.
+	promptClearWindow   = 3 * time.Second
+	promptClearInterval = 200 * time.Millisecond
+
+	// startingWindow is how long a session with no visible interface is
+	// given the benefit of the doubt. The runtime takes tens of seconds to
+	// paint; beyond this, silence means something other than booting.
+	startingWindow = 90 * time.Second
+
 	// unsentAgeWorthMentioning is when a composer holding text stops looking
 	// like someone typing. Below it the age is noise; above it, it is the
 	// whole story.
@@ -508,7 +517,8 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	d.mu.Lock()
 	for _, r := range rows {
 		text, captured := captures[r.paneID]
-		st := d.stampSinceLocked(r.session, classifyPane(text, captured, !r.dead), now)
+		young := now.Sub(r.created) < startingWindow
+		st := d.stampSinceLocked(r.session, classifyPaneAged(text, captured, !r.dead, young), now)
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since,
@@ -571,7 +581,8 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		now := d.now()
 		text, captured := captures[r.paneID]
 		d.mu.Lock()
-		st := d.stampSinceLocked(r.session, classifyPane(text, captured, !r.dead), now)
+		st := d.stampSinceLocked(r.session,
+			classifyPaneAged(text, captured, !r.dead, now.Sub(r.created) < startingWindow), now)
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since,
@@ -984,12 +995,30 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: "session process has exited"}, nil
 	}
 
-	option, blocked := selectionPrompt(newScreen(captures[target.paneID]))
-	if !blocked {
+	before := parsePrompt(newScreen(captures[target.paneID]))
+	if before == nil {
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: "session is not waiting on a prompt; a keypress would be " +
 				"consumed by whatever it is doing instead",
+		}, nil
+	}
+
+	// A stale nonce means the caller is answering a question that is no
+	// longer on screen. Submitting by index anyway would answer a DIFFERENT
+	// question — and the two boot prompts on this substrate put the safe
+	// option at different indices, so that is not a theoretical harm.
+	if resp.Nonce != "" && resp.Nonce != before.Nonce {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "the prompt changed since it was read; answering by index now " +
+				"would answer a different question",
+		}, nil
+	}
+	if resp.Choice > len(before.Options) {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason:  "no such option on this prompt",
 		}, nil
 	}
 
@@ -1001,9 +1030,6 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	case resp.Cancel:
 		keys = []string{"Escape"}
 	case resp.Choice > 0:
-		// Type the option number, then confirm. Accepting the highlighted
-		// default is the zero value precisely because it is the common case
-		// and needs no arithmetic about which option is where.
 		keys = []string{strconv.Itoa(resp.Choice), "C-m"}
 	}
 	args := []string{"send-keys", "-t", target.paneID}
@@ -1019,10 +1045,27 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	case resp.Choice > 0:
 		answered = "chose option " + strconv.Itoa(resp.Choice)
 	}
-	if option != "" {
-		answered += " (was: " + option + ")"
+	if resp.Choice > 0 && resp.Choice <= len(before.Options) {
+		answered += " (" + before.Options[resp.Choice-1] + ")"
+	} else if before.Selected > 0 && before.Selected <= len(before.Options) {
+		answered += " (" + before.Options[before.Selected-1] + ")"
 	}
-	return fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued, Reason: answered}, nil
+	if resp.Nonce == "" {
+		answered += "; answered without a nonce, so nothing verified the prompt " +
+			"had not changed since it was read"
+	}
+
+	// Confirm the prompt actually went away. A keypress a prompt swallows
+	// leaves the session exactly as stuck as before, and reporting success
+	// there is how a supervisor concludes it has cleared something it has
+	// not.
+	if d.promptCleared(ctx, target.paneID, before.Nonce) {
+		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeSubmitted, Reason: answered}, nil
+	}
+	return fleet.DeliveryReceipt{
+		Outcome: fleet.OutcomeUnknown,
+		Reason:  answered + "; the prompt is still on screen, so the keypress may not have registered",
+	}, nil
 }
 
 // deliverInitialPrompt waits for the runtime to be ready, then sends §2.1's
@@ -1159,4 +1202,29 @@ func (d *Driver) stampSinceLocked(id string, st fleet.SessionState, now time.Tim
 		}
 	}
 	return st
+}
+
+// promptCleared waits briefly for the answered prompt to leave the screen.
+//
+// "Still the same prompt" is the only outcome that means the keypress did not
+// register; a different prompt counts as cleared, because the session moved on
+// and the caller's answer had its effect.
+func (d *Driver) promptCleared(ctx context.Context, paneID, was string) bool {
+	deadline := d.now().Add(promptClearWindow)
+	for {
+		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-e", "-t", paneID, "-S", "-"+strconv.Itoa(d.captureLines))
+		if err == nil {
+			if now := parsePrompt(newScreen(string(out))); now == nil || now.Nonce != was {
+				return true
+			}
+		}
+		if d.now().After(deadline) || ctx.Err() != nil {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(promptClearInterval):
+		}
+	}
 }

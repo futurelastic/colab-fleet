@@ -3,6 +3,7 @@ package tmux
 import (
 	"strings"
 	"testing"
+	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
 )
@@ -374,5 +375,125 @@ func TestBlockedStateNamesTheHighlightedOption(t *testing.T) {
 	got := classify(f, true)
 	if !strings.Contains(got.Evidence, "Resume from summary") {
 		t.Errorf("evidence = %q; it should name the option a caller would be accepting", got.Evidence)
+	}
+}
+
+// --- #424's requirements: enumerate, version, verify -----------------------
+
+// The two boot prompts observed on one fleet put the SAFE option at different
+// indices. A caller that accepted the highlighted default would proceed in one
+// case and kill the session in the other — which is why the options must be
+// enumerated rather than described.
+const fixtureTrustPrompt = `  Quick safety check: Is this a project you created or one you trust?
+❯ 1. Yes, I trust this folder
+  2. No, continue without these permissions
+Enter to confirm · Esc to cancel`
+
+const fixtureBypassPrompt = `  By proceeding, you accept all responsibility for actions taken.
+❯ 1. No, exit
+  2. Yes, I accept
+Enter to confirm · Esc to cancel`
+
+func TestPromptOptionsAreEnumeratedInOrder(t *testing.T) {
+	p := parsePrompt(newScreen(fixtureTrustPrompt))
+	if p == nil {
+		t.Fatal("no prompt parsed")
+	}
+	if len(p.Options) != 2 {
+		t.Fatalf("options = %v, want two", p.Options)
+	}
+	if p.Options[0] != "Yes, I trust this folder" {
+		t.Errorf("option 1 = %q", p.Options[0])
+	}
+	if p.Selected != 1 {
+		t.Errorf("selected = %d, want 1", p.Selected)
+	}
+	if p.Question == "" {
+		t.Error("question is empty; a caller has to show the human what is being asked")
+	}
+}
+
+// The whole reason enumeration matters.
+func TestSafeOptionIsAtADifferentIndexBetweenPrompts(t *testing.T) {
+	trust := parsePrompt(newScreen(fixtureTrustPrompt))
+	bypass := parsePrompt(newScreen(fixtureBypassPrompt))
+	if trust == nil || bypass == nil {
+		t.Fatal("both prompts must parse")
+	}
+	if trust.Selected != 1 || bypass.Selected != 1 {
+		t.Fatal("fixtures both highlight option 1")
+	}
+	// Same highlighted index, opposite meanings.
+	if trust.Options[0] == bypass.Options[0] {
+		t.Fatal("fixtures drifted")
+	}
+	if !strings.HasPrefix(bypass.Options[0], "No, exit") {
+		t.Errorf("bypass option 1 = %q; accepting the default here EXITS the session",
+			bypass.Options[0])
+	}
+}
+
+// A nonce must change when the question changes, and be stable when it does not.
+func TestNonceTracksTheQuestion(t *testing.T) {
+	a := parsePrompt(newScreen(fixtureTrustPrompt))
+	again := parsePrompt(newScreen(fixtureTrustPrompt))
+	b := parsePrompt(newScreen(fixtureBypassPrompt))
+	if a.Nonce != again.Nonce {
+		t.Error("nonce changed for an unchanged prompt; every answer would be refused")
+	}
+	if a.Nonce == b.Nonce {
+		t.Error("two different prompts share a nonce; a stale answer would be applied " +
+			"to a question the caller never saw")
+	}
+}
+
+// Options are found by their numbering, not their wording, so a prompt from a
+// future release enumerates without a new matcher.
+func TestUnknownPromptStillEnumerates(t *testing.T) {
+	f := `  Some question nobody has written a matcher for
+❯ 1. First
+  2. Second
+  3. Third
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel`
+	p := parsePrompt(newScreen(f))
+	if p == nil || len(p.Options) != 3 {
+		t.Fatalf("parsed = %+v; enumeration must not depend on recognising the wording", p)
+	}
+}
+
+// §8's `starting`: a booting session is not an unreadable one. Conflating them
+// is why a spawn that never got past a boot screen "read as healthy".
+func TestYoungPaneWithNoInterfaceIsStartingNotUnknown(t *testing.T) {
+	booting := "  loading...\n"
+	if got := classifyAged(booting, true, true); got.Status != fleet.StatusStarting {
+		t.Errorf("young pane = %q, want starting", got.Status)
+	}
+	if got := classifyAged(booting, true, false); got.Status != fleet.StatusUnknown {
+		t.Errorf("old pane = %q, want unknown — age is the discriminator", got.Status)
+	}
+}
+
+// The pane is written by an agent that can print anything, so anything parsed
+// out of it is untrusted input. Padding a slice up to a parsed index is
+// unbounded allocation: one transcript line hung the live service.
+func TestPromptParsingIsBoundedByHostileInput(t *testing.T) {
+	hostile := `  A question
+❯ 1. Real option
+  2. Another
+  1000000. absurd index from the transcript
+  99999999999999999999. and an overflowing one
+Enter to confirm · Esc to cancel`
+	done := make(chan *fleet.SessionPrompt, 1)
+	go func() { done <- parsePrompt(newScreen(hostile)) }()
+	select {
+	case p := <-done:
+		if p == nil {
+			t.Fatal("prompt should still parse")
+		}
+		if len(p.Options) > 32 {
+			t.Errorf("options = %d; a menu with more options than this is not a menu", len(p.Options))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("parsing did not terminate — unbounded work driven by screen content")
 	}
 }

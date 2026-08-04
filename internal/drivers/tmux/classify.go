@@ -1,6 +1,8 @@
 package tmux
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"unicode"
 
@@ -70,6 +72,11 @@ const (
 	// with. Matching a run of them, rather than an exact width, keeps this
 	// independent of terminal width.
 	ruleRune = '─'
+	// maxPromptOptions bounds how many options a prompt may enumerate. See
+	// parsePrompt: the index comes from the screen, and the screen is
+	// attacker-influenced in the general case.
+	maxPromptOptions = 32
+
 	// Menu footers. There is more than one, which cost a real incident: the
 	// detector knew only "Enter to select", so a folder-trust prompt and a
 	// session-resume prompt — both saying "Enter to confirm" — classified as
@@ -327,6 +334,107 @@ func awaitingSelection(s screen) bool {
 	return blocked
 }
 
+// parsePrompt extracts the full question a session is blocked on: every
+// option in order, which one is highlighted, and a nonce over the whole thing.
+//
+// Options are recognised by their leading "N." rather than by any wording, so
+// a new prompt from a future release is enumerated without a new matcher —
+// which is the failure mode a sibling project named explicitly: "chasing them
+// individually means a new matcher every time the CLI adds a screen".
+func parsePrompt(s screen) *fleet.SessionPrompt {
+	if _, blocked := selectionPrompt(s); !blocked {
+		return nil
+	}
+	p := &fleet.SessionPrompt{}
+	var question []string
+	for _, raw := range s.lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		selected := strings.HasPrefix(line, composerRuneMarker)
+		body := strings.TrimSpace(strings.TrimPrefix(line, composerRuneMarker))
+		if n, text, ok := numberedOption(body); ok {
+			if n > maxPromptOptions {
+				// Bounded on purpose. This parses a pane whose contents are
+				// written by an agent that can print anything, and padding
+				// a slice up to a parsed index is unbounded allocation
+				// driven by untrusted input: one transcript line reading
+				// "1000000. x" hung the service until it was killed.
+				//
+				// A menu with more options than this is not a menu.
+				continue
+			}
+			for len(p.Options) < n-1 {
+				// A gap means a line did not parse; keep indices honest
+				// rather than silently renumbering what a caller will
+				// submit by index.
+				p.Options = append(p.Options, "")
+			}
+			if len(p.Options) == n-1 {
+				p.Options = append(p.Options, text)
+			} else if n-1 < len(p.Options) {
+				p.Options[n-1] = text
+			}
+			if selected {
+				p.Selected = n
+			}
+			continue
+		}
+		if strings.Contains(line, selectFooter) || strings.Contains(line, confirmFooter) {
+			continue
+		}
+		if len(p.Options) == 0 && !isRule(line) {
+			question = append(question, line)
+		}
+	}
+	if len(p.Options) == 0 {
+		return nil
+	}
+	// Keep the question short: the last couple of lines before the options
+	// are the ask; everything above is transcript.
+	if n := len(question); n > 3 {
+		question = question[n-3:]
+	}
+	p.Question = strings.Join(question, " ")
+	p.Nonce = promptNonce(p)
+	return p
+}
+
+// numberedOption parses "1. Some option" into its index and text.
+func numberedOption(line string) (int, string, bool) {
+	i := 0
+	// At most four digits: a longer run is not an option number, and
+	// accumulating it would overflow before it was ever rejected.
+	for i < len(line) && i < 4 && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i == 0 || i >= len(line) || line[i] != '.' {
+		return 0, "", false
+	}
+	n := 0
+	for _, c := range line[:i] {
+		n = n*10 + int(c-'0')
+	}
+	if n <= 0 {
+		return 0, "", false
+	}
+	return n, strings.TrimSpace(line[i+1:]), true
+}
+
+// promptNonce is a digest of what is being asked. It changes whenever the
+// question or the options change, which is what makes a stale answer
+// detectable rather than silently applied to a different menu.
+func promptNonce(p *fleet.SessionPrompt) string {
+	h := sha256.New()
+	h.Write([]byte(p.Question))
+	for _, o := range p.Options {
+		h.Write([]byte{0})
+		h.Write([]byte(o))
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
 // selectionPrompt reports whether a blocking prompt is on screen and, if so,
 // what it is asking — the highlighted option, so a supervisor reading the
 // state knows what it would be agreeing to.
@@ -398,6 +506,15 @@ func spinner(s screen) (running bool, found bool) {
 // plural responses across machines; the same confusion is available inside
 // a single driver, between a pane it failed to read and a pane with nothing
 // in it, and it is just as capable of producing a confident wrong answer.
+func classifyPaneAged(raw string, captured, alive, young bool) fleet.SessionState {
+	if !captured {
+		return fleet.UnknownState(fleet.ConfidenceInferred,
+			"driver failed to capture this pane's screen; this is a driver "+
+				"malfunction, not an observation about the session")
+	}
+	return classifyAged(raw, alive, young)
+}
+
 func classifyPane(raw string, captured, alive bool) fleet.SessionState {
 	if !captured {
 		return fleet.UnknownState(fleet.ConfidenceInferred,
@@ -414,6 +531,12 @@ func classifyPane(raw string, captured, alive bool) fleet.SessionState {
 // process table. Everything else is screen-reading, and the returned
 // SessionState says so.
 func classify(raw string, alive bool) fleet.SessionState {
+	return classifyAged(raw, alive, false)
+}
+
+// classifyAged adds whether the session is young enough to plausibly still be
+// starting — see the default branch for why that distinction matters.
+func classifyAged(raw string, alive, young bool) fleet.SessionState {
 	if !alive {
 		// §8: dead is terminal. This is the one status this driver can
 		// state without reading a screen, and still it is inferred: the
@@ -434,7 +557,9 @@ func classify(raw string, alive bool) fleet.SessionState {
 			// accept the default needs to know what the default IS.
 			evidence += "; highlighted option: " + option
 		}
-		return fleet.InferredState(fleet.StatusWaitingInput, evidence, nil)
+		st := fleet.InferredState(fleet.StatusWaitingInput, evidence, nil)
+		st.Prompt = parsePrompt(s)
+		return st
 	}
 
 	running, foundSpinner := spinner(s)
@@ -459,6 +584,19 @@ func classify(raw string, alive bool) fleet.SessionState {
 	case foundSpinner && !running:
 		return fleet.InferredState(fleet.StatusIdle, "spinner line in finished form; composer empty", nil)
 
+	case !foundSpinner && hasComposer && pending == "" && young:
+		// A young session with a painted composer, no spinner and nothing
+		// typed has not had a turn yet — so the "a turn may have just
+		// begun" ambiguity below cannot apply to it. It is up and waiting
+		// for work.
+		//
+		// This matters beyond tidiness: a caller asking "did this spawn
+		// actually produce a running agent" needs an answer, and `unknown`
+		// for a session whose interface is visibly painted is the reading
+		// that let a dead spawn look the same as a healthy one.
+		return fleet.InferredState(fleet.StatusIdle,
+			"interface painted, composer empty, no turn yet", nil)
+
 	case !foundSpinner && hasComposer && pending == "":
 		// No spinner at all and an empty composer: most likely a session
 		// sitting at a fresh prompt. "Most likely" is not good enough to
@@ -472,9 +610,22 @@ func classify(raw string, alive bool) fleet.SessionState {
 			"no spinner line; composer holds unsent input")
 
 	default:
-		// No composer found: this pane is probably not running the TUI at
-		// all — a plain shell, a pager, an editor. The driver has no
-		// business guessing what that means.
+		// No composer found. Two very different situations share this
+		// shape, and a caller needs them apart: a runtime still painting
+		// its interface, and a pane that is not running the runtime at all.
+		//
+		// §8 has `starting` for the first and §2.3 has `unknown` for the
+		// second, and returning `unknown` for both was why a spawn that
+		// never got past a boot screen "read as healthy" — nothing could
+		// distinguish "not up yet" from "cannot tell".
+		//
+		// Age is the discriminator, and it is honest: young means plausibly
+		// still booting, old means something else is going on. The caller
+		// gets the distinction; the confidence stays inferred.
+		if young {
+			return fleet.InferredState(fleet.StatusStarting,
+				"no TUI composer yet; session is young enough to still be starting", nil)
+		}
 		return fleet.UnknownState(fleet.ConfidenceInferred,
 			"no TUI composer found in pane; pane may not be running the expected runtime")
 	}

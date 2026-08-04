@@ -114,6 +114,19 @@ type SessionState struct {
 	Confidence Confidence `json:"confidence"`
 	Evidence   string     `json:"evidence"`
 	Since      *Timestamp `json:"since,omitempty"`
+
+	// Prompt is the question this session is blocked on, when it is blocked
+	// on one (§2.3, answered via §3's respond). Nil otherwise.
+	//
+	// It lives on the state rather than beside it so that every path which
+	// reports state also reports the question: a single-session read, a
+	// listing, and — the one that matters most — an event. A subscriber
+	// learns that a session became blocked AND what it is asking in the same
+	// message, instead of having to turn around and ask.
+	//
+	// Evidence names the highlighted option in prose; this is the structured
+	// form a client can render as buttons and submit by index.
+	Prompt *SessionPrompt `json:"prompt,omitempty"`
 }
 
 // ObservedState constructs a SessionState a driver reports from a

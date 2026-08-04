@@ -33,4 +33,18 @@ type Response struct {
 	// does not like any of the options needs a way to say so that is not
 	// "pick one anyway".
 	Cancel bool
+
+	// Nonce is the SessionPrompt.Nonce the caller was answering.
+	//
+	// A caller reads a prompt, shows it to a human, and answers seconds or
+	// minutes later. In between the session may have moved on and be showing
+	// a DIFFERENT question in the same place — and an answer submitted by
+	// index would be applied to it, silently. Supplying the nonce turns that
+	// into a refusal.
+	//
+	// Optional, and its absence is not free: a driver must say, in the
+	// receipt, that it answered without checking. An automated caller should
+	// always send it; a human at a terminal answering immediately reasonably
+	// may not.
+	Nonce string
 }

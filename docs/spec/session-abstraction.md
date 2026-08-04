@@ -236,7 +236,51 @@ weak check is never mistaken for a strong one.
 §4.4 already governs — a second field would be a second source of truth about
 the same fact. And anything about the *target*, which stays an argument.
 
-### 2.7 Response
+### 2.7 SessionPrompt
+
+```
+SessionPrompt {
+  question?: string
+  options  : string[]      // in order, 1-based when referenced
+  selected?: number        // the highlighted option
+  nonce    : string        // changes when the prompt changes
+}
+```
+
+The question a session is blocked on, carried **on `SessionState`** so every
+path that reports state reports the question too — a single read, a listing,
+and an event. A subscriber learns that a session blocked and what it is asking
+in one message rather than having to turn around and ask.
+
+**Options are enumerated, not described.** Evidence prose naming the
+highlighted option explains a state; it does not let a caller act on one. Two
+boot prompts observed on one fleet:
+
+```
+❯ 1. Yes, I trust this folder        ❯ 1. No, exit
+  2. No, continue without these        2. Yes, I accept
+```
+
+Same shape, same footer, and the safe answer is at a different index. A caller
+accepting the highlighted default proceeds in one case and kills the session in
+the other. Enumerating is what makes an answer a choice rather than a guess.
+
+**Options are recognised by their numbering, not their wording**, so a prompt
+from a future release is enumerated without a new matcher — otherwise every new
+screen needs new code, which is how this class of stall stays permanently one
+release behind.
+
+**`nonce` exists because an option index is not an option.** A caller reads a
+prompt, shows it to a human, and answers seconds or minutes later; in between,
+the session may be showing a different question in the same place. Answering by
+index would answer that one instead. Supplying the nonce turns a stale answer
+into a refusal — §5.4's "a proxy for identity is not identity", in a third
+operation.
+
+**Parsing is bounded.** The screen is written by an agent that can print
+anything, so an index parsed from it is untrusted input. See Appendix A, F35.
+
+### 2.7a Response
 
 ```
 Response {
@@ -1627,6 +1671,35 @@ fills with nil is not necessarily unnecessary — it may be unused because
 nothing has yet needed the question it answers.** And the cheapest new signal
 is usually not a new probe but a second look: this needed no extra call, no
 extra permission, and nothing done to the session at all.
+
+**F35 · A parser over screen content allocated without a bound, and hung the
+service.** `parsePrompt` padded its option list up to whatever index it read,
+so a transcript line reading `1000000. something` allocated a million entries.
+The live service stopped answering — including its own health endpoint — and it
+looked like a network fault until loopback proved otherwise.
+
+The pane is written by an agent that can print anything. Anything parsed out of
+it is attacker-influenced input in the general case and arbitrary input in every
+case, and the code treated a number on screen as a size. Both the index and the
+digit count are now bounded.
+
+Worth stating because the same shape recurs wherever a system reads a rendered
+interface: **a value parsed from a display is input, and sizing an allocation
+from input is the oldest bug there is.** It is easy to forget when the "input"
+looks like a menu.
+
+**F36 · Binding only to a tunnel interface makes a service unreachable from its
+own machine.** When the VPN dropped, the service was still listening on its
+tunnel address and answering nothing — not even to a client on the same host,
+because the route to that address went with the tunnel. It presented exactly
+like a hung process: `launchctl` showed it alive, `lsof` showed it listening,
+and every request timed out.
+
+§6.1 says exposure beyond loopback is explicit configuration, and that remains
+right. What is missing is that a service which can only be reached over a
+tunnel has no local fallback when the tunnel is what failed — so diagnosing it
+requires knowing to try a different address, which is precisely what nobody
+thinks to do while it looks like the process is wedged.
 
 ### The pattern worth naming
 
