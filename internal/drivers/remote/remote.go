@@ -229,11 +229,17 @@ var _ driver.Driver = (*Driver)(nil)
 // before its peer has ever answered.
 func (d *Driver) Capabilities() fleet.DriverCapabilities {
 	d.mu.RLock()
-	defer d.mu.RUnlock()
-	caps := d.caps
+	caps, seen := d.caps, d.capsSeen
 	d.mu.RUnlock()
+
 	caps.DeadlineMs = d.effectiveDeadline().Milliseconds()
-	d.mu.RLock()
+	if !seen {
+		// Nobody has told this driver anything about the peer. The flags
+		// are a conservative floor, and saying so is the whole of D3: a
+		// caller can now tell an unreached peer from a minimal one, which
+		// an all-false declaration alone cannot express.
+		return caps.Assumed()
+	}
 	return caps
 }
 
@@ -267,7 +273,10 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 			continue
 		}
 		d.mu.Lock()
-		d.caps = ri.Capabilities
+		// Adopt what the peer said about itself, then stamp WHEN we heard
+		// it — the peer's own timestamp would be on the peer's clock (§11),
+		// and freshness here is a local judgement about a local cache.
+		d.caps = ri.Capabilities.Observed(d.now())
 		d.capsSeen = true
 		d.mu.Unlock()
 		return nil

@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -410,5 +411,40 @@ func TestPeerErrorKindIsRelayedNotReclassified(t *testing.T) {
 	if rec.Code != 409 {
 		t.Errorf("status = %d, want 409; the peer had already classified this and "+
 			"re-deriving a kind here can only lose information", rec.Code)
+	}
+}
+
+// api-http.md §3.1 tells clients they MUST consult /v1/runtimes before relying
+// on a capability. That rule was unfollowable for peer runtimes while this
+// listed only local ones — the case where a caller cannot simply know.
+func TestRuntimesIncludesPeersAndMarksUnconfirmedOnes(t *testing.T) {
+	svc := New("testbox")
+	if err := svc.RegisterLocalDriver("stub", &stub.Driver{DeadlineMs: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RegisterPeerDriver("otherbox", &stub.Driver{DeadlineMs: 2000}); err != nil {
+		t.Fatal(err)
+	}
+	col, err := svc.ListRuntimes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawPeer bool
+	for _, it := range col.Items() {
+		if it.Machine == "otherbox" {
+			sawPeer = true
+		}
+	}
+	if !sawPeer {
+		t.Fatal("peer runtimes absent; a client cannot consult what is not listed")
+	}
+	var peerSrc *fleet.SourceStatus
+	for i := range col.Sources() {
+		if col.Sources()[i].Machine == "otherbox" {
+			peerSrc = &col.Sources()[i]
+		}
+	}
+	if peerSrc == nil {
+		t.Fatal("peer contributed no SourceStatus")
 	}
 }

@@ -294,15 +294,37 @@ DriverCapabilities {
   supportsResume  : boolean   // sessions survive a service restart
   supportsPin     : { model: boolean, effort: boolean, agent: boolean }
   deadlineMs      : number    // declared upper bound on any single call
+  source          : "observed" | "assumed"
+  observedAt?     : Timestamp | null
 }
 ```
 
+**A declaration carries its own provenance.** `observed` means the driver these
+describe reported them — a local driver is always this, since it is describing
+itself. `assumed` means nobody has reported them and the values are a
+conservative floor.
+
+The distinction is not decoration. Every flag false means "this driver supports
+nothing"; a peer that has never answered produces exactly that value, meaning
+"nobody has told me anything". Without `source` those are one value, and a
+permanently misconfigured peer is indistinguishable from a deliberately minimal
+one — §5.7 in its fourth location.
+
+`observedAt` is when the declaration was obtained. Freshness is left for the
+caller to judge rather than collapsed into a boolean, for the same reason §11
+reports clocks instead of deciding about skew: the component that has the
+information is rarely the one that knows what counts as too old.
+
+A caller acting on a capability **must** consult `source`. Reading `assumed`
+values as an answer is how a temporarily unreachable peer gets treated as a
+permanently incapable one.
+
 A driver must never silently emulate a capability it lacks.
 
-> **Open defect D3.** This declaration is synchronous and infallible, which a
-> remote driver cannot be — its answer lives on the peer, behind a network.
-> And `DriverCapabilities` has no way to say "the peer has not answered yet":
-> that value is currently indistinguishable from "supports nothing". See §14.
+> **Partly resolved (D3).** `source` now separates "nobody has told me" from
+> "supports nothing". What remains is that the declaration is still synchronous
+> and infallible, so a remote driver cannot *fetch* it in the course of
+> answering — it can only report what it happens to have cached. See §14 D3.
 
 ### 4.4 Every driver declares a deadline
 
@@ -816,26 +838,26 @@ needing caller-side context with nowhere to carry it — and the envelope in
 §2.6 is the fix for the class rather than for either instance. See
 Appendix A, F16.
 
-### D3 — Capability declaration cannot say "unknown" · §4.3
+### D3 — Capability declaration is synchronous and infallible · §4.3 — **NARROWED**
 
-`Capabilities()` is synchronous and infallible. For a driver describing itself
-that is correct. For a driver describing a **peer**, the answer lives across a
-network that may be down, and there is no honest synchronous value for "nobody
-has told me yet."
+The half that is fixed: `DriverCapabilities.source` (§4.3) distinguishes
+`observed` from `assumed`, so an unreached peer is no longer indistinguishable
+from a peer that genuinely supports nothing. That was the part with real cost,
+because it made a misconfiguration look permanent and unremarkable. See
+Appendix A, F21.
 
-The type cannot express it either. All-false already means "supports nothing";
-an unreached peer produces exactly that. A caller consulting `/v1/runtimes` —
-which api-http.md §3.1 says it MUST do before relying on a capability — cannot
-distinguish a deliberately minimal peer from an unreachable one.
+The half that remains: `capabilities()` still cannot fail and cannot take a
+context, so a remote driver can only ever report a cache. Something out of band
+must populate it, and until something does, every answer is `assumed` — which
+is now honest, but still not the peer's answer.
 
-Both readings degrade identically, so the cost is **diagnostic rather than
-correctness**: a permanently misconfigured peer looks like a minimal one,
-forever, and nothing prompts anyone to look.
+The consequence is concrete and visible in D7: a proxy derives its deadline
+from the peer's declared one, so until the peer's capabilities are known the
+proxy uses a floor it has no reason to believe.
 
-- **Proposed fix:** either `deadlineMs` becomes the only field a remote driver
-  answers for itself — it describes the transport, not the peer — and the rest
-  gain a third state; or capability declaration becomes fallible and
-  context-taking like every other cross-machine question.
+- **Proposed fix:** capability discovery becomes an operation like any other
+  cross-machine question — fallible, context-taking, and refreshable — rather
+  than a property read.
 
 ### D4 — `subscribe`'s filter cannot name a session · §5.5
 
@@ -1174,6 +1196,22 @@ peer's `count`), which is enough to state it generally: **a proxy relays what a
 peer said about itself and derives nothing.** The reachability of a peer is the
 proxy's observation to make; everything the peer reported about its own answer
 is the peer's.
+
+**F21 · §5.7, found for the fourth time, and fixed by copying §2.3 rather than
+inventing.** Capability declaration had the same collapse the design had
+already solved twice: an all-false value meaning both "supports nothing" and
+"nobody has said". The fix borrows the shape §2.3 uses for session state —
+a value plus its provenance plus when it was obtained — instead of designing a
+third mechanism for the same problem.
+
+That is worth stating as a working rule. When this design meets absence again,
+the answer is not a new type; it is `(value, provenance, observed-at)`, because
+that trio is what the two previous instances converged on independently.
+
+The immediate payoff was in D7's fix, which derives a proxy's deadline from its
+peer's. Before provenance, "the peer declares 0ms" and "we have never asked"
+were the same reading, and the derivation could not tell whether it was
+applying a floor because the peer was minimal or because nobody had checked.
 
 ### The pattern worth naming
 

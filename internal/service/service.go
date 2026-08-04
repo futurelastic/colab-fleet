@@ -257,12 +257,44 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 func (s *Service) ListRuntimes(ctx context.Context) (fleet.Collection[fleet.RuntimeInfo], error) {
 	now := time.Now()
 	var items []fleet.RuntimeInfo
+	sources := []fleet.SourceStatus{{Machine: s.self, Status: fleet.SourceOK, ObservedAt: now}}
+
 	s.mu.RLock()
 	for rt, d := range s.local {
 		items = append(items, fleet.RuntimeInfo{Machine: s.self, Runtime: rt, Capabilities: d.Capabilities()})
 	}
+	peers := make(map[fleet.MachineId]driver.Driver, len(s.peers))
+	for m, d := range s.peers {
+		peers[m] = d
+	}
 	s.mu.RUnlock()
-	sources := []fleet.SourceStatus{{Machine: s.self, Status: fleet.SourceOK, ObservedAt: now}}
+
+	// Peers are included, and they are the whole reason this endpoint
+	// matters. api-http.md §3.1 tells clients they MUST consult this before
+	// relying on a capability — a rule that was unfollowable for peer
+	// runtimes while this listed only local ones, which is exactly the case
+	// where a caller cannot simply know.
+	//
+	// No network call is made. A peer driver answers from whatever it has
+	// cached, and says so: §4.3's `source` reports `assumed` when nobody has
+	// told it anything and `observed` when the peer has. That distinction is
+	// what makes reporting a cache honest rather than misleading, and it is
+	// why this endpoint can stay cheap.
+	for m, d := range peers {
+		caps := d.Capabilities()
+		items = append(items, fleet.RuntimeInfo{Machine: m, Runtime: "", Capabilities: caps})
+		st := fleet.SourceOK
+		if caps.Source != fleet.CapabilitiesObserved {
+			// Nothing was reached to produce this row. §5.7: that is not
+			// the same as a peer that answered, and the envelope must not
+			// present it as one.
+			st = fleet.SourceDegraded
+		}
+		sources = append(sources, fleet.SourceStatus{
+			Machine: m, Status: st, ObservedAt: now,
+			Error: map[bool]string{true: "", false: "capabilities not yet obtained from this peer"}[st == fleet.SourceOK],
+		})
+	}
 	return fleet.NewCollection(items, sources)
 }
 

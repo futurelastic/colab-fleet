@@ -271,6 +271,10 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 			Agent:  true,
 		},
 		DeadlineMs: d.deadline.Milliseconds(),
+		// A local driver is describing itself, so this is observed by
+		// definition — there is no network between the claim and its
+		// subject.
+		Source: fleet.CapabilitiesObserved,
 	}
 }
 

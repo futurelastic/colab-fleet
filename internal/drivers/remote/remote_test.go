@@ -401,6 +401,7 @@ func TestRefreshCapabilitiesAdoptsWhatThePeerReports(t *testing.T) {
 			Capabilities: fleet.DriverCapabilities{
 				ObservesState: false, ConfirmsDelivery: false,
 				SupportsResume: true, DeadlineMs: 5000,
+				Source: fleet.CapabilitiesObserved,
 			},
 		}},
 		"sources":  []fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
@@ -473,7 +474,8 @@ func TestProxyWaitsAtLeastAsLongAsThePeerDeclared(t *testing.T) {
 	runtimes := map[string]any{
 		"items": []fleet.RuntimeInfo{{
 			Machine: "peerbox", Runtime: "claude-code-tmux",
-			Capabilities: fleet.DriverCapabilities{SupportsResume: true, DeadlineMs: 5000},
+			Capabilities: fleet.DriverCapabilities{
+				SupportsResume: true, DeadlineMs: 5000, Source: fleet.CapabilitiesObserved},
 		}},
 		"sources":  []fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
 		"complete": true,
@@ -500,7 +502,8 @@ func TestProxyWaitsAtLeastAsLongAsThePeerDeclared(t *testing.T) {
 func TestPeerDeadlineNeverShortensTheConfiguredFloor(t *testing.T) {
 	runtimes := map[string]any{
 		"items": []fleet.RuntimeInfo{{
-			Machine: "peerbox", Capabilities: fleet.DriverCapabilities{DeadlineMs: 500},
+			Machine: "peerbox", Capabilities: fleet.DriverCapabilities{
+				DeadlineMs: 500, Source: fleet.CapabilitiesObserved},
 		}},
 		"sources":  []fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
 		"complete": true,
@@ -512,5 +515,53 @@ func TestPeerDeadlineNeverShortensTheConfiguredFloor(t *testing.T) {
 	}
 	if got := d.Capabilities().DeadlineMs; got != 9000 {
 		t.Errorf("deadline = %dms, want the 9000 floor", got)
+	}
+}
+
+// D3, stated as the distinction that did not previously exist: a peer that
+// genuinely supports nothing and a peer nobody has reached produce identical
+// flags. Only provenance separates them.
+func TestMinimalPeerIsDistinguishableFromUnreachedPeer(t *testing.T) {
+	minimal := map[string]any{
+		"items": []fleet.RuntimeInfo{{
+			Machine: "peerbox",
+			Capabilities: fleet.DriverCapabilities{
+				DeadlineMs: 1000, Source: fleet.CapabilitiesObserved,
+			},
+		}},
+		"sources":  []fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
+		"complete": true,
+	}
+	srv := peerServing(t, 200, minimal, nil)
+
+	reached := New("peerbox", srv.URL)
+	if err := reached.RefreshCapabilities(context.Background(), caller); err != nil {
+		t.Fatal(err)
+	}
+	unreached := New("peerbox", "http://127.0.0.1:1", WithDeadline(200*time.Millisecond))
+
+	a, b := reached.Capabilities(), unreached.Capabilities()
+
+	// The flags really are identical — that is the point.
+	if a.ObservesState != b.ObservesState || a.SupportsResume != b.SupportsResume {
+		t.Fatal("fixture drifted; both should report nothing supported")
+	}
+	if a.Source != fleet.CapabilitiesObserved {
+		t.Errorf("a peer that answered should read observed, got %q", a.Source)
+	}
+	if b.Source != fleet.CapabilitiesAssumed {
+		t.Errorf("a peer that never answered should read assumed, got %q", b.Source)
+	}
+	if a.ObservedAt == nil {
+		t.Error("an observed declaration should say when")
+	}
+}
+
+// A declaration with no provenance must not marshal. An absent source is not
+// the same fact as "assumed", and silently defaulting would rebuild exactly
+// the ambiguity this field removes.
+func TestCapabilitiesWithoutProvenanceDoNotMarshal(t *testing.T) {
+	if _, err := json.Marshal(fleet.DriverCapabilities{DeadlineMs: 1000}); err == nil {
+		t.Error("capabilities with no source should not encode")
 	}
 }

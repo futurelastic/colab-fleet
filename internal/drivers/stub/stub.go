@@ -43,6 +43,7 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 		SupportsResume:   false,
 		SupportsPin:      fleet.PinSupport{},
 		DeadlineMs:       deadline,
+		Source:           fleet.CapabilitiesObserved,
 	}
 }
 

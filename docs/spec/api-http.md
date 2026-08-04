@@ -68,12 +68,18 @@ GET /v1/runtimes
                                        "supportsResume": false,
                                        "supportsPin": { "model": true,
                                                         "effort": false,
-                                                        "agent": true } } } ],
+                                                        "agent": true },
+                                       "source": "observed",
+                                       "observedAt": "..." } } ],
         "sources": [...], "complete": true }
 ```
 
 Clients **must** consult `/v1/runtimes` before relying on a capability, and
 degrade rather than assume. A driver never emulates (§5.6).
+
+They must also consult `source`. `assumed` means nobody has confirmed these
+values and they are a conservative floor — reading them as the runtime's answer
+is how a temporarily unreachable peer becomes a permanently incapable one.
 
 ### 3.2 Sessions
 
