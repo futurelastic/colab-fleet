@@ -212,6 +212,17 @@ POST /v1/machines/{machine}/sessions/{id}/respond?runtime=
 → 200 { "outcome": "queued" | "refused", "reason": "..." }
 ```
 
+`state.prompt.kind` — when present — names what is being asked
+(`resume-chooser`, `folder-trust`, `tool-permission`, `bypass-permissions`).
+It is **advisory and fails to absent**: an unrecognised prompt carries no kind.
+
+A client may auto-answer a kind it knows. It must **never** treat an absent
+kind as safe: a real prompt in this fleet highlights `No, exit`, so answering
+what you cannot read eventually kills the session you meant to rescue. The
+service deliberately does not choose for you — deciding what to answer is a
+supervisor's judgement, and a session service that made it would have become
+one.
+
 **Send `nonce`.** It is `SessionPrompt.nonce` from the state you read, and it
 is the whole of the protection: a caller reads a prompt, shows it to a human,
 and answers a minute later — by which time the session may be showing a

@@ -675,3 +675,40 @@ func TestStatusLineRejectsChrome(t *testing.T) {
 		}
 	}
 }
+
+// The kind exists so a caller can auto-answer a question it recognises without
+// matching prose itself. Its most important property is the last case: an
+// unfamiliar prompt gets NO kind, so a filter on a known kind can never select
+// it. Empty is not permission.
+func TestClassifyPromptKind(t *testing.T) {
+	cases := []struct {
+		name string
+		opts []string
+		want fleet.PromptKind
+	}{
+		{"resume chooser", []string{"Resume from summary (recommended)", "Resume full session as-is", "Don't ask me again"}, fleet.PromptResumeChooser},
+		{"folder trust", []string{"Yes, I trust this folder", "No, continue without these"}, fleet.PromptFolderTrust},
+		{"bypass", []string{"Yes, I accept the bypass permissions mode", "No, exit"}, fleet.PromptBypassAcceptance},
+		{"tool permission", []string{"Yes, allow this command", "Yes, and don't ask again", "No, tell Claude what to do"}, fleet.PromptToolPermission},
+		{"something never seen before", []string{"Deploy to production", "Cancel"}, ""},
+		{"no options at all", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyPromptKind(&fleet.SessionPrompt{Options: tc.opts})
+			if got != tc.want {
+				t.Errorf("kind = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The prompt whose highlighted default is "No, exit" is the reason policy
+// never moves into this service: a caller that answered the default here would
+// kill the session it meant to rescue. The kind must not imply it is safe.
+func TestUnrecognisedPromptIsNeverGivenAKind(t *testing.T) {
+	p := &fleet.SessionPrompt{Options: []string{"No, exit", "Yes, proceed"}, Selected: 1}
+	if k := classifyPromptKind(p); k != "" {
+		t.Errorf("a prompt we do not recognise was labelled %q — a filter would then select it", k)
+	}
+}

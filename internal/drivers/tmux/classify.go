@@ -462,6 +462,57 @@ func numberedOption(line string) (int, string, bool) {
 // promptNonce is a digest of what is being asked. It changes whenever the
 // question or the options change, which is what makes a stale answer
 // detectable rather than silently applied to a different menu.
+// classifyPromptKind recognises which question a prompt is asking (§2.7's
+// Kind), or returns empty when it does not recognise it.
+//
+// # This is prose matching, and that is the point
+//
+// Everything else in this file avoids matching the runtime's words, because
+// words change and a matcher built on them stays one release behind. This
+// function does the opposite deliberately, for one reason: the alternative is
+// not "no prose matching" — it is prose matching in every client that wants to
+// answer a prompt safely, which is the same fragility multiplied.
+//
+// Quarantining it here costs one function and buys three properties clients
+// cannot get on their own:
+//
+//   - it fails to EMPTY rather than to a wrong label (§5.7);
+//   - when the runtime rewords a screen, one place needs fixing;
+//   - a caller filtering on a known kind is safe by construction, because an
+//     unrecognised prompt simply never matches its filter.
+//
+// Matched on the OPTIONS rather than the question text: the question is best
+// effort and often absent, while the options are the thing being chosen
+// between and are what a caller answers by index.
+func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
+	if p == nil || len(p.Options) == 0 {
+		return ""
+	}
+	joined := strings.ToLower(strings.Join(p.Options, " | ") + " | " + p.Question)
+	has := func(needles ...string) bool {
+		for _, n := range needles {
+			if !strings.Contains(joined, n) {
+				return false
+			}
+		}
+		return true
+	}
+	switch {
+	case has("resume", "summary"):
+		return fleet.PromptResumeChooser
+	case has("trust", "folder"):
+		return fleet.PromptFolderTrust
+	case has("bypass"):
+		return fleet.PromptBypassAcceptance
+	// Checked last: a tool-permission dialog names the tool rather than a
+	// fixed phrase, so this is the loosest of the four and must not shadow
+	// the others.
+	case has("allow"), has("permission"), has("yes, and don't ask again"):
+		return fleet.PromptToolPermission
+	}
+	return ""
+}
+
 func promptNonce(p *fleet.SessionPrompt) string {
 	h := sha256.New()
 	h.Write([]byte(p.Question))
@@ -783,6 +834,9 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 		}
 		st := fleet.InferredState(fleet.StatusWaitingInput, evidence, nil)
 		st.Prompt = parsePrompt(s)
+		if st.Prompt != nil {
+			st.Prompt.Kind = classifyPromptKind(st.Prompt)
+		}
 		return st, ambNone
 	}
 

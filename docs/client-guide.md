@@ -261,6 +261,7 @@ is populated:
 
 ```json
 "prompt": {
+  "kind": "folder-trust",
   "question": "Do you trust the files in this folder?",
   "options": ["1. Yes, I trust this folder", "2. No, continue without these"],
   "selected": 1,
@@ -281,6 +282,11 @@ POST /v1/machines/{machine}/sessions/{id}/respond
   are looking at this second.
 - `choice` is 1-based. Omit it to accept the highlighted default, and `cancel:
   true` dismisses instead of answering.
+- `kind` names the question when the service recognises it — `resume-chooser`,
+  `folder-trust`, `tool-permission`, `bypass-permissions`. Filter on it if you
+  automate answers, so you only ever answer questions you know. **An absent
+  kind is not permission**: it means the service did not recognise the prompt,
+  and answering it blind is how an automation kills a session.
 - **Never blindly accept the default.** A real prompt in the wild highlights
   `No, exit` — a client that reflexively confirms would kill the session it was
   trying to start. That is why `options` and `selected` are both on the wire.
