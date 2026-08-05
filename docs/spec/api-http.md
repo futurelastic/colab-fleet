@@ -174,6 +174,17 @@ live keyboard with a running agent. Absent means the driver has no answer,
 which is a real answer (§5.7).
 
 ```
+POST /v1/machines/{machine}/sessions/{id}/input
+{ "text": "...", "submit": true, "resumeIfStranded": false }
+```
+
+`resumeIfStranded` completes a delivery that returned `unknown` — the text
+reached the composer and could not be confirmed. The service submits it only if
+its own record says that text is what it delivered there; text it did not place
+is never submitted. Send the same text: this finishes one delivery rather than
+starting another.
+
+```
 POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&startedAt=
 → 202 { "accepted": true }
 → 409 if the digest does not match what is there now, or none was supplied

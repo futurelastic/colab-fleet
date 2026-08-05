@@ -327,6 +327,14 @@ it. Check the receipt rather than assuming success.
 screen, you get an `unknown` outcome naming the stranded text instead of a
 cheerful success — because "sent" and "landed" are different claims.
 
+**If `send` answers `unknown`, retry it with `resumeIfStranded: true`.** That
+outcome means the text reached the composer but could not be confirmed in time,
+so it is sitting there unsent — and a plain retry is refused, correctly, by the
+rule that stops anything appending to a busy composer. The resume submits it
+only if the service can establish from its own record that the text is the text
+it delivered; anything else is refused. Send the *same* text: this finishes one
+delivery, it does not start another.
+
 **To clear text you must not send, use `discard`.** `POST …/discard?expect=<composerDigest>`
 — the digest comes from the same read that told you `waitingOn: unsent-input`.
 It is refused if the composer changed since (somebody may be typing), and

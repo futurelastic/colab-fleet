@@ -190,6 +190,12 @@ type Driver struct {
 	// throwaway instance and was the defect (D5) for a real one.
 	idem      *idemStore
 	retention time.Duration
+
+	// stranded remembers, per session, text this driver delivered and could
+	// not confirm — the record a resume is checked against. In memory only:
+	// it describes what is sitting in a composer right now, and a composer
+	// does not survive the multiplexer, let alone a service restart.
+	stranded map[string]string
 }
 
 type observation struct {
@@ -699,6 +705,25 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	}
 
 	if pending, ok := composerText(screenNow); ok && pending != "" {
+		// The one case where a busy composer is not somebody else's business:
+		// this driver put the text there itself, could not confirm it, and
+		// said so. Completing that delivery is finishing the caller's original
+		// request, not starting a new one.
+		//
+		// Established from OUR OWN RECORD, never by reading the screen back —
+		// a multi-line paste renders as a collapsed summary, so the bytes are
+		// not there to compare (F49), and the messages most likely to strand
+		// are exactly the long ones.
+		if opts.ResumeIfStranded && d.strandedMatches(ref.ID, text) {
+			if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "C-m"); err != nil {
+				return fleet.DeliveryReceipt{}, fmt.Errorf("send: submitting stranded text: %w", err)
+			}
+			d.forgetStranded(ref.ID)
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeSubmitted,
+				Reason:  "submitted text this driver had delivered and could not confirm earlier",
+			}, nil
+		}
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: "composer holds unsent input; delivering would concatenate " +
@@ -757,10 +782,14 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// the caller must decide whether to retry or clear it, and silence
 		// here is how a session ends up holding an instruction nobody knows
 		// about.
+		// Record what we left behind, so the caller has a way to finish this
+		// rather than being told where the text is and left there.
+		d.noteStranded(ref.ID, text)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: "text was delivered to the composer but did not render in time " +
-				"to be submitted safely; it is sitting there unsent",
+				"to be submitted safely; it is sitting there unsent — retry the same " +
+				"send with resumeIfStranded to submit it",
 		}, nil
 	}
 	if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "C-m"); err != nil {
@@ -1466,6 +1495,40 @@ func composerHoldsCollapsedPaste(painted string) bool {
 		}
 	}
 	return false
+}
+
+// noteStranded records text this driver delivered and could not confirm.
+//
+// The record is what a resume corroborates against. It is deliberately OUR
+// account of what we did, not a reading of the screen: the screen cannot show
+// a long message back (F49), and composer contents are not evidence anyone
+// meant to send them.
+func (d *Driver) noteStranded(id, text string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stranded == nil {
+		d.stranded = map[string]string{}
+	}
+	d.stranded[id] = text
+}
+
+// strandedMatches reports whether text is exactly what this driver left in
+// that session's composer.
+//
+// Exact, not prefix: "resume the delivery I made" is a different request from
+// "submit something that starts the same way", and only the first is the one
+// the caller is owed.
+func (d *Driver) strandedMatches(id, text string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	prior, ok := d.stranded[id]
+	return ok && prior == text
+}
+
+func (d *Driver) forgetStranded(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.stranded, id)
 }
 
 // stampSinceLocked fills §2.3's Since: when this status was FIRST observed to

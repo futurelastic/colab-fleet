@@ -371,6 +371,18 @@ compile without deciding what to do with it, which is the point: the rule it
 serves — §13's "a proxy presents the original caller's authority, never its
 own" — is unenforceable if the operations have nowhere to carry a principal.
 
+`send` may carry **resumeIfStranded**, which completes a delivery this service
+already made and could not confirm. §2.4's refusal is what makes it necessary:
+after an unconfirmed delivery the text is in the composer, a second send is
+refused by the very rule protecting it, and nothing else submits.
+
+A driver may honour it **only** by establishing, from its own record of what it
+delivered, that the text is its own — never by reading the screen back, since a
+long message is collapsed to a summary and cannot be compared (F49), and the
+messages most likely to strand are exactly the long ones. Text the driver did
+not place is never submitted: composer contents are not evidence that anybody
+meant to send them.
+
 `discard` removes unsent composer text **without submitting it** — the verb
 between "run it" and "destroy the session holding it", which was missing. `send`
 refuses to append to a busy composer (§2.4), which is right and left a caller

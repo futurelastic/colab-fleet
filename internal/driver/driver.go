@@ -26,6 +26,25 @@ var ErrUnsupported = errors.New("driver: capability not supported")
 // "submit", api-http.md §3.3).
 type SendOptions struct {
 	Submit bool
+
+	// ResumeIfStranded completes a delivery this driver already made and
+	// could not confirm.
+	//
+	// `send` refuses to append to a busy composer (§2.4), so when its own
+	// confirm-before-submit times out the text is left sitting there and the
+	// caller has no way back in: a second send is refused by the very rule
+	// that protects it, and nothing else submits.
+	//
+	// With this set, a driver may submit what is in the composer ONLY if it
+	// can establish the text is the text it delivered — from its own record,
+	// not by reading the screen back, because a multi-line paste is collapsed
+	// to a summary and cannot be compared (F49).
+	//
+	// It must never submit text it did not put there. Composer contents are
+	// not evidence that anyone meant to send them: the runtime redraws the
+	// last submitted message as a placeholder, and a human's half-typed line
+	// looks the same to a screen reader as a finished one.
+	ResumeIfStranded bool
 }
 
 // ListFilter narrows List to a subset of sessions (the query parameters of

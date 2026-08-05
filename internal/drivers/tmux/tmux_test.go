@@ -1112,3 +1112,74 @@ func TestDiscardClearsWhatTheCallerSaw(t *testing.T) {
 		t.Error("no clear keystroke was sent")
 	}
 }
+
+// #3: send's own safety refusal used to be a dead end. It delivers, cannot
+// confirm, and says the text is sitting there — after which a second send is
+// refused by the very rule that protects the text, and nothing else submits.
+func TestResumeSubmitsOnlyWhatThisDriverStranded(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("resume completes our own stranded delivery", func(t *testing.T) {
+		f := twoSessions()
+		f.noEcho = true // the pane never renders the paste, so confirm times out
+		d := newTestDriver(f)
+
+		r1, err := d.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+			"the long message", driver.SendOptions{Submit: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r1.Outcome != fleet.OutcomeUnknown {
+			t.Fatalf("expected an unconfirmed delivery, got %s", r1.Outcome)
+		}
+
+		// The text is now visibly in the composer.
+		f.setCapture("%1", "transcript\n✻ Brewed for 1m 0s\n"+rule+"\n❯ the long message\n"+rule+"\n")
+		f.noEcho = false
+
+		r2, err := d.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+			"the long message", driver.SendOptions{Submit: true, ResumeIfStranded: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r2.Outcome != fleet.OutcomeSubmitted {
+			t.Errorf("resume outcome = %s (%s), want submitted", r2.Outcome, r2.Reason)
+		}
+	})
+
+	t.Run("resume never submits text we did not place", func(t *testing.T) {
+		f := twoSessions()
+		f.captures["%2"] = fixtureUnsent // a human's typing, nothing to do with us
+		d := newTestDriver(f)
+
+		r, err := d.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"},
+			"something else entirely", driver.SendOptions{Submit: true, ResumeIfStranded: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Outcome != fleet.OutcomeRefused {
+			t.Errorf("outcome = %s, want refused — this driver never delivered that text", r.Outcome)
+		}
+	})
+
+	t.Run("resume with different text is refused", func(t *testing.T) {
+		f := twoSessions()
+		f.noEcho = true
+		d := newTestDriver(f)
+		if _, err := d.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+			"the original", driver.SendOptions{Submit: true}); err != nil {
+			t.Fatal(err)
+		}
+		f.setCapture("%1", "transcript\n✻ Brewed for 1m 0s\n"+rule+"\n❯ the original\n"+rule+"\n")
+		f.noEcho = false
+
+		r, err := d.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+			"NOT the original", driver.SendOptions{Submit: true, ResumeIfStranded: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Outcome != fleet.OutcomeRefused {
+			t.Errorf("outcome = %s, want refused — resume finishes one delivery, it does not start another", r.Outcome)
+		}
+	})
+}

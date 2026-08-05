@@ -156,8 +156,12 @@ func mutating(svc *Service, cfg Config, next http.HandlerFunc) http.HandlerFunc 
 				})
 				return
 			}
-			logMutation(p, need, target, r)
-			next(w, r)
+			// Run first, then log what actually happened. Logging the
+			// authorization decision as though it were the outcome made a
+			// destroy and a refusal indistinguishable in the trail.
+			aw := &auditWriter{ResponseWriter: w}
+			next(aw, r)
+			logMutation(p, need, target, r, aw.status)
 			return
 		}
 
@@ -513,6 +517,10 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		var body struct {
 			Text   string `json:"text"`
 			Submit bool   `json:"submit"`
+			// ResumeIfStranded completes a delivery this service already made
+			// and could not confirm. It never submits text the service did not
+			// place there — see driver.SendOptions.
+			ResumeIfStranded bool `json:"resumeIfStranded,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "malformed JSON body", Machine: machine})
@@ -529,7 +537,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Send(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit})
+		receipt, err := d.Send(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded})
 		if err != nil {
 			// A refusal from the driver is not this branch — Send returns
 			// it as a DeliveryReceipt value, not an error. Only a
