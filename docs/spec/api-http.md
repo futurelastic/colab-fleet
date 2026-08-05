@@ -205,11 +205,22 @@ driver decided.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/respond?runtime=
-{ "choice": 1 }          // or {} to accept the highlighted option
-                         // or { "cancel": true } to dismiss
+{ "choice": 1, "nonce": "<SessionPrompt.nonce>" }
+                         // or {"nonce": "..."} to accept the highlighted option
+                         // or {"cancel": true, "nonce": "..."} to dismiss
 
 → 200 { "outcome": "queued" | "refused", "reason": "..." }
 ```
+
+**Send `nonce`.** It is `SessionPrompt.nonce` from the state you read, and it
+is the whole of the protection: a caller reads a prompt, shows it to a human,
+and answers a minute later — by which time the session may be showing a
+DIFFERENT question in the same place, and an answer submitted by index would be
+applied to it silently. With the nonce that becomes a refusal.
+
+It is optional only for a human answering something they are looking at right
+now. An automated caller that omits it is choosing to answer whatever happens
+to be on screen; a driver that answers unchecked must say so in the receipt.
 
 Answers a prompt the session is blocked on. Refused as an ordinary 200 when the
 session is not at a prompt — a keypress delivered to a session that is not

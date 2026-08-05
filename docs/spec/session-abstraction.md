@@ -1950,6 +1950,37 @@ answer, not an error". That principle was never wrong; it was applied to a
 question with two answers as if it had one — which is §5.7 turned inward, on a
 rule §5.7 itself produced.
 
+**F45 · Writing the client guide found three defects, and none of them were
+findable from inside.** F44 was one. The other two were the same shape:
+
+- **The nonce was undocumented on the wire.** `respond` accepts a nonce that
+  makes an answer refuse rather than land on a question that changed underneath
+  it — the entire protection §2.7's design exists for — and the HTTP document
+  showed `{ "choice": 1 }` and never mentioned it. Every client written from
+  that document would have been unprotected, and nothing would have failed
+  until the day it mattered. `Response` also carried no JSON tags: decoding
+  worked because Go matches field names case-insensitively, so the omission was
+  invisible from the server while making it the one type in the package that
+  would MARSHAL as `Choice`.
+- **A peer's runtime id was reported as the empty string.** The peer names it
+  in the very row the driver reads its capabilities from; the value was
+  discarded and a placeholder `""` shipped. A client cannot use `?runtime=` to
+  disambiguate a session on a peer if a peer's runtime is never reported.
+
+Each was invisible from the inside for the same reason. **The implementer knows
+which ids exist, which fields are load-bearing, and what the server will accept
+— so the implementer never sends the request that exposes the gap.** Writing
+the guide meant calling the API as a stranger: every endpoint, with wrong
+inputs, reading only what came back.
+
+The generalisation, which is now three findings deep (F38, F44, this):
+
+> **Documentation for a consumer is a test suite that runs against the parts of
+> a design tests do not reach — the affordances.** A test asserts that what you
+> called does what you meant. A guide has to state what a stranger should call
+> and what they will get, and the sentences that cannot be written truthfully
+> are the defects.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

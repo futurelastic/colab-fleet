@@ -23,16 +23,24 @@ package fleet
 // operation would bind every future driver to this substrate's idea of
 // confirmation. A choice is what the caller actually means; how a driver
 // produces it is the driver's business.
+//
+// # Why the fields carry tags
+//
+// Field names are tagged rather than left to Go's defaults. Decoding happened
+// to work without them — encoding/json matches field names case-insensitively
+// — so the omission was invisible from the server side while making this the
+// one wire type in the package that would MARSHAL as "Choice". A type that
+// reads one way and writes another is a trap for the next client.
 type Response struct {
 	// Choice selects a numbered option, 1-based. Zero means "accept
 	// whatever is highlighted", which is what a caller usually wants and
 	// what a human pressing Enter would get.
-	Choice int
+	Choice int `json:"choice,omitempty"`
 
 	// Cancel dismisses the prompt instead of answering it. A caller that
 	// does not like any of the options needs a way to say so that is not
 	// "pick one anyway".
-	Cancel bool
+	Cancel bool `json:"cancel,omitempty"`
 
 	// Nonce is the SessionPrompt.Nonce the caller was answering.
 	//
@@ -46,5 +54,5 @@ type Response struct {
 	// receipt, that it answered without checking. An automated caller should
 	// always send it; a human at a terminal answering immediately reasonably
 	// may not.
-	Nonce string
+	Nonce string `json:"nonce,omitempty"`
 }

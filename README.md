@@ -119,7 +119,11 @@ of them, not the other way round.
 2. [`docs/spec/api-http.md`](docs/spec/api-http.md) — the wire protocol.
 3. [`doc.go`](doc.go) — an index of what transcription revealed, including the
    judgement calls that were left out of the spec on purpose.
-4. [`docs/adoption.md`](docs/adoption.md) — how an existing supervisor becomes
+4. [`docs/client-guide.md`](docs/client-guide.md) — **if you are writing a
+   client, start here instead.** What to call, what you get back, and the
+   handful of things you must handle. Every example is copied from a running
+   service.
+5. [`docs/adoption.md`](docs/adoption.md) — how an existing supervisor becomes
    a client of this, staged so each step is reversible. Read it if you are
    evaluating whether this is worth adopting; §2 is the precondition that
    surprised us.

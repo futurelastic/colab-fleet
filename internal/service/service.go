@@ -410,7 +410,15 @@ func (s *Service) ListRuntimes(ctx context.Context) (fleet.Collection[fleet.Runt
 	// why this endpoint can stay cheap.
 	for m, d := range peers {
 		caps := d.Capabilities()
-		items = append(items, fleet.RuntimeInfo{Machine: m, Runtime: "", Capabilities: caps})
+		// The peer names its runtime in the same row this driver learned its
+		// capabilities from; reporting "" was a placeholder nobody removed.
+		// Empty remains possible and remains honest — it means the peer has
+		// not answered yet, which the row's `source: assumed` also says.
+		var rt fleet.RuntimeId
+		if r, ok := d.(interface{ Runtime() fleet.RuntimeId }); ok {
+			rt = r.Runtime()
+		}
+		items = append(items, fleet.RuntimeInfo{Machine: m, Runtime: rt, Capabilities: caps})
 		st := fleet.SourceOK
 		if caps.Source != fleet.CapabilitiesObserved {
 			// Nothing was reached to produce this row. §5.7: that is not

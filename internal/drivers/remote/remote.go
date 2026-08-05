@@ -137,6 +137,11 @@ type Driver struct {
 	mu       sync.RWMutex
 	caps     fleet.DriverCapabilities
 	capsSeen bool
+	// runtime is the peer's own runtime id, learned on the same probe as
+	// caps. Empty until the peer has answered — which is honest, and is
+	// distinguishable because the cached capabilities say `assumed` in
+	// exactly that case.
+	runtime fleet.RuntimeId
 	// build is what the peer said it was running, the last time it said
 	// anything. Cached beside caps because it is learned the same way and
 	// is stale in the same manner: a peer that has restarted onto new code
@@ -318,6 +323,11 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 		// and freshness here is a local judgement about a local cache.
 		d.caps = ri.Capabilities.Observed(d.now())
 		d.capsSeen = true
+		// The peer named its runtime in the same row. Discarding it and
+		// reporting "" was a placeholder that survived: a client cannot use
+		// ?runtime= to disambiguate a peer's session if the peer's runtime
+		// is never reported.
+		d.runtime = ri.Runtime
 		d.mu.Unlock()
 
 		// Learn which code the peer is running, on the same probe rather
@@ -345,6 +355,13 @@ func (d *Driver) peerBuild(ctx context.Context, req fleet.Request) (fleet.Build,
 		return fleet.Build{}, err
 	}
 	return body.Build, nil
+}
+
+// Runtime reports the peer's runtime id, empty until the peer has answered.
+func (d *Driver) Runtime() fleet.RuntimeId {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.runtime
 }
 
 // Build reports what the peer said it was running, if it has ever said.
