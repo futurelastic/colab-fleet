@@ -77,6 +77,7 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/input", withAuth(cfg, mutating(svc, cfg, handleSendInput(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/respond", withAuth(cfg, mutating(svc, cfg, handleRespond(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/interrupt", withAuth(cfg, mutating(svc, cfg, handleInterrupt(svc))))
+	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/rename", withAuth(cfg, mutating(svc, cfg, handleRename(svc))))
 	mux.HandleFunc("DELETE /v1/machines/{machine}/sessions/{id}", withAuth(cfg, mutating(svc, cfg, handleClose(svc))))
 	mux.HandleFunc("GET /v1/events", withAuth(cfg, handleEvents(svc)))
 
@@ -621,6 +622,55 @@ func handleClose(svc *Service) http.HandlerFunc {
 			writeDriverError(w, machine, deadline, err)
 			return
 		}
+		writeJSON(w, http.StatusAccepted, ack)
+	}
+}
+
+func handleRename(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		machine := fleet.MachineId(r.PathValue("machine"))
+		id := r.PathValue("id")
+		runtimeHint := fleet.RuntimeId(r.URL.Query().Get("runtime"))
+
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "malformed JSON body", Machine: machine})
+			return
+		}
+		if strings.TrimSpace(body.Name) == "" {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "rename needs a non-empty name", Machine: machine})
+			return
+		}
+
+		d, resErr := svc.resolveSessionDriver(machine, runtimeHint)
+		if resErr != nil {
+			writeError(w, resErr)
+			return
+		}
+
+		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
+		ctx, cancel := context.WithTimeout(r.Context(), deadline)
+		defer cancel()
+
+		req := requestFrom(r)
+		ack, err := d.Rename(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Name)
+		if err != nil {
+			writeDriverError(w, machine, deadline, err)
+			return
+		}
+
+		// Announce it. A subscriber filtering by id would otherwise see the old
+		// id go quiet and a stranger appear — indistinguishable from a session
+		// dying and another being created, which is exactly the wrong reading.
+		svc.events.publish(fleet.Event{
+			Kind:    fleet.EventSessionRenamed,
+			Machine: machine,
+			Payload: fleet.SessionRenamed{
+				Machine: machine, From: id, To: body.Name, StartedAt: req.Expect.StartedAt,
+			},
+		})
 		writeJSON(w, http.StatusAccepted, ack)
 	}
 }

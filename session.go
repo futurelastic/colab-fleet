@@ -57,6 +57,24 @@ type SessionRef struct {
 	Name    string    `json:"name,omitempty"`
 }
 
+// SessionRenamed reports that a session's id changed (§3's rename).
+//
+// Both ids are present and neither is optional. A subscriber holding the old
+// one has to recognise the event as being about ITS session, which needs From;
+// and it has to re-key, which needs To.
+//
+// StartedAt is the identity that did NOT change, and it is why a mutable id is
+// safe to reason about at all: §5.4 already tells callers an id is not
+// identity and must never be acted on alone. A rename is that rule with a
+// sharper edge — the id can now change under a caller who was already
+// forbidden from trusting it.
+type SessionRenamed struct {
+	Machine   MachineId  `json:"machine"`
+	From      string     `json:"from"`
+	To        string     `json:"to"`
+	StartedAt *Timestamp `json:"startedAt,omitempty"`
+}
+
 // Session is a SessionRef plus its current details and state — the shape
 // GET /v1/machines/{machine}/sessions/{id} returns (api-http.md §3.3), and
 // the item type of Collection[Session] returned by List (see

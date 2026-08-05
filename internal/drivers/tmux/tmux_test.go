@@ -156,6 +156,29 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			return nil, errors.New("cannot create session")
 		}
 		return nil, nil
+	case "rename-session":
+		// -t "=OLD" NEW. The "=" pin is stripped the way the real
+		// multiplexer does, so a test can assert it was sent.
+		//
+		// No locking here: exec() already holds f.mu, and sync.Mutex is not
+		// reentrant — taking it again deadlocks the whole suite, which is
+		// exactly what it did.
+		var from, to string
+		for i := 0; i < len(args); i++ {
+			if args[i] == "-t" && i+1 < len(args) {
+				from = strings.TrimPrefix(args[i+1], "=")
+				if i+2 < len(args) {
+					to = args[i+2]
+				}
+			}
+		}
+		for i := range f.sessions {
+			if f.sessions[i].name == from {
+				f.sessions[i].name = to
+				return nil, nil
+			}
+		}
+		return nil, errors.New("can't find session")
 	case "display-message":
 		// The batched capture call: emit marker + capture for each pane.
 		mark := testNonce + "P"
@@ -876,4 +899,114 @@ func TestCollapsedPasteCountsAsDelivered(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Rename changes the very thing callers address a session by, so it is
+// corroborated exactly as Close is — and its failure is quieter than Close's:
+// renaming the wrong session succeeds silently and leaves two sessions
+// misnamed rather than raising anything.
+func TestRenameCorroboratesLikeClose(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("with the caller's expected start time", func(t *testing.T) {
+		f := twoSessions()
+		d := newTestDriver(f)
+		started := time.Unix(1785600000, 0)
+		req := testCaller
+		req.Expect.StartedAt = &started
+
+		if _, err := d.Rename(ctx, req, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "renamed💬"); err != nil {
+			t.Fatalf("rename: %v", err)
+		}
+		col, _ := d.List(ctx, testCaller, driver.ListFilter{})
+		var names []string
+		for _, s := range col.Items() {
+			names = append(names, s.ID)
+		}
+		if !slicesContains(names, "renamed💬") || slicesContains(names, "alpha💬") {
+			t.Errorf("after rename the fleet reads %v", names)
+		}
+	})
+
+	t.Run("a stale expectation is refused", func(t *testing.T) {
+		f := twoSessions()
+		d := newTestDriver(f)
+		wrong := time.Unix(1700000000, 0)
+		req := testCaller
+		req.Expect.StartedAt = &wrong
+
+		_, err := d.Rename(ctx, req, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "renamed💬")
+		if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+			t.Errorf("want an ambiguous-target refusal, got %v", err)
+		}
+	})
+
+	t.Run("nothing to corroborate against is refused", func(t *testing.T) {
+		f := twoSessions()
+		d := newTestDriver(f) // never listed, so the driver has no sighting
+		_, err := d.Rename(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "renamed💬")
+		if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+			t.Errorf("want a refusal when nothing corroborates, got %v", err)
+		}
+	})
+
+	t.Run("a name already in use is refused", func(t *testing.T) {
+		f := twoSessions()
+		d := newTestDriver(f)
+		started := time.Unix(1785600000, 0)
+		req := testCaller
+		req.Expect.StartedAt = &started
+
+		_, err := d.Rename(ctx, req, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "beta")
+		if err == nil {
+			t.Error("renaming onto a live session's name must be refused, not left to the multiplexer")
+		}
+	})
+
+	t.Run("an unknown id is not found", func(t *testing.T) {
+		f := twoSessions()
+		d := newTestDriver(f)
+		_, err := d.Rename(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "ghost"}, "whatever")
+		if !errors.Is(err, fleet.ErrNoSuchSession) {
+			t.Errorf("want no-such-session, got %v", err)
+		}
+	})
+}
+
+// The driver's memory must move with the name, or the renamed session looks
+// brand new: `since` resets and §12 reports it as newly adopted.
+func TestRenameCarriesTheDriversMemory(t *testing.T) {
+	ctx := context.Background()
+	f := twoSessions()
+	d := newTestDriver(f)
+	if _, err := d.List(ctx, testCaller, driver.ListFilter{}); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Unix(1785600000, 0)
+	req := testCaller
+	req.Expect.StartedAt = &started
+	if _, err := d.Rename(ctx, req, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "renamed💬"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	d.mu.Lock()
+	_, oldGone := d.observed["alpha💬"]
+	_, newKept := d.observed["renamed💬"]
+	d.mu.Unlock()
+	if oldGone {
+		t.Error("the old id is still remembered")
+	}
+	if !newKept {
+		t.Error("the driver forgot the session it just renamed — since would reset and §12 would call it adopted")
+	}
+}
+
+func slicesContains(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }

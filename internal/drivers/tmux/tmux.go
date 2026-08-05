@@ -880,6 +880,100 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 	return d.killCorroborated(ctx, ref)
 }
 
+// Rename changes a session's id (§3).
+//
+// # The id IS the name on this substrate
+//
+// A multiplexer session's name is its handle: it is what an operator sees in
+// their status bar, what a picker lists, and what every command targets. So a
+// rename here is not cosmetic relabelling — it changes the very thing callers
+// address the session by, which is why the service emits an event and why this
+// corroborates before acting.
+//
+// # Corroborated exactly like Close, and for a sharper reason
+//
+// Close destroys the wrong session if the id was recycled. Rename does
+// something subtler and arguably worse: it succeeds, silently, on a session
+// the caller never meant — and leaves BOTH sessions misnamed, the target
+// wearing a name that belongs to another piece of work. §5.4's rule is the
+// same and the failure is quieter, so the check is the same.
+func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.Ack, error) {
+	ctx, cancel := d.bounded(ctx)
+	defer cancel()
+
+	to = strings.TrimSpace(to)
+	if to == "" {
+		return fleet.Ack{}, errors.New("rename: new name is empty")
+	}
+	if to == ref.ID {
+		// Not an error: the caller asked for a state that already holds.
+		return fleet.Ack{Accepted: true}, nil
+	}
+
+	rows, _, err := d.enumerate(ctx)
+	if err != nil {
+		return fleet.Ack{}, err
+	}
+	var live *paneRow
+	for i := range rows {
+		if rows[i].session == ref.ID {
+			live = &rows[i]
+		}
+		// Refuse a collision rather than letting the multiplexer decide. Two
+		// sessions cannot share a name, and the failure mode of finding out
+		// afterwards is an operator who believes a rename happened.
+		if rows[i].session == to {
+			return fleet.Ack{}, fmt.Errorf("rename: %q is already in use on this machine", to)
+		}
+	}
+	if live == nil {
+		return fleet.Ack{}, fmt.Errorf("%w: %q", fleet.ErrNoSuchSession, ref.ID)
+	}
+
+	if want := req.Expect.StartedAt; want != nil {
+		if !live.created.Equal(*want) {
+			return fleet.Ack{}, fmt.Errorf(
+				"%w: id %q now holds a session started at %s; the caller meant the one started at %s",
+				ErrAmbiguousTarget, ref.ID, live.created.Format(time.RFC3339), want.Format(time.RFC3339))
+		}
+	} else {
+		// The weak guarantee, named as weak — same shape as Close.
+		d.mu.Lock()
+		prior, seen := d.observed[ref.ID]
+		d.mu.Unlock()
+		if !seen {
+			return fleet.Ack{}, fmt.Errorf(
+				"%w: caller supplied no expected start time, and this driver has no prior "+
+					"observation of id %q either; nothing corroborates the target",
+				ErrAmbiguousTarget, ref.ID)
+		}
+		if !live.created.Equal(prior.created) || live.cwd != prior.cwd {
+			return fleet.Ack{}, fmt.Errorf(
+				"%w: id %q was recycled since this driver last observed it (weak check)",
+				ErrAmbiguousTarget, ref.ID)
+		}
+	}
+
+	// "=" pins an exact name. Without it the multiplexer resolves prefixes and
+	// patterns, and would happily rename a DIFFERENT session whose name merely
+	// starts with this one — which on a fleet full of `<repo>-<issue>` names is
+	// not a hypothetical.
+	if _, err := d.run(ctx, d.bin, "rename-session", "-t", "="+ref.ID, to); err != nil {
+		return fleet.Ack{}, fmt.Errorf("rename: %w", err)
+	}
+
+	// Carry the driver's own memory across, or the renamed session looks
+	// brand new: its `since` would reset and §12 would call it adopted.
+	d.mu.Lock()
+	if prior, ok := d.observed[ref.ID]; ok {
+		d.observed[to] = prior
+		delete(d.observed, ref.ID)
+	}
+	d.mu.Unlock()
+
+	return fleet.Ack{Accepted: true}, nil
+}
+
 func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fleet.Ack, error) {
 	if _, err := d.run(ctx, d.bin, "kill-session", "-t", ref.ID); err != nil {
 		return fleet.Ack{}, fmt.Errorf("close: %w", err)

@@ -109,6 +109,47 @@ func (c *Confidence) UnmarshalJSON(b []byte) error {
 // means the driver has no opinion on when the status started; a driver that
 // knows must say so, not synthesize a value it doesn't have (§5.2 again,
 // applied to a single field).
+// TurnEnd says how the most recent turn FINISHED, when the screen says
+// anything about it.
+//
+// # Why this is not a status
+//
+// A session whose turn died on a transient server error looks exactly like one
+// that finished its work: the error prints, the spinner settles into its
+// finished form, the composer empties. Both are `idle`, and `idle` is honest —
+// the session is up and will accept input.
+//
+// What is missing is not the current state but a fact about the LAST TURN, and
+// no status member carries it without lying about the present. `waiting_input`
+// is the tempting hack and is wrong twice: nothing is being asked, and no human
+// is needed — any caller resumes the session by sending anything at all.
+//
+// So the status stays `idle` and gains a footnote. A supervisor can then tell
+// "finished, ready for the next thing" from "its work died and nobody noticed",
+// which is the distinction `idle` had been collapsing.
+//
+// # Why not read the evidence string
+//
+// `Evidence` is prose for humans and explicitly not to be parsed. A caller that
+// must ACT on this needs a field, or it ends up pattern-matching sentences this
+// project keeps rewriting.
+type TurnEnd struct {
+	// Outcome is "failed" when the screen shows the turn ending in an error.
+	// Absent otherwise: "it worked" is the unremarkable case, and recording it
+	// would make every session carry a field nobody reads.
+	Outcome string `json:"outcome"`
+
+	// Reason is the runtime's own words, trimmed. For humans and logs; do not
+	// branch on it.
+	Reason string `json:"reason,omitempty"`
+
+	// Retryable is true when the runtime itself called the failure temporary —
+	// the difference between "poke it and the work continues" and "somebody
+	// needs to look". Taken from what the screen SAYS, not inferred from an
+	// error code we decided to interpret.
+	Retryable bool `json:"retryable,omitempty"`
+}
+
 type SessionState struct {
 	Status     Status     `json:"status"`
 	Confidence Confidence `json:"confidence"`
@@ -127,6 +168,11 @@ type SessionState struct {
 	// Evidence names the highlighted option in prose; this is the structured
 	// form a client can render as buttons and submit by index.
 	Prompt *SessionPrompt `json:"prompt,omitempty"`
+
+	// LastTurn reports how the most recent turn ended, when the screen says
+	// anything about it. Nil is the ordinary case and means nothing was said —
+	// NOT that the turn succeeded (§5.7: absence is not a finding).
+	LastTurn *TurnEnd `json:"lastTurn,omitempty"`
 }
 
 // ObservedState constructs a SessionState a driver reports from a

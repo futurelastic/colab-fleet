@@ -7,6 +7,12 @@ const (
 	EventSessionCreated EventKind = "session.created"
 	EventSessionState   EventKind = "session.state"
 	EventSessionClosed  EventKind = "session.closed"
+	// EventSessionRenamed carries a session whose ID has CHANGED. A subscriber
+	// filtering by id must re-key on this or it silently stops matching a
+	// session that is still very much alive — which is why a rename cannot be
+	// a quiet mutation. Without the event, a rename is indistinguishable from
+	// a disappearance, and that is the one thing it must not be mistaken for.
+	EventSessionRenamed EventKind = "session.renamed"
 	EventSourceStatus   EventKind = "source.status"
 	EventControlResync  EventKind = "control.resync"
 )

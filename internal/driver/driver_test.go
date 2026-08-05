@@ -44,6 +44,10 @@ func (fakeDriver) Close(ctx context.Context, req fleet.Request, ref fleet.Sessio
 	return fleet.Ack{}, ErrUnsupported
 }
 
+func (fakeDriver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.Ack, error) {
+	return fleet.Ack{}, ErrUnsupported
+}
+
 func (fakeDriver) List(ctx context.Context, req fleet.Request, filter ListFilter) (fleet.Collection[fleet.Session], error) {
 	return fleet.Collection[fleet.Session]{}, ErrUnsupported
 }

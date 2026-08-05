@@ -44,7 +44,18 @@ const (
 	GrantSend      Grant = "send"      // deliver input to them
 	GrantInterrupt Grant = "interrupt" // interrupt them
 	GrantClose     Grant = "close"     // destroy them
-	GrantRelay     Grant = "relay"     // have mutations proxied to peers
+	// GrantRename is its own verb rather than folded into close or send.
+	//
+	// It is not destructive, so lumping it with close would over-restrict; and
+	// it is not delivery, so lumping it with send would under-restrict. What it
+	// actually does is change the handle every other caller addresses a session
+	// by — a distinct kind of power, and §6 says grants are per verb precisely
+	// so a distinct power can be granted or withheld on its own.
+	//
+	// Absent means denied, like every other grant, so existing principals are
+	// unaffected until an operator opts them in.
+	GrantRename Grant = "rename"
+	GrantRelay  Grant = "relay" // have mutations proxied to peers
 )
 
 // Principal is one identity this service accepts (§6).
@@ -111,6 +122,8 @@ func grantForVerb(r *http.Request) Grant {
 		return GrantSend
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/interrupt"):
 		return GrantInterrupt
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/rename"):
+		return GrantRename
 	case r.Method == http.MethodDelete:
 		return GrantClose
 	}

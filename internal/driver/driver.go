@@ -186,6 +186,19 @@ type Driver interface {
 	Interrupt(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error)
 	Close(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error)
 
+	// Rename changes a session's id.
+	//
+	// Corroborated exactly as Close is, and for the same reason: it acts on one
+	// specific session, and an id alone does not identify one (§5.4).
+	//
+	// A driver that cannot rename returns ErrUnsupported rather than
+	// approximating one — §5.6, degrade never emulate. Renaming is not
+	// universal across substrates, and on some the id is not a name at all.
+	//
+	// On success the service emits EventSessionRenamed so subscribers
+	// filtering by id can re-key.
+	Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.Ack, error)
+
 	// List returns every session this driver knows about in one call —
 	// see the type-level doc comment above for why the signature is
 	// Collection[Session], not []SessionRef.

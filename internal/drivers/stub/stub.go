@@ -71,6 +71,10 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 	return fleet.Ack{}, driver.ErrUnsupported
 }
 
+func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.Ack, error) {
+	return fleet.Ack{}, driver.ErrUnsupported
+}
+
 func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {
 	return fleet.Collection[fleet.Session]{}, driver.ErrUnsupported
 }

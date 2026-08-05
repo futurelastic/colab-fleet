@@ -348,6 +348,7 @@ respond(req, ref, response)    -> DeliveryReceipt
 state(req, ref)                -> SessionState
 interrupt(req, ref)            -> Ack
 close(req, ref)                -> Ack
+rename(req, ref, to)           -> Ack
 list(req, filter?)             -> Collection<Session>
 subscribe(req, filter?)        -> EventStream
 ```
@@ -368,6 +369,30 @@ Every operation carries a `Request` (§2.6), reads included. A driver cannot
 compile without deciding what to do with it, which is the point: the rule it
 serves — §13's "a proxy presents the original caller's authority, never its
 own" — is unenforceable if the operations have nowhere to carry a principal.
+
+`rename` changes a session's **id**, and that is not a slip of wording. On a
+substrate where the id is the name an operator sees and every command targets,
+a "label" stored beside it would rename the session in this API and leave the
+human's terminal saying the old thing — solving nothing. So the handle itself
+moves.
+
+That makes ids **mutable as well as recyclable**, which sounds alarming until
+you notice §5.4 already forbids acting on an id alone. `startedAt` is the
+stable identity and it survives a rename; a mutable id is the same rule with a
+sharper edge, not a new hazard.
+
+Two consequences are normative:
+
+- **`rename` is corroborated exactly as `close` is.** Its failure is quieter
+  than a wrong close and no less bad: it succeeds silently on a session the
+  caller never meant, and leaves that session wearing a name belonging to
+  somebody else's work.
+- **The service emits `session.renamed` carrying both ids.** Without it, a
+  subscriber filtering by id sees the old id go quiet and a stranger appear —
+  indistinguishable from a death and a birth, which is the one reading a
+  rename must never produce.
+
+A driver on a substrate with no renaming returns `unsupported` (§5.6).
 
 `subscribe` is not optional garnish. Federated callers must be able to learn
 about state changes without polling — see §5.5.
@@ -2179,6 +2204,53 @@ Worth noting where the rule came from. It was not derived; it was **already
 written**, in a runbook telling an operator how not to be fooled. A service
 absorbing screen-reading from humans should read what those humans wrote down
 about being fooled, because they have been fooled longer.
+
+**F51 · A turn that died looks exactly like a turn that finished.** A live
+session was reported stuck. Its pane:
+
+    ⏺ API Error: 529 Overloaded. This is a server-side issue, usually
+      temporary — try again in a moment.
+    ✻ Sautéed for 3m 24s
+    ❯
+
+The service said `idle` — *"spinner line in finished form; composer empty"* —
+which was true and useless. The turn had **died**, its work was abandoned, and
+`idle` is the status that means *available, send it work*.
+
+**Neither classifier caught it, and the supervisor next door has a detector for
+exactly this class.** Its stall rule looks for a session that stopped while
+BUSY; this one settled its status line into the tidy finished form first, so it
+read as a clean end. In 86,723 shadow comparisons there was not one `errored`
+classification from either side.
+
+This is the third member of a family, and the family is worth naming more than
+any of its members:
+
+| the session | how it paints | the truth |
+|---|---|---|
+| out of quota (F50) | idle, empty composer | cannot proceed at all |
+| turn died on a server error | idle, finished spinner | its work is abandoned |
+| message stranded (F49) | idle-ish | what it was told never arrived |
+
+> **A session that failed and a session that succeeded end the same way: quietly,
+> with an empty composer.** Every "the agent is stuck" report so far has been an
+> instance of that, and the screen alone cannot separate them.
+
+**The fix deliberately did not touch the status.** `idle` is honest here — the
+session is up and will accept input, and unlike the quota case any caller can
+resume it by sending anything. Reporting `waiting_input` would have been wrong
+twice: nothing is being asked, and no human is required.
+
+What was missing is not the current state but a fact about the **last turn**,
+so §2.3 gained an optional `lastTurn` — outcome, the runtime's own words, and
+whether the runtime itself called the failure temporary. `retryable` is read
+from what the screen SAYS rather than inferred from a status code, because
+deciding which of somebody else's error codes deserve a retry is exactly the
+policy this service refuses to own.
+
+The general rule, which is the third time a variant of it has been recorded
+here: **when a status cannot express something without lying about the present,
+the missing thing is usually history, and history belongs in a field.**
 
 ### The pattern worth naming
 

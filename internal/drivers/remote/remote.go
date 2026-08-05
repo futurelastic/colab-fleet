@@ -744,6 +744,28 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 	return fleet.Ack{Accepted: true}, nil
 }
 
+// Rename changes the id of a session belonging to the peer (§3).
+//
+// The caller's expectation is forwarded for the same reason Close forwards it:
+// corroboration has to happen where the session actually is, against what the
+// CALLER saw rather than the far driver's own sighting.
+func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.Ack, error) {
+	ctx, cancel := d.bounded(ctx)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/rename",
+		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
+	if want := req.Expect.StartedAt; want != nil {
+		path += "?startedAt=" + url.QueryEscape(want.UTC().Format(time.RFC3339Nano))
+	}
+	body := map[string]string{"name": to}
+	var ack fleet.Ack
+	if err := d.do(ctx, req, http.MethodPost, path, body, &ack); err != nil {
+		return fleet.Ack{}, err
+	}
+	return ack, nil
+}
+
 // Respond answers a prompt on a session belonging to the peer (§3).
 //
 // Like Send, a refusal comes back as an ordinary 200 carrying an outcome and

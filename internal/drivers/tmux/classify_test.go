@@ -776,3 +776,59 @@ func TestHistoricalLimitNoticeIsIgnored(t *testing.T) {
 		t.Error("a limit notice in replayed scrollback was read as a live block")
 	}
 }
+
+// The screen that prompted this: a turn that died on a transient server error
+// looks exactly like one that finished — error printed, spinner settled into
+// its finished form, composer empty. Both are idle, and idle is the status
+// that means "send it work", so the abandoned work goes unnoticed.
+func TestFailedTurnIsNotedWithoutLyingAboutTheStatus(t *testing.T) {
+	const rule = "────────────────────"
+	errored := "  ⏺ API Error: 529 Overloaded. This is a server-side issue, usually\n" +
+		"    temporary — try again in a moment. If it persists, check\n" +
+		"    https://status.claude.com.\n" +
+		"✻ Sautéed for 3m 24s\n" +
+		rule + "\n❯ \n" + rule + "\n"
+
+	st := classifyAged(errored, true, false)
+	if st.Status != fleet.StatusIdle {
+		t.Fatalf("status = %s, want idle — the session IS up and will accept input", st.Status)
+	}
+	if st.LastTurn == nil {
+		t.Fatal("the turn died and nothing recorded it; this is the whole point")
+	}
+	if st.LastTurn.Outcome != "failed" {
+		t.Errorf("outcome = %q, want failed", st.LastTurn.Outcome)
+	}
+	if !st.LastTurn.Retryable {
+		t.Error("the runtime called it temporary; a supervisor may simply poke it")
+	}
+	if !strings.Contains(strings.ToLower(st.LastTurn.Reason), "529") {
+		t.Errorf("reason should carry the runtime's own words, got %q", st.LastTurn.Reason)
+	}
+}
+
+// A session that finished cleanly must NOT carry the footnote, or every idle
+// session grows one and it stops meaning anything.
+func TestCleanTurnHasNoFootnote(t *testing.T) {
+	const rule = "────────────────────"
+	clean := "  ⏺ Done — all 12 tests pass.\n✻ Brewed for 1m 0s\n" + rule + "\n❯ \n" + rule + "\n"
+	st := classifyAged(clean, true, false)
+	if st.LastTurn != nil {
+		t.Errorf("a clean turn was marked %+v", st.LastTurn)
+	}
+}
+
+// After a resume the runtime re-renders old output, so an error from hours ago
+// scrolls past again. A session that errored and then carried on has that later
+// work in the window, which is what pushes the stale error out of it.
+func TestOldErrorFollowedByWorkIsNotTheLastTurn(t *testing.T) {
+	const rule = "────────────────────"
+	recovered := "  ⏺ API Error: 529 Overloaded. Temporary.\n" +
+		"  ⏺ Retried and it worked.\n  ⏺ Then I did the next thing.\n" +
+		"  ⏺ And another.\n  ⏺ And one more.\n  ⏺ Finished the task.\n" +
+		"✻ Brewed for 2m 0s\n" + rule + "\n❯ \n" + rule + "\n"
+	st := classifyAged(recovered, true, false)
+	if st.LastTurn != nil {
+		t.Errorf("a recovered session was reported as having failed: %+v", st.LastTurn)
+	}
+}

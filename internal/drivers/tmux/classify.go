@@ -537,6 +537,72 @@ func usageLimit(s screen) (resetHint string, blocked bool) {
 	return "", false
 }
 
+// lastTurnFailed reports whether the live region shows the most recent turn
+// ending in an error, and what the runtime said about it.
+//
+// # Why a window here, and exactly one line for the usage limit
+//
+// usageLimit demands the notice be the LAST live line, because a limit notice
+// with work beneath it is history. This one cannot: the runtime prints the
+// error and THEN settles its status line, so the error is never last. The
+// window is a few lines, and the same replay hazard is handled differently —
+// a session that errored and then carried on has that later work in the
+// window, pushing the error out of it.
+//
+// # What "retryable" means, and where it comes from
+//
+// From the screen, not from us. The runtime says "usually temporary — try
+// again in a moment" when it believes the failure is transient, and that
+// sentence is the difference between a supervisor poking the session and a
+// human being called. Inferring it from a status code instead would mean
+// deciding, here, which of somebody else's error codes are worth retrying.
+func lastTurnFailed(s screen) (*fleet.TurnEnd, bool) {
+	end := len(s.lines)
+	for i := len(s.lines) - 1; i >= 0 && i >= len(s.lines)-promptScanDepth; i-- {
+		if strings.Contains(s.lines[i], composerRuneMarker) {
+			end = i
+			for end > 0 && isRule(s.lines[end-1]) {
+				end--
+			}
+			break
+		}
+	}
+	const window = 6
+	var seen []string
+	for i := end - 1; i >= 0 && len(seen) < window; i-- {
+		line := strings.TrimSpace(s.lines[i])
+		if line == "" || isRule(s.lines[i]) {
+			continue
+		}
+		seen = append([]string{line}, seen...)
+	}
+	joined := strings.Join(seen, " ")
+	lower := strings.ToLower(joined)
+
+	// Matched on the runtime's error banner rather than on any status code:
+	// the banner is what the runtime prints when a turn dies, and the code is
+	// an implementation detail that has already changed shape once.
+	marker := "api error"
+	k := strings.Index(lower, marker)
+	if k < 0 {
+		return nil, false
+	}
+	reason := strings.TrimSpace(joined[k:])
+	// Keep it to one sentence: the rest is a support URL and advice a human
+	// does not need repeated in every listing.
+	if cut := strings.IndexAny(reason, ".\n"); cut > 0 {
+		reason = reason[:cut]
+	}
+	if len(reason) > 120 {
+		reason = reason[:120]
+	}
+	return &fleet.TurnEnd{
+		Outcome:   "failed",
+		Reason:    reason,
+		Retryable: strings.Contains(lower, "temporary") || strings.Contains(lower, "try again"),
+	}, true
+}
+
 // classifyPromptKind recognises which question a prompt is asking (§2.7's
 // Kind), or returns empty when it does not recognise it.
 //
@@ -975,7 +1041,16 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 			"turn finished; composer holds unsent input", nil), ambNone
 
 	case foundSpinner && !running:
-		return fleet.InferredState(fleet.StatusIdle, "spinner line in finished form; composer empty", nil), ambNone
+		// Idle is the honest status: the session is up and will take input.
+		// But a turn that DIED here looks identical to one that finished, and
+		// collapsing those two is how abandoned work goes unnoticed — so the
+		// state carries a footnote when the screen says the last turn failed.
+		st := fleet.InferredState(fleet.StatusIdle, "spinner line in finished form; composer empty", nil)
+		if turn, failed := lastTurnFailed(s); failed {
+			st.LastTurn = turn
+			st.Evidence = "turn ended in an error; session is up and will accept input"
+		}
+		return st, ambNone
 
 	case !foundSpinner && hasComposer && pending == "" && young:
 		// A young session with a painted composer, no spinner and nothing
