@@ -2021,6 +2021,60 @@ client declared `local path=` in zsh, where `path` is tied to `PATH`, and
 destroyed its own environment inside every request — a bug the guide could not
 have prevented and should not try to.
 
+**F47 · A subscription exhausted the machine it was watching, and the
+incumbent supervisor read the result as "everything is gone".** A forgotten
+client — one `curl` that outlived the shell that started it — held a
+fleet-wide subscription for two hours. Unfiltered, so the driver opened one
+control client per session: 62 of them on a 69-session host.
+
+The cost was not paid where it was incurred. Each client is a connection to a
+multiplexer server that launchers, supervisors and a human's terminal also use,
+and that server has one descriptor budget shared by everything. It reached 262
+descriptors and began refusing new clients. Every subsequent connection —
+including a plain `list-sessions` — failed with *"server exited unexpectedly"*,
+while all 69 sessions and their agents were alive and healthy.
+
+**The incumbent supervisor then logged: `MASS-VANISH BURST — 67 sessions gone
+in one tick with no paired kill`.** It had asked, been refused, and recorded
+the refusal as an observation about the world. Its own guard — a threshold on
+implausible disappearance — is the only reason it paused instead of reaping 67
+live sessions.
+
+Three lessons, and the middle one is uncomfortable.
+
+**1. This is §5.7 with real consequences, and it is the strongest evidence in
+this document.** Asked the same question in the same conditions, this service
+answered `unreachable` carrying the peer's own error text, and its client
+printed *"sessions there are NOT shown and are NOT known to be gone"*. The
+distinction this specification is built around is not academic: one system
+concluded the machine was empty, the other concluded it could not see. Only a
+threshold heuristic stopped the first from acting on it.
+
+**2. The design that caused it was already documented, and documenting a cost
+is not bounding it.** §5.5's "a vague subscriber pays" was written, measured
+(26 clients, 26 MB, released on disconnect) and published in the client guide.
+Every word was true and it still took the machine down, because *"the
+subscriber pays"* was false: **the subscriber pays in a resource the machine
+shares with everything else on it.** A cost borne by a shared substrate is not
+a cost, it is a hazard, and hazards need bounds rather than documentation.
+
+**3. Bound the accumulation, not the snapshot.** The obvious cap is on the
+initial pass. The path that matters over hours is the one that attaches to
+sessions appearing *later*: it bounds the fleet's accumulated history rather
+than its size at any instant, and capping only the first pass would have made
+the leak slower instead of impossible.
+
+The cap is 16 per subscription, and it costs correctness nothing, because
+notifications here are triggers rather than data: any one of them causes a full
+enumerate-and-diff across every session. Verified while capped — a session
+created afterwards, outside the watched set, still produced `created`, `state`
+and `closed`. What degrades is latency on quiet sessions, and the cap is
+logged rather than silently applied.
+
+> **A limit that only appears in documentation is a limit the system does not
+> have.** If exceeding it damages something outside the component, the
+> component must refuse, not describe.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

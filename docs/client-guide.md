@@ -435,17 +435,27 @@ Measured on a machine with 25 live sessions, subscribing with no filter:
 
 | | |
 |---|---|
-| helper processes | 26 (one per session, plus one for lifecycle) |
-| their total memory | 26 MB (~1 MB each) |
+| helper processes | up to 17 (capped at 16, plus one for lifecycle) |
+| their total memory | ~17 MB (~1 MB each) |
 | their CPU when idle | 0% |
 | released when you disconnect | yes, immediately |
 
-**Name the sessions you care about if you can.** Watching costs a connection
-per session on this substrate, so a subscriber that only describes what it
-wants (`cwdPrefix`, or no filter at all) makes the machine pay for every match.
-Watching everything is a legitimate thing for a supervisor to do — the cost is
-modest and it is released when you leave — but it should be a decision, not an
-accident.
+**The service caps this at 16 helpers per subscription**, and says so in its
+log. The cap costs you nothing: notifications are triggers, not data, so any
+one of them makes the service re-read *every* session — watching a subset still
+detects changes fleet-wide. What degrades slightly is how quickly a change is
+noticed on a session nobody is watching.
+
+The cap exists because this cost is not paid by you. Each helper holds a
+connection to a multiplexer server that other tools on that machine share, and
+an uncapped subscription once exhausted one: every new connection refused,
+including a human's terminal, while all 69 sessions were alive. Name the
+sessions you care about when you can — but you can no longer bring a machine
+down by not doing so.
+
+**Stop your subscription when you are done.** A stream that outlives the
+process that opened it keeps its helpers open on every machine in the fleet.
+That is what caused the incident above.
 
 One documented limitation: on a machine with **no sessions at all**, a
 subscription cannot be opened, because this substrate has no unattached form to
