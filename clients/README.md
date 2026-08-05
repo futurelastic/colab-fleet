@@ -74,16 +74,32 @@ the functions that talk to the multiplexer.
 ```sh
 source /path/to/your/launcher.zsh    # unchanged
 source clients/fcode-ui.zsh
-fcode                                # same UI, fleet underneath
+
+fcode      # sessions on THIS machine   — replaces the local launcher
+sfcode     # sessions on EVERY machine  — replaces the remote one
 ```
+
+The pair mirrors the incumbent's own split, because the split is right: one is
+what you use while working on a machine, the other is how you reach the rest of
+the fleet.
+
+**`fcode` is the same command on every machine.** It asks the local service for
+its own view (`scope=local`), so it needs no idea what the machine is called
+and no per-host configuration. Verified on two: 27 sessions where the
+incumbent's `tmux ls` reported 27, and 73 where it reported 73.
+
+**`sfcode` is where the remote launcher's shape changes.** That one ssh'd into
+a second launcher on one named host. This asks the local service, which fans
+out to every configured peer — and when a machine does not answer it says so
+rather than quietly showing fewer sessions.
 
 The incumbent's own commands keep working: every override delegates to the
 original unless `FCODE_ACTIVE` is set, and only `fcode` sets it.
 
 **Verified identical.** Driving the launcher's own tree builder from both
-layers, restricted to one machine, produced byte-identical picker rows. Widen
-it to the fleet and the same UI renders 90 sessions across two machines instead
-of 25 — the tree, the counts and the grouping all still the launcher's.
+layers on the same machine produced byte-identical picker rows — the tree, the
+counts, the grouping, all still the launcher's. Switch to fleet scope and the
+same UI renders the whole fleet instead.
 
 Three seams were enough:
 

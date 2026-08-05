@@ -11,7 +11,14 @@
 #
 #   source /path/to/ccode.zsh          # your existing launcher, unchanged
 #   source /path/to/fcode-ui.zsh       # this file
-#   fcode                              # same UI, fleet underneath
+#
+#   fcode     sessions on THIS machine        (mirrors the local launcher)
+#   sfcode    sessions on EVERY machine       (mirrors the remote one)
+#
+# The pair mirrors the incumbent's own split, and for the same reason: one is
+# what you use while working on a machine, the other is how you reach the rest
+# of the fleet. `fcode` runs unchanged on either machine — it asks the local
+# service for its own view and never needs to know its own name.
 #
 # `ccode` and `sccode` keep working exactly as before. The overrides below
 # delegate to the originals unless FCODE_ACTIVE is set, and only `fcode` sets
@@ -52,6 +59,12 @@
 : ${FLEET_TOKEN_FILE:=$HOME/.config/colab-fleet/token}
 : ${FLEET_SSH_FMT:=ssh -t %s}
 
+# Which slice of the fleet the current invocation is about. `local` asks this
+# machine's service for its own sessions only (§13.1's scope=local), which is
+# the same question the incumbent's local mode answers — and, usefully, needs
+# no knowledge of what this machine is called.
+typeset -g  _fcode_scope=local
+
 typeset -gA _fcode_machine_of      # cache only: id → machine. NEVER depended on.
 typeset -g  _fcode_partial=0       # was the last listing missing a machine?
 
@@ -71,7 +84,7 @@ typeset -g  _fcode_partial=0       # was the last listing missing a machine?
 _fcode_machine_for() {
   local name="$1"
   [[ -n ${_fcode_machine_of[$name]:-} ]] && { print -r -- "${_fcode_machine_of[$name]}"; return }
-  _fcode_body GET "/v1/sessions?scope=fleet" | python3 -c '
+  _fcode_body GET "/v1/sessions?scope=${_fcode_scope}" | python3 -c '
 import sys, json
 want = sys.argv[1]
 for s in json.load(sys.stdin).get("items", []):
@@ -120,7 +133,7 @@ _ccode_sessions_rooted() {
 
   _fcode_machine_of=(); _fcode_partial=0
   local body
-  body="$(_fcode_body GET "/v1/sessions?scope=fleet")" || {
+  body="$(_fcode_body GET "/v1/sessions?scope=${_fcode_scope}")" || {
     # Never silently empty: an empty picker reads as "no sessions", which is a
     # claim, and the honest answer here is "I could not ask".
     print -u2 "⚠️  fcode: session layer unreachable — showing nothing is NOT the same as nothing running"
@@ -287,12 +300,23 @@ tmux() {
 # the launcher spawns that re-enters ccode (a restored tab, a nested call) sees
 # the flag exported, so it stays on the same session layer rather than silently
 # reverting.
-fcode() {
+_fcode_run() {
   emulate -L zsh
   local -x FCODE_ACTIVE=1
+  local -x _fcode_scope="$1"; shift
   if [[ -z ${FLEET_URL:-} ]]; then
     print -u2 "fcode: FLEET_URL is not set — refusing rather than guessing a port"
     return 2
   fi
   ccode "$@"
 }
+
+# Sessions on this machine. The replacement for the local launcher, and it is
+# the same command on every machine: scope=local means "whoever you are".
+fcode()  { _fcode_run local "$@" }
+
+# Sessions everywhere. The replacement for the remote launcher — but where that
+# one ssh'd into a second launcher on one named host, this asks the local
+# service, which fans out to every configured peer and reports the ones that
+# did not answer instead of quietly showing fewer sessions.
+sfcode() { _fcode_run fleet "$@" }
