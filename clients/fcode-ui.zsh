@@ -188,6 +188,16 @@ for s in d.get("items", []):
 _ccode_local_attach() {
   (( ${FCODE_ACTIVE:-0} )) || { _fcode_orig_local_attach "$@"; return }
   emulate -L zsh
+  # Session names carry emoji, and quoting one for a remote shell under a
+  # non-UTF-8 locale mangles it — `printf %q` renders 💬 as $'\237'$'\222'.
+  # The mangled string is a DIFFERENT session name, so the attach silently
+  # targets nothing. Measured: correct under en_US.UTF-8, broken under C, and
+  # C is what a LaunchAgent, a bare ssh or a phone client hands you.
+  #
+  # LC_ALL is emptied as well as LC_CTYPE being set, because LC_ALL overrides
+  # LC_CTYPE — setting the latter alone would have looked like a fix and
+  # changed nothing in exactly the environments that need it.
+  local -x LC_ALL= LC_CTYPE=en_US.UTF-8
   local name="$1" machine
   machine="$(_fcode_machine_for "$name")"
 
@@ -223,6 +233,16 @@ print("\n".join(cmd))')}") || {
   # Remote: quote every argument — ids carry spaces and emoji.
   local remote_cmd; remote_cmd="$(printf '%q ' "${cmdv[@]}")"
   ${=${FLEET_SSH_FMT/\%s/$machine}} "$remote_cmd"
+  local rc=$?
+  # Reaching another machine is the client's job, and it is not symmetric: a
+  # fleet can be fully readable in both directions over HTTP while ssh works
+  # only one way. Say which of the two failed, because "connection refused"
+  # after a successful listing is otherwise baffling.
+  if (( rc == 255 )); then
+    print -u2 "fcode: the fleet can SEE $machine but this machine cannot ssh to it."
+    print -u2 "       Attach from $machine itself, or set FLEET_SSH_FMT to a route that works."
+  fi
+  return $rc
 }
 
 # ── kill ────────────────────────────────────────────────────────────────────

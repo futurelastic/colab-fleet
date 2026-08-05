@@ -118,6 +118,16 @@ code was needed.
 which builds a richer command than the driver's, and `rename` has no operation
 in the API at all — a real gap, recorded rather than faked.
 
+### A fifth trap: the C locale eats emoji, and a mangled name is a different name
+
+Session names carry emoji. Quoting one for a remote shell under a non-UTF-8
+locale renders `💬` as `$'\237'$'\222'` — a **different session name**, so the
+attach silently targets nothing. Correct under `en_US.UTF-8`, broken under `C`,
+and `C` is what a LaunchAgent, a bare `ssh` or a phone client hands you.
+
+Setting `LC_CTYPE` alone would have looked like a fix and changed nothing,
+because `LC_ALL` overrides it. Both are pinned.
+
 ### And a fourth zsh trap: state does not survive a subshell
 
 The launcher loads sessions as `... <<< "$(_ccode_sessions_rooted)"`. Command
