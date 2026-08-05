@@ -62,14 +62,27 @@ other machines. Supervisors become clients.
 > the running build back after restarting and fails if it is not what it just
 > installed.
 >
+> **A session can be driven, not just watched.** Beyond input and answers:
+> `rename` (corroborated, announced so subscribers re-key), `discard` (removes
+> unsent composer text without submitting it), and a `send` that can resume a
+> delivery it could not confirm — submitting only text the service itself
+> placed there, never text a human typed.
+>
+> **The screen no longer collapses failure into idle.** A session out of quota
+> reports `quota_blocked`; one whose turn died on a transient error stays
+> `idle` and carries `lastTurn`, because it is genuinely ready for input; one
+> holding unsent text says so with `waitingOn` and an age. All three used to
+> look identical — quiet, with an empty composer — which is how abandoned work
+> went unnoticed.
+>
 > **State survives a restart.** Idempotency keys, the event epoch and cursor,
 > and the driver's own session records are persisted atomically, which is what
 > makes §12 reconciliation able to tell adopted from orphaned rather than
 > calling everything orphaned. Verified: `adopted=24` across a restart.
 >
 > **The specification is still the primary artifact.** Building against it
-> resolved seven of its nine recorded defects, added three types it turned out
-> to need, and produced a findings log of 43 measurements — every one of them a
+> resolved seven of its nine recorded defects, added the types and operations it
+> turned out to need, and produced a findings log of 53 measurements — every one of them a
 > place the document or the code was wrong before something ran.
 
 ## What it owns
@@ -235,9 +248,12 @@ Stated plainly so nobody rediscovers them the expensive way.
   itself, over a read path only, which bounds the widening to reads but does
   not remove it: a subscriber sees a peer under the service's authority rather
   than its own. See spec §14 D9.
-- **Auth has no lifecycle.** Credentials are per principal with per-verb grants
-  and an audit trail, but they are static: issuance, rotation and expiry are
-  unspecified, and adding a principal is editing a config and restarting.
+- **Auth has no rotation or expiry.** Credentials are per principal with
+  per-verb grants and an audited outcome, and enrolment is now a command
+  (`colab-fleetd principal add`) that mints a token and validates grants before
+  writing. What is still missing is the rest of a lifecycle: nothing expires, a
+  compromised token is revoked by editing a file, and there is no way to change
+  a principal's grants except by removing and re-adding it.
 - **`SourceState` has no member for "reachable but unsupported"** — currently
   squeezed into `degraded`.
 - **Enumeration cost is the real scaling risk, not the network** — and the fix

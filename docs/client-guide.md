@@ -639,4 +639,6 @@ boundaries.)
 - [ ] Keys on `id` from the server, never on the `name` it asked for
 - [ ] Checks `self` from `/v1/machines` before attaching, so local sessions do not take a remote path
 - [ ] Treats "not found in a partial view" as unknown, not as absent
+- [ ] Reads `lastTurn` before treating an `idle` session as having succeeded
+- [ ] Never discards composer text without quoting back its `composerDigest`
 - [ ] Has its own principal and its own token
