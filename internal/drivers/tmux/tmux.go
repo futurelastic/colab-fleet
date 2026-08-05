@@ -600,11 +600,34 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		d.mu.Unlock()
 		return st, nil
 	}
-	// §5.7 applied to a singular read: "I looked and it is not there" is a
-	// real answer, and it is not the same as a failure to look. A session
-	// that existed and no longer does is dead (§8), not an error.
-	return fleet.InferredState(fleet.StatusDead,
-		"no session with this id present in the multiplexer", nil), nil
+	// §5.7 applied to a singular read, and then applied a second time to its
+	// own answer.
+	//
+	// "I looked and it is not there" is a real answer, not a failure to look
+	// — that much was always right. What was wrong is that it was the ONLY
+	// answer: every unfound id returned `dead`, including ids this machine
+	// has never had.
+	//
+	// `dead` is a claim about history — it existed, and it ended. For a
+	// mistyped id there is no such history, so the claim is manufactured, and
+	// a caller gets told its session died when the truth is that no such
+	// session was ever here. Those deserve opposite reactions.
+	//
+	// The driver's own memory settles it, and that memory already exists for
+	// §8's `since` and §12's reconciliation.
+	d.mu.Lock()
+	prior, seen := d.observed[ref.ID]
+	d.mu.Unlock()
+	if !seen {
+		return fleet.SessionState{}, fmt.Errorf("%w: %q", fleet.ErrNoSuchSession, ref.ID)
+	}
+	evidence := "session was present in the multiplexer and is no longer"
+	if prior.cwd != "" {
+		// Name what is gone. A caller reconciling its own records needs to
+		// know WHICH session ended, and an id alone is recyclable (§5.4).
+		evidence += "; last seen in " + prior.cwd
+	}
+	return fleet.InferredState(fleet.StatusDead, evidence, nil), nil
 }
 
 // Send delivers input to a session (§3), and refuses when delivery would

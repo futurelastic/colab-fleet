@@ -37,6 +37,31 @@ const (
 // caller to fix its syntax when what it should do is re-read and decide.
 var ErrAmbiguousTarget = errors.New("fleet: destructive operation on an uncorroborated target (§5.4)")
 
+// ErrNoSuchSession is returned by a read whose id the machine has never had.
+//
+// # Why this is not "dead"
+//
+// A single-session read used to answer `dead` for any id it could not find,
+// on the reasoning that §8 makes dead terminal and a session that is gone is
+// gone. That reasoning is right for a session the machine ONCE HAD, and wrong
+// for every other string a caller can type.
+//
+// `dead` is a claim about a session's history: it existed, and it ended. For
+// an id that was never seen, the service has no such history, and manufacturing
+// one is §5.7 inverted — reporting a fact about the world that is really the
+// reporter's ignorance. A caller that mistypes an id would be told its session
+// had died, which is a far more alarming answer than "no such thing", and it
+// invites exactly the wrong follow-up.
+//
+// The distinction is available because a driver remembers what it has seen
+// (that memory is also what §8's `since` and §12's reconciliation are built
+// from). Seen before and absent now is `dead`; never seen is this error, and
+// it maps to not_found.
+//
+// Like ErrAmbiguousTarget, it lives here so the service can map it to a wire
+// kind without importing a driver.
+var ErrNoSuchSession = errors.New("fleet: no session with that id has been observed on this machine")
+
 // DefaultHTTPStatus is the api-http.md §2 table, kept next to the kind it
 // describes so a Go client never has to hardcode it separately from the
 // server that emits it.

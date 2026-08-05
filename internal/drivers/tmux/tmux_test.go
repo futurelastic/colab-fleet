@@ -509,17 +509,42 @@ func TestReconcileAdoptsAndDestroysNothing(t *testing.T) {
 }
 
 // §5.7 for a singular read: "looked, not there" is an answer, not an error.
-func TestStateOfAMissingSessionIsDeadNotAnError(t *testing.T) {
-	d := newTestDriver(twoSessions())
-	got, err := d.State(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "ghost"})
+// Absence is an answer — that part never changed. What changed is that there
+// are TWO absences, and they were being given the same one.
+//
+// A session this driver watched and can no longer find is dead. An id it has
+// never seen is not dead: claiming so invents a history, and tells a caller
+// who mistyped an id that its work has died.
+func TestStateSeparatesGoneFromNeverHere(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+
+	// Never seen: no history to report, so this is not an answer about a
+	// session at all.
+	_, err := d.State(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "ghost"})
+	if !errors.Is(err, fleet.ErrNoSuchSession) {
+		t.Fatalf("an id never observed must not be reported as dead; got err=%v", err)
+	}
+
+	// Seen, then gone: this one really is dead, and absence is the answer.
+	if _, err := d.List(context.Background(), testCaller, driver.ListFilter{}); err != nil {
+		t.Fatal(err)
+	}
+	f.dropLastSession()
+	got, err := d.State(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"})
 	if err != nil {
-		t.Fatalf("absence is an answer: %v", err)
+		t.Fatalf("a session that was here and is gone is an answer, not an error: %v", err)
 	}
 	if got.Status != fleet.StatusDead {
 		t.Errorf("want dead, got %q", got.Status)
 	}
 	if got.Confidence != fleet.ConfidenceInferred {
 		t.Errorf("want inferred, got %q", got.Confidence)
+	}
+	// Name what ended. An id alone is recyclable (§5.4), so a caller
+	// reconciling its own records needs more than the id it asked with.
+	if !strings.Contains(got.Evidence, "/work/beta") {
+		t.Errorf("evidence should say which session ended, got %q", got.Evidence)
 	}
 }
 

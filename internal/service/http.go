@@ -274,6 +274,12 @@ func writeDriverError(w http.ResponseWriter, machine fleet.MachineId, deadline t
 	}
 
 	switch {
+	case errors.Is(err, fleet.ErrNoSuchSession):
+		// The machine answered, and there is no such session. Distinct from
+		// unreachable, which is the machine not answering at all — see
+		// fleet.ErrorUnreachable's comment for why conflating them is the
+		// worst mistake a client of this API can make.
+		writeError(w, &fleet.Error{Kind: fleet.ErrorNotFound, Message: err.Error(), Machine: machine})
 	case errors.Is(err, fleet.ErrAmbiguousTarget):
 		// §5.4: the caller's belief and the world disagree. Well-formed
 		// request, conflicting state — 409, not 400.

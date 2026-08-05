@@ -1925,6 +1925,31 @@ it to callers: **the facts a client would have to hardcode are exactly the
 facts the machine already knows about itself.** Every one it hardcodes is a
 place the fleet is not allowed to be heterogeneous.
 
+**F44 · There are two absences, and one answer was being given for both.**
+Writing the consumer-facing guide meant probing every endpoint as a client
+would, and a single-session read for an id that does not exist answered
+`200 dead`.
+
+`dead` is a claim about history — it existed, and it ended. For an id the
+machine has never had, there is no history, so the claim is manufactured. A
+caller that mistypes an id would be told its session had **died**, which is
+both false and alarming in a way that invites the wrong follow-up.
+
+The driver could always tell the difference and was not asked to: it remembers
+what it has seen, which is the same memory §8's `since` and §12's
+reconciliation are built on. Seen and now absent is `dead`; never seen is
+`not_found`.
+
+Note where this was found. Not by a test, not by the implementation, but by
+**writing the documentation for someone else** — and the same exercise is what
+surfaced F38 one endpoint over. Explaining an interface to a stranger exercises
+it differently from building it, because the builder knows which ids exist.
+
+The original test had encoded the old behaviour under the name "absence is an
+answer, not an error". That principle was never wrong; it was applied to a
+question with two answers as if it had one — which is §5.7 turned inward, on a
+rule §5.7 itself produced.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered
