@@ -832,3 +832,37 @@ func TestOldErrorFollowedByWorkIsNotTheLastTurn(t *testing.T) {
 		t.Errorf("a recovered session was reported as having failed: %+v", st.LastTurn)
 	}
 }
+
+// waiting_input carries three different situations that need OPPOSITE
+// handling, and only one of them has a prompt to branch on. Before this,
+// telling "holds unsent text" from "out of quota" meant parsing the evidence
+// prose — which §2.3 forbids, and which this project has paid for twice.
+func TestWaitingInputSaysWhy(t *testing.T) {
+	const rule = "────────────────────"
+
+	held := "transcript\n✻ Brewed for 1m 0s\n" + rule + "\n❯ finish the migration\n" + rule + "\n"
+	if st := classifyAged(held, true, false); st.WaitingOn != fleet.WaitingUnsentInput {
+		t.Errorf("unsent text: waitingOn = %q, want %q", st.WaitingOn, fleet.WaitingUnsentInput)
+	}
+
+	quota := "transcript\nYou've hit your weekly limit · resets Thu 9:00\n" + rule + "\n❯ \n" + rule + "\n"
+	if st := classifyAged(quota, true, false); st.WaitingOn != fleet.WaitingUsageLimit {
+		t.Errorf("usage limit: waitingOn = %q, want %q", st.WaitingOn, fleet.WaitingUsageLimit)
+	}
+
+	asked := "transcript\n  1. Yes, proceed\n❯ 2. No, exit\nEnter to select\n" + rule + "\n❯ \n" + rule + "\n"
+	st := classifyAged(asked, true, false)
+	if st.Status == fleet.StatusWaitingInput && st.WaitingOn != fleet.WaitingPrompt {
+		t.Errorf("prompt: waitingOn = %q, want %q", st.WaitingOn, fleet.WaitingPrompt)
+	}
+}
+
+// Every other status leaves it empty — a reason for waiting means nothing on a
+// session that is not waiting, and a stray value invites branching on noise.
+func TestWaitingOnIsEmptyWhenNotWaiting(t *testing.T) {
+	const rule = "────────────────────"
+	idle := "transcript\n✻ Brewed for 1m 0s\n" + rule + "\n❯ \n" + rule + "\n"
+	if st := classifyAged(idle, true, false); st.WaitingOn != "" {
+		t.Errorf("idle session carries waitingOn=%q", st.WaitingOn)
+	}
+}

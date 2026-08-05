@@ -109,6 +109,47 @@ func (c *Confidence) UnmarshalJSON(b []byte) error {
 // means the driver has no opinion on when the status started; a driver that
 // knows must say so, not synthesize a value it doesn't have (§5.2 again,
 // applied to a single field).
+// WaitingReason says WHY a session is `waiting_input`, when the driver can
+// tell.
+//
+// # Why this had to exist the moment there was a second reason
+//
+// `waiting_input` began meaning one thing — blocked on a question — and a
+// caller could branch on `prompt` being present. Adding usage limits gave it a
+// third meaning with no prompt attached, and at that moment the status became
+// ambiguous in a way only the evidence prose resolved:
+//
+//	waiting_input, no prompt → holds unsent text? or out of quota?
+//
+// Those need OPPOSITE handling. Text sitting unsent should be discarded or
+// left alone, and sending more is the one thing that must not happen. A
+// quota block is cleared by waiting or switching accounts, and nothing a
+// caller sends will help. A client that cannot tell them apart will do the
+// wrong one roughly half the time.
+//
+// Evidence cannot be the discriminator: §2.3 says it is prose for humans and
+// must not be parsed, and this project has already paid twice for matching
+// sentences that later changed.
+//
+// # Absent means unclassified, not "no reason"
+//
+// §5.7 again. A driver that knows why says so; one that does not leaves this
+// empty, and a caller must treat empty as "go look" rather than as any
+// particular cause.
+type WaitingReason string
+
+const (
+	// WaitingPrompt: a question is on screen. `Prompt` carries it.
+	WaitingPrompt WaitingReason = "prompt"
+	// WaitingUnsentInput: the composer holds text nobody submitted. `Since`
+	// is the age, and the age is what separates somebody mid-thought from
+	// text nobody is coming back for.
+	WaitingUnsentInput WaitingReason = "unsent-input"
+	// WaitingUsageLimit: the account is out of quota. Sending achieves
+	// nothing; this clears with time or a different account.
+	WaitingUsageLimit WaitingReason = "usage-limit"
+)
+
 // TurnEnd says how the most recent turn FINISHED, when the screen says
 // anything about it.
 //
@@ -168,6 +209,11 @@ type SessionState struct {
 	// Evidence names the highlighted option in prose; this is the structured
 	// form a client can render as buttons and submit by index.
 	Prompt *SessionPrompt `json:"prompt,omitempty"`
+
+	// WaitingOn says why the session is `waiting_input`, when the driver can
+	// tell. Empty for every other status, and empty on waiting_input means
+	// unclassified — see WaitingReason.
+	WaitingOn WaitingReason `json:"waitingOn,omitempty"`
 
 	// LastTurn reports how the most recent turn ended, when the screen says
 	// anything about it. Nil is the ordinary case and means nothing was said —

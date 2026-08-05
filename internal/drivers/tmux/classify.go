@@ -955,8 +955,10 @@ func resolveAmbiguity(st fleet.SessionState, amb ambiguity, prior paneMemory, di
 		// pressing enter. §8's `since` then carries the age, which is the
 		// discriminator between an operator mid-thought and a pane nobody
 		// is coming back to.
-		return fleet.InferredState(fleet.StatusWaitingInput,
+		blocked := fleet.InferredState(fleet.StatusWaitingInput,
 			"composer holds unsent input; screen unchanged after "+age, nil)
+		blocked.WaitingOn = fleet.WaitingUnsentInput
+		return blocked
 	}
 	return st
 }
@@ -998,6 +1000,7 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 			evidence += "; highlighted option: " + option
 		}
 		st := fleet.InferredState(fleet.StatusWaitingInput, evidence, nil)
+		st.WaitingOn = fleet.WaitingPrompt
 		st.Prompt = parsePrompt(s)
 		if st.Prompt != nil {
 			st.Prompt.Kind = classifyPromptKind(st.Prompt)
@@ -1018,7 +1021,9 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 		// unblocks it (wait it out, or switch accounts). Prompt stays nil —
 		// there is nothing to answer, and §2.7 is optional for exactly this
 		// reason.
-		return fleet.InferredState(fleet.StatusWaitingInput, evidence, nil), ambNone
+		blocked := fleet.InferredState(fleet.StatusWaitingInput, evidence, nil)
+		blocked.WaitingOn = fleet.WaitingUsageLimit
+		return blocked, ambNone
 	}
 
 	running, foundSpinner := spinner(s)
@@ -1037,8 +1042,10 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 		// sent. The session is not working and not merely idle: it is
 		// holding input. waiting_input is the honest §2.3 member — the
 		// session is blocked on a human (to press enter).
-		return fleet.InferredState(fleet.StatusWaitingInput,
-			"turn finished; composer holds unsent input", nil), ambNone
+		held := fleet.InferredState(fleet.StatusWaitingInput,
+			"turn finished; composer holds unsent input", nil)
+		held.WaitingOn = fleet.WaitingUnsentInput
+		return held, ambNone
 
 	case foundSpinner && !running:
 		// Idle is the honest status: the session is up and will take input.
