@@ -329,6 +329,84 @@ for m in d.get("items", []):
 if not d.get("complete", True): print("  (view incomplete)")'
 }
 
+# ── answering a whole class of prompt ───────────────────────────────────────
+#
+# After a crash, every restored session stops on the runtime's resume chooser
+# and does nothing until somebody answers it. Twenty-four of them once sat for
+# 35 minutes while the supervisor could only offer "jump to this session" —
+# press a key yourself, twenty-four times.
+#
+# This answers them by KIND, and the safety rules are the whole design:
+#
+#   - the kind is REQUIRED. There is no "answer everything waiting", because
+#     the fleet's prompts include an agent asking whether to merge, and a real
+#     runtime prompt whose highlighted default is "No, exit".
+#   - a prompt with NO kind is never answered. Empty means the service did not
+#     recognise the question, which is not permission (see PromptKind).
+#   - the choice is REQUIRED and explicit. Accepting a highlighted default in
+#     bulk is how automation kills the session it meant to rescue.
+#   - each answer carries the prompt's nonce, so it cannot land on a question
+#     that changed while we were working through the list.
+#
+# fleetctl answer <kind> <choice> [--dry-run]
+fleetctl_answer() {
+  local kind="$1" choice="$2" dry="$3"
+  if [[ -z $kind || -z $choice ]]; then
+    print -u2 "usage: fleetctl answer <kind> <choice> [--dry-run]"
+    print -u2 "  e.g. fleetctl answer resume-chooser 1"
+    print -u2 "  kinds: resume-chooser · folder-trust · tool-permission · bypass-permissions"
+    print -u2 "  Both arguments are required on purpose: no default kind, no default choice."
+    return 2
+  fi
+  local body
+  body="$(_flc_get "/v1/sessions?scope=fleet")" || return $?
+
+  local -a targets
+  targets=("${(@f)$(print -r -- "$body" | _flc_py '
+import sys, json
+want = sys.argv[1]
+d = json.load(sys.stdin)
+if not d.get("complete", True):
+    down = [s["machine"] for s in d.get("sources", []) if s.get("status") != "ok"]
+    print("PARTIAL\t" + ",".join(down) + "\t\t", file=sys.stderr)
+for s in d.get("items", []):
+    p = (s.get("state") or {}).get("prompt")
+    if not p: continue
+    # No kind => never a target, whatever it looks like.
+    if (p.get("kind") or "") != want: continue
+    n = len(p.get("options") or [])
+    print("\t".join([s["machine"], s["id"], p.get("nonce",""), str(n)]))' "$kind")}")
+
+  local machine id nonce n answered=0 skipped=0
+  for line in "${targets[@]}"; do
+    [[ -z $line ]] && continue
+    machine="${line%%$'\t'*}"; line="${line#*$'\t'}"
+    id="${line%%$'\t'*}"; line="${line#*$'\t'}"
+    nonce="${line%%$'\t'*}"; n="${line#*$'\t'}"
+    if (( choice > n )); then
+      print -u2 "  skip $id — choice $choice but it offers only $n options"
+      (( skipped++ )); continue
+    fi
+    if [[ $dry == --dry-run ]]; then
+      print -- "  would answer $id on $machine with option $choice"
+      (( answered++ )); continue
+    fi
+    local out
+    out="$(_flc_curl POST "/v1/machines/$machine/sessions/$(_flc_urlenc "$id")/respond" \
+      "$(_flc_py 'import json,sys; print(json.dumps({"choice":int(sys.argv[1]),"nonce":sys.argv[2]}))' "$choice" "$nonce")")"
+    local code="${out##*$'\n'}" resp="${out%$'\n'*}"
+    if [[ $code == 2* ]]; then
+      print -- "  $id -> $(print -r -- "$resp" | _flc_py 'import sys,json
+d=json.load(sys.stdin); print(d.get("outcome","?"), d.get("reason","") or "")')"
+      (( answered++ ))
+    else
+      print -u2 "  $id -> HTTP $code"
+      (( skipped++ ))
+    fi
+  done
+  print -- "answered $answered, skipped $skipped (kind=$kind, choice=$choice)"
+}
+
 # ── entry point ─────────────────────────────────────────────────────────────
 fleetctl() {
   case "$1" in
@@ -337,13 +415,15 @@ fleetctl() {
     watch)      fleetctl_watch ;;
     new)        shift; fleetctl_new "$@" ;;
     kill)       shift; fleetctl_kill "$@" ;;
+    answer)     shift; fleetctl_answer "$@" ;;
     help|-h|--help)
       print -r -- "fleetctl                list the fleet"
       print -r -- "fleetctl <prefix>       attach (local or over ssh, decided by the service)"
       print -r -- "fleetctl watch          stream state changes"
       print -r -- "fleetctl up             health + machines"
       print -r -- "fleetctl new <machine> <name> <cwd>"
-      print -r -- "fleetctl kill <prefix>" ;;
+      print -r -- "fleetctl kill <prefix>"
+      print -r -- "fleetctl answer <kind> <choice> [--dry-run]   answer every prompt of one kind" ;;
     *)          fleetctl_attach "$1" ;;
   esac
 }
