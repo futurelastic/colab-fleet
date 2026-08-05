@@ -122,6 +122,41 @@ whole migration. Two classifiers built from different evidence will differ, and
 was one of them being wrong. A disagreement log is a free, continuously-running
 differential test on real sessions.
 
+#### Log what you COMPARED, not only what disagreed
+
+A log that records disagreements alone cannot distinguish *"the two agree"* from
+*"the comparison never ran"*. Both are silence. That ambiguity is not
+theoretical — it happened on the first real adoption: the shadow was written,
+merged, and marked done with the switch off, and it collected nothing. The stage
+reported complete because the *code* was complete.
+
+So the shadow must also record, periodically, **how many sessions it compared**.
+One line every few minutes is enough. With that line, silence has exactly one
+meaning.
+
+**D1 is done when you can state a number, not when the code merges.** Before
+starting D2, answer: *how many sessions were compared, over how many hours, on
+how many machines?* If that number is zero after a few hours of real traffic,
+the comparison is not wired — it is **not** evidence that the classifiers agree.
+
+Two traps worth knowing before you conclude "it is not wired":
+
+- A flag can be set in a service definition and still not reach the process.
+  Restarting a job is not the same as reloading its definition; on some
+  supervisors an edit needs a full unload and reload, and a plain restart
+  silently keeps the old environment. This cost an hour on the first adoption:
+  a healthy supervisor, a correct flag, and a silent shadow.
+- If two of your services run a file with the same name, identifying the
+  process by name will read the wrong one's environment. Identify it by the
+  port it is listening on.
+
+*Why not have this service count the reads for you?* Because it would answer a
+weaker question than it appears to. The service can see that something
+authenticated and read a listing; it cannot see whether that read was fed into
+a comparison. A non-zero counter would be compatible with a shadow that never
+ran — assurance without evidence, which is worse than silence you know how to
+read.
+
 **D2 — read path, cutover.** State, unsent-input detection, liveness and the
 *diagnosis* half of any repair ladder come from the service. Leave the old code
 in the tree, unreferenced, for a release.
