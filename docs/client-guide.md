@@ -45,13 +45,19 @@ dependencies.
 
 There is no unauthenticated mode. Not on loopback, not in development.
 
-**Get your own principal.** Do not reuse the token a machine uses to talk to
-its peers. Ask the operator to add you to the service's principal table with
-the grants you need:
+**Get your own principal.** Do not reuse a token that happens to be on the
+machine — the one lying around is rarely the one with the right grants, and
+borrowing it is how a read-only client quietly acquires the ability to destroy
+sessions. Ask the operator to run:
 
-```json
-{ "name": "my-supervisor", "token": "…", "grants": ["read"] }
+```sh
+colab-fleetd principal add my-supervisor --grants=read
+# → token written to …/my-supervisor.token (0600)
 ```
+
+It mints the credential, validates the grants before writing, and leaves the
+running service untouched until it is reloaded. `colab-fleetd principal list`
+shows who holds what, without printing anyone's token.
 
 Grants are per verb, so you can be given exactly what you need:
 

@@ -49,6 +49,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -68,6 +69,17 @@ import (
 )
 
 func main() {
+	// Operator subcommands run and exit — they never start a service. Handled
+	// before anything else so that enrolling a principal does not require the
+	// environment a running instance needs.
+	if handled, err := runPrincipal(os.Args[1:]); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
+	}
+
 	self := fleet.MachineId(getenv("FLEET_MACHINE", "local"))
 
 	// Logged before anything else can fail, so a crash report says which
