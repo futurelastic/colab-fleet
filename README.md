@@ -49,6 +49,13 @@ other machines. Supervisors become clients.
 > as itself and carries the original principal as an assertion the peer
 > records. Every mutation is audited with an actor, not an address.
 >
+> **A service can say which code it is.** `GET /v1/health` carries a
+> version-control build stamp, peers learn each other's, and an unknown or
+> locally-modified build never compares equal to anything — so "we disagree"
+> stays distinguishable from "we are different vintages". The deploy path reads
+> the running build back after restarting and fails if it is not what it just
+> installed.
+>
 > **State survives a restart.** Idempotency keys, the event epoch and cursor,
 > and the driver's own session records are persisted atomically, which is what
 > makes §12 reconciliation able to tell adopted from orphaned rather than
@@ -198,15 +205,6 @@ Stated plainly so nobody rediscovers them the expensive way.
   supervisors claiming one piece of work. Measured, not theorised. See
   [`docs/adoption.md`](docs/adoption.md) §2 — it is the one thing that must be
   answered before a supervisor's *write* path is cut over.
-- **Nothing reports the build a service is running.** Two machines silently ran
-  different builds, and the older one still had a bug fixed in the newer; the
-  symptom was a stranded prompt that made no sense against the source. The
-  health endpoint should carry a build identifier, and a peer whose build
-  differs should be able to say so.
-- **Binding is single-address.** A service bound only to a tunnel interface is
-  unreachable from its own machine when that tunnel half-fails, and the symptom
-  is indistinguishable from a wedged process. Loopback should always be bound
-  alongside whatever else is. See spec F36.
 - **There are no metrics.** Subprocess spawn cost is known to degrade with host
   load — 8× idle on a machine at load average 63 (F19) — and nothing measures
   it in production.

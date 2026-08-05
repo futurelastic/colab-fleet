@@ -65,6 +65,9 @@ type Service struct {
 	self      fleet.MachineId
 	epoch     string
 	startedAt time.Time
+	// build is read once at construction: it describes the binary, which
+	// cannot change while the binary runs.
+	build fleet.Build
 
 	// peerCredential authorizes this service's OWN long-lived reads from
 	// peers — specifically the event subscriptions the hub multiplexes.
@@ -149,6 +152,7 @@ func newService(self fleet.MachineId) *Service {
 		// GET /v1/health.
 		epoch:     now.UTC().Format(time.RFC3339Nano),
 		startedAt: now,
+		build:     fleet.SelfBuild(),
 		local:     make(map[fleet.RuntimeId]driver.Driver),
 		peers:     make(map[fleet.MachineId]driver.Driver),
 		events:    newHub(self, now.UTC().Format(time.RFC3339Nano)),

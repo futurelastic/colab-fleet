@@ -11,10 +11,15 @@
 //	                       useful for a single-machine trial.
 //	FLEET_TOKEN            shared bearer token. Required. No default, no
 //	                       unauthenticated mode (api-http.md §5).
-//	FLEET_ADDR             listen address. Defaults to loopback on an
-//	                       ephemeral port (§6.1: exposure beyond loopback is
-//	                       explicit configuration, never a side effect).
-//	                       Bind a specific interface, never 0.0.0.0.
+//	FLEET_ADDR             listen address, or a comma-separated list of
+//	                       them. Defaults to loopback on an ephemeral port
+//	                       (§6.1: exposure beyond loopback is explicit
+//	                       configuration, never a side effect). Bind a
+//	                       specific interface, never 0.0.0.0. Loopback is
+//	                       added automatically on the same port whenever it
+//	                       is not already covered — a service is not
+//	                       diagnosable if it can be cut off from its own
+//	                       machine by the failure being diagnosed.
 //	FLEET_RUNTIME          "tmux" (default) or "stub".
 //	FLEET_TMUX_BIN         path to the multiplexer binary. Defaults to
 //	                       "tmux" on PATH — which a non-interactive ssh
@@ -64,6 +69,11 @@ import (
 
 func main() {
 	self := fleet.MachineId(getenv("FLEET_MACHINE", "local"))
+
+	// Logged before anything else can fail, so a crash report says which
+	// code crashed. See fleet.Build.
+	selfBuild := fleet.SelfBuild()
+	log.Printf("colab-fleetd: build %s (%s)", selfBuild.Short(), selfBuild.Go)
 
 	// There is no unauthenticated mode (api-http.md §5) — not for
 	// loopback, not for development. A missing token is a refusal to
@@ -194,6 +204,19 @@ func main() {
 			}
 			log.Printf("colab-fleetd: peer %s deadline learned: %dms",
 				m, p.Capabilities().DeadlineMs)
+
+			// Version skew, said out loud. Two machines ran different
+			// builds silently, and the older one still had a bug the
+			// newer had fixed — the symptom looked like a defect in code
+			// that no longer existed. SameAs deliberately refuses to call
+			// unknown or dirty builds equal, so this warns in the cases
+			// where a comparison cannot be trusted rather than staying
+			// quiet about them.
+			if why := selfBuild.DifferenceFrom(p.Build()); why != "" {
+				log.Printf("colab-fleetd: NOTE peer %s build %s vs ours %s — %s; "+
+					"a disagreement between these two may be skew rather than a bug",
+					m, p.Build().Short(), selfBuild.Short(), why)
+			}
 		}(peer, machine)
 	}
 
@@ -255,24 +278,39 @@ func main() {
 	// enabling federation.") No specific host or port is hardcoded here —
 	// the fleet's actual port assignment is an operational fact, not a
 	// specification one.
-	addr := getenv("FLEET_ADDR", "127.0.0.1:0")
-	if strings.HasPrefix(addr, "0.0.0.0:") {
-		log.Print("colab-fleetd: WARNING binding 0.0.0.0 — this service can read paths and (when mutations are enabled) start processes; bind a specific interface instead")
-	}
-
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Fatalf("colab-fleetd: listen %s: %v", addr, err)
-	}
-	log.Printf("colab-fleetd: listening on %s (machine=%s runtime=%s)", ln.Addr(), self, runtimeID)
-
-	srv := &http.Server{Handler: mux}
-
-	go func() {
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("colab-fleetd: serve: %v", err)
+	addrs := splitList(getenv("FLEET_ADDR", "127.0.0.1:0"))
+	for _, a := range addrs {
+		if strings.HasPrefix(a, "0.0.0.0:") {
+			log.Print("colab-fleetd: WARNING binding 0.0.0.0 — this service can read paths and (when mutations are enabled) start processes; bind a specific interface instead")
 		}
-	}()
+	}
+	addrs = withLoopback(addrs)
+
+	// Listen on every configured address, and always on loopback (see
+	// withLoopback). The first bind failure is fatal: a service that came up
+	// on some of its addresses is a service whose reachability depends on
+	// which client you ask, and that is the ambiguity F36 was about.
+	srv := &http.Server{Handler: mux}
+	var listeners []net.Listener
+	for _, a := range addrs {
+		ln, err := net.Listen("tcp", a)
+		if err != nil {
+			for _, prev := range listeners {
+				_ = prev.Close()
+			}
+			log.Fatalf("colab-fleetd: listen %s: %v", a, err)
+		}
+		listeners = append(listeners, ln)
+		log.Printf("colab-fleetd: listening on %s (machine=%s runtime=%s)", ln.Addr(), self, runtimeID)
+	}
+
+	for _, ln := range listeners {
+		go func(ln net.Listener) {
+			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("colab-fleetd: serve %s: %v", ln.Addr(), err)
+			}
+		}(ln)
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -288,6 +326,50 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// withLoopback guarantees the service is reachable from its own machine.
+//
+// # Why this is not just a convenience
+//
+// A service bound only to a tunnel address disappears when the tunnel does —
+// and it disappears from ITS OWN MACHINE, where every diagnostic is run. The
+// observed incident: the interface still reported UP and RUNNING while passing
+// nothing, so the process looked wedged. It was not; it was unaddressable. The
+// thing that would have distinguished those two in one command was a loopback
+// listener, which is precisely what was missing.
+//
+// So loopback is not an optional extra binding, it is the binding that keeps
+// the failure diagnosable. An operator who configures a specific interface is
+// making a statement about who ELSE may reach the service, never about whether
+// the machine may reach itself.
+//
+// The added listener reuses the configured port so that a local probe is the
+// same URL with the host swapped — a diagnostic nobody has to look up. When
+// the configured port is ephemeral there is nothing to mirror, and the
+// configured address is loopback anyway in the only case that produces one.
+func withLoopback(addrs []string) []string {
+	const loopback = "127.0.0.1"
+	port := ""
+	for _, a := range addrs {
+		host, p, err := net.SplitHostPort(a)
+		if err != nil {
+			continue
+		}
+		// Already reachable locally: an explicit loopback bind, or a
+		// wildcard, which includes it.
+		if host == "" || host == loopback || host == "localhost" ||
+			host == "::1" || host == "0.0.0.0" || host == "::" {
+			return addrs
+		}
+		if p != "" && p != "0" && port == "" {
+			port = p
+		}
+	}
+	if port == "" {
+		return addrs
+	}
+	return append(addrs, net.JoinHostPort(loopback, port))
 }
 
 func splitList(raw string) []string {

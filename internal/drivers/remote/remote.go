@@ -137,6 +137,11 @@ type Driver struct {
 	mu       sync.RWMutex
 	caps     fleet.DriverCapabilities
 	capsSeen bool
+	// build is what the peer said it was running, the last time it said
+	// anything. Cached beside caps because it is learned the same way and
+	// is stale in the same manner: a peer that has restarted onto new code
+	// has not told us, and will not until something asks again.
+	build fleet.Build
 }
 
 // Option configures a Driver.
@@ -314,9 +319,42 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 		d.caps = ri.Capabilities.Observed(d.now())
 		d.capsSeen = true
 		d.mu.Unlock()
+
+		// Learn which code the peer is running, on the same probe rather
+		// than a second one. Failure here is deliberately not propagated:
+		// build identity is diagnostic, and a peer that answers /v1/runtimes
+		// but not /v1/health is still a working peer. Losing the deadline we
+		// just learned in order to report a missing diagnostic would trade a
+		// correctness property for an informational one.
+		if b, err := d.peerBuild(ctx, req); err == nil {
+			d.mu.Lock()
+			d.build = b
+			d.mu.Unlock()
+		}
 		return nil
 	}
 	return fmt.Errorf("remote: peer %q reported no runtimes for itself", d.machine)
+}
+
+// peerBuild reads the peer's build identity from its health endpoint.
+func (d *Driver) peerBuild(ctx context.Context, req fleet.Request) (fleet.Build, error) {
+	var body struct {
+		Build fleet.Build `json:"build"`
+	}
+	if err := d.do(ctx, req, http.MethodGet, "/v1/health", nil, &body); err != nil {
+		return fleet.Build{}, err
+	}
+	return body.Build, nil
+}
+
+// Build reports what the peer said it was running, if it has ever said.
+//
+// An unknown build and a matching build must not be conflated — see
+// fleet.Build.SameAs, which refuses to call anything unknown "the same".
+func (d *Driver) Build() fleet.Build {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.build
 }
 
 // CapabilitiesKnown reports whether the peer has ever answered. It is the

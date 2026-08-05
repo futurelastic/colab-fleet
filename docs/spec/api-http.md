@@ -54,7 +54,10 @@ work as gone while it is running fine on an unreachable host.
 
 ```
 GET /v1/health
-→ 200 { "epoch": "...", "cursor": 12904, "startedAt": "...", "drivers": [...] }
+→ 200 { "epoch": "...", "cursor": 12904, "startedAt": "...",
+        "build": { "known": true, "revision": "...", "modified": false,
+                   "time": "...", "go": "go1.26.5" },
+        "drivers": [...] }
 
 GET /v1/machines
 → 200 { "items": [ { "machine": "...", "self": true, "status": "ok",
@@ -80,6 +83,14 @@ degrade rather than assume. A driver never emulates (§5.6).
 They must also consult `source`. `assumed` means nobody has confirmed these
 values and they are a conservative floor — reading them as the runtime's answer
 is how a temporarily unreachable peer becomes a permanently incapable one.
+
+**`build` identifies the code, and `known: false` is not a match.** Two
+services that disagree may be two services running different vintages, and
+those need opposite responses: one is a bug, the other is a deploy. A client
+comparing builds **must** treat an unstamped or `modified` build as
+*unverifiable* rather than as equal — an unmodified pair of equal revisions is
+the only comparison that means anything, and the failure this field exists to
+catch is precisely a confident conclusion drawn from an absent measurement.
 
 ### 3.2 Sessions
 

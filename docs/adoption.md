@@ -115,20 +115,28 @@ migration has proven the API.
 ## 4. What must be true before the write cutover
 
 These are not niceties. Each was found the hard way during the work that
-produced Appendix A phases 4 and 5.
+produced Appendix A phases 4 and 5. Three of the four are now done; the one
+that remains is the one this repository cannot do.
 
-1. **The repository/claim question of §2 must have an answer.** The write
-   cutover is what makes cross-machine dispatch routine.
-2. **Bind loopback as well as any tunnel address.** A service bound only to a
-   tunnel interface becomes unreachable *from its own machine* when the tunnel
-   half-fails, and the symptom is indistinguishable from a wedged process
-   (F36).
-3. **Build identity must be visible in the health endpoint.** Two machines
-   silently ran different builds, and the older one still had a bug fixed in
-   the newer — the symptom was a stranded prompt that made no sense against the
-   source. A peer whose build differs from yours should be able to say so.
-4. **A deployment path that is not hand-copying a binary.** That is how the
-   skew in (3) happened.
+1. **The repository/claim question of §2 must have an answer.** ⏳ **Open, and
+   the only genuine blocker.** The write cutover is what makes cross-machine
+   dispatch routine, and nothing in this service can make it safe.
+2. ~~**Bind loopback as well as any tunnel address.**~~ ✅ Done. Loopback is
+   bound automatically on the configured port whenever the configured
+   addresses do not already cover it. A service bound only to a tunnel becomes
+   unreachable *from its own machine* when the tunnel half-fails, and the
+   symptom is indistinguishable from a wedged process (F36).
+3. ~~**Build identity must be visible in the health endpoint.**~~ ✅ Done.
+   `GET /v1/health` reports a version-control stamp, peers learn each other's
+   on the probe that learns their deadline, and a mismatch is logged with the
+   reason it could not be verified. Unstamped and modified builds never
+   compare equal — see F39 for why that asymmetry is the whole point.
+4. ~~**A deployment path that is not hand-copying a binary.**~~ ✅ Done —
+   `scripts/deploy.sh`, which refuses to build from a modified tree, and reads
+   the running build back *after* restart to prove the deploy happened. That
+   read-back is the part that matters: the skew in (3) was not caused by a
+   failed copy but by a service that kept serving the old binary afterwards
+   (F40).
 
 ## 5. What adoption does not fix
 

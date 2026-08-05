@@ -311,12 +311,21 @@ func handleHealth(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"epoch": svc.epoch,
-			// No event bus exists in this skeleton (see fleet.Event's doc
-			// comment on unresolved SSE framing) — cursor is always 0,
-			// honestly, rather than a fabricated counter.
-			"cursor":    int64(0),
+			// The event plane is real now, so this reports the actual
+			// high-water mark. It used to be a hardcoded 0 with a comment
+			// explaining that no event bus existed — true when written, and
+			// left behind when one did. A health endpoint that reports a
+			// constant is worse than one that omits the field: a subscriber
+			// comparing its cursor against this would conclude it had run
+			// ahead of the service.
+			"cursor":    svc.events.currentCursor(),
 			"startedAt": svc.startedAt.Format(time.RFC3339Nano),
-			"drivers":   svc.driverSummaries(),
+			// Which code this is. See fleet.Build for the incident that
+			// added it; the short version is that two services disagreeing
+			// is a different problem from two services being different
+			// vintages, and nothing could previously tell them apart.
+			"build":   svc.build,
+			"drivers": svc.driverSummaries(),
 		})
 	}
 }

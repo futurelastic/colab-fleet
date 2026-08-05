@@ -174,6 +174,13 @@ func (h *hub) remove(id int) {
 	}
 }
 
+// currentCursor reports the high-water mark this instance has stamped.
+func (h *hub) currentCursor() int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cursor
+}
+
 func (h *hub) subscriberCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -1708,6 +1708,13 @@ tunnel has no local fallback when the tunnel is what failed — so diagnosing it
 requires knowing to try a different address, which is precisely what nobody
 thinks to do while it looks like the process is wedged.
 
+*Fixed:* loopback is now bound automatically, on the configured port, whenever
+the configured addresses do not already cover it. The general form is worth
+stating, because it is not about tunnels: **a service must remain reachable
+over a path that cannot be taken down by the failure being diagnosed.**
+Configuring an interface is a statement about who ELSE may reach the service,
+never about whether its own machine may.
+
 **F37 · Footer matching was always going to lose, and four variants proved it.**
 The prompt detector recognised menus by their footer text. One runtime produced
 `Enter to select · Tab/Arrow keys to navigate`, then `Enter to confirm · Esc to
@@ -1736,10 +1743,59 @@ it. It said so about listings, and the same omission reappeared one endpoint
 over. **A rule learned about one surface is not learned until it is checked on
 every surface that could break it.**
 
+### Phase 6 — the preconditions for being adopted
+
+Planning a supervisor's migration onto this service produced a short list of
+things that had to be true first. None was a missing feature; each was a way
+the service could be wrong without being able to say so.
+
+**F39 · A participant that cannot state which code it is running turns every
+disagreement into a mystery.** Two machines in one fleet silently ran different
+builds. The older one still had a bug the newer had fixed, and the symptom — a
+session stranded at a question the newer code answers — made no sense against
+the source anyone was reading. The entire diagnosis was spent looking for a
+defect that had already been fixed.
+
+Every surface reported health, and each was right by its own standard: the
+service was running, answering, and correct for the code it happened to be.
+What no surface could express is the distinction that mattered. **"We disagree"
+and "we are different vintages" need opposite responses — the first is a bug,
+the second is a deploy** — and nothing in the API could tell them apart.
+
+`GET /v1/health` now carries a build identity, and a peer's is learned on the
+same probe that learns its deadline. Two details are load-bearing:
+
+- The stamp comes from version control, not a hand-maintained constant. A
+  constant records what somebody remembered to bump.
+- **An unknown or locally-modified build never compares equal to anything,
+  including an identical-looking counterpart.** This is §5.7 again, and the
+  asymmetry is deliberate: this comparison exists to raise a warning, and a
+  false "same" suppresses precisely the warning worth having. A false
+  "different" costs a log line.
+
+The comparison also names *why* it failed, because "different revisions" sends
+an operator looking for a lagging deploy, and saying that about a comparison
+that could not be made wastes the same diagnosis this finding is about.
+
+**F40 · An unverified deploy is a deploy that can silently not have happened.**
+F39's skew was produced by cross-compiling and copying a binary by hand. The
+copy never failed loudly; what happened is that a service kept serving the old
+binary afterwards, and nothing checked.
+
+The deploy path now asks the running service what it is, *after* restarting it,
+and fails if the answer is not what was just installed. It also refuses to
+build from a modified tree by default — a binary with no identity cannot
+participate in F39's check at all, so shipping one quietly disables the
+mechanism that catches the problem.
+
+Worth stating generally: **a deployment step that does not read back the
+deployed state is a copy, not a deploy.** The failure mode is never the loud
+one.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered
-independently at four different altitudes:
+independently at five different altitudes:
 
 1. **A status field.** A driver that cannot determine state must say `unknown`,
    not guess (§2.3).
@@ -1749,8 +1805,12 @@ independently at four different altitudes:
    read and found empty (F5).
 4. **A capability declaration.** A peer that has not answered is not a peer
    that supports nothing (D3).
+5. **A build identity.** A peer whose build is unstamped is not a peer whose
+   build matches — and here the rule had to be enforced in a *predicate*
+   rather than a field, because the tempting default was to let an unknown
+   compare equal and stay quiet (F39).
 
-Four instances, found separately, each initially looking like a local detail.
+Five instances, found separately, each initially looking like a local detail.
 The generalisation is worth stating as a design rule for anything added later:
 
 > **Every field in this API that can be absent needs to distinguish
