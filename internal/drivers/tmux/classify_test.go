@@ -736,3 +736,43 @@ func TestPromptKindDoesNotCombineAcrossOptions(t *testing.T) {
 		t.Errorf("words from two different options combined into %q", k)
 	}
 }
+
+// A session blocked by a usage limit paints like a healthy one — empty
+// composer, no spinner — and `idle` is the one status meaning "send it work".
+// A supervisor picking the least-loaded session would preferentially choose
+// exactly the sessions that cannot do anything.
+func TestUsageLimitIsNotIdle(t *testing.T) {
+	const rule = "────────────────────"
+	blocked := "some transcript\n" +
+		"You've hit your weekly limit · resets Thu 9:00\n" +
+		rule + "\n❯ \n" + rule + "\n"
+
+	st := classifyAged(blocked, true, false)
+	if st.Status != fleet.StatusWaitingInput {
+		t.Fatalf("status = %s, want waiting_input (a blocked session must not read as available)", st.Status)
+	}
+	if !strings.Contains(st.Evidence, "usage limit") {
+		t.Errorf("evidence should name the limit, got %q", st.Evidence)
+	}
+	if !strings.Contains(st.Evidence, "thu 9:00") && !strings.Contains(strings.ToLower(st.Evidence), "thu") {
+		t.Errorf("evidence should carry the reset hint, got %q", st.Evidence)
+	}
+	if st.Prompt != nil {
+		t.Error("nothing to answer here — a prompt must not be invented")
+	}
+}
+
+// After --resume the runtime re-renders the transcript, so an OLD limit notice
+// scrolls past again. Judging by anything but the live bottom reports a session
+// as blocked by a limit it recovered from hours ago.
+func TestHistoricalLimitNoticeIsIgnored(t *testing.T) {
+	const rule = "────────────────────"
+	replayed := "You've hit your weekly limit · resets Thu 9:00\n" +
+		"  ⏺ ...and then the session carried on working\n" +
+		rule + "\n❯ \n" + rule + "\n"
+
+	st := classifyAged(replayed, true, false)
+	if st.Status == fleet.StatusWaitingInput && strings.Contains(st.Evidence, "usage limit") {
+		t.Error("a limit notice in replayed scrollback was read as a live block")
+	}
+}

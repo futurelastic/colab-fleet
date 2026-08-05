@@ -462,6 +462,81 @@ func numberedOption(line string) (int, string, bool) {
 // promptNonce is a digest of what is being asked. It changes whenever the
 // question or the options change, which is what makes a stale answer
 // detectable rather than silently applied to a different menu.
+// usageLimit reports whether the LIVE BOTTOM of the screen says this session is
+// blocked by a usage limit, and any reset time it states.
+//
+// # Why the live bottom, and not the screen
+//
+// After a resume the runtime re-renders the transcript, so an OLD limit notice
+// scrolls past again. A matcher that searched the whole capture would report a
+// session blocked by a limit it hit yesterday and has long since recovered
+// from — an operational runbook for this fleet records exactly that trap
+// ("judge by the live bottom of the pane"). So this looks only below the last
+// composer fence, which is the region the runtime redraws.
+//
+// # Why prose is matched here at all
+//
+// Reluctantly, and bounded the same way classifyPromptKind is: there is no
+// structural signal for "the account ran out of quota" — no spinner, no menu,
+// no dialog chrome. The screen simply says so in words. Matched loosely on the
+// two shapes seen in the wild, and failing to "no limit" rather than to a
+// guess.
+func usageLimit(s screen) (resetHint string, blocked bool) {
+	// The live region is the last few transcript lines ABOVE the composer, not
+	// below it: the composer and its fences are the bottom of the screen, and
+	// the runtime prints its notices just before them.
+	end := len(s.lines)
+	for i := len(s.lines) - 1; i >= 0 && i >= len(s.lines)-promptScanDepth; i-- {
+		if strings.Contains(s.lines[i], composerRuneMarker) {
+			// walk up past the opening fence
+			end = i
+			for end > 0 && isRule(s.lines[end-1]) {
+				end--
+			}
+			break
+		}
+	}
+	// The notice must be the LAST thing printed. Anything after it — a response
+	// bullet, more output — means the session carried on, so the notice is
+	// history rather than a live block.
+	//
+	// This is stricter than a tail window, and deliberately: after a resume the
+	// runtime re-renders old output, so a session that hit a limit yesterday
+	// shows the notice again with its later work beneath it. A window of even
+	// two or three lines reads that as blocked. An operational runbook for this
+	// fleet states the rule exactly — judge by the LAST live line — and that is
+	// the only formulation that survives replay.
+	const liveTail = 1
+	seen := 0
+	for i := end - 1; i >= 0 && seen < liveTail; i-- {
+		line := strings.ToLower(strings.TrimSpace(s.lines[i]))
+		if line == "" || isRule(s.lines[i]) {
+			continue
+		}
+		seen++
+		hit := (strings.Contains(line, "limit") &&
+			(strings.Contains(line, "hit your") || strings.Contains(line, "reached") ||
+				strings.Contains(line, "usage"))) ||
+			strings.Contains(line, "/usage-credits")
+		if !hit {
+			continue
+		}
+		// A reset time when the screen offers one — the number an operator
+		// actually needs, and the difference between "wait" and "switch".
+		for _, marker := range []string{"resets ", "try again ", "available again "} {
+			if k := strings.Index(line, marker); k >= 0 {
+				rest := strings.TrimSpace(line[k+len(marker):])
+				if len(rest) > 40 {
+					rest = rest[:40]
+				}
+				return rest, true
+			}
+		}
+		return "", true
+	}
+	return "", false
+}
+
 // classifyPromptKind recognises which question a prompt is asking (§2.7's
 // Kind), or returns empty when it does not recognise it.
 //
@@ -862,6 +937,22 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 			st.Prompt.Kind = classifyPromptKind(st.Prompt)
 		}
 		return st, ambNone
+	}
+
+	// Checked before anything that could resolve to idle. A session blocked by
+	// a usage limit paints exactly like a healthy one waiting for work — empty
+	// composer, no spinner — and `idle` is the single status that means "send
+	// it work", so this is the one misreading that actively causes harm.
+	if hint, blocked := usageLimit(s); blocked {
+		evidence := "blocked by a usage limit"
+		if hint != "" {
+			evidence += "; resets " + hint
+		}
+		// waiting_input, deliberately: the session is blocked and only a human
+		// unblocks it (wait it out, or switch accounts). Prompt stays nil —
+		// there is nothing to answer, and §2.7 is optional for exactly this
+		// reason.
+		return fleet.InferredState(fleet.StatusWaitingInput, evidence, nil), ambNone
 	}
 
 	running, foundSpinner := spinner(s)

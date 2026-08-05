@@ -2149,6 +2149,37 @@ to demand the text.
 > too large to show. Every UI has a threshold beyond which it stops echoing and
 > starts describing.**
 
+**F50 · A session with no quota left reads as the most available thing on the
+machine.** A usage-limited session paints exactly like a healthy one waiting for
+work — the notice, then an empty composer, no spinner. The classifier had no
+rule for it, so the second-look resolution landed on `idle` with evidence that
+was true and entirely misleading: *no spinner, and the screen is unchanged*.
+
+`idle` is not merely an under-description here. It is the one status that means
+**available, send it work** — so a supervisor picking the least-loaded session
+preferentially chooses the ones that cannot do anything, because they are the
+stillest things on the machine. Nothing self-corrects either: the block clears
+only when a human waits it out or switches accounts.
+
+Reported as `waiting_input` with the limit named and the reset time when the
+screen states one. The session IS blocked on a human; it simply has nothing to
+answer, and §2.7's prompt was already optional. That keeps the wire unchanged —
+adding a status member would have been a breaking change for every client to
+express something an existing member already covers.
+
+**The detection rule is the interesting part.** After a resume the runtime
+re-renders the transcript, so an old limit notice scrolls past again with the
+session's later work beneath it. A tail window of two or three lines reads that
+as blocked. The only formulation that survives replay is the one an operational
+runbook had already written down for humans: **judge by the LAST live line** —
+anything printed after the notice means the session carried on, and the notice
+is history.
+
+Worth noting where the rule came from. It was not derived; it was **already
+written**, in a runbook telling an operator how not to be fooled. A service
+absorbing screen-reading from humans should read what those humans wrote down
+about being fooled, because they have been fooled longer.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered
