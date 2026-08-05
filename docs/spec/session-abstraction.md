@@ -1701,6 +1701,34 @@ tunnel has no local fallback when the tunnel is what failed — so diagnosing it
 requires knowing to try a different address, which is precisely what nobody
 thinks to do while it looks like the process is wedged.
 
+**F37 · Footer matching was always going to lose, and four variants proved it.**
+The prompt detector recognised menus by their footer text. One runtime produced
+`Enter to select · Tab/Arrow keys to navigate`, then `Enter to confirm · Esc to
+cancel` on two different boot screens, then `Esc to cancel · Tab to amend` on a
+tool-permission dialog. Each new screen needed a new matcher, which is how this
+class of stall stays permanently one release behind the thing it watches.
+
+What every variant shares is the question itself: a run of numbered options
+near the bottom with one marked as highlighted. Detection is now structural
+first, with the footer kept as a second signal for the case structure misses —
+a long menu whose highlighted marker has scrolled above the captured window.
+
+Neither signal alone is sufficient, and that is the point: **when an interface
+has no compatibility contract, match what the interface is FOR rather than how
+it happens to be decorated** — and keep the decoration as a fallback, because
+the thing it is for can also fall off the edge of the screen.
+
+**F38 · The endpoint a caller reads before destroying did not return what
+destroying requires.** A single-session read returned only an id and a state,
+because the driver operation behind it returns a state. But §5.4's strong
+corroboration needs the caller to quote back the session's start time — and
+that field was absent from exactly the response a caller would read first.
+
+F16 already said a guarantee is only as reachable as the data needed to invoke
+it. It said so about listings, and the same omission reappeared one endpoint
+over. **A rule learned about one surface is not learned until it is checked on
+every surface that could break it.**
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

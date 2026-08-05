@@ -497,3 +497,54 @@ Enter to confirm · Esc to cancel`
 		t.Fatal("parsing did not terminate — unbounded work driven by screen content")
 	}
 }
+
+// A fourth footer, from a tool-permission dialog: neither "Enter to select"
+// nor "Enter to confirm". Footer-matching was always going to lose this race —
+// detection is structural first.
+const fixturePermissionDialog = `⏺ Write(REMOTE_TEST.md)
+ Create file
+ REMOTE_TEST.md
+  1 written by Alex on the other machine
+ Do you want to create REMOTE_TEST.md?
+❯ 1. Yes
+  2. Yes, allow all edits in this directory during this session
+  3. No
+ Esc to cancel · Tab to amend`
+
+func TestPermissionDialogIsDetectedWithoutAKnownFooter(t *testing.T) {
+	p := parsePrompt(newScreen(fixturePermissionDialog))
+	if p == nil {
+		t.Fatal("tool-permission dialog not detected; a session blocked on it would " +
+			"read as unreadable and nobody would answer it")
+	}
+	if len(p.Options) != 3 || p.Selected != 1 {
+		t.Errorf("parsed %d options, selected %d; want 3 and 1", len(p.Options), p.Selected)
+	}
+	if got := classify(fixturePermissionDialog, true); got.Status != fleet.StatusWaitingInput {
+		t.Errorf("status = %q, want waiting_input", got.Status)
+	}
+}
+
+// ...and the case structure alone would miss: a menu whose highlighted option
+// has scrolled above the captured window. The footer still carries it.
+func TestMenuWithScrolledOffMarkerStillCounts(t *testing.T) {
+	f := "  4. Type something.\n  5. Chat about this\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel"
+	if _, blocked := selectionPrompt(newScreen(f)); !blocked {
+		t.Error("a menu whose marker scrolled out of view must still read as blocked")
+	}
+}
+
+// A numbered list in a transcript is not a question.
+func TestTranscriptListIsNotAPrompt(t *testing.T) {
+	f := `  Here is what I found:
+  1. the first thing
+  2. the second thing
+  3. the third thing
+
+` + rule + `
+❯
+` + rule
+	if p := parsePrompt(newScreen(f)); p != nil {
+		t.Errorf("transcript list read as a prompt: %+v", p.Options)
+	}
+}

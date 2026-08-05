@@ -3,6 +3,7 @@ package tmux
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -72,6 +73,10 @@ const (
 	// with. Matching a run of them, rather than an exact width, keeps this
 	// independent of terminal width.
 	ruleRune = '─'
+	// promptScanDepth is how far up from the bottom a prompt may reach. A
+	// numbered list further up is transcript, not a question.
+	promptScanDepth = 24
+
 	// maxPromptOptions bounds how many options a prompt may enumerate. See
 	// parsePrompt: the index comes from the screen, and the screen is
 	// attacker-influenced in the general case.
@@ -85,6 +90,9 @@ const (
 	// something that will never move by itself.
 	selectFooter  = "Enter to select"
 	confirmFooter = "Enter to confirm"
+	// A tool-permission dialog uses neither of the above. Four footers on one
+	// runtime is why detection is structural first and footer second.
+	amendFooter = "Tab to amend"
 	// spinnerRune prefixes the status line in both its running and
 	// finished forms.
 	spinnerRune = "✻"
@@ -342,12 +350,25 @@ func awaitingSelection(s screen) bool {
 // which is the failure mode a sibling project named explicitly: "chasing them
 // individually means a new matcher every time the CLI adds a screen".
 func parsePrompt(s screen) *fleet.SessionPrompt {
-	if _, blocked := selectionPrompt(s); !blocked {
-		return nil
-	}
+	// Detection is STRUCTURAL, not footer-based.
+	//
+	// Four footers have been seen on one runtime — "Enter to select · Tab/Arrow
+	// keys to navigate", "Enter to confirm · Esc to cancel", and a tool-permission
+	// dialog reading "Esc to cancel · Tab to amend" — and matching them meant a
+	// new matcher for every screen the runtime adds, which is how this class of
+	// stall stays permanently one release behind.
+	//
+	// What every one of them has is the thing being asked: a run of numbered
+	// options near the bottom of the screen with exactly one marked as
+	// highlighted. That is the question, and it is what a caller has to answer.
 	p := &fleet.SessionPrompt{}
+	footer := false
 	var question []string
-	for _, raw := range s.lines {
+	from := 0
+	if len(s.lines) > promptScanDepth {
+		from = len(s.lines) - promptScanDepth
+	}
+	for _, raw := range s.lines[from:] {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
@@ -381,14 +402,27 @@ func parsePrompt(s screen) *fleet.SessionPrompt {
 			}
 			continue
 		}
-		if strings.Contains(line, selectFooter) || strings.Contains(line, confirmFooter) {
+		if strings.Contains(line, selectFooter) || strings.Contains(line, confirmFooter) ||
+			strings.Contains(line, amendFooter) {
+			footer = true
 			continue
 		}
 		if len(p.Options) == 0 && !isRule(line) {
 			question = append(question, line)
 		}
 	}
-	if len(p.Options) == 0 {
+	// Structure OR footer — neither alone is sufficient.
+	//
+	// Structure (two or more options with one highlighted) catches dialogs
+	// whose footer nobody has seen before, which is the case that kept
+	// costing a new matcher per release.
+	//
+	// Footer catches the case structure misses: a long menu whose highlighted
+	// option has scrolled above the captured window. That happens on real
+	// panes, and requiring the marker would classify a genuinely blocked
+	// session as merely unreadable.
+	structural := len(p.Options) >= 2 && p.Selected > 0
+	if !structural && !(footer && len(p.Options) >= 1) {
 		return nil
 	}
 	// Keep the question short: the last couple of lines before the options
@@ -444,25 +478,17 @@ func promptNonce(p *fleet.SessionPrompt) string {
 // and both classified as unknown, which reads as "cannot determine" rather
 // than "blocked on a human".
 func selectionPrompt(s screen) (string, bool) {
-	found := false
-	for i := len(s.lines) - 1; i >= 0 && i > len(s.lines)-6; i-- {
-		if strings.Contains(s.lines[i], selectFooter) || strings.Contains(s.lines[i], confirmFooter) {
-			found = true
-			break
+	if p := parsePrompt(s); p != nil {
+		if p.Selected > 0 && p.Selected <= len(p.Options) {
+			return strconv.Itoa(p.Selected) + ". " + p.Options[p.Selected-1], true
 		}
+		return "", true
 	}
-	if !found {
-		return "", false
-	}
-	// The highlighted option carries the prompt marker.
-	for i := len(s.lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(s.lines[i])
-		if strings.HasPrefix(line, composerRuneMarker) {
-			return strings.TrimSpace(strings.TrimPrefix(line, composerRuneMarker)), true
-		}
-	}
-	return "", true
+	return "", false
 }
+
+// awaitingSelection reports whether the TUI is showing a menu that blocks
+// on a human keypress.
 
 // spinner reports the most recent status line and whether it indicates a
 // turn still in progress. Second return is false when no spinner line was

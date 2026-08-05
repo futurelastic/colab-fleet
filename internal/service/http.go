@@ -452,7 +452,33 @@ func handleGetSession(svc *Service) http.HandlerFunc {
 		defer cancel()
 
 		ref := fleet.SessionRef{Machine: machine, ID: id}
-		state, err := d.State(ctx, requestFrom(r), ref)
+
+		// Answered from a listing rather than from State(), because State()
+		// returns only a SessionState and this endpoint must return a
+		// Session (api-http.md §3.3: cwd, agent, model, startedAt).
+		//
+		// The omission was not cosmetic. `startedAt` is what a caller quotes
+		// back to make a destroy corroborable (§5.4), so a response without
+		// it left the strong guarantee unreachable through the very endpoint
+		// a caller would read before destroying something — a guarantee is
+		// only as reachable as the data needed to invoke it.
+		//
+		// The cost is one enumeration, which is a constant number of
+		// subprocess spawns on the driver that motivated that design; a
+		// per-session query would not be cheaper.
+		req := requestFrom(r)
+		if col, err := d.List(ctx, req, driver.ListFilter{}); err == nil {
+			for _, s := range col.Items() {
+				if s.ID == id {
+					writeJSON(w, http.StatusOK, s)
+					return
+				}
+			}
+		}
+
+		// Not in the listing: fall through to the driver's own answer, which
+		// distinguishes "looked and it is gone" from "could not look" (§5.7).
+		state, err := d.State(ctx, req, ref)
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return

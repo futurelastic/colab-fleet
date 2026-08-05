@@ -460,3 +460,35 @@ func TestRuntimesIncludesPeersAndMarksUnconfirmedOnes(t *testing.T) {
 		t.Fatal("peer contributed no SourceStatus")
 	}
 }
+
+// api-http.md §3.3 says a single-session read returns cwd, agent, model and
+// startedAt. It returned only id and state — and startedAt is what a caller
+// quotes back to make a destroy corroborable (§5.4), so the strong guarantee
+// was unreachable through the endpoint a caller reads before destroying.
+func TestSingleSessionReadReturnsAWholeSession(t *testing.T) {
+	svc := New("testbox")
+	if err := svc.RegisterLocalDriver("fake", &sessionDriver{}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewMux(svc, Config{Token: testToken, AllowLocalMutations: true}))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/machines/testbox/sessions/s1", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var got fleet.Session
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Cwd == "" {
+		t.Error("cwd missing")
+	}
+	if got.StartedAt == nil {
+		t.Error("startedAt missing — §5.4's corroboration cannot be invoked without it")
+	}
+}

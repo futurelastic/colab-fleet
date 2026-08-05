@@ -11,6 +11,7 @@ import (
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
 )
 
 func sessionEvent(id string, status fleet.Status) fleet.Event {
@@ -286,4 +287,21 @@ func TestSSEEnvelopeCarriesOrigin(t *testing.T) {
 		}
 	}
 	t.Error("no data frame received")
+}
+
+// sessionDriver is a minimal driver that returns whole sessions, for the
+// endpoints that must relay more than a state.
+type sessionDriver struct{ stub.Driver }
+
+func (d *sessionDriver) List(ctx context.Context, req fleet.Request, f driver.ListFilter) (fleet.Collection[fleet.Session], error) {
+	started := time.Unix(1785600000, 0)
+	s := fleet.Session{
+		SessionRef: fleet.SessionRef{Machine: "testbox", ID: "s1", Name: "s1"},
+		Runtime:    "fake",
+		Cwd:        "/work/one",
+		StartedAt:  &started,
+		State:      fleet.InferredState(fleet.StatusIdle, "test", nil),
+	}
+	return fleet.NewCollection([]fleet.Session{s},
+		[]fleet.SourceStatus{{Machine: "testbox", Status: fleet.SourceOK, ObservedAt: time.Now()}})
 }
