@@ -349,6 +349,7 @@ state(req, ref)                -> SessionState
 interrupt(req, ref)            -> Ack
 close(req, ref)                -> Ack
 rename(req, ref, to)           -> Ack
+discard(req, ref, digest)      -> Ack
 list(req, filter?)             -> Collection<Session>
 subscribe(req, filter?)        -> EventStream
 ```
@@ -369,6 +370,22 @@ Every operation carries a `Request` (§2.6), reads included. A driver cannot
 compile without deciding what to do with it, which is the point: the rule it
 serves — §13's "a proxy presents the original caller's authority, never its
 own" — is unenforceable if the operations have nowhere to carry a principal.
+
+`discard` removes unsent composer text **without submitting it** — the verb
+between "run it" and "destroy the session holding it", which was missing. `send`
+refuses to append to a busy composer (§2.4), which is right and left a caller
+with nowhere to go: text it did not write, must not submit, and could only
+escape by killing the session.
+
+It destroys typing, so it corroborates like a destroy. The caller quotes back
+`ComposerDigest` from a read; a mismatch means the composer changed since — most
+likely somebody typing this second — and is refused. **Discarding blind is
+refused outright rather than treated as permission**: "I do not know what is
+there, remove it" is precisely the request this must not honour.
+
+Clearing an already-empty composer succeeds. A caller that timed out and retried
+must not be told it failed for having worked, and nothing is destroyed by
+clearing nothing.
 
 `rename` changes a session's **id**, and that is not a slip of wording. On a
 substrate where the id is the name an operator sees and every command targets,

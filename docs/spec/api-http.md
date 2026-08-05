@@ -174,6 +174,18 @@ live keyboard with a running agent. Absent means the driver has no answer,
 which is a real answer (§5.7).
 
 ```
+POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&startedAt=
+→ 202 { "accepted": true }
+→ 409 if the digest does not match what is there now, or none was supplied
+```
+
+Removes unsent composer text without submitting it. `expect` is
+`state.composerDigest` from a read, and it is **required when there is text**:
+this deletes somebody's typing, and a caller that has not seen the current text
+has no business removing it. An already-empty composer returns 202, so a retry
+after a timeout is safe.
+
+```
 POST /v1/machines/{machine}/sessions/{id}/rename?startedAt=&runtime=
 { "name": "new-name" }
 → 202 { "accepted": true }

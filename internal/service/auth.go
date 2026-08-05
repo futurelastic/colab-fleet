@@ -55,7 +55,12 @@ const (
 	// Absent means denied, like every other grant, so existing principals are
 	// unaffected until an operator opts them in.
 	GrantRename Grant = "rename"
-	GrantRelay  Grant = "relay" // have mutations proxied to peers
+	// GrantDiscard removes unsent composer text. Separate from send because
+	// the interesting direction is the reverse of the usual one: an operator
+	// may well want a janitor that can CLEAR stranded text without being able
+	// to drive sessions at all.
+	GrantDiscard Grant = "discard"
+	GrantRelay   Grant = "relay" // have mutations proxied to peers
 )
 
 // Principal is one identity this service accepts (§6).
@@ -124,6 +129,8 @@ func grantForVerb(r *http.Request) Grant {
 		return GrantInterrupt
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/rename"):
 		return GrantRename
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/discard"):
+		return GrantDiscard
 	case r.Method == http.MethodDelete:
 		return GrantClose
 	}

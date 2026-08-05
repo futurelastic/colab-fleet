@@ -744,6 +744,27 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 	return fleet.Ack{Accepted: true}, nil
 }
 
+// Discard clears unsent composer text on a session belonging to the peer (§3).
+//
+// The caller's digest travels, because corroboration has to happen where the
+// composer actually is — against what the CALLER saw, not the far driver's own
+// later reading.
+func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string) (fleet.Ack, error) {
+	ctx, cancel := d.bounded(ctx)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/discard",
+		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
+	if expectDigest != "" {
+		path += "?expect=" + url.QueryEscape(expectDigest)
+	}
+	var ack fleet.Ack
+	if err := d.do(ctx, req, http.MethodPost, path, nil, &ack); err != nil {
+		return fleet.Ack{}, err
+	}
+	return ack, nil
+}
+
 // Rename changes the id of a session belonging to the peer (§3).
 //
 // The caller's expectation is forwarded for the same reason Close forwards it:

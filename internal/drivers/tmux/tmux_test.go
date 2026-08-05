@@ -179,6 +179,29 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			}
 		}
 		return nil, errors.New("can't find session")
+	case "send-keys":
+		// Model the one key whose EFFECT a test depends on: C-u clears the
+		// composer. Anything else stays a no-op, as before.
+		//
+		// Modelling it here rather than in the test matters: clearing the pane
+		// before calling Discard would have it see an empty composer and
+		// return early, so the test would pass while proving nothing about the
+		// keystroke.
+		var pane string
+		clear := false
+		for i := 0; i < len(args); i++ {
+			if args[i] == "-t" && i+1 < len(args) {
+				pane = args[i+1]
+			}
+			if args[i] == "C-u" {
+				clear = true
+			}
+		}
+		if clear && pane != "" {
+			delete(f.pasted, pane)
+			f.captures[pane] = idleFixtureFor("cleared")
+		}
+		return nil, nil
 	case "display-message":
 		// The batched capture call: emit marker + capture for each pane.
 		mark := testNonce + "P"
@@ -1009,4 +1032,83 @@ func slicesContains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// Discard destroys somebody's typing, so every refusal here is the feature.
+func TestDiscardRefusesWhatItCannotCorroborate(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("blind discard is refused", func(t *testing.T) {
+		f := twoSessions()
+		f.captures["%2"] = fixtureUnsent
+		d := newTestDriver(f)
+		_, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "")
+		if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+			t.Errorf("no digest should be refused, not treated as permission; got %v", err)
+		}
+	})
+
+	t.Run("a stale digest is refused", func(t *testing.T) {
+		f := twoSessions()
+		f.captures["%2"] = fixtureUnsent
+		d := newTestDriver(f)
+		_, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "not-the-digest")
+		if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+			t.Errorf("a changed composer must refuse — somebody may be typing; got %v", err)
+		}
+	})
+
+	t.Run("an empty composer succeeds, so a retry is safe", func(t *testing.T) {
+		f := twoSessions() // alpha's composer is empty
+		d := newTestDriver(f)
+		if _, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "anything"); err != nil {
+			t.Errorf("clearing nothing destroys nothing and must not fail: %v", err)
+		}
+	})
+
+	t.Run("an unknown session is not found", func(t *testing.T) {
+		d := newTestDriver(twoSessions())
+		_, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "ghost"}, "x")
+		if !errors.Is(err, fleet.ErrNoSuchSession) {
+			t.Errorf("want no-such-session, got %v", err)
+		}
+	})
+}
+
+// The happy path: the digest the caller read is the digest that gets cleared,
+// and the clear is VERIFIED rather than assumed — a keystroke that did not
+// register looks exactly like one that did.
+func TestDiscardClearsWhatTheCallerSaw(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent
+	d := newTestDriver(f)
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a session holding unsent text published no composerDigest, so a caller cannot discard it safely")
+	}
+
+	if _, err := d.Discard(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest); err != nil {
+		t.Fatalf("discard with the digest the caller read: %v", err)
+	}
+
+	var sawClear bool
+	for _, call := range f.callsSnapshot() {
+		if len(call) >= 4 && call[0] == "send-keys" && call[len(call)-1] == "C-u" {
+			sawClear = true
+		}
+	}
+	if !sawClear {
+		t.Error("no clear keystroke was sent")
+	}
 }

@@ -327,6 +327,13 @@ it. Check the receipt rather than assuming success.
 screen, you get an `unknown` outcome naming the stranded text instead of a
 cheerful success — because "sent" and "landed" are different claims.
 
+**To clear text you must not send, use `discard`.** `POST …/discard?expect=<composerDigest>`
+— the digest comes from the same read that told you `waitingOn: unsent-input`.
+It is refused if the composer changed since (somebody may be typing), and
+refused if you omit it. This is the only safe move for text a session holds that
+you did not write: `send` will not append to it, and closing the session to be
+rid of a line is not a trade anyone should make.
+
 **`rename` changes the id.** `POST …/sessions/{id}/rename` with `{"name":"…"}`,
 and carry `?startedAt=` exactly as you would for a delete — renaming the wrong
 session does not fail loudly, it succeeds and leaves that session named after

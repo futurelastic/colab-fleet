@@ -94,7 +94,7 @@ func validGrant(g service.Grant) bool {
 	switch g {
 	case service.GrantRead, service.GrantCreate, service.GrantSend,
 		service.GrantInterrupt, service.GrantClose, service.GrantRename,
-		service.GrantRelay:
+		service.GrantDiscard, service.GrantRelay:
 		return true
 	}
 	return false

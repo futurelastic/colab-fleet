@@ -186,6 +186,23 @@ type Driver interface {
 	Interrupt(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error)
 	Close(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error)
 
+	// Discard removes unsent text from the composer WITHOUT submitting it.
+	//
+	// The missing verb between "run it" and "destroy the session that holds
+	// it". `send` delivers and submits, `respond` answers a question, `close`
+	// destroys the session — so a caller holding text that must never be
+	// submitted had no safe move at all.
+	//
+	// expectDigest is SessionState.ComposerDigest as the caller last saw it.
+	// A driver must refuse when it does not match what is there now: this
+	// destroys somebody's typing, and a caller that has not seen the current
+	// text has no business deleting it. Empty means the caller is discarding
+	// blind and a driver may refuse outright.
+	//
+	// Discarding an already-empty composer succeeds. A caller retrying after a
+	// timeout must not be told it failed for having previously worked.
+	Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string) (fleet.Ack, error)
+
 	// Rename changes a session's id.
 	//
 	// Corroborated exactly as Close is, and for the same reason: it acts on one

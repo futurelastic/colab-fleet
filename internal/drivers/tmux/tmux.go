@@ -891,6 +891,106 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 	return d.killCorroborated(ctx, ref)
 }
 
+// Discard clears unsent composer text without submitting it (§3).
+//
+// # Why this verb had to exist
+//
+// `send` refuses to append to a composer that already holds something (§2.4),
+// which is right — appending corrupts somebody's line. But that refusal left a
+// caller with nowhere to go: the only operations that touch a busy composer
+// were "submit it" and "destroy the session holding it", and neither is safe
+// for text the caller did not write.
+//
+// It arrived from real use twice over. A fleet was found holding operator text
+// unsent for hours, and separately a supervisor's own keepalive stranded lines
+// it never meant to send. Both needed removal, and removal did not exist.
+//
+// # It destroys typing, so it corroborates like a destroy
+//
+// expectDigest is what the caller last saw in ComposerDigest. A mismatch means
+// the composer changed since — most likely a human typing this second — and
+// deleting then would destroy something nobody has looked at. Refused, with
+// the same sentinel `close` uses for the same reason.
+//
+// Discarding blind (no digest) is refused outright rather than treated as
+// permission. "I do not know what is there, remove it" is exactly the request
+// this operation must not honour.
+//
+// # An empty composer is a success
+//
+// A caller that timed out and retried must not be told it failed for having
+// worked the first time. Nothing is destroyed by clearing nothing.
+func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string) (fleet.Ack, error) {
+	ctx, cancel := d.bounded(ctx)
+	defer cancel()
+
+	rows, captures, err := d.enumerate(ctx)
+	if err != nil {
+		return fleet.Ack{}, err
+	}
+	var live *paneRow
+	for i := range rows {
+		if rows[i].session == ref.ID {
+			live = &rows[i]
+			break
+		}
+	}
+	if live == nil {
+		return fleet.Ack{}, fmt.Errorf("%w: %q", fleet.ErrNoSuchSession, ref.ID)
+	}
+	if want := req.Expect.StartedAt; want != nil && !live.created.Equal(*want) {
+		return fleet.Ack{}, fmt.Errorf(
+			"%w: id %q now holds a session started at %s; the caller meant the one started at %s",
+			ErrAmbiguousTarget, ref.ID, live.created.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+
+	pending, _ := composerText(newScreen(captures[live.paneID]))
+	if pending == "" {
+		// Already clear — including the case where what looked like text was
+		// the dim placeholder, which is not text at all and never was.
+		return fleet.Ack{Accepted: true}, nil
+	}
+	if expectDigest == "" {
+		return fleet.Ack{}, fmt.Errorf(
+			"%w: refusing to discard %d characters the caller has not seen; "+
+				"supply the composerDigest from a read",
+			ErrAmbiguousTarget, len(pending))
+	}
+	if got := screenDigest(pending); got != expectDigest {
+		return fleet.Ack{}, fmt.Errorf(
+			"%w: the composer holds different text than the caller saw "+
+				"(expected digest %s, found %s) — somebody may be typing right now",
+			ErrAmbiguousTarget, expectDigest, got)
+	}
+
+	// C-u clears the line. Measured on a live session rather than assumed:
+	// C-a C-k and Escape were tried too, and C-u alone is enough.
+	if _, err := d.run(ctx, d.bin, "send-keys", "-t", live.paneID, "C-u"); err != nil {
+		return fleet.Ack{}, fmt.Errorf("discard: %w", err)
+	}
+
+	// Verify, because a keypress that did not register looks exactly like one
+	// that did — the same reason send confirms before submitting.
+	deadline := d.now().Add(promptClearWindow)
+	for {
+		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-e", "-J", "-t", live.paneID)
+		if err == nil {
+			if left, _ := composerText(newScreen(string(out))); left == "" {
+				return fleet.Ack{Accepted: true}, nil
+			}
+		}
+		if d.now().After(deadline) || ctx.Err() != nil {
+			return fleet.Ack{}, errors.New(
+				"discard: the clear keystroke did not empty the composer; text is still there")
+		}
+		select {
+		case <-ctx.Done():
+			return fleet.Ack{}, ctx.Err()
+		case <-time.After(promptClearInterval):
+		}
+	}
+}
+
 // Rename changes a session's id (§3).
 //
 // # The id IS the name on this substrate
