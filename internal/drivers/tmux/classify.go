@@ -958,6 +958,7 @@ func resolveAmbiguity(st fleet.SessionState, amb ambiguity, prior paneMemory, di
 		blocked := fleet.InferredState(fleet.StatusWaitingInput,
 			"composer holds unsent input; screen unchanged after "+age, nil)
 		blocked.WaitingOn = fleet.WaitingUnsentInput
+		blocked.ComposerDigest = digest
 		return blocked
 	}
 	return st
@@ -1021,9 +1022,13 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 		// unblocks it (wait it out, or switch accounts). Prompt stays nil —
 		// there is nothing to answer, and §2.7 is optional for exactly this
 		// reason.
-		blocked := fleet.InferredState(fleet.StatusWaitingInput, evidence, nil)
-		blocked.WaitingOn = fleet.WaitingUsageLimit
-		return blocked, ambNone
+		// quota_blocked, which §2.3 has defined since the first commit as
+		// "alive but refused by its provider" and §8 gives transitions for.
+		// It was reported as waiting_input for several hours because nobody
+		// checked the enum — see F52. waiting_input was always slightly false
+		// here: the session is not blocked on a HUMAN, it is blocked on a
+		// clock or an account, and no answer from a caller unblocks it.
+		return fleet.InferredState(fleet.StatusQuotaBlocked, evidence, nil), ambNone
 	}
 
 	running, foundSpinner := spinner(s)
@@ -1045,6 +1050,7 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 		held := fleet.InferredState(fleet.StatusWaitingInput,
 			"turn finished; composer holds unsent input", nil)
 		held.WaitingOn = fleet.WaitingUnsentInput
+		held.ComposerDigest = screenDigest(pending)
 		return held, ambNone
 
 	case foundSpinner && !running:

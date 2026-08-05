@@ -2187,10 +2187,10 @@ stillest things on the machine. Nothing self-corrects either: the block clears
 only when a human waits it out or switches accounts.
 
 Reported as `waiting_input` with the limit named and the reset time when the
-screen states one. The session IS blocked on a human; it simply has nothing to
-answer, and §2.7's prompt was already optional. That keeps the wire unchanged —
-adding a status member would have been a breaking change for every client to
-express something an existing member already covers.
+screen states one — **which was wrong, and corrected within hours by F52**:
+§2.3 has had `quota_blocked` since the first commit, and no driver had ever
+produced it. The reasoning below about not adding a status member was sound
+and rested on a false premise, because nobody checked the enum.
 
 **The detection rule is the interesting part.** After a resume the runtime
 re-renders the transcript, so an old limit notice scrolls past again with the
@@ -2251,6 +2251,40 @@ policy this service refuses to own.
 The general rule, which is the third time a variant of it has been recorded
 here: **when a status cannot express something without lying about the present,
 the missing thing is usually history, and history belongs in a field.**
+
+**F52 · The status I decided not to add had been in the type since the first
+commit.** F50 reported a quota-blocked session as `waiting_input`, and the
+reasoning was explicit: *"adding a status member would have been a breaking
+change for every client to express something an existing member already
+covers."*
+
+`quota_blocked` was already there. §2.3 has listed it since the spec was
+written — *"alive but refused by its provider"* — §8 gives its transitions
+(`working → quota_blocked`, `quota_blocked → working | idle | dead`), the Go
+type declares and validates it, and **no driver had ever produced it.**
+
+So the trade-off was argued carefully and against a false premise. Nobody
+checked the enum. And `waiting_input` was never quite true here: that status
+means blocked on a HUMAN, and a quota block is waiting on a clock or an
+account — no answer from a caller unblocks it.
+
+The cost compounded, which is the part worth recording. Reporting quota as
+`waiting_input` gave that status a third meaning, which created a real
+ambiguity, which needed a new `waitingOn` field to resolve — a field, its
+constants, its tests and its documentation, all to disambiguate a status that
+should never have carried the meaning. Correcting the status left `waitingOn`
+doing the one job that genuinely needs it: separating a question to answer
+from text nobody submitted.
+
+> **Before deciding what a design cannot afford to add, check whether it is
+> already there.** A closed set that nothing produces is invisible in every
+> way except the one that matters — it is in the contract, and clients are
+> entitled to it.
+
+The general shape has a name here already: this is the same failure as F34,
+where the answer was a field that had been filled with nil the whole time.
+Twice now, the fix was to use something the design had and the implementation
+had forgotten.
 
 ### The pattern worth naming
 

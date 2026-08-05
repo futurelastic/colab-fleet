@@ -748,8 +748,8 @@ func TestUsageLimitIsNotIdle(t *testing.T) {
 		rule + "\n❯ \n" + rule + "\n"
 
 	st := classifyAged(blocked, true, false)
-	if st.Status != fleet.StatusWaitingInput {
-		t.Fatalf("status = %s, want waiting_input (a blocked session must not read as available)", st.Status)
+	if st.Status != fleet.StatusQuotaBlocked {
+		t.Fatalf("status = %s, want quota_blocked (a blocked session must not read as available)", st.Status)
 	}
 	if !strings.Contains(st.Evidence, "usage limit") {
 		t.Errorf("evidence should name the limit, got %q", st.Evidence)
@@ -845,9 +845,13 @@ func TestWaitingInputSaysWhy(t *testing.T) {
 		t.Errorf("unsent text: waitingOn = %q, want %q", st.WaitingOn, fleet.WaitingUnsentInput)
 	}
 
+	// A quota block is its own status — §2.3's quota_blocked, "alive but
+	// refused by its provider" — not a flavour of waiting_input. Nothing a
+	// caller sends unblocks it, so it never belonged in the status that means
+	// "blocked on a human".
 	quota := "transcript\nYou've hit your weekly limit · resets Thu 9:00\n" + rule + "\n❯ \n" + rule + "\n"
-	if st := classifyAged(quota, true, false); st.WaitingOn != fleet.WaitingUsageLimit {
-		t.Errorf("usage limit: waitingOn = %q, want %q", st.WaitingOn, fleet.WaitingUsageLimit)
+	if st := classifyAged(quota, true, false); st.Status != fleet.StatusQuotaBlocked {
+		t.Errorf("usage limit: status = %q, want %q", st.Status, fleet.StatusQuotaBlocked)
 	}
 
 	asked := "transcript\n  1. Yes, proceed\n❯ 2. No, exit\nEnter to select\n" + rule + "\n❯ \n" + rule + "\n"

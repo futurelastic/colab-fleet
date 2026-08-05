@@ -229,11 +229,14 @@ POST /v1/machines/{machine}/sessions/{id}/respond?runtime=
 → 200 { "outcome": "queued" | "refused", "reason": "..." }
 ```
 
-`state.waitingOn` discriminates `waiting_input`, which carries three
-situations needing opposite handling: `prompt` · `unsent-input` ·
-`usage-limit`. Only the first has a `prompt` to branch on, so without this
-field the other two are separable only by reading `evidence` — prose that is
-explicitly not to be parsed. Absent means unclassified (§5.7), not "no reason".
+`state.waitingOn` discriminates `waiting_input`, which carries two situations
+needing opposite handling: `prompt` (answer it) and `unsent-input` (do not send
+to it). Only the first has a `prompt` to branch on, so without this field they
+are separable only by reading `evidence` — prose explicitly not to be parsed.
+Absent means unclassified (§5.7), not "no reason".
+
+A session out of quota is **not** one of these: it reports `quota_blocked`
+(§2.3), because nothing a caller sends will unblock it.
 
 `state.lastTurn` — when present — says how the most recent turn **ended**:
 `{"outcome":"failed","reason":"…","retryable":true}`. It exists because a turn

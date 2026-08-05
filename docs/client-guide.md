@@ -219,7 +219,7 @@ starts recreating work that is already running.
 
 | field | meaning |
 |---|---|
-| `status` | `starting`, `idle`, `working`, `waiting_input`, `dead`, `unknown` |
+| `status` | `starting`, `idle`, `working`, `waiting_input`, `quota_blocked`, `dead`, `unknown` |
 | `confidence` | `observed` (measured) or `inferred` (deduced from a screen) |
 | `evidence` | human-readable reason — show it, do not parse it |
 | `since` | when this status was **first observed to hold** |
@@ -227,12 +227,14 @@ starts recreating work that is already running.
 
 Two rules that will save you an incident:
 
-- **`waiting_input` has three causes — branch on `waitingOn`, never on the
-  evidence text.** `prompt` (a question is on screen, answer it), `unsent-input`
-  (the composer holds text nobody submitted — do NOT send more; `since` is its
-  age), `usage-limit` (out of quota; sending achieves nothing, it clears with
-  time or another account). Empty means the service could not tell, which is
-  "go look", not any particular cause.
+- **`quota_blocked` means the provider refused it** — alive, but out of quota.
+  Nothing you send will unblock it; it clears with time or a different account.
+  Do not dispatch work to it and do not treat it as stuck.
+- **`waiting_input` has two causes — branch on `waitingOn`, never on the
+  evidence text.** `prompt` (a question is on screen, answer it) and
+  `unsent-input` (the composer holds text nobody submitted — do NOT send more;
+  `since` is its age). Empty means the service could not tell, which is "go
+  look", not any particular cause.
 - **`idle` does not mean the last turn succeeded.** Check `state.lastTurn`: a
   session whose turn died on a transient error looks exactly like one that
   finished — same empty composer, same settled status line. If `lastTurn.outcome`

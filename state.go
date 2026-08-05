@@ -119,13 +119,14 @@ func (c *Confidence) UnmarshalJSON(b []byte) error {
 // third meaning with no prompt attached, and at that moment the status became
 // ambiguous in a way only the evidence prose resolved:
 //
-//	waiting_input, no prompt → holds unsent text? or out of quota?
+//	waiting_input, no prompt → holds unsent text? or something else?
 //
-// Those need OPPOSITE handling. Text sitting unsent should be discarded or
-// left alone, and sending more is the one thing that must not happen. A
-// quota block is cleared by waiting or switching accounts, and nothing a
-// caller sends will help. A client that cannot tell them apart will do the
-// wrong one roughly half the time.
+// A quota block briefly landed in that ambiguity too, before it was moved to
+// the `quota_blocked` status the spec had defined all along (F52). What
+// remains is the distinction that genuinely belongs here: a question to answer
+// versus text nobody submitted. They need opposite handling — one wants a
+// choice, the other must NOT be sent to — and a caller that cannot tell them
+// apart does the wrong one about half the time.
 //
 // Evidence cannot be the discriminator: §2.3 says it is prose for humans and
 // must not be parsed, and this project has already paid twice for matching
@@ -145,9 +146,6 @@ const (
 	// is the age, and the age is what separates somebody mid-thought from
 	// text nobody is coming back for.
 	WaitingUnsentInput WaitingReason = "unsent-input"
-	// WaitingUsageLimit: the account is out of quota. Sending achieves
-	// nothing; this clears with time or a different account.
-	WaitingUsageLimit WaitingReason = "usage-limit"
 )
 
 // TurnEnd says how the most recent turn FINISHED, when the screen says
@@ -209,6 +207,19 @@ type SessionState struct {
 	// Evidence names the highlighted option in prose; this is the structured
 	// form a client can render as buttons and submit by index.
 	Prompt *SessionPrompt `json:"prompt,omitempty"`
+
+	// ComposerDigest fingerprints the unsent text, and is present only when
+	// WaitingOn is WaitingUnsentInput.
+	//
+	// It exists so a caller can DISCARD that text without racing a human. The
+	// text itself is deliberately not published: a listing that carried pane
+	// content would turn every read into a transcript leak, and the caller
+	// does not need the words — it needs to prove it is destroying the thing
+	// it looked at. A digest does that and nothing else.
+	//
+	// Same discipline as `close` quoting `startedAt` back: the caller states
+	// what it believes, and the driver refuses if the world has moved.
+	ComposerDigest string `json:"composerDigest,omitempty"`
 
 	// WaitingOn says why the session is `waiting_input`, when the driver can
 	// tell. Empty for every other status, and empty on waiting_input means
