@@ -530,10 +530,11 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		text, captured := captures[r.paneID]
 		young := now.Sub(r.created) < startingWindow
 		raw, digest := classifyPaneRemembering(text, captured, !r.dead, young, d.memoryLocked(r.session), now)
-		st := d.stampSinceLocked(r.session, raw, now)
+		st, carried := d.stampSinceLocked(r.session, raw, now)
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since, digest: digest,
+			sinceRestored: carried,
 		}
 		started := r.created
 		s := fleet.Session{
@@ -601,10 +602,11 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		d.mu.Lock()
 		raw, digest := classifyPaneRemembering(text, captured, !r.dead,
 			now.Sub(r.created) < startingWindow, d.memoryLocked(r.session), now)
-		st := d.stampSinceLocked(r.session, raw, now)
+		st, carried := d.stampSinceLocked(r.session, raw, now)
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since, digest: digest,
+			sinceRestored: carried,
 		}
 		d.mu.Unlock()
 		return st, nil
@@ -1434,7 +1436,11 @@ func (d *Driver) memoryLocked(id string) paneMemory {
 	return paneMemory{known: true, digest: prior.digest, at: prior.at}
 }
 
-func (d *Driver) stampSinceLocked(id string, st fleet.SessionState, now time.Time) fleet.SessionState {
+// Returns the state and whether its `since` was carried from a previous
+// instance — the caller must store that on the observation, or the provenance
+// is lost the moment the value is cached and every later read presents a
+// second-hand age as one this instance measured.
+func (d *Driver) stampSinceLocked(id string, st fleet.SessionState, now time.Time) (fleet.SessionState, bool) {
 	since := now
 	restored := false
 	if prior, ok := d.observed[id]; ok && prior.status == st.Status && !prior.statusSince.IsZero() {
@@ -1461,7 +1467,7 @@ func (d *Driver) stampSinceLocked(id string, st fleet.SessionState, now time.Tim
 	if restored {
 		st.Evidence += " (age carried from before this service restarted)"
 	}
-	return st
+	return st, restored
 }
 
 // persistedRecord reads one session's durable record. Caller holds d.mu.

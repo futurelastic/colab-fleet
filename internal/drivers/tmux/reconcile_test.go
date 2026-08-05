@@ -213,3 +213,46 @@ func TestSinceSurvivesARestart(t *testing.T) {
 		t.Fatal("beta missing from the listing")
 	}
 }
+
+// The provenance must survive being cached, not just the first read. It was
+// computed correctly and then dropped on the floor: the observation did not
+// carry it, so every read after the first presented a second-hand age as one
+// this instance had measured — §5.2's exact prohibition, reintroduced by the
+// fix for it.
+func TestCarriedAgeStaysMarkedOnLaterReads(t *testing.T) {
+	dir := t.TempDir()
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent
+
+	early := time.Unix(1785600100, 0)
+	d1 := New("testbox", withExec(f.exec), WithState(store),
+		withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return early }))
+	if _, err := d1.List(context.Background(), testCaller, driver.ListFilter{}); err != nil {
+		t.Fatal(err)
+	}
+
+	late := early.Add(3 * time.Hour)
+	d2 := New("testbox", withExec(f.exec), WithState(store),
+		withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return late }))
+
+	for read := 1; read <= 3; read++ {
+		col, err := d2.List(context.Background(), testCaller, driver.ListFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range col.Items() {
+			if s.ID != "beta" {
+				continue
+			}
+			if !strings.Contains(s.State.Evidence, "restart") {
+				t.Fatalf("read %d lost the provenance: %q", read, s.State.Evidence)
+			}
+		}
+	}
+}
