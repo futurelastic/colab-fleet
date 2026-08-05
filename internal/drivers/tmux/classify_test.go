@@ -632,3 +632,46 @@ func TestFailedCaptureYieldsNoDigest(t *testing.T) {
 		t.Error("a failed capture must not be remembered as a screen")
 	}
 }
+
+// Five animation frames were live on ONE machine at one instant. Matching a
+// single glyph meant a session's status line was legible or invisible
+// depending on which frame the capture caught — 16% of that machine's sessions
+// read `unknown` while showing a perfectly good running spinner.
+func TestStatusLineAcceptsEveryObservedGlyph(t *testing.T) {
+	for _, glyph := range []string{"✻", "✽", "✢", "✶", "✳"} {
+		t.Run(glyph, func(t *testing.T) {
+			running, ok := statusLine(glyph + " Metamorphosing… (21m 39s · ↓ 91.4k tokens)")
+			if !ok {
+				t.Fatalf("%s not recognised as a status line", glyph)
+			}
+			if !running {
+				t.Error("ellipsis form means the turn is still running")
+			}
+			finished, ok := statusLine(glyph + " Worked for 2m 7s")
+			if !ok || finished {
+				t.Errorf("%s finished form: ok=%v running=%v", glyph, ok, finished)
+			}
+		})
+	}
+}
+
+// The glyph test had to be widened, and a wide test meets far more than the
+// status line: the TUI's chrome is made of symbols. These are lines from real
+// captures that must never be read as a turn status.
+func TestStatusLineRejectsChrome(t *testing.T) {
+	for _, line := range []string{
+		"❯ ",                          // the composer, which sits BELOW the status line
+		"❯ please refactor for me",    // ... and can contain the finished infix
+		"⏵⏵ auto mode on (shift+tab)", // mode footer
+		"▸ Opus 5 · coding-dashboard", // model footer
+		"⎿  $ cd /some/path",          // tool output
+		"────────────────────", // composer fencing
+		"- a bulleted line", // ASCII punctuation: transcript prose
+		"* another for good measure",
+		"",
+	} {
+		if _, ok := statusLine(line); ok {
+			t.Errorf("%q was read as a status line", line)
+		}
+	}
+}

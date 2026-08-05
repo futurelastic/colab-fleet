@@ -1830,6 +1830,42 @@ The general form: **when a single sample is genuinely ambiguous, the fix is
 usually another sample rather than a cleverer reading of the first** — and the
 sample you need is often one you already took.
 
+**F42 · The glyph was an animation frame, and matching it was matching one
+frame of five.** F41's fix left a residue of `unknown` on one machine, so the
+next step was to open a pane and look. It was 21 minutes into a turn, with a
+running status line on screen, and the classifier could not see it: the line
+began with `✽` and the detector matched `✻`.
+
+A sweep of every session on that machine found **five glyphs in use at the same
+instant** — `✻ ✽ ✢ ✶ ✳` — because the leading character is animated. So a
+session's status line was legible or invisible depending on which frame the
+capture happened to catch, at random, refreshing several times a second. 16% of
+one machine's sessions were `unknown` for this reason alone, and the number
+would have moved on its own between any two readings.
+
+This is F37 again, one level down, and the repetition is the point: **the
+footer was decoration, and so was the glyph.** What the line is FOR is
+announcing a turn, and the parts that carry that meaning — the ellipsis for
+running, `for <duration>` for finished — were already being matched. The glyph
+only ever needed to be recognised as *a symbol rather than text*.
+
+Widening it immediately produced a second bug worth recording, because it is
+the cost of every loosened matcher: the composer's own `❯` is a symbol too, and
+sits below the status line. The old scan stopped at the first symbol-led line
+it met and reported "found nothing usable", so **every screen went from
+one-frame-in-five detection to none at all.** The tests caught it; the fix was
+to scan for the status line's *shape* rather than stopping at the first
+candidate. Chrome is full of symbols — `❯`, `⏵⏵`, `▸`, `⎿` — and a matcher
+loose enough to survive an animation must not treat the first symbol it meets
+as decisive.
+
+Worth stating as a rule for anything that reads an interface with no
+compatibility contract:
+
+> **Every constant you match against is a bet about what will not change.
+> Prefer the ones that carry meaning — a structure, a role — over the ones that
+> carry style, because style is exactly what a UI is free to animate.**
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

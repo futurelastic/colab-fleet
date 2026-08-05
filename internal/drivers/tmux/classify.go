@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	fleet "github.com/godx-jp/colab-fleet"
 )
@@ -94,8 +95,9 @@ const (
 	// A tool-permission dialog uses neither of the above. Four footers on one
 	// runtime is why detection is structural first and footer second.
 	amendFooter = "Tab to amend"
-	// spinnerRune prefixes the status line in both its running and
-	// finished forms.
+	// spinnerRune is ONE of the glyphs that prefix the status line — see
+	// hasSpinnerGlyph for why matching this exact character was a bug. Kept
+	// as a fixture anchor for tests, not used for detection.
 	spinnerRune = "✻"
 	// runningSuffixMarker distinguishes a running spinner ("… (5m 57s · ↓
 	// 21.3k tokens)") from a finished one ("for 2m 7s"). The ellipsis is
@@ -496,23 +498,104 @@ func selectionPrompt(s screen) (string, bool) {
 // found at all, which is a different fact from "found, and it was
 // finished".
 func spinner(s screen) (running bool, found bool) {
+	// Scan upward for the LAST line that is a status line in one of its two
+	// shapes, rather than stopping at the first line that merely begins with
+	// a symbol.
+	//
+	// The earlier version did stop at the first, which was safe only because
+	// it matched exactly one glyph. Widening the glyph test (see
+	// hasSpinnerGlyph) immediately broke it: the composer's own `❯` is below
+	// the status line and begins with a symbol too, so every screen "found" a
+	// spinner line in neither shape and gave up. Chrome is full of symbols —
+	// `❯`, `⏵⏵`, `▸`, `⎿` — and a matcher loose enough to survive an
+	// animation frame must not treat the first symbol it meets as decisive.
 	for i := len(s.lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(s.lines[i])
-		if !strings.HasPrefix(line, spinnerRune) {
-			continue
+		if running, ok := statusLine(strings.TrimSpace(s.lines[i])); ok {
+			return running, true
 		}
-		if strings.Contains(line, runningSuffixMarker) {
-			return true, true
-		}
-		if strings.Contains(line, finishedInfix) {
-			return false, true
-		}
-		// A spinner line in neither shape: the TUI changed, or this is
-		// transcript text that happens to start with the rune. Report
-		// "found nothing usable" rather than guessing a tense.
-		return false, false
 	}
 	return false, false
+}
+
+// statusLine reports whether a line is the TUI's turn-status line, and whether
+// that status is running.
+//
+// Three conditions, all structural, none of them a particular character:
+//
+//   - it begins with a single non-ASCII symbol followed by a space — the
+//     status line's shape, and the part that varies (five animation frames
+//     were live at once on one machine);
+//   - the next word is capitalised, which is what the TUI's verb always is and
+//     what tool-output lines below the transcript generally are not;
+//   - it carries one of the two tense markers, `…` for running and " for " for
+//     finished.
+//
+// The verb itself is deliberately not matched. It is drawn at random from a
+// large set, and enumerating it would be the same mistake as enumerating
+// footers (F37) or glyphs (F42).
+func statusLine(line string) (running bool, ok bool) {
+	if !hasSpinnerGlyph(line) {
+		return false, false
+	}
+	_, size := utf8.DecodeRuneInString(line)
+	rest := strings.TrimLeft(line[size:], " ")
+	first, _ := utf8.DecodeRuneInString(rest)
+	if !unicode.IsUpper(first) {
+		return false, false
+	}
+	switch {
+	case strings.Contains(rest, runningSuffixMarker):
+		return true, true
+	case strings.Contains(rest, finishedInfix):
+		return false, true
+	}
+	return false, false
+}
+
+// hasSpinnerGlyph reports whether a line begins with the status line's leading
+// symbol.
+//
+// # Why this is a shape and not a character
+//
+// It was one character — `✻` — and that was wrong in a way nothing reported.
+// The glyph is an ANIMATION FRAME: a live fleet was using five of them
+// (`✻ ✽ ✢ ✶ ✳`) at the same instant, so a session's status line was
+// legible or invisible depending on which frame the capture happened to catch.
+//
+// The consequence was not a cosmetic miss. A session 21 minutes into a turn,
+// with a perfectly good running spinner on screen, fell through to "no spinner
+// line" and was reported `unknown` — 16% of one machine's sessions, entirely
+// at random, refreshing every few hundred milliseconds.
+//
+// F37 said it about footers and it is true here: **match what the line is FOR,
+// not how it is decorated.** What the line is for is announcing a turn, and
+// the parts that carry that meaning are the ellipsis and the "for <duration>"
+// — both already matched below. The leading glyph only has to be recognised as
+// "a symbol, not text", which is a property of the character class rather than
+// of any particular character.
+func hasSpinnerGlyph(line string) bool {
+	if line == "" {
+		return false
+	}
+	r, size := utf8.DecodeRuneInString(line)
+	if r == utf8.RuneError {
+		return false
+	}
+	// Must be a symbol or punctuation glyph, not a letter or digit: this is
+	// the part that keeps ordinary transcript prose from matching.
+	if !unicode.IsSymbol(r) && !unicode.IsPunct(r) {
+		return false
+	}
+	// ASCII punctuation is excluded deliberately. Transcript lines routinely
+	// begin with `-`, `*`, `>`, `#` and `|`, and admitting those would make
+	// every bulleted list a candidate status line.
+	if r < utf8.RuneSelf {
+		return false
+	}
+	// A single glyph followed by a space, which is the status line's shape.
+	// Box-drawing rules and other chrome fail this because they run.
+	rest := line[size:]
+	return strings.HasPrefix(rest, " ")
 }
 
 // classifyPane is what callers use. It separates "the driver failed to read
