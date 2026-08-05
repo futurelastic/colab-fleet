@@ -12,11 +12,18 @@ is thereby permanently bound to one runtime on one host.
 owns sessions, exposes them over HTTP, and federates with peer instances on
 other machines. Supervisors become clients.
 
-> **Status: one working driver.** A driver over a terminal multiplexer running
-> an interactive agent CLI now implements the read path and the write path, and
-> has been exercised against 22 concurrent live sessions. It reports a full
-> fleet view — with differentiated per-session state — in ~30ms, using a
-> constant number of subprocess spawns rather than one per session.
+> **Status: an agent has been started, questioned and answered on another
+> machine, end to end.** From one machine: create a session on a peer, wait for
+> the runtime to become ready, deliver its first instruction, watch it stop at a
+> tool-permission dialog, read that dialog remotely with every option
+> enumerated, answer it by index, and see the agent proceed. That is the whole
+> point of the layer, and it works.
+>
+> A driver over a terminal multiplexer running an interactive agent CLI
+> implements the read path, the write path and the answer path, and has been
+> exercised against 22 concurrent live sessions. It reports a full fleet view —
+> with differentiated per-session state — in ~30ms, using a constant number of
+> subprocess spawns rather than one per session.
 >
 > Event subscription is live over the substrate's own push channel and served
 > as SSE with cursors, epoch, retention and announced resync — no polling
@@ -37,8 +44,20 @@ other machines. Supervisors become clients.
 > trip rather than being flattened. Neither service needed a special case, and
 > the proxying one never learns its peer is remote.
 >
-> **The specification is still the primary artifact**, and building these two
-> drivers amended eight sections of it.
+> **Authorization is per principal, per verb.** Each caller is a named identity
+> with its own credential and its own grants; a relaying service authenticates
+> as itself and carries the original principal as an assertion the peer
+> records. Every mutation is audited with an actor, not an address.
+>
+> **State survives a restart.** Idempotency keys, the event epoch and cursor,
+> and the driver's own session records are persisted atomically, which is what
+> makes §12 reconciliation able to tell adopted from orphaned rather than
+> calling everything orphaned. Verified: `adopted=24` across a restart.
+>
+> **The specification is still the primary artifact.** Building against it
+> resolved seven of its nine recorded defects, added three types it turned out
+> to need, and produced a findings log of 38 measurements — every one of them a
+> place the document or the code was wrong before something ran.
 
 ## What it owns
 
@@ -87,6 +106,10 @@ of them, not the other way round.
 2. [`docs/spec/api-http.md`](docs/spec/api-http.md) — the wire protocol.
 3. [`doc.go`](doc.go) — an index of what transcription revealed, including the
    judgement calls that were left out of the spec on purpose.
+4. [`docs/adoption.md`](docs/adoption.md) — how an existing supervisor becomes
+   a client of this, staged so each step is reversible. Read it if you are
+   evaluating whether this is worth adopting; §2 is the precondition that
+   surprised us.
 
 If you are picking this up cold and want the short version: read the session
 spec's **§14** (five things that do not work) and **Appendix A's closing
@@ -168,50 +191,45 @@ zero; adding one is a decision to argue for, not a convenience.
 
 Stated plainly so nobody rediscovers them the expensive way.
 
-- **Idempotency keys do not survive a service restart**, on a driver that
-  correctly declares `supportsResume: true`. Sessions survive; keys are in
-  memory. A caller retrying a `create` across a restart therefore gets the
-  §10 disaster — two sessions in one working directory — from a driver that
-  looks compliant. `supportsResume` answers a question about sessions and was
-  being read as answering one about keys. See spec §10 and §14 D5.
-- **The write path has never run against a live session.** `send`, `create`,
-  `interrupt` and `close` are implemented and unit-tested, and §2.4's refusal
-  now fires on real captured screens — but every live exercise so far has been
-  read-only by construction, because the sessions available to test against are
-  somebody's actual work. The refusal logic is no longer prose; the delivery
-  path still is.
-- **`subscribe`'s filter cannot name a session.** It can only describe one by
-  working-directory prefix. That is a proxy for identity, not identity — and
-  here it is also a cost parameter, because watching a session's content costs
-  a connection per session on this substrate. A caller wanting one session must
-  ask for a directory and hope. See spec §14 D4.
-- **The operations have nowhere to carry the caller's authority — and the
-  natural fallback is a security bug.** §13 requires a proxying service to
-  present the *original caller's* credentials, never its own. No operation in
-  §3 takes a principal, so the only channel is an out-of-band context value
-  that a service can silently forget. A remote driver missing it will reach for
-  the credential it definitely has — its own — and then everything works,
-  every test passes, and every machine is a confused deputy for every other.
-  Note the asymmetry: every other gap here fails toward a wrong answer somebody
-  eventually notices; this one fails toward a **correct-looking answer with the
-  authorization quietly widened.** The current driver refuses rather than
-  substituting, which is a driver declining to do something the interface
-  cannot stop it doing. See spec §14 D1.
+- **Adoption has a precondition this repository cannot discharge.** The service
+  can dispatch an agent to another machine long before the surrounding system
+  can safely let it edit anything there: repository state is a non-goal (§1),
+  so nothing here prevents two machines editing one working tree, or two
+  supervisors claiming one piece of work. Measured, not theorised. See
+  [`docs/adoption.md`](docs/adoption.md) §2 — it is the one thing that must be
+  answered before a supervisor's *write* path is cut over.
+- **Nothing reports the build a service is running.** Two machines silently ran
+  different builds, and the older one still had a bug fixed in the newer; the
+  symptom was a stranded prompt that made no sense against the source. The
+  health endpoint should carry a build identifier, and a peer whose build
+  differs should be able to say so.
+- **Binding is single-address.** A service bound only to a tunnel interface is
+  unreachable from its own machine when that tunnel half-fails, and the symptom
+  is indistinguishable from a wedged process. Loopback should always be bound
+  alongside whatever else is. See spec F36.
+- **There are no metrics.** Subprocess spawn cost is known to degrade with host
+  load — 8× idle on a machine at load average 63 (F19) — and nothing measures
+  it in production.
+- **Deadline composition across a hop is unspecified.** Bounded in practice by
+  §13.1's one-hop rule, so it is a correctness gap rather than a live hazard.
+  See spec §14 D7.
 - **Capability declaration cannot say "I don't know yet."** `Capabilities()` is
   synchronous and infallible — fine for a driver describing itself, impossible
   for one describing a peer across a network. An unreached peer is
   indistinguishable from a peer that genuinely supports nothing. Both degrade
   safely, so the cost is diagnostic rather than correctness: a misconfigured
   peer looks like a minimal one forever. This is §5.7 a third time; see spec
-  spec §14 D3.
+  §14 D3.
 - **A subscription's authority is the service's, not the subscriber's.** A
   multiplexed stream serves many callers at once and outlives any of them, so
   there is no single "original caller" whose credential it could present — the
   assumption §13's rule was written on. The service subscribes to peers as
-  itself, using a read-only path, and with one shared token that is a real
-  widening nothing can currently detect. See spec §14 D9.
-- **Auth has no lifecycle.** A static bearer token is specified; issuance,
-  rotation and scoping are not.
+  itself, over a read path only, which bounds the widening to reads but does
+  not remove it: a subscriber sees a peer under the service's authority rather
+  than its own. See spec §14 D9.
+- **Auth has no lifecycle.** Credentials are per principal with per-verb grants
+  and an audit trail, but they are static: issuance, rotation and expiry are
+  unspecified, and adding a principal is editing a config and restarting.
 - **`SourceState` has no member for "reachable but unsupported"** — currently
   squeezed into `degraded`.
 - **Enumeration cost is the real scaling risk, not the network** — and the fix
@@ -246,13 +264,23 @@ Stated plainly so nobody rediscovers them the expensive way.
    has no room for a concept it requires — caller authority, and "capabilities
    unknown". §5.4's corroboration gap is also visibly worse here, exactly as
    predicted: this driver has no sightings of its own to corroborate against.
-4. **Settle the three wire-shape decisions** now that two implementations exist
-   to weigh them against: caller authority as an operation parameter (§6),
-   a corroborating attribute on `SessionRef` (§5.4), and a filter that can name
-   sessions (§5.5).
-5. **A supervisor as a client**, replacing direct terminal-multiplexer access.
+4. ~~**Settle the three wire-shape decisions.**~~ Done, all three: caller
+   authority is an argument of every operation (§2.6), `startedAt` corroborates
+   a destroy (§5.4), and a filter can name sessions (§5.5). Naming turned out
+   to be a cost parameter as much as a correctness one — on this substrate,
+   watching costs a connection per session, so a subscriber that describes
+   instead of naming is charged for the difference.
+5. ~~**Answering, not just observing.**~~ Done. A session can be lost to a
+   question nobody can reach, and `send` cannot answer one by construction —
+   the property that makes it safe for messages makes it useless for control.
+   §3 gained `respond`: enumerated options, a nonce so an answer cannot land on
+   a question that has changed underneath it, and verification that the prompt
+   actually cleared.
+6. **A supervisor as a client**, replacing direct terminal-multiplexer access.
    This is where the value actually lands: until it happens, this is a second
    implementation of session management rather than a replacement for one.
+   Planned in [`docs/adoption.md`](docs/adoption.md) — including the one
+   precondition that cannot be discharged from inside this repository.
 
 ## License
 

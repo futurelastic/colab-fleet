@@ -1587,6 +1587,13 @@ read and written on a common path: **a process that compares "before" against
 "after" must capture "before" prior to anything that can write it — including
 its own instrumentation.**
 
+### Phase 5 — answering, and driving a live agent on another machine
+
+The read path was federated and the write path worked locally. What remained
+was the case the whole layer exists for: an operator on one machine starting an
+agent on another, and getting it past every question it asks before it will do
+any work. Every finding below came from attempting exactly that.
+
 **F31 · A session can be lost to a dialog nobody can reach, and there were
 three of them.** In one working session a supervisor met a folder-trust
 question on every newly created session, a resume-from-summary question on a
