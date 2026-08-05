@@ -67,6 +67,35 @@ version control be the only transport; exclude the worked-on repositories from
 the sync; or keep one machine per repository by discipline. Pick one
 deliberately. The failure mode is silent.
 
+### How it was answered here
+
+Recorded because the shape of the answer generalises, even though the paths do
+not.
+
+**Only the machines that receive dispatched work move out of the synced tree.**
+The race needs *two writers into the shared tree*, not two machines — so the
+host a human works on directly keeps its existing paths, tooling and habits,
+and the dispatch targets get their own checkouts cloned from the forge. The
+synced copy stays where it is on those machines and simply has no writers. That
+asymmetry turns a fleet-wide migration into a change on the hosts that were
+going to be reconfigured anyway.
+
+**Claims moved to the forge rather than to a shared database.** Each supervisor
+had its own local claim store, and the tempting fix — one shared database — is
+a distributed lock in disguise. The issue tracker is *already* shared state that
+every machine talks to, so a claim became an assignment on the issue itself:
+fleet-wide by construction, legible to a human, and no new source of truth. The
+local database keeps caching it and stops being authority.
+
+The general rule: **when two machines need to agree on something, prefer a
+system they both already depend on over a new one built to make them agree.**
+
+One trap worth repeating: the new root's name must not resemble an existing
+synced root. On a case-insensitive filesystem, a path that differs by one
+character from a synced directory will eventually be typed, and it puts a
+working checkout back inside sync — silently, and precisely where the design
+was supposed to have removed it.
+
 ## 3. Stage it so every step is reversible
 
 Ordered so that the cheapest thing that could disprove the plan runs first.
@@ -115,12 +144,13 @@ migration has proven the API.
 ## 4. What must be true before the write cutover
 
 These are not niceties. Each was found the hard way during the work that
-produced Appendix A phases 4 and 5. Three of the four are now done; the one
-that remains is the one this repository cannot do.
+produced Appendix A phases 4 and 5. **All four are now settled** — three by
+changes in this repository, and the fourth by a decision outside it.
 
-1. **The repository/claim question of §2 must have an answer.** ⏳ **Open, and
-   the only genuine blocker.** The write cutover is what makes cross-machine
-   dispatch routine, and nothing in this service can make it safe.
+1. ~~**The repository/claim question of §2 must have an answer.**~~ ✅ Decided
+   — see §2's "How it was answered here". The work it implies is entirely on
+   the supervisor's side of the boundary; nothing in this service changes,
+   which is the non-goals holding.
 2. ~~**Bind loopback as well as any tunnel address.**~~ ✅ Done. Loopback is
    bound automatically on the configured port whenever the configured
    addresses do not already cover it. A service bound only to a tunnel becomes
