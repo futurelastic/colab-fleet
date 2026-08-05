@@ -849,3 +849,31 @@ func TestListCarriesAnAttachHint(t *testing.T) {
 		t.Error("this substrate allows concurrent viewers; saying otherwise makes a supervisor warn about eviction that cannot happen")
 	}
 }
+
+// A multi-line paste is not echoed: the runtime collapses it into a summary,
+// so the bytes just delivered appear nowhere on screen. Matching the text then
+// fails forever and every long message is reported stranded — delivered,
+// honestly refused, and left sitting in the composer. Measured the first time a
+// long message went to a live session.
+func TestCollapsedPasteCountsAsDelivered(t *testing.T) {
+	const rule = "────────────────────"
+	cases := []struct {
+		name    string
+		painted string
+		want    bool
+	}{
+		{"the observed form", rule + "\n❯ [Pasted text #1 +8 lines]\n" + rule, true},
+		{"reworded, still counting lines", rule + "\n❯ [attached 12 lines]\n" + rule, true},
+		{"a bracketed thing that is not a paste", rule + "\n❯ see [the docs] first\n" + rule, false},
+		{"an ordinary typed line", rule + "\n❯ merge it\n" + rule, false},
+		{"empty composer", rule + "\n❯ \n" + rule, false},
+		{"a bracket somewhere else entirely", "transcript [4 lines] here\n" + rule + "\n❯ \n" + rule, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := composerHoldsCollapsedPaste(tc.painted); got != tc.want {
+				t.Errorf("composerHoldsCollapsedPaste = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

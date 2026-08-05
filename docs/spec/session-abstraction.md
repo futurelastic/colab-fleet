@@ -2114,6 +2114,41 @@ wrong label**, and confident-wrong is the direction that gets acted on.
 > bytes it is derived from.** Data an agent controls can be shaped to trigger
 > whatever the automation does next.
 
+**F49 · The runtime does not echo a long message, so confirming delivery by
+reading it back fails on exactly the messages worth sending.** F33's rule —
+confirm on screen before submitting — has held since it was adopted. The first
+time a genuinely long message was sent to a live session it produced:
+
+    outcome: unknown
+    reason:  text was delivered to the composer but did not render in time to
+             be submitted safely; it is sitting there unsent
+
+The text was there. The composer read `[Pasted text #1 +8 lines]`: a
+**multi-line paste is collapsed into a summary**, so the bytes just delivered
+appear nowhere on screen, and a confirmer looking for them waits out its window
+every time.
+
+The failure was safe and honest — it said precisely where the text was, which
+is why it took one capture to diagnose — but it would have stranded **every**
+multi-line message, and long messages are the ones with something to say.
+
+The collapsed marker is itself positive evidence: it says the composer accepted
+a paste. So it is accepted, and matched **structurally** — a bracketed marker
+on the composer line naming a count of lines — rather than by its wording. The
+runtime is free to reword "Pasted text"; it is not free to stop saying how many
+lines it swallowed, because that is the only thing the summary is for.
+
+Worth noting what this is an instance of. Every previous finding about reading
+a screen was about the screen being ambiguous. This one is about the screen
+being **incomplete on purpose**: the interface deliberately does not show what
+it holds. A verifier built on "read back what you wrote" has no answer for an
+interface that summarises, and the fix is to recognise the summary rather than
+to demand the text.
+
+> **When you verify by reading back, ask what the interface does with inputs
+> too large to show. Every UI has a threshold beyond which it stops echoing and
+> starts describing.**
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

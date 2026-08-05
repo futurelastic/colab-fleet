@@ -1195,14 +1195,33 @@ func (d *Driver) confirmLanded(ctx context.Context, paneID, text string) bool {
 	if needle == "" {
 		return true
 	}
+	// A prefix, because the composer wraps and the tail may be off-screen.
 	if len(needle) > 24 {
 		needle = needle[:24]
 	}
+	// ...except when the runtime does not echo the text at all.
+	//
+	// A MULTI-LINE paste is collapsed into a summary — "[Pasted text #1 +8
+	// lines]" — so the bytes just delivered appear nowhere on screen. Matching
+	// the text then fails forever, and every multi-line message is reported
+	// stranded: delivered, honestly refused, and sitting in the composer.
+	//
+	// Measured the first time a long message was sent to a live session, and
+	// it would have been every long message after it.
+	//
+	// The collapsed form is still positive evidence of landing — it says the
+	// composer accepted a paste — so it is accepted as such. It is matched
+	// structurally (a bracketed marker on the composer line naming a count of
+	// lines) rather than by its wording, because the wording is exactly the
+	// kind of prose that changes underneath a matcher.
 	deadline := d.now().Add(submitConfirmWindow)
 	for {
 		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID, "-S", "-6")
-		if err == nil && strings.Contains(stripSGR(string(out)), needle) {
-			return true
+		if err == nil {
+			painted := stripSGR(string(out))
+			if strings.Contains(painted, needle) || composerHoldsCollapsedPaste(painted) {
+				return true
+			}
 		}
 		if d.now().After(deadline) || ctx.Err() != nil {
 			return false
@@ -1213,6 +1232,35 @@ func (d *Driver) confirmLanded(ctx context.Context, paneID, text string) bool {
 		case <-time.After(submitConfirmInterval):
 		}
 	}
+}
+
+// composerHoldsCollapsedPaste reports whether the composer line shows the
+// runtime's summary of a pasted block rather than the pasted text itself.
+//
+// Structural rather than worded: a composer line carrying a bracketed marker
+// that mentions a line count. The runtime is free to reword "Pasted text"; it
+// is not free to stop saying how many lines it swallowed, because that is the
+// only thing the summary is FOR.
+func composerHoldsCollapsedPaste(painted string) bool {
+	for _, line := range strings.Split(painted, "\n") {
+		if !strings.Contains(line, composerRuneMarker) {
+			continue
+		}
+		rest := line[strings.Index(line, composerRuneMarker):]
+		open := strings.Index(rest, "[")
+		if open < 0 {
+			continue
+		}
+		close := strings.Index(rest[open:], "]")
+		if close < 0 {
+			continue
+		}
+		inside := strings.ToLower(rest[open : open+close])
+		if strings.Contains(inside, "line") && strings.ContainsAny(inside, "0123456789") {
+			return true
+		}
+	}
+	return false
 }
 
 // stampSinceLocked fills §2.3's Since: when this status was FIRST observed to
