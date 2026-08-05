@@ -973,7 +973,11 @@ func resolveAmbiguity(st fleet.SessionState, amb ambiguity, prior paneMemory, di
 		blocked := fleet.InferredState(fleet.StatusWaitingInput,
 			"composer holds unsent input; screen unchanged after "+age, nil)
 		blocked.WaitingOn = fleet.WaitingUnsentInput
-		blocked.ComposerDigest = digest
+		// Carried from the unresolved state, which computed it from the
+		// composer text. NOT the screen digest this function was handed —
+		// they fingerprint different things and only one is what discard
+		// compares against.
+		blocked.ComposerDigest = st.ComposerDigest
 		return blocked
 	}
 	return st
@@ -1102,8 +1106,15 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 			"no spinner line; composer present and empty"), ambNoSpinnerEmpty
 
 	case !foundSpinner && hasComposer && pending != "":
-		return fleet.UnknownState(fleet.ConfidenceInferred,
-			"no spinner line; composer holds unsent input"), ambNoSpinnerPending
+		pendingState := fleet.UnknownState(fleet.ConfidenceInferred,
+			"no spinner line; composer holds unsent input")
+		// Computed HERE, where the composer text exists. The resolution path
+		// below has only the screen digest, and publishing that instead made
+		// the field useless: a caller quoted back a fingerprint of the whole
+		// screen while discard compared the text, so a correct call could
+		// never match.
+		pendingState.ComposerDigest = screenDigest(pending)
+		return pendingState, ambNoSpinnerPending
 
 	default:
 		// No composer found. Two very different situations share this

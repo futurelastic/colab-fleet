@@ -904,3 +904,28 @@ func TestWelcomePanelIsNotAStatusLine(t *testing.T) {
 			second.WaitingOn)
 	}
 }
+
+// The digest a caller quotes back must fingerprint the same bytes discard
+// compares. They briefly did not: the resolution path published the whole
+// SCREEN's digest while discard hashed the composer text, so a caller doing
+// everything right was refused every time.
+func TestComposerDigestIsOfTheComposerNotTheScreen(t *testing.T) {
+	const rule = "────────────────────"
+	const pending = "this must never be sent"
+	screenText := "transcript\n" + rule + "\n❯ " + pending + "\n" + rule + "\n"
+
+	t0 := time.Date(2026, 8, 6, 0, 0, 0, 0, time.UTC)
+	_, d := classifyPaneRemembering(screenText, true, true, false, paneMemory{}, t0)
+	prior := paneMemory{known: true, digest: d, at: t0}
+	st, _ := classifyPaneRemembering(screenText, true, true, false, prior, t0.Add(time.Minute))
+
+	if st.ComposerDigest == "" {
+		t.Fatal("no digest published, so the text cannot be discarded safely")
+	}
+	if want := screenDigest(pending); st.ComposerDigest != want {
+		t.Errorf("digest = %s, want %s (the composer text, not the screen)", st.ComposerDigest, want)
+	}
+	if st.ComposerDigest == screenDigest(screenText) {
+		t.Error("the published digest is of the whole screen — discard can never match it")
+	}
+}
