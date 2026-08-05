@@ -80,10 +80,21 @@ func (c *fileConfig) principals() ([]service.Principal, error) {
 	return out, nil
 }
 
+// validGrant is a SECOND list of the grants, and that is the problem with it.
+//
+// Adding GrantRename to the authorization layer left this behind, and the
+// service then refused to start — correctly, fail-closed, but for a config an
+// operator had every reason to think was valid. A grant that exists and cannot
+// be granted is worse than one that does not exist.
+//
+// Kept as an explicit switch rather than a map so the compiler shows this
+// function to anyone adding a member; the real fix would be for the grant set
+// to have one definition, which is worth doing the next time a grant is added.
 func validGrant(g service.Grant) bool {
 	switch g {
 	case service.GrantRead, service.GrantCreate, service.GrantSend,
-		service.GrantInterrupt, service.GrantClose, service.GrantRelay:
+		service.GrantInterrupt, service.GrantClose, service.GrantRename,
+		service.GrantRelay:
 		return true
 	}
 	return false
