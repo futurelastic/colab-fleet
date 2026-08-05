@@ -294,6 +294,49 @@ highlighted", which is what a human pressing Enter gets and what a caller
 usually means. `cancel` exists because a caller that likes none of the options
 needs a way to say so other than picking one anyway.
 
+### 2.8 AttachHint
+
+```
+AttachHint {
+  kind      : string      // "multiplexer"; unknown kinds are unsupported, not guessed
+  target?   : string      // the substrate's own handle for this session
+  command?  : string[]    // argv, run ON THIS SESSION'S MACHINE, to take over
+  readOnly? : string[]    // the same attachment, without a keyboard
+  shared?   : boolean     // attaching does not evict another viewer
+}
+```
+
+Optional on `Session`. Absent means the driver has no answer, which is a real
+answer (§5.7) and the correct one for a substrate with no interactive
+attachment.
+
+**Why this is in the model at all.** Every other thing a supervisor does to a
+session — read it, drive it, answer it, end it — is expressible without knowing
+what the substrate is. One was not: giving a *human* a terminal. A supervisor
+that still shells out to a multiplexer for that has not been freed of the
+substrate, it has been freed of it everywhere except where its users touch.
+This is the difference between a driver boundary and a leak.
+
+**Why a hint and not an operation.** There is deliberately no `attach` in §3.
+Attaching gives a terminal to a person, and no person is on the far end of this
+API — an HTTP request is. A service that "attached" could only attach something
+of its own, which is either useless or an impersonation.
+
+**Why local argv and no remote form.** The service knows the machine it runs
+on; it does not know how a caller reaches that machine. Synthesising a remote
+invocation would assert a network topology it cannot see — the same reason §7.2
+requires a peer's address to be one the operator confirmed rather than the
+peer's own idea of its name. The client composes remoteness, because the client
+is the one that knows it.
+
+Argv rather than a command string, because session ids are operator-chosen and
+routinely contain emoji and spaces; a string invites interpolation into a shell
+and the quoting bug that follows.
+
+**`readOnly` is not a nicety.** A supervisor offering "watch" and "take over"
+as the same button will corrupt somebody's session by leaning on a keyboard.
+A client that cannot tell the two apart offers the dangerous one.
+
 ---
 
 ## 3. Operations

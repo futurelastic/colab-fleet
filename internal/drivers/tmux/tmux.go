@@ -537,6 +537,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			StartedAt:  &started,
 			Runtime:    d.runtime,
 			Cwd:        fleet.AbsolutePath(r.cwd),
+			Attach:     d.attachHint(r.session),
 			State:      st,
 		}
 		if !matchesFilter(s, filter) {
@@ -1198,6 +1199,57 @@ func (d *Driver) confirmLanded(ctx context.Context, paneID, text string) bool {
 // that is the number a human needs and the one that distinguishes "somebody is
 // typing" from "nobody is ever coming back". A caller reading `since` can
 // compute it; a caller reading a log line cannot.
+// attachHint describes how a person gets a terminal onto this session (§2.8).
+//
+// The binary path is this machine's, resolved the same way every other
+// invocation resolves it — which matters, because the reason FLEET_TMUX_BIN
+// exists is that a non-interactive shell on these machines does not have the
+// multiplexer on PATH. A hint containing a bare "tmux" would work when tested
+// interactively and fail exactly where a supervisor would run it.
+//
+// No remote form is produced. This driver knows the machine it runs on; it
+// does not know how a caller reaches that machine, and inventing an ssh line
+// would be this service asserting a network topology it cannot see (§7.2).
+func (d *Driver) attachHint(session string) *fleet.AttachHint {
+	bin := d.attachBin()
+	return &fleet.AttachHint{
+		Kind:   "multiplexer",
+		Target: session,
+		// -t takes the name verbatim; ids here routinely contain emoji and
+		// spaces, which is why this is argv and not a command string.
+		Command: []string{bin, "attach-session", "-t", session},
+		// -r attaches read-only: the viewer sees the session and cannot type
+		// into it. This is the one a supervisor should offer for "watch",
+		// because the read-write attachment shares a real keyboard with
+		// whatever the agent is doing.
+		ReadOnly: []string{bin, "attach-session", "-r", "-t", session},
+		// The multiplexer permits many concurrent clients on one session, so
+		// attaching never evicts anyone.
+		Shared: true,
+	}
+}
+
+// attachBin resolves the multiplexer to an absolute path for the hint.
+//
+// The driver itself can run a bare "tmux" because whatever PATH it inherited
+// resolved it. A hint is executed somewhere else entirely — possibly by a
+// supervisor's non-interactive shell, which on these machines gets a bare PATH
+// that does not include the package manager's prefix. Handing out a name that
+// works here and not there would produce a hint that fails only in production,
+// which is the same trap FLEET_TMUX_BIN exists for.
+//
+// Falls back to the configured value when resolution fails: a name is a worse
+// answer than a path, and still better than nothing.
+func (d *Driver) attachBin() string {
+	if filepath.IsAbs(d.bin) {
+		return d.bin
+	}
+	if resolved, err := exec.LookPath(d.bin); err == nil {
+		return resolved
+	}
+	return d.bin
+}
+
 // memoryLocked returns what the driver remembers of a pane's last screen.
 // Caller holds d.mu.
 func (d *Driver) memoryLocked(id string) paneMemory {

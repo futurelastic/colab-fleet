@@ -4,8 +4,10 @@ Concrete wire protocol for the model in
 [`session-abstraction.md`](session-abstraction.md). Where the two disagree, the
 abstraction wins and this document is the bug.
 
-**Status:** draft, unimplemented. The `/v1` prefix is aspirational — the surface
-is not stable and will change without ceremony until a driver has proven it.
+**Status:** implemented and running, across two machines. The surface is not
+frozen — it has changed several times under contact with a real driver, and it
+will change again — but it is no longer aspirational: every endpoint below is
+served, and the federated ones have been exercised peer to peer.
 
 ---
 
@@ -156,9 +158,20 @@ reaches a command line (§5.3).
 GET /v1/machines/{machine}/sessions/{id}?runtime=
 → 200 { "machine": "...", "id": "...", "name": "...", "runtime": "...",
         "cwd": "...", "agent": "...", "model": "...", "startedAt": "...",
+        "attach": { "kind": "multiplexer", "target": "...",
+                    "command": ["...", "..."], "readOnly": ["...", "..."],
+                    "shared": true },
         "state": { "status": "working", "confidence": "inferred",
                    "evidence": "...", "since": "..." } }
 ```
+
+`attach` (§2.8) is how a **human's** terminal reaches the session. `command` is
+argv to run *on that session's machine*; the client composes any remoteness
+itself, because this service knows which machine it is and not how you reach
+it. Prefer `readOnly` whenever the user asked to watch rather than to take
+over — the two are different attachments, and offering the wrong one shares a
+live keyboard with a running agent. Absent means the driver has no answer,
+which is a real answer (§5.7).
 
 `runtime` is an **optional** query parameter on every single-session endpoint
 (`GET`, `input`, `interrupt`, `DELETE`). A session `id` is scoped to

@@ -784,3 +784,43 @@ func TestRecentUnsentInputDoesNotShoutAboutAge(t *testing.T) {
 		t.Errorf("evidence = %q; thirty seconds is somebody typing", got.Evidence)
 	}
 }
+
+// The abstraction is only complete if a client never has to know what the
+// substrate is — including for the one job a supervisor's users touch
+// directly, which is putting a terminal in front of a session.
+func TestListCarriesAnAttachHint(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var h *fleet.AttachHint
+	for _, s := range col.Items() {
+		if s.ID == "alpha💬" {
+			h = s.Attach
+		}
+	}
+	if h == nil {
+		t.Fatal("no attach hint; a client would have to know this is a multiplexer")
+	}
+	if h.Target != "alpha💬" {
+		t.Errorf("target = %q, want the session's own handle", h.Target)
+	}
+	if len(h.Command) == 0 || len(h.ReadOnly) == 0 {
+		t.Fatal("both a take-over and a watch form are needed; a client that cannot tell them apart offers the dangerous one")
+	}
+	// Argv, not a shell string: this id contains an emoji, and a caller
+	// interpolating it into a shell is a quoting bug waiting to happen.
+	last := h.Command[len(h.Command)-1]
+	if last != "alpha💬" {
+		t.Errorf("command should end with the verbatim id, got %q", last)
+	}
+	if h.Command[0] == "tmux" {
+		t.Error("hint must carry the resolved binary path; a bare name fails in the non-interactive shell a supervisor runs it from")
+	}
+	if !h.Shared {
+		t.Error("this substrate allows concurrent viewers; saying otherwise makes a supervisor warn about eviction that cannot happen")
+	}
+}

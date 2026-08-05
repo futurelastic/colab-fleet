@@ -79,5 +79,14 @@ type Session struct {
 	// substrate records it.
 	StartedAt *Timestamp `json:"startedAt,omitempty"`
 
+	// Attach is how a human's terminal reaches this session, if the driver
+	// knows (§2.8). Nil means it does not — a real answer, and the one a
+	// driver over a substrate with no interactive attachment must give.
+	//
+	// It is on Session rather than SessionRef because a ref is an address and
+	// this is a capability: two sessions with the same shape of id may be
+	// attachable by entirely different means.
+	Attach *AttachHint `json:"attach,omitempty"`
+
 	State SessionState `json:"state"`
 }
