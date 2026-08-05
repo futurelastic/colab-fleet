@@ -62,6 +62,46 @@ Three behaviours that are awkward without a session service, and fall out here:
   session that inherited a recycled id.
 - It sends an idempotency key on every create.
 
+## `fcode-ui.zsh` — the incumbent's UI, this service underneath
+
+`fcode.zsh` above has its own small interface, which makes it a poor instrument
+for judging the session layer: you end up comparing two interfaces at once.
+
+This file takes the other approach. It keeps the launcher you already use —
+picker, folder browser, grouping, naming rules, keybindings — and replaces only
+the functions that talk to the multiplexer.
+
+```sh
+source /path/to/your/launcher.zsh    # unchanged
+source clients/fcode-ui.zsh
+fcode                                # same UI, fleet underneath
+```
+
+The incumbent's own commands keep working: every override delegates to the
+original unless `FCODE_ACTIVE` is set, and only `fcode` sets it.
+
+**Verified identical.** Driving the launcher's own tree builder from both
+layers, restricted to one machine, produced byte-identical picker rows. Widen
+it to the fleet and the same UI renders 90 sessions across two machines instead
+of 25 — the tree, the counts and the grouping all still the launcher's.
+
+Three seams were enough:
+
+| seam | before | after |
+|---|---|---|
+| listing | one `tmux ls` on one host | one HTTP call covering every machine |
+| attach | `tmux attach` | the argv the owning machine reports, run here or over ssh |
+| kill | `tmux kill-session` | corroborated by start time, routed to the right machine |
+
+The picker calls two of those **inline** rather than through a function, so the
+multiplexer command itself is shimmed while `fcode` runs. That is not a trick
+around the design; it is the boundary being replaced, which is why so little
+code was needed.
+
+**Not routed, deliberately:** `new` still uses the incumbent's spawn path,
+which builds a richer command than the driver's, and `rename` has no operation
+in the API at all — a real gap, recorded rather than faked.
+
 ### Three zsh names that are not free
 
 Written down because all three were hit while building this, and each fails
