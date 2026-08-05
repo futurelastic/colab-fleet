@@ -1909,6 +1909,22 @@ compatibility contract:
 > Prefer the ones that carry meaning — a structure, a role — over the ones that
 > carry style, because style is exactly what a UI is free to animate.**
 
+**F43 · The attach hint immediately justified itself: the two machines do not
+agree on where the binary is.** The first fleet-wide read carrying §2.8 hints
+showed one machine answering `/opt/homebrew/bin/tmux` and the other
+`/usr/local/bin/tmux` — different package-manager prefixes, because the two
+hosts are different architectures.
+
+A client composing its own attach command would have had to know that, per
+machine, and would have been silently wrong on one of them the moment the fleet
+stopped being homogeneous. The service knows because it is *on* that machine
+and already had to resolve the binary to run at all.
+
+Which is the general argument for putting this in the model rather than leaving
+it to callers: **the facts a client would have to hardcode are exactly the
+facts the machine already knows about itself.** Every one it hardcodes is a
+place the fleet is not allowed to be heterogeneous.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

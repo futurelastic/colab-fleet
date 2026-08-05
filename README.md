@@ -21,9 +21,15 @@ other machines. Supervisors become clients.
 >
 > A driver over a terminal multiplexer running an interactive agent CLI
 > implements the read path, the write path and the answer path, and has been
-> exercised against 22 concurrent live sessions. It reports a full fleet view —
-> with differentiated per-session state — in ~30ms, using a constant number of
-> subprocess spawns rather than one per session.
+> exercised against 93 concurrent live sessions across two machines. It reports
+> a full fleet view — with differentiated per-session state — in ~30ms, using a
+> constant number of subprocess spawns rather than one per session.
+>
+> **Nothing in that fleet reads `unknown`.** It was 11% until two screen-reading
+> bugs were found by asking why: one screen shape that a single capture
+> genuinely cannot settle (fixed by looking twice rather than by guessing), and
+> a status line whose leading glyph turned out to be an animation frame — five
+> were in use at one instant, and the detector matched one of them.
 >
 > Event subscription is live over the substrate's own push channel and served
 > as SSE with cursors, epoch, retention and announced resync — no polling
