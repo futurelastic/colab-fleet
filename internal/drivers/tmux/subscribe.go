@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"strings"
 	"sync"
@@ -99,6 +100,17 @@ type ctlConn interface {
 	Notes() <-chan ctlNote
 	Close() error
 }
+
+// maxContentClients bounds how many per-session control clients ONE
+// subscription may open.
+//
+// The number is chosen against the multiplexer server's descriptor budget,
+// not against this process's: a server holding ~80 descriptors idle was
+// pushed past its limit by 62 of these, and the failure surfaced as every
+// new client being refused — including a human's terminal. 16 leaves an
+// order of magnitude of headroom for several concurrent subscribers plus
+// everything else on the machine.
+const maxContentClients = 16
 
 // ctlDialer opens a control-mode client attached to one session. Injected
 // so tests can drive subscription logic without spawning a multiplexer.
@@ -288,9 +300,41 @@ func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver
 	// only those. This is where filter granularity turns into cost: one
 	// connection per watched session, so a caller that named two sessions
 	// opens two, not one per session on the machine.
+	//
+	// Bounded, because the cost is not paid in this process. Each client is a
+	// connection to a multiplexer server that other tools — launchers,
+	// supervisors, a human's terminal — also depend on, and that server has a
+	// file-descriptor budget shared by all of them. An unbounded subscription
+	// therefore does not degrade itself, it degrades the MACHINE: measured
+	// during an incident where one forgotten subscriber held 62 clients on a
+	// 69-session host, exhausted the server's descriptors, and left every new
+	// attach failing with "server exited unexpectedly" — while every session
+	// was in fact alive and healthy.
+	//
+	// Capping is safe because of how this driver uses notifications. They are
+	// triggers, never data: ANY notification causes a full enumerate-and-diff
+	// across every session (see "push-triggered pull"). So watching a subset
+	// still detects changes everywhere; what degrades is latency on sessions
+	// that are quiet while the watched ones are also quiet — and lifecycle
+	// events, which are global, are unaffected either way.
+	//
+	// A caller that names sessions gets exactly those, up to the cap, because
+	// naming is a statement about what matters.
+	opened := 0
 	for _, r := range rows {
 		if !filter.Matches(r.session, r.cwd) {
 			continue
+		}
+		if opened >= maxContentClients {
+			// Said out loud rather than silently truncated: a subscriber
+			// that believes it has per-session triggers for everything and
+			// does not is exactly the "confident report on evidence the
+			// reporter manufactured" this project keeps meeting.
+			log.Printf("tmux: subscription watching %d sessions, capped at %d content clients; "+
+				"changes are still detected fleet-wide (notifications are triggers, not data), "+
+				"latency may rise for unwatched sessions",
+				len(rows), maxContentClients)
+			break
 		}
 		conn, err := d.dial(streamCtx, d.bin, r.session)
 		if err != nil {
@@ -299,6 +343,7 @@ func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver
 		s.mu.Lock()
 		s.conns[r.session] = conn
 		s.mu.Unlock()
+		opened++
 		go pump(conn.Notes(), trigger, isContentNote, streamCtx)
 	}
 	s.mu.Lock()
@@ -558,6 +603,16 @@ func (s *eventStream) attachContent(ctx context.Context, sess fleet.Session) {
 		return
 	}
 	if !s.filter.Matches(sess.ID, string(sess.Cwd)) {
+		return
+	}
+	// The same bound as Subscribe's initial pass, and this is the path that
+	// actually matters over time: a subscription held for hours meets every
+	// session the machine ever creates. Capping only the initial pass would
+	// bound the wrong thing — the fleet at t=0 rather than the fleet's
+	// accumulated history — and the leak would simply arrive more slowly.
+	//
+	// conns includes the lifecycle client, hence the +1.
+	if len(s.conns) >= maxContentClients+1 {
 		return
 	}
 	conn, err := s.d.dial(ctx, s.d.bin, sess.ID)

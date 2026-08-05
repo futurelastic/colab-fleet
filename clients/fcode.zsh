@@ -48,13 +48,16 @@ _fc_curl() {
   local token
   [[ -r $FLEET_TOKEN_FILE ]] || { print -u2 "fcode: no token at $FLEET_TOKEN_FILE"; return 2 }
   token="$(<$FLEET_TOKEN_FILE)"
-  local -a args=(-sS -m 20 -X "$method"
-    -H "Authorization: Bearer ${token//[$'\t\r\n ']}"
+  # The token goes in a curl config file on stdin, never in argv: anything in
+  # argv is visible in `ps` to every process on the machine, and this one was
+  # caught sitting in plain sight during an incident.
+  local -a args=(-sS -m 20 -X "$method" --config -
     -H "Content-Type: application/json"
     -w '\n%{http_code}')
   [[ -n $body ]] && args+=(-d "$body")
   [[ -n $4 ]] && args+=(-H "$4")
-  curl "${args[@]}" "${FLEET_URL}${route}" 2>/dev/null
+  print -r -- "header = \"Authorization: Bearer ${token//[$'\t\r\n ']}\"" |
+    curl "${args[@]}" "${FLEET_URL}${route}" 2>/dev/null
 }
 
 # _fc_get ROUTE → body on stdout, 0 on 2xx.
@@ -265,8 +268,25 @@ except Exception: print("(no body)")')"
 fcode_watch() {
   local token; token="$(<$FLEET_TOKEN_FILE)"
   print -u2 "fcode: watching ${FLEET_URL} — transitions only, silence is normal. ^C to stop."
-  curl -sN -H "Authorization: Bearer ${token//[$'\t\r\n ']}" -H "Accept: text/event-stream" \
-    "${FLEET_URL}/v1/events" | _fc_py '
+  # A subscription is not free on the far side: watching everything opens one
+  # helper per session on every machine in the fleet, and those helpers hold
+  # file descriptors on a multiplexer shared with whatever else uses it. A
+  # curl that outlives its shell therefore does not just leak a process — it
+  # can exhaust the multiplexer and lock out every other tool on that host.
+  # Measured, during an incident this exact function caused.
+  #
+  # So: curl writes into a fifo in the background, the formatter reads the
+  # fifo in the foreground, and a trap kills curl on every exit path. Piping
+  # curl directly would leave no pid to kill; `wait`ing on it would not carry
+  # its output through the pipe.
+  local fifo pid
+  fifo="$(mktemp -u -t fcode-watch)"
+  mkfifo "$fifo" || return 1
+  trap 'kill $pid 2>/dev/null; rm -f "$fifo"' INT TERM EXIT HUP
+  print -r -- "header = \"Authorization: Bearer ${token//[$'\t\r\n ']}\"" |
+    curl -sN --config - -H "Accept: text/event-stream" "${FLEET_URL}/v1/events" > "$fifo" &
+  pid=$!
+  _fc_py '
 import sys, json, datetime
 for line in sys.stdin:
     if not line.startswith("data: "): continue
@@ -279,7 +299,7 @@ for line in sys.stdin:
         print(f"{now}  RESYNC — your view is stale, re-list", flush=True)
     else:
         mach = ev.get("machine", "?")
-        print(f"{now}  {mach:<11} {k:<16} {sid} {st}", flush=True)'
+        print(f"{now}  {mach:<11} {k:<16} {sid} {st}", flush=True)' < "$fifo"
 }
 
 # ── health ──────────────────────────────────────────────────────────────────

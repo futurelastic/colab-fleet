@@ -521,3 +521,46 @@ func TestFilterSelectorsCompose(t *testing.T) {
 		}
 	}
 }
+
+// A subscription's cost is paid by a multiplexer server that other tools
+// share. One forgotten subscriber once held 62 clients on a 69-session host,
+// exhausted the server's descriptors, and made every new attach fail while
+// every session was alive — so this bound is a safety property, not a tuning
+// knob.
+func TestSubscribeCapsContentClients(t *testing.T) {
+	f := twoSessions()
+	for i := 0; i < 60; i++ {
+		id := "%" + intToStr(500+i)
+		f.sessions = append(f.sessions, fakeSession{
+			name: "big" + intToStr(i), paneID: id, cwd: "/w", pid: 5000 + i, created: 1785600002,
+		})
+		f.captures[id] = idleFixtureFor("big" + intToStr(i))
+	}
+	d := newTestDriver(f)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, err := d.Subscribe(ctx, testCaller, driver.SubscribeFilter{})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer stream.Close()
+
+	es, ok := stream.(*eventStream)
+	if !ok {
+		t.Fatalf("unexpected stream type %T", stream)
+	}
+	es.mu.Lock()
+	n := len(es.conns)
+	es.mu.Unlock()
+
+	// conns also holds the single lifecycle client, which is per subscription
+	// rather than per session and is not what the cap governs.
+	if n > maxContentClients+1 {
+		t.Errorf("opened %d clients for %d sessions; cap is %d(+1 lifecycle) — an unbounded "+
+			"subscription exhausts a server other tools depend on", n, len(f.sessions), maxContentClients)
+	}
+	if n == 0 {
+		t.Error("capped to nothing; a subscription with no content clients loses its change triggers")
+	}
+}
