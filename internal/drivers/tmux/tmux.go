@@ -214,6 +214,10 @@ type observation struct {
 	// somebody is still composing.
 	status      fleet.Status
 	statusSince time.Time
+	// sinceRestored marks a statusSince that came from disk rather than from
+	// an observation this instance made. It travels with the observation so
+	// the provenance is not lost the moment the value is cached in memory.
+	sinceRestored bool
 
 	// digest fingerprints the screen this observation classified, so the
 	// next one can tell "unchanged" from "changed" without keeping the pane
@@ -545,7 +549,12 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		}
 		sessions = append(sessions, s)
 	}
+	obs := make(map[string]observation, len(d.observed))
+	for k, v := range d.observed {
+		obs[k] = v
+	}
 	d.mu.Unlock()
+	d.noteStatuses(obs)
 
 	count := len(sessions)
 	src := fleet.SourceStatus{
@@ -1427,8 +1436,17 @@ func (d *Driver) memoryLocked(id string) paneMemory {
 
 func (d *Driver) stampSinceLocked(id string, st fleet.SessionState, now time.Time) fleet.SessionState {
 	since := now
+	restored := false
 	if prior, ok := d.observed[id]; ok && prior.status == st.Status && !prior.statusSince.IsZero() {
 		since = prior.statusSince
+		restored = prior.sinceRestored
+	} else if rec, ok := d.persistedRecord(id); ok &&
+		rec.Status == string(st.Status) && !rec.StatusSince.IsZero() {
+		// No in-memory sighting, but the same status was recorded before this
+		// instance started. Carrying it is the difference between reporting a
+		// 14-hour stall and reporting the service's own uptime.
+		since = rec.StatusSince
+		restored = true
 	}
 	st.Since = &since
 
@@ -1437,7 +1455,22 @@ func (d *Driver) stampSinceLocked(id string, st fleet.SessionState, now time.Tim
 			st.Evidence += "; unchanged for " + age.Round(time.Minute).String()
 		}
 	}
+	// Say where the number came from. §5.2 forbids presenting inference as
+	// observation, and an age this instance did not measure is exactly that —
+	// the value is worth keeping, the provenance is not optional.
+	if restored {
+		st.Evidence += " (age carried from before this service restarted)"
+	}
 	return st
+}
+
+// persistedRecord reads one session's durable record. Caller holds d.mu.
+func (d *Driver) persistedRecord(id string) (sessionRecord, bool) {
+	if d.store == nil {
+		return sessionRecord{}, false
+	}
+	rec, ok := d.loadRecords()[id]
+	return rec, ok
 }
 
 // promptCleared waits briefly for the answered prompt to leave the screen.

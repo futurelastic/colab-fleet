@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/godx-jp/colab-fleet/internal/state"
 )
 
 func listAll() driver.ListFilter { return driver.ListFilter{} }
@@ -153,5 +155,61 @@ func TestRecordsAreWrittenOnChangeNotOnEveryRead(t *testing.T) {
 	}
 	if after := statMod(t, dir); after.Equal(before) {
 		t.Error("a changed session set did not update the records file")
+	}
+}
+
+// `since` is the discriminator this service added so nobody has to probe a
+// pane to tell "somebody is mid-thought" from "nobody is coming back" (F34).
+// It resets on restart unless the value survives — and restarts are how this
+// service is deployed, so a 14-hour stall silently reads as minutes old.
+func TestSinceSurvivesARestart(t *testing.T) {
+	dir := t.TempDir()
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent // beta holds unsent operator text
+
+	// A service instance sees it, some time ago.
+	early := time.Unix(1785600100, 0)
+	d1 := New("testbox", withExec(f.exec), WithState(store),
+		withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return early }))
+	if _, err := d1.List(context.Background(), testCaller, driver.ListFilter{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A NEW instance — same store, no in-memory history — reads it much later.
+	late := early.Add(14 * time.Hour)
+	d2 := New("testbox", withExec(f.exec), WithState(store),
+		withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return late }))
+	col, err := d2.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var found bool
+	for _, s := range col.Items() {
+		if s.ID != "beta" {
+			continue
+		}
+		found = true
+		if s.State.Since == nil {
+			t.Fatal("no since at all")
+		}
+		age := late.Sub(*s.State.Since)
+		if age < 13*time.Hour {
+			t.Errorf("age = %s, want ~14h — the restart reset it, which is the bug", age)
+		}
+		// §5.2: an age this instance did not measure must not pass as one it did.
+		if !strings.Contains(s.State.Evidence, "restart") {
+			t.Errorf("evidence does not say the age is second-hand: %q", s.State.Evidence)
+		}
+	}
+	if !found {
+		t.Fatal("beta missing from the listing")
 	}
 }

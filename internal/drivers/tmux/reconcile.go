@@ -47,6 +47,21 @@ type sessionRecord struct {
 	Cwd       string    `json:"cwd"`
 	FirstSeen time.Time `json:"firstSeen"`
 	LastSeen  time.Time `json:"lastSeen"`
+
+	// Status and StatusSince persist §8's `since` across a restart.
+	//
+	// Without them a restarted service stamps `now` the first time it
+	// classifies, and every long-held state reads as freshly entered — a
+	// 14-hour abandonment becomes "unchanged for 10m", which is the age of
+	// the PROCESS. That number is what a rescue ladder and a sweep key on,
+	// the error points the wrong way (always too fresh), and restarts are
+	// how this service is deployed.
+	//
+	// A restored value is second-hand: this instance did not observe it, and
+	// §5.2 forbids presenting inference as observation. So it is carried, and
+	// the state says where the number came from.
+	Status      string    `json:"status,omitempty"`
+	StatusSince time.Time `json:"statusSince,omitempty"`
 }
 
 type sessionsFile struct {
@@ -189,6 +204,43 @@ func (d *Driver) noteSessionSet(rows []paneRow) {
 		}
 		rec.LastSeen = now
 		next[r.session] = rec
+	}
+	if !changed {
+		return
+	}
+	d.saveRecords(next)
+}
+
+// noteStatuses persists each session's status and the time it was first seen
+// to hold, so §8's `since` survives a restart.
+//
+// Written only when something CHANGED, exactly like noteSessionSet: a status
+// that has not moved needs no write, and a fleet at rest must not turn every
+// read into a disk write. Status transitions are rare — they are the same
+// events the event plane publishes — so this costs a write per transition
+// rather than per read.
+func (d *Driver) noteStatuses(obs map[string]observation) {
+	if d.store == nil {
+		return
+	}
+	prior := d.loadRecords()
+	next := make(map[string]sessionRecord, len(prior))
+	changed := false
+	for id, rec := range prior {
+		o, live := obs[id]
+		if !live {
+			// Keep the record: a session missing from THIS read may simply
+			// have been filtered out, and §12 decides what absence means, not
+			// this function.
+			next[id] = rec
+			continue
+		}
+		if rec.Status != string(o.status) || !rec.StatusSince.Equal(o.statusSince) {
+			rec.Status = string(o.status)
+			rec.StatusSince = o.statusSince
+			changed = true
+		}
+		next[id] = rec
 	}
 	if !changed {
 		return
