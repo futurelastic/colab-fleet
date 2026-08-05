@@ -52,8 +52,32 @@
 : ${FLEET_TOKEN_FILE:=$HOME/.config/colab-fleet/token}
 : ${FLEET_SSH_FMT:=ssh -t %s}
 
-typeset -gA _fcode_machine_of      # session id → machine that holds it
+typeset -gA _fcode_machine_of      # cache only: id → machine. NEVER depended on.
 typeset -g  _fcode_partial=0       # was the last listing missing a machine?
+
+# _fcode_machine_for NAME → the machine holding that session, or empty.
+#
+# # Why this asks the service instead of reading a map
+#
+# The launcher loads its session list as `... <<< "$(_ccode_sessions_rooted)"`.
+# Command substitution runs in a SUBSHELL, so anything the producer records in
+# a global — like a name→machine map — is discarded the moment it returns. The
+# rows survive because they travel on stdout; nothing else does.
+#
+# That cost a working attach: the picker showed the session, and attaching
+# reported not knowing which machine held it. The lesson is not "populate the
+# map differently" but "do not keep state across a boundary the caller is free
+# to put a subshell on". Asking is one request and cannot go stale.
+_fcode_machine_for() {
+  local name="$1"
+  [[ -n ${_fcode_machine_of[$name]:-} ]] && { print -r -- "${_fcode_machine_of[$name]}"; return }
+  _fcode_body GET "/v1/sessions?scope=fleet" | python3 -c '
+import sys, json
+want = sys.argv[1]
+for s in json.load(sys.stdin).get("items", []):
+    if s.get("id") == want:
+        print(s.get("machine","")); break' "$name"
+}
 
 # ── keep the originals, once ────────────────────────────────────────────────
 if (( ! $+functions[_fcode_orig_sessions_rooted] )); then
@@ -151,10 +175,11 @@ for s in d.get("items", []):
 _ccode_local_attach() {
   (( ${FCODE_ACTIVE:-0} )) || { _fcode_orig_local_attach "$@"; return }
   emulate -L zsh
-  local name="$1" machine="${_fcode_machine_of[$1]:-}"
+  local name="$1" machine
+  machine="$(_fcode_machine_for "$name")"
 
   if [[ -z $machine ]]; then
-    print -u2 "fcode: don't know which machine holds \"$name\" — re-open the picker"
+    print -u2 "fcode: no session named \"$name\" anywhere in the fleet"
     return 1
   fi
 
@@ -199,7 +224,8 @@ _ccode_local() {
     _fcode_orig_local "$@"
     return
   fi
-  local name="$2" machine="${_fcode_machine_of[$2]:-}"
+  local name="$2" machine
+  machine="$(_fcode_machine_for "$name")"
   [[ -z $machine ]] && { _fcode_orig_local "$@"; return }
 
   local enc started
@@ -240,7 +266,7 @@ tmux() {
       # -t "=NAME" pins an exact name; strip the pin to look the session up.
       [[ $2 == -t && -n $3 ]] || { command tmux "$@"; return }
       target="$3"; name="${target#=}"
-      machine="${_fcode_machine_of[$name]:-}"
+      machine="$(_fcode_machine_for "$name")"
       # Unknown to the fleet view → let the real binary answer, so a session
       # this client never saw behaves exactly as it does today.
       [[ -z $machine ]] && { command tmux "$@"; return }

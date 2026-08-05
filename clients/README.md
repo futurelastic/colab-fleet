@@ -102,6 +102,19 @@ code was needed.
 which builds a richer command than the driver's, and `rename` has no operation
 in the API at all — a real gap, recorded rather than faked.
 
+### And a fourth zsh trap: state does not survive a subshell
+
+The launcher loads sessions as `... <<< "$(_ccode_sessions_rooted)"`. Command
+substitution runs in a **subshell**, so a producer that records anything in a
+global — a name→machine map, a count, a flag — sees it discarded on return.
+Only what goes to stdout survives.
+
+This shipped as a working picker with a broken attach: the session was listed,
+and attaching reported not knowing which machine held it. The fix is not a
+better way to populate the map; it is to **stop keeping state across a boundary
+the caller is free to put a subshell on.** The machine is now looked up on
+demand — one request, cannot go stale, cannot be lost.
+
 ### Three zsh names that are not free
 
 Written down because all three were hit while building this, and each fails
