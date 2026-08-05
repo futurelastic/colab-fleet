@@ -467,47 +467,71 @@ func numberedOption(line string) (int, string, bool) {
 //
 // # This is prose matching, and that is the point
 //
-// Everything else in this file avoids matching the runtime's words, because
-// words change and a matcher built on them stays one release behind. This
+// Everything else in this file avoids matching the runtime's words. This
 // function does the opposite deliberately, for one reason: the alternative is
 // not "no prose matching" — it is prose matching in every client that wants to
-// answer a prompt safely, which is the same fragility multiplied.
+// answer a prompt safely, which is the same fragility multiplied. Quarantining
+// it here means it fails to EMPTY, and one place needs fixing when the runtime
+// rewords a screen.
 //
-// Quarantining it here costs one function and buys three properties clients
-// cannot get on their own:
+// # It reads the OPTIONS only. Never the question.
 //
-//   - it fails to EMPTY rather than to a wrong label (§5.7);
-//   - when the runtime rewords a screen, one place needs fixing;
-//   - a caller filtering on a known kind is safe by construction, because an
-//     unrecognised prompt simply never matches its filter.
+// This rule was learned in production, twenty minutes after the first version
+// shipped. A ship-decision prompt was labelled bypass-permissions because the
+// AGENT had written "No auth bypass" in its question text — and a client
+// filtering on that kind would have auto-answered somebody's merge decision.
 //
-// Matched on the OPTIONS rather than the question text: the question is best
-// effort and often absent, while the options are the thing being chosen
-// between and are what a caller answers by index.
+// The question is written by the agent. The options of a RUNTIME dialog are
+// fixed strings the runtime emits. Matching agent-authored text is not merely
+// fragile, it is injectable: an agent that writes "resume from summary" in its
+// own question could have its decision auto-answered by a client that trusts
+// the kind. Only the runtime's own option text is eligible.
+//
+// # And a question the agent asked is never a runtime dialog
+//
+// When an agent asks its own question, the runtime appends affordances no
+// runtime dialog has — an escape hatch to type freely, or to chat instead.
+// Their presence is a structural tell that this prompt belongs to the agent,
+// and it disqualifies classification outright rather than being weighed.
 func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
 	if p == nil || len(p.Options) == 0 {
 		return ""
 	}
-	joined := strings.ToLower(strings.Join(p.Options, " | ") + " | " + p.Question)
-	has := func(needles ...string) bool {
-		for _, n := range needles {
-			if !strings.Contains(joined, n) {
-				return false
+	lower := make([]string, 0, len(p.Options))
+	for _, o := range p.Options {
+		lower = append(lower, strings.ToLower(o))
+	}
+	// Agent-authored question → not a runtime dialog, whatever it resembles.
+	for _, o := range lower {
+		if strings.HasPrefix(o, "type something") || strings.HasPrefix(o, "chat about") {
+			return ""
+		}
+	}
+	// All needles must appear in ONE option. Spreading them across the set
+	// is how unrelated words combine into a false match.
+	hasOption := func(needles ...string) bool {
+		for _, o := range lower {
+			all := true
+			for _, n := range needles {
+				if !strings.Contains(o, n) {
+					all = false
+					break
+				}
+			}
+			if all {
+				return true
 			}
 		}
-		return true
+		return false
 	}
 	switch {
-	case has("resume", "summary"):
+	case hasOption("resume", "summary"):
 		return fleet.PromptResumeChooser
-	case has("trust", "folder"):
+	case hasOption("trust", "folder"):
 		return fleet.PromptFolderTrust
-	case has("bypass"):
+	case hasOption("bypass", "permissions"):
 		return fleet.PromptBypassAcceptance
-	// Checked last: a tool-permission dialog names the tool rather than a
-	// fixed phrase, so this is the loosest of the four and must not shadow
-	// the others.
-	case has("allow"), has("permission"), has("yes, and don't ask again"):
+	case hasOption("don't ask again"), hasOption("allow this"):
 		return fleet.PromptToolPermission
 	}
 	return ""

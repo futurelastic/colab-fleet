@@ -2075,6 +2075,45 @@ logged rather than silently applied.
 > have.** If exceeding it damages something outside the component, the
 > component must refuse, not describe.
 
+**F48 · A convenience field became injectable twenty minutes after it
+shipped.** §2.7 gained `kind` so a client could auto-answer questions it
+recognises without matching prose itself — the matching quarantined in one
+place, failing to empty. Sound reasoning, and the first live read mislabelled a
+**ship decision** as `bypass-permissions`.
+
+The trigger was in the question text, written by the agent:
+
+> "…No auth **bypass**, all 9 security fixes verified real, 29/29 green…"
+
+The classifier had joined question and options and matched a substring. A
+client filtering on `bypass-permissions` to auto-answer would have answered
+somebody's merge decision.
+
+**The distinction that was missing is who wrote the words.** A runtime dialog's
+options are fixed strings the runtime emits. A question is written by the
+agent, and the agent writes whatever it likes — so matching it is not merely
+fragile, it is **injectable**: an agent that writes "resume from summary" in
+its own question could have its decision auto-answered by any client that
+trusts the kind. Classification now reads the runtime's option text only.
+
+Two further rules fell out of the same fix:
+
+- **All needles must land in ONE option.** Spread across the set — "Resume the
+  deployment" plus "Show me the summary" — they are a coincidence, not a
+  question.
+- **An agent's own question is disqualified structurally.** When an agent asks,
+  the runtime appends affordances no runtime dialog has (an option to type
+  freely, one to chat instead). Their presence ends classification rather than
+  being weighed — which is a structural tell, not more prose.
+
+Worth stating because the failure direction inverted: every other finding here
+is about degrading to `unknown` too readily. This one degraded to a **confident
+wrong label**, and confident-wrong is the direction that gets acted on.
+
+> **When a field exists so that automation can act on it, ask who authored the
+> bytes it is derived from.** Data an agent controls can be shaped to trigger
+> whatever the automation does next.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

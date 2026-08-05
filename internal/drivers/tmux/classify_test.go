@@ -712,3 +712,27 @@ func TestUnrecognisedPromptIsNeverGivenAKind(t *testing.T) {
 		t.Errorf("a prompt we do not recognise was labelled %q — a filter would then select it", k)
 	}
 }
+
+// The exact prompt that was mislabelled in production: a ship decision whose
+// QUESTION mentions "No auth bypass". The question is written by the agent, so
+// matching it is injectable — an agent could get its own decision auto-answered
+// by a client that filters on kind.
+func TestAgentQuestionIsNeverGivenARuntimeKind(t *testing.T) {
+	p := &fleet.SessionPrompt{
+		Question: "failure counter never decays... No auth bypass, all 9 security fixes verified real, 29/29 green. How do you want me to proceed?",
+		Options: []string{"Bounce back for the cheap fixes", "Merge now, file follow-ups",
+			"Merge now, fix comment only", "Type something.", "Chat about this"},
+		Selected: 1,
+	}
+	if k := classifyPromptKind(p); k != "" {
+		t.Errorf("a merge decision was labelled %q — a filtering client would auto-answer it", k)
+	}
+}
+
+// Needles must land in ONE option; spread across the set they are a coincidence.
+func TestPromptKindDoesNotCombineAcrossOptions(t *testing.T) {
+	p := &fleet.SessionPrompt{Options: []string{"Resume the deployment", "Show me the summary"}}
+	if k := classifyPromptKind(p); k != "" {
+		t.Errorf("words from two different options combined into %q", k)
+	}
+}
