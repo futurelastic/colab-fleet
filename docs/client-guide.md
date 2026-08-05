@@ -78,9 +78,28 @@ ends up hardcoding answers that differ per machine.
 
 ```
 GET /v1/health     → epoch, cursor, startedAt, build, drivers
-GET /v1/machines   → which machines this service can see, and their status
+GET /v1/machines   → which machines this service can see, and which one is you
 GET /v1/runtimes   → what each machine's driver can actually DO
 ```
+
+`/v1/health`'s `drivers` is an array of the same `{machine, runtime,
+capabilities}` rows `/v1/runtimes` returns, for this machine only. If you want
+capabilities, ask `/v1/runtimes` — it covers peers too.
+
+`/v1/machines` tells you who is out there, and **which one you are**:
+
+```json
+{ "items": [ { "machine": "aurora",   "self": true,  "status": "ok", "observedAt": "…" },
+             { "machine": "borealis", "self": false, "status": "ok", "observedAt": "…" } ],
+  "sources": [ … ], "complete": true }
+```
+
+**`self` is the field you need before you attach anything.** A session on the
+`self` machine is reachable from the terminal you are already in; a session on
+any other machine needs whatever remoting you use. Without checking it, a
+client either SSHes to its own host for every local session, or tries to run a
+remote machine's attach command locally. Both look like they work until they
+do not.
 
 **`/v1/health` is your liveness check** — it is the question "is the session
 layer up", which is not the same question as "are there sessions". It also
@@ -161,6 +180,10 @@ per session, so do not build a per-session read loop to "avoid a big response".
 `items` is not the whole answer. A machine that did not respond contributes a
 `SourceStatus` — it never silently drops out of `items`.
 
+**This applies to every plural response, not just this one.** `/v1/sessions`,
+`/v1/machines` and `/v1/runtimes` all return the same envelope, and all three
+can be partial for the same reason.
+
 ```json
 { "machine": "borealis", "status": "unreachable", "error": "no answer within 3s" }
 ```
@@ -171,6 +194,26 @@ tell someone their sessions are gone when the truth is that a machine is
 unreachable. If you implement one rule from this document, implement that one.
 
 `status` values: `ok`, `degraded`, `unreachable`.
+
+**To find a session when you only know its id, list and scan.** There is no
+id filter, and you do not need one: a fleet-wide listing is a single round trip
+that already contains every session, so scanning `items` is the intended route
+rather than a workaround. The single-session endpoint (§5) needs a machine,
+which is exactly what you do not have yet.
+
+**Ids are opaque and hostile to naive formatting.** They routinely contain
+spaces and emoji. Never build a space- or tab-delimited line out of them, never
+`cut`/`awk` such a line back apart, and always percent-encode an id when you put
+it in a URL path — on *every* endpoint, not just the ones whose examples happen
+to show it.
+
+**"Does session X exist?" has three answers, not two.** If you did not find it
+and `complete` is true, it does not exist. If you did not find it and
+`complete` is false, **you do not know** — it may be sitting on the machine
+that failed to answer. Any function of yours that returns a plain yes/no is
+throwing that third case away, so make it return the third case, or make it
+loud. Collapsing "I could not see it" into "it is gone" is how a supervisor
+starts recreating work that is already running.
 
 ### Session state
 
@@ -270,11 +313,71 @@ recyclable; without corroboration you may destroy a *different* session that
 inherited the id. A mismatch answers `409 conflict`, which means your belief is
 stale — re-read and decide, do not retry.
 
-**`create` requires an `Idempotency-Key` header.** It is not optional. A
-federated create that times out and gets retried without one produces two
-agents in the same working directory, and nothing afterwards can detect it.
-Same key + same body returns the original session; same key + different body is
-a `409`.
+Send the timestamp exactly as the read returned it, URL-encoded (it contains
+`:` and `+`):
+
+```
+DELETE /v1/machines/aurora/sessions/alpha?startedAt=2026-08-01T23%3A14%3A01%2B07%3A00
+```
+
+Omitting it is allowed and gives you a weaker guarantee — the driver
+corroborates against its own sightings instead of against what *you* saw — and
+the refusal tells you which one you got.
+
+### Creating a session
+
+```
+POST /v1/machines/{machine}/sessions
+Idempotency-Key: 4f1c9e2a-…          ← REQUIRED
+
+{ "cwd":  "/work/alpha",             ← required, absolute
+  "name": "alpha",                   ← what you want it called; a REQUEST, not a guarantee
+  "runtime": "claude-code-tmux",     ← optional; omitted means the machine's only runtime
+  "agent": "…", "model": "…", "effort": "…",   ← optional hints (see below)
+  "prompt": "first instruction",     ← optional, delivered once the agent is ready
+  "contextRef": "/abs/path" }        ← optional, a PATH — never inline content
+```
+
+```json
+→ 201 { "machine": "aurora", "id": "alpha", "name": "alpha",
+        "runtime": "claude-code-tmux", "cwd": "/work/alpha",
+        "state": { "status": "starting", "confidence": "inferred", … } }
+```
+
+**Read `id` out of the response and key everything afterwards on it.** Do not
+assume it equals the `name` you asked for. On the multiplexer driver they
+happen to coincide today; that is a property of one driver, not of the API, and
+a client that hardcodes the equality breaks on the first driver that sanitises
+or de-duplicates names.
+
+Fields the body does **not** have: `machine` (it is in the path) and `id` (it
+is the server's answer, not your input — sending one is ignored, not honoured).
+
+`agent`, `model` and `effort` are **hints**. A driver that cannot pin one says
+so rather than silently substituting a default — check `supportsPin` in
+`/v1/runtimes` before relying on any of them.
+
+**The `Idempotency-Key` header is required**, and a create without one is
+rejected with `invalid` before any driver is consulted. A federated create that
+times out and gets retried without one produces two agents in the same working
+directory, and nothing afterwards can detect it. Same key + same body returns
+the original session; same key + different body is a `409`.
+
+On `409`, the guide's advice is "re-read and decide", and the decision is
+genuinely yours — but it is a narrow one. The conflict means the session at
+that id is not the session you looked at. Re-read it: if the working directory
+and start time describe something you did not mean to touch, **stop** and
+surface it, because the alternative is destroying a stranger's work. Do not
+loop retrying with a fresh `startedAt` each time; that turns a safety
+mechanism into a slower way of doing the dangerous thing.
+
+Deleting a session already reported `dead` is harmless — the driver is
+reconciling something it has already lost, and you get the same answer. Skip it
+if you like; do not build logic that depends on the distinction.
+
+`state.status` on a fresh session is usually `starting` — the agent is not
+ready yet. If you passed a `prompt`, the service delivers it once the runtime
+is up; you do not need to wait and send it yourself.
 
 Pass context by path (`contextRef`), never inline. Prompts and context never
 reach a command line.
@@ -362,9 +465,13 @@ session carries a hint:
 ```
 
 - It is **argv**, not a shell string. Session ids contain emoji and spaces.
-- It runs **on that session's machine**. If the session is on a peer, you
-  compose the remoting — the service knows which machine it is, not how you
-  reach it.
+- It runs **on that session's machine**. Compare `session.machine` against the
+  `self` entry from `/v1/machines`: if they match, run the argv directly; if
+  they do not, wrap it in your own remoting. The service knows which machine it
+  is, not how you reach it.
+- **`attach` may be absent entirely.** That means the driver has no interactive
+  attachment to offer — not that you should invent one. Show the session as
+  unattachable rather than guessing a command.
 - The binary path is that machine's own. Do not hardcode one: in a live
   two-machine fleet the paths differ, because the hosts are different
   architectures.
@@ -472,4 +579,7 @@ boundaries.)
 - [ ] Subscribes rather than polls, and handles `control.resync`
 - [ ] Talks only to its own machine's service
 - [ ] Shows "unreachable", never an empty list, when the service is down
+- [ ] Keys on `id` from the server, never on the `name` it asked for
+- [ ] Checks `self` from `/v1/machines` before attaching, so local sessions do not take a remote path
+- [ ] Treats "not found in a partial view" as unknown, not as absent
 - [ ] Has its own principal and its own token

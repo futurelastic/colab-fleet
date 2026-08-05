@@ -1981,6 +1981,46 @@ The generalisation, which is now three findings deep (F38, F44, this):
 > and what they will get, and the sentences that cannot be written truthfully
 > are the defects.
 
+**F46 · The client guide was tested by having someone build from it, twice.**
+F45 argued that documentation is a test suite for the affordances. That claim
+was itself testable, so it was tested: an agent was given the guide, forbidden
+from reading any other file in the repository or calling the service, and asked
+to implement a session-management client. It reported per-function confidence
+and, more usefully, every question the guide had failed to answer.
+
+The first run failed in one specific place. `create` — the operation the client
+existed for — scored *low confidence*, because the guide said "see below" and
+had no below. The implementer reconstructed a request body from the *read*
+shape and guessed field names. Two of the guesses were wrong in the worst
+available way: the server ignores unknown fields, so the create would have
+half-worked, producing sessions named by the driver instead of by the caller,
+with nothing failing.
+
+The same run also found that a client had no documented way to learn **which
+machine it is**. `/v1/machines` carries a `self` flag; the guide never showed
+the response. The implementer therefore routed *every* attach — including local
+sessions — through SSH to the machine it was already running on.
+
+The guide was corrected and a second, independent implementer given the same
+task. `create` moved from low confidence to "no gaps"; the attach path used
+`self`; the code ran against the live service and listed 99 sessions, handled
+emoji ids, distinguished alive from gone, and surfaced a permission error
+verbatim.
+
+Three things this technique is good at, which review is not:
+
+1. **It finds absences.** A reviewer reads what is present. An implementer
+   stops at what is missing, and has to say so.
+2. **It grades by confidence, not correctness.** "I did this and I am not sure"
+   locates a weak passage precisely; a correct-looking implementation hides it.
+3. **It is honest about the reader's ignorance**, which the author cannot
+   simulate. The author knows which ids exist.
+
+What it does not test is judgement about the *host* language. The generated
+client declared `local path=` in zsh, where `path` is tied to `PATH`, and
+destroyed its own environment inside every request — a bug the guide could not
+have prevented and should not try to.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered
