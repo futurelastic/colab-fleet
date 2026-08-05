@@ -227,6 +227,11 @@ starts recreating work that is already running.
 
 Two rules that will save you an incident:
 
+- **`idle` does not mean the last turn succeeded.** Check `state.lastTurn`: a
+  session whose turn died on a transient error looks exactly like one that
+  finished — same empty composer, same settled status line. If `lastTurn.outcome`
+  is `failed` and `retryable` is true, sending anything resumes it; no human is
+  needed. Ignore this and abandoned work sits looking available.
 - **`unknown` is not `dead`.** It means the service could not determine the
   state. Never clean up, kill or restart on `unknown`.
 - **`since` is your stall detector, and it needs no probe.** `waiting_input`
@@ -313,6 +318,13 @@ it. Check the receipt rather than assuming success.
 **Delivery is confirmed before submit.** If the text cannot be confirmed on
 screen, you get an `unknown` outcome naming the stranded text instead of a
 cheerful success — because "sent" and "landed" are different claims.
+
+**`rename` changes the id.** `POST …/sessions/{id}/rename` with `{"name":"…"}`,
+and carry `?startedAt=` exactly as you would for a delete — renaming the wrong
+session does not fail loudly, it succeeds and leaves that session named after
+somebody else's work. Afterwards, **the id you hold is stale**: use the new one,
+and if you are subscribed, re-key on `session.renamed` rather than concluding
+the old id died.
 
 **`DELETE` should carry `?startedAt=`** from the session you read. Ids are
 recyclable; without corroboration you may destroy a *different* session that

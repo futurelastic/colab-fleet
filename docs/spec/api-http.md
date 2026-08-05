@@ -173,6 +173,23 @@ over — the two are different attachments, and offering the wrong one shares a
 live keyboard with a running agent. Absent means the driver has no answer,
 which is a real answer (§5.7).
 
+```
+POST /v1/machines/{machine}/sessions/{id}/rename?startedAt=&runtime=
+{ "name": "new-name" }
+→ 202 { "accepted": true }
+→ 409 if startedAt disagrees, or the new name is already in use here
+```
+
+**Renaming changes the `id`**, not a label beside it — on a substrate where the
+id is the name an operator sees, anything less renames the session in this API
+and leaves their terminal saying the old thing. Send `?startedAt=` for the same
+reason `DELETE` wants it: acting on the wrong session here succeeds *silently*
+and leaves it wearing somebody else's name.
+
+Subscribers receive `session.renamed` carrying `from` and `to`. A client
+filtering by id **must** re-key on it, or it stops matching a session that is
+still alive — and cannot tell that from the session having died.
+
 `runtime` is an **optional** query parameter on every single-session endpoint
 (`GET`, `input`, `interrupt`, `DELETE`). A session `id` is scoped to
 `(machine, runtime)` — not to `machine` alone (session-abstraction.md §2.2) —
@@ -211,6 +228,17 @@ POST /v1/machines/{machine}/sessions/{id}/respond?runtime=
 
 → 200 { "outcome": "queued" | "refused", "reason": "..." }
 ```
+
+`state.lastTurn` — when present — says how the most recent turn **ended**:
+`{"outcome":"failed","reason":"…","retryable":true}`. It exists because a turn
+that died and a turn that finished leave the same screen: an error, a settled
+status line, an empty composer. Both are honestly `idle`, and a supervisor that
+cannot tell them apart silently abandons the work.
+
+Absent means the screen said nothing about it — **not** that the turn
+succeeded (§5.7). `retryable` is the runtime's own word for the failure, not
+our judgement of its error code: when true, sending anything resumes the
+session and no human is required.
 
 `state.prompt.kind` — when present — names what is being asked
 (`resume-chooser`, `folder-trust`, `tool-permission`, `bypass-permissions`).

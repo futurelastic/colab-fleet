@@ -94,8 +94,9 @@ real binary. That is not a workaround; it is the boundary being replaced.
   (agent flags, credentials, restore behaviour). Creating still goes through
   the launcher you already trust; routing it would change more than the session
   layer, which is the one thing this is supposed to isolate.
-- **`rename`** — the API has no rename operation. A real gap, recorded rather
-  than faked. Renaming still acts locally and will not find a remote session.
+- **`rename`** — the API now has one (corroborated, and announced as
+  `session.renamed`), but this client has not been wired to it yet. Renaming
+  still acts locally and will not find a session on another machine.
 
 ---
 
