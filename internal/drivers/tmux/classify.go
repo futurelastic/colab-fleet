@@ -808,6 +808,21 @@ func hasSpinnerGlyph(line string) bool {
 	if r < utf8.RuneSelf {
 		return false
 	}
+	// Box drawing and block elements are chrome, never a status glyph.
+	//
+	// Found on a live session: the runtime's welcome screen draws a panel
+	// whose rows begin with `│`, and its "what's new" list is full of
+	// truncated lines ending in `…`. That is a non-ASCII symbol, a space, a
+	// capitalised word and an ellipsis — every condition below — so the splash
+	// screen classified as a RUNNING SPINNER, and a freshly started session
+	// reported `working` forever while it sat idle at its own welcome panel.
+	//
+	// This is the cost of loosening the glyph test (F42) arriving in a second
+	// place. The first was the composer's own `❯`, caught by tests; this one
+	// needed a live session, because no fixture contained a splash screen.
+	if (r >= 0x2500 && r <= 0x259F) || (r >= 0x25A0 && r <= 0x25FF) {
+		return false
+	}
 	// A single glyph followed by a space, which is the status line's shape.
 	// Box-drawing rules and other chrome fail this because they run.
 	rest := line[size:]

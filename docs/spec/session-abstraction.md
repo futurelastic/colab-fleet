@@ -2303,6 +2303,34 @@ where the answer was a field that had been filled with nil the whole time.
 Twice now, the fix was to use something the design had and the implementation
 had forgotten.
 
+**F53 · Loosening the glyph test cost a second false positive, and this one
+only a live session could find.** F42 widened spinner detection from one
+character to "a non-ASCII symbol, a space, a capitalised word, and a tense
+marker", because the glyph turned out to be animated. The composer's own `❯`
+immediately met that description — caught by tests, fixed, recorded.
+
+The runtime's **welcome panel** meets it too:
+
+    │         Opus 5 · Claude Max ·          │ Fixed worktree-isolate… │
+
+Box-drawing `│`, a space, a capitalised word, an ellipsis. So a session sitting
+at its own splash screen classified as `working`, and stayed that way — the
+panel does not change, so nothing ever re-classified it.
+
+Box drawing and block elements are now excluded: they are chrome, never a
+status glyph. But the lesson is about how it was found, not what it was.
+
+**No fixture contained a splash screen**, because every fixture was captured
+from a session that had been running for a while. The test suite could not have
+caught this, and did not; it took creating a session and watching it boot. The
+same is true of the earlier one in this family — the `❯` case was caught by
+tests only because the composer is in every fixture.
+
+> **A test suite built from captures of steady state cannot see the states a
+> system passes through on the way there.** Startup screens, first paints and
+> transitional panels are exactly where a screen-reader is least tested and
+> most wrong.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

@@ -870,3 +870,37 @@ func TestWaitingOnIsEmptyWhenNotWaiting(t *testing.T) {
 		t.Errorf("idle session carries waitingOn=%q", st.WaitingOn)
 	}
 }
+
+// The runtime's welcome panel: box-drawing rows, capitalised words, and a
+// "what's new" list of truncated lines ending in an ellipsis. Every condition
+// the status-line test looks for, and not a status line at all. A freshly
+// started session reported `working` forever because of it.
+func TestWelcomePanelIsNotAStatusLine(t *testing.T) {
+	const rule = "────────────────────"
+	splash := "╭─── Claude Code v2.1.222 ───────────────╮\n" +
+		"│                 Welcome back!          │ Tips for getting        │\n" +
+		"│                                        │ Run /init to create a … │\n" +
+		"│         Opus 5 · Claude Max ·          │ Fixed worktree-isolate… │\n" +
+		"╰────────────────────────────────────────╯\n" +
+		rule + "\n❯ this must never be sent\n" + rule + "\n"
+
+	if running, ok := spinner(newScreen(splash)); ok {
+		t.Errorf("the welcome panel was read as a status line (running=%v)", running)
+	}
+	st := classifyAged(splash, true, false)
+	if st.Status == fleet.StatusWorking {
+		t.Errorf("a session sitting at its welcome panel reported %s", st.Status)
+	}
+
+	// A first sighting is deliberately unknown here — no spinner and text in
+	// the composer is genuinely ambiguous from one capture. The second look
+	// settles it, and that is what a caller actually sees.
+	t0 := time.Date(2026, 8, 6, 0, 0, 0, 0, time.UTC)
+	_, digest := classifyPaneRemembering(splash, true, true, false, paneMemory{}, t0)
+	prior := paneMemory{known: true, digest: digest, at: t0}
+	second, _ := classifyPaneRemembering(splash, true, true, false, prior, t0.Add(time.Minute))
+	if second.WaitingOn != fleet.WaitingUnsentInput {
+		t.Errorf("second look: waitingOn = %q, want unsent-input — the composer plainly holds text",
+			second.WaitingOn)
+	}
+}
