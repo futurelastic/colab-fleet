@@ -548,3 +548,87 @@ func TestTranscriptListIsNotAPrompt(t *testing.T) {
 		t.Errorf("transcript list read as a prompt: %+v", p.Options)
 	}
 }
+
+// The largest source of `unknown` in a real fleet was one screen shape: no
+// spinner, composer painted and empty. It is genuinely ambiguous from a single
+// capture — a fresh prompt and a turn that has not painted yet look identical
+// — and it accounted for 10 of 91 sessions across two machines.
+//
+// A second look settles it, and these tests pin which way each case resolves.
+func TestResolveAmbiguityUsesTheSecondLook(t *testing.T) {
+	const idleScreen = "some transcript\n" +
+		"────────────────────\n" +
+		"❯ \x1b[2mTry \"fix the tests\"\x1b[0m\n" +
+		"────────────────────\n"
+
+	t0 := time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
+
+	// First sighting: nothing to compare against, so the honest answer is
+	// still unknown. This is the floor the change must not lower.
+	first, digest := classifyPaneRemembering(idleScreen, true, true, false, paneMemory{}, t0)
+	if first.Status != fleet.StatusUnknown {
+		t.Fatalf("first sighting = %s, want unknown — one capture cannot settle this", first.Status)
+	}
+	if digest == "" {
+		t.Fatal("a successful capture must yield a digest to compare against next time")
+	}
+
+	// Same screen, later: a turn that had just begun would have painted a
+	// spinner by now.
+	prior := paneMemory{known: true, digest: digest, at: t0}
+	second, _ := classifyPaneRemembering(idleScreen, true, true, false, prior, t0.Add(30*time.Second))
+	if second.Status != fleet.StatusIdle {
+		t.Errorf("unchanged screen after 30s = %s, want idle (%s)", second.Status, second.Evidence)
+	}
+	if second.Confidence != fleet.ConfidenceInferred {
+		t.Error("resolution is still an inference, not an observation")
+	}
+
+	// Too soon: within the paint grace, the ambiguity is real.
+	tooSoon, _ := classifyPaneRemembering(idleScreen, true, true, false, prior, t0.Add(time.Second))
+	if tooSoon.Status != fleet.StatusUnknown {
+		t.Errorf("within the paint grace = %s, want unknown", tooSoon.Status)
+	}
+
+	// Changed screen: deliberately NOT resolved to working. Content moves for
+	// reasons other than a turn, and guessing the busy direction is how a
+	// caller interrupts a session that was doing nothing.
+	changed, _ := classifyPaneRemembering(idleScreen+"more output\n", true, true, false, prior, t0.Add(30*time.Second))
+	if changed.Status != fleet.StatusUnknown {
+		t.Errorf("changed screen = %s, want unknown — resolution only ever goes toward less activity", changed.Status)
+	}
+}
+
+// Unsent text on a screen that has stopped moving is the case a sibling
+// project measured at 37 of 39 panes: blocked on a human pressing enter, with
+// the age as the discriminator between mid-thought and abandoned.
+func TestResolveAmbiguityForStrandedInput(t *testing.T) {
+	const pendingScreen = "transcript\n" +
+		"────────────────────\n" +
+		"❯ please refactor the parser\n" +
+		"────────────────────\n"
+
+	t0 := time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
+	first, digest := classifyPaneRemembering(pendingScreen, true, true, false, paneMemory{}, t0)
+	if first.Status != fleet.StatusUnknown {
+		t.Fatalf("first sighting = %s, want unknown", first.Status)
+	}
+	prior := paneMemory{known: true, digest: digest, at: t0}
+	second, _ := classifyPaneRemembering(pendingScreen, true, true, false, prior, t0.Add(time.Minute))
+	if second.Status != fleet.StatusWaitingInput {
+		t.Errorf("stable screen with unsent input = %s, want waiting_input (%s)", second.Status, second.Evidence)
+	}
+}
+
+// A failed capture must not produce a digest: two failures in a row would
+// otherwise compare equal and be read as a stable screen — a driver
+// malfunction laundered into an observation about the session (§5.7, F5).
+func TestFailedCaptureYieldsNoDigest(t *testing.T) {
+	st, digest := classifyPaneRemembering("", false, true, false, paneMemory{}, time.Now())
+	if st.Status != fleet.StatusUnknown {
+		t.Errorf("failed capture = %s, want unknown", st.Status)
+	}
+	if digest != "" {
+		t.Error("a failed capture must not be remembered as a screen")
+	}
+}

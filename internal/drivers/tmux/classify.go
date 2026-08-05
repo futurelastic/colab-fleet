@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	fleet "github.com/godx-jp/colab-fleet"
@@ -533,12 +534,29 @@ func spinner(s screen) (running bool, found bool) {
 // a single driver, between a pane it failed to read and a pane with nothing
 // in it, and it is just as capable of producing a confident wrong answer.
 func classifyPaneAged(raw string, captured, alive, young bool) fleet.SessionState {
+	st, _ := classifyPaneRemembering(raw, captured, alive, young, paneMemory{}, time.Time{})
+	return st
+}
+
+// classifyPaneRemembering classifies a pane using what the driver saw of it
+// last time, and returns the digest to remember for next time.
+//
+// A first sighting (prior.known == false) behaves exactly as before — which is
+// the honest floor, since one capture genuinely cannot settle the ambiguity
+// resolveAmbiguity settles.
+func classifyPaneRemembering(raw string, captured, alive, young bool, prior paneMemory, now time.Time) (fleet.SessionState, string) {
 	if !captured {
+		// No digest is returned for a failed capture: remembering the
+		// fingerprint of a screen we did not read would make the next
+		// comparison agree with nothing, or worse, agree with an earlier
+		// failure and call two failures a stable screen.
 		return fleet.UnknownState(fleet.ConfidenceInferred,
 			"driver failed to capture this pane's screen; this is a driver "+
-				"malfunction, not an observation about the session")
+				"malfunction, not an observation about the session"), ""
 	}
-	return classifyAged(raw, alive, young)
+	st, amb := classifyAgedDetail(raw, alive, young)
+	digest := screenDigest(raw)
+	return resolveAmbiguity(st, amb, prior, digest, now), digest
 }
 
 func classifyPane(raw string, captured, alive bool) fleet.SessionState {
@@ -560,20 +578,117 @@ func classify(raw string, alive bool) fleet.SessionState {
 	return classifyAged(raw, alive, false)
 }
 
+// ambiguity names a classification that a single screen cannot settle but a
+// second look at the same screen can.
+//
+// # Why this is a return value rather than a comment
+//
+// Two branches below refuse to commit because "no spinner" has two readings: a
+// session sitting at a fresh prompt, and a turn that began so recently it has
+// not painted one yet. From one capture those are identical, and guessing
+// either way is how a stalled session reads as busy or a busy one gets
+// interrupted.
+//
+// From two captures they are not identical at all. A turn that had just begun
+// paints within a second; a screen that is byte-for-byte unchanged seconds
+// later was not mid-anything. That evidence exists in the driver's memory
+// already — §8's `since` is stamped from it — so the resolution is passive,
+// costs no extra capture, and never touches the session (the same reasoning
+// as F34).
+//
+// The alternative was string-matching the evidence text at the call site,
+// which makes a prose field load-bearing. Naming the ambiguity keeps the
+// question in the type.
+type ambiguity int
+
+const (
+	ambNone ambiguity = iota
+	// ambNoSpinnerEmpty: no spinner, composer painted and empty.
+	ambNoSpinnerEmpty
+	// ambNoSpinnerPending: no spinner, composer holds unsent text.
+	ambNoSpinnerPending
+)
+
+// spinnerPaintGrace is how long a turn is allowed to have started without
+// having painted a spinner. Generous by an order of magnitude: the cost of
+// waiting is a slightly later answer, while the cost of being wrong is
+// reporting a working session as idle.
+const spinnerPaintGrace = 2 * time.Second
+
+// screenDigest fingerprints a captured screen so two observations can be
+// compared without keeping the text.
+//
+// Keeping the text would be the obvious implementation and is the wrong one:
+// pane content is somebody's actual work, and a driver that retains it has
+// turned a state cache into a transcript store.
+func screenDigest(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:8])
+}
+
+// resolveAmbiguity settles a classification using what the same pane looked
+// like last time, or leaves it unknown when there is nothing to settle it
+// with.
+//
+// It only ever resolves toward *less* activity, and only on evidence of
+// stability. A screen that CHANGED between observations is deliberately left
+// unknown rather than called working: content moves for reasons other than a
+// turn (a redraw, a resize, a notification), and §5.6 says degrade rather than
+// emulate. One direction here has evidence behind it; the other would be a
+// guess wearing a status.
+func resolveAmbiguity(st fleet.SessionState, amb ambiguity, prior paneMemory, digest string, now time.Time) fleet.SessionState {
+	if amb == ambNone || !prior.known || prior.digest != digest {
+		return st
+	}
+	stable := now.Sub(prior.at)
+	if stable < spinnerPaintGrace {
+		return st
+	}
+	age := stable.Round(time.Second).String()
+	switch amb {
+	case ambNoSpinnerEmpty:
+		return fleet.InferredState(fleet.StatusIdle,
+			"no spinner, and the screen is unchanged after "+age+
+				" — a turn that had just begun would have painted one by now", nil)
+	case ambNoSpinnerPending:
+		// Unsent text on a screen that has stopped moving is the same
+		// situation as the finished-turn case above: blocked on a human
+		// pressing enter. §8's `since` then carries the age, which is the
+		// discriminator between an operator mid-thought and a pane nobody
+		// is coming back to.
+		return fleet.InferredState(fleet.StatusWaitingInput,
+			"composer holds unsent input; screen unchanged after "+age, nil)
+	}
+	return st
+}
+
+// paneMemory is what the driver remembers about one pane from its previous
+// observation. Empty (known == false) is the first sighting.
+type paneMemory struct {
+	known  bool
+	digest string
+	at     time.Time
+}
+
 // classifyAged adds whether the session is young enough to plausibly still be
 // starting — see the default branch for why that distinction matters.
 func classifyAged(raw string, alive, young bool) fleet.SessionState {
+	st, _ := classifyAgedDetail(raw, alive, young)
+	return st
+}
+
+func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambiguity) {
 	if !alive {
 		// §8: dead is terminal. This is the one status this driver can
 		// state without reading a screen, and still it is inferred: the
 		// process being gone is observed, but "this session is dead"
 		// infers that the process was the session.
-		return fleet.InferredState(fleet.StatusDead, "pane process not present in process table", nil)
+		return fleet.InferredState(fleet.StatusDead, "pane process not present in process table", nil), ambNone
 	}
 
 	s := newScreen(raw)
 	if len(s.lines) == 0 {
-		return fleet.UnknownState(fleet.ConfidenceInferred, "pane captured empty")
+		return fleet.UnknownState(fleet.ConfidenceInferred, "pane captured empty"), ambNone
 	}
 
 	if option, blocked := selectionPrompt(s); blocked {
@@ -585,7 +700,7 @@ func classifyAged(raw string, alive, young bool) fleet.SessionState {
 		}
 		st := fleet.InferredState(fleet.StatusWaitingInput, evidence, nil)
 		st.Prompt = parsePrompt(s)
-		return st
+		return st, ambNone
 	}
 
 	running, foundSpinner := spinner(s)
@@ -597,7 +712,7 @@ func classifyAged(raw string, alive, young bool) fleet.SessionState {
 
 	switch {
 	case foundSpinner && running:
-		return fleet.InferredState(fleet.StatusWorking, "spinner line in running form", nil)
+		return fleet.InferredState(fleet.StatusWorking, "spinner line in running form", nil), ambNone
 
 	case foundSpinner && !running && hasComposer && pending != "":
 		// Turn finished, and a human has typed something they have not
@@ -605,10 +720,10 @@ func classifyAged(raw string, alive, young bool) fleet.SessionState {
 		// holding input. waiting_input is the honest §2.3 member — the
 		// session is blocked on a human (to press enter).
 		return fleet.InferredState(fleet.StatusWaitingInput,
-			"turn finished; composer holds unsent input", nil)
+			"turn finished; composer holds unsent input", nil), ambNone
 
 	case foundSpinner && !running:
-		return fleet.InferredState(fleet.StatusIdle, "spinner line in finished form; composer empty", nil)
+		return fleet.InferredState(fleet.StatusIdle, "spinner line in finished form; composer empty", nil), ambNone
 
 	case !foundSpinner && hasComposer && pending == "" && young:
 		// A young session with a painted composer, no spinner and nothing
@@ -621,7 +736,7 @@ func classifyAged(raw string, alive, young bool) fleet.SessionState {
 		// for a session whose interface is visibly painted is the reading
 		// that let a dead spawn look the same as a healthy one.
 		return fleet.InferredState(fleet.StatusIdle,
-			"interface painted, composer empty, no turn yet", nil)
+			"interface painted, composer empty, no turn yet", nil), ambNone
 
 	case !foundSpinner && hasComposer && pending == "":
 		// No spinner at all and an empty composer: most likely a session
@@ -629,11 +744,11 @@ func classifyAged(raw string, alive, young bool) fleet.SessionState {
 		// claim idle over working — a turn that has just begun may not
 		// have painted a spinner yet.
 		return fleet.UnknownState(fleet.ConfidenceInferred,
-			"no spinner line; composer present and empty")
+			"no spinner line; composer present and empty"), ambNoSpinnerEmpty
 
 	case !foundSpinner && hasComposer && pending != "":
 		return fleet.UnknownState(fleet.ConfidenceInferred,
-			"no spinner line; composer holds unsent input")
+			"no spinner line; composer holds unsent input"), ambNoSpinnerPending
 
 	default:
 		// No composer found. Two very different situations share this
@@ -650,9 +765,9 @@ func classifyAged(raw string, alive, young bool) fleet.SessionState {
 		// gets the distinction; the confidence stays inferred.
 		if young {
 			return fleet.InferredState(fleet.StatusStarting,
-				"no TUI composer yet; session is young enough to still be starting", nil)
+				"no TUI composer yet; session is young enough to still be starting", nil), ambNone
 		}
 		return fleet.UnknownState(fleet.ConfidenceInferred,
-			"no TUI composer found in pane; pane may not be running the expected runtime")
+			"no TUI composer found in pane; pane may not be running the expected runtime"), ambNone
 	}
 }

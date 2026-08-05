@@ -1792,6 +1792,44 @@ Worth stating generally: **a deployment step that does not read back the
 deployed state is a copy, not a deploy.** The failure mode is never the loud
 one.
 
+**F41 · The largest single source of `unknown` was settled by looking twice.**
+A fleet-wide read across two machines returned 91 sessions, of which 10 were
+`unknown` — and every one carried the same evidence: *no spinner line; composer
+present and empty.*
+
+That branch was written deliberately. From one capture, a session sitting at a
+fresh prompt and a turn that began too recently to have painted its spinner are
+byte-for-byte identical, and §5.6 says degrade rather than emulate. The
+classifier was right to refuse.
+
+But the refusal was permanent, and 11% of a fleet reading `unknown` is not a
+safe default — it is the state a supervisor's rescue ladder triggers on, so
+honest uncertainty at rest becomes intervention against sessions that are
+merely idle.
+
+What settles it is not a better screen-reading rule but a **second look**. A
+turn that had just begun paints within a second; a screen unchanged thirty
+seconds later was not mid-anything. The driver already remembers each pane
+between observations — that is where §8's `since` comes from — so the
+resolution costs no extra capture and never touches the session. F34's lesson
+repeated: the answer was in a field that already existed.
+
+Three details are load-bearing:
+
+- **It resolves only toward less activity.** A screen that CHANGED between
+  observations is left `unknown`, not called `working`. Content moves for
+  reasons other than a turn, and the wrong direction here interrupts a session
+  that was doing nothing.
+- **A first sighting still answers `unknown`.** The floor is unchanged; only a
+  comparison can lower it.
+- **A failed capture yields no fingerprint.** Otherwise two consecutive
+  failures compare equal and get read as a stable screen — F5's driver
+  malfunction laundered into an observation about the session.
+
+The general form: **when a single sample is genuinely ambiguous, the fix is
+usually another sample rather than a cleverer reading of the first** — and the
+sample you need is often one you already took.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

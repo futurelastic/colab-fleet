@@ -214,6 +214,13 @@ type observation struct {
 	// somebody is still composing.
 	status      fleet.Status
 	statusSince time.Time
+
+	// digest fingerprints the screen this observation classified, so the
+	// next one can tell "unchanged" from "changed" without keeping the pane
+	// text. See classify.go's resolveAmbiguity: an unchanged screen is what
+	// settles "idle or a turn that has not painted yet", which is otherwise
+	// the largest source of unknown in a real fleet.
+	digest string
 }
 
 // Option configures a Driver.
@@ -518,10 +525,11 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	for _, r := range rows {
 		text, captured := captures[r.paneID]
 		young := now.Sub(r.created) < startingWindow
-		st := d.stampSinceLocked(r.session, classifyPaneAged(text, captured, !r.dead, young), now)
+		raw, digest := classifyPaneRemembering(text, captured, !r.dead, young, d.memoryLocked(r.session), now)
+		st := d.stampSinceLocked(r.session, raw, now)
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
-			status: st.Status, statusSince: *st.Since,
+			status: st.Status, statusSince: *st.Since, digest: digest,
 		}
 		started := r.created
 		s := fleet.Session{
@@ -581,11 +589,12 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		now := d.now()
 		text, captured := captures[r.paneID]
 		d.mu.Lock()
-		st := d.stampSinceLocked(r.session,
-			classifyPaneAged(text, captured, !r.dead, now.Sub(r.created) < startingWindow), now)
+		raw, digest := classifyPaneRemembering(text, captured, !r.dead,
+			now.Sub(r.created) < startingWindow, d.memoryLocked(r.session), now)
+		st := d.stampSinceLocked(r.session, raw, now)
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
-			status: st.Status, statusSince: *st.Since,
+			status: st.Status, statusSince: *st.Since, digest: digest,
 		}
 		d.mu.Unlock()
 		return st, nil
@@ -1189,6 +1198,16 @@ func (d *Driver) confirmLanded(ctx context.Context, paneID, text string) bool {
 // that is the number a human needs and the one that distinguishes "somebody is
 // typing" from "nobody is ever coming back". A caller reading `since` can
 // compute it; a caller reading a log line cannot.
+// memoryLocked returns what the driver remembers of a pane's last screen.
+// Caller holds d.mu.
+func (d *Driver) memoryLocked(id string) paneMemory {
+	prior, ok := d.observed[id]
+	if !ok || prior.digest == "" {
+		return paneMemory{}
+	}
+	return paneMemory{known: true, digest: prior.digest, at: prior.at}
+}
+
 func (d *Driver) stampSinceLocked(id string, st fleet.SessionState, now time.Time) fleet.SessionState {
 	since := now
 	if prior, ok := d.observed[id]; ok && prior.status == st.Status && !prior.statusSince.IsZero() {
