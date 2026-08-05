@@ -1,18 +1,20 @@
-# fcode — a session launcher that talks to colab-fleet instead of to tmux.
+# fleetctl — a standalone client for colab-fleet: no launcher required.
 #
-# This is a SECOND tool, deliberately. It does not replace, wrap, patch or
-# import the existing launcher: run both, compare, and keep whichever you
-# trust. Nothing here writes to the incumbent's files, and sourcing this does
-# not shadow its commands — the names are different on purpose.
+# Where fcode.zsh borrows the launcher's interface, this one has its own and
+# depends on nothing: useful in a script, on a machine with no launcher
+# installed, or when you want to see the service's answers unmediated.
+#
+# The command is `fleetctl` rather than `fcode` so that sourcing both files is
+# safe — they would otherwise define the same name.
 #
 #   source /path/to/colab-fleet/clients/fcode.zsh
 #
-#   fcode                       list every session in the fleet
-#   fcode <prefix>              attach to the one session matching <prefix>
-#   fcode watch                 stream state changes as they happen
-#   fcode up                    is the session layer reachable, and what is it running
-#   fcode new <machine> <name> <cwd>
-#   fcode kill <prefix>
+#   fleetctl                       list every session in the fleet
+#   fleetctl <prefix>              attach to the one session matching <prefix>
+#   fleetctl watch                 stream state changes as they happen
+#   fleetctl up                    is the session layer reachable, and what is it running
+#   fleetctl new <machine> <name> <cwd>
+#   fleetctl kill <prefix>
 #
 # Configuration, all environment, no machine names in this file:
 #
@@ -29,7 +31,7 @@
 # guide explains why; the short version is in each comment.
 
 if [[ -z ${FLEET_URL:-} ]]; then
-  print -u2 "fcode: set FLEET_URL to this machine's colab-fleet service, e.g."
+  print -u2 "fleetctl: set FLEET_URL to this machine's colab-fleet service, e.g."
   print -u2 "       export FLEET_URL=http://127.0.0.1:<port>"
 fi
 : ${FLEET_TOKEN_FILE:=$HOME/.config/colab-fleet/token}
@@ -43,10 +45,10 @@ fi
 # not found". `status` is READ-ONLY (it mirrors $?), so assigning it aborts the
 # function outright. `argv` is the positional parameters. All three were hit
 # writing this file. Prefix locals rather than trusting a name to be free.
-_fc_curl() {
+_flc_curl() {
   local method="$1" route="$2" body="$3"
   local token
-  [[ -r $FLEET_TOKEN_FILE ]] || { print -u2 "fcode: no token at $FLEET_TOKEN_FILE"; return 2 }
+  [[ -r $FLEET_TOKEN_FILE ]] || { print -u2 "fleetctl: no token at $FLEET_TOKEN_FILE"; return 2 }
   token="$(<$FLEET_TOKEN_FILE)"
   # The token goes in a curl config file on stdin, never in argv: anything in
   # argv is visible in `ps` to every process on the machine, and this one was
@@ -60,16 +62,16 @@ _fc_curl() {
     curl "${args[@]}" "${FLEET_URL}${route}" 2>/dev/null
 }
 
-# _fc_get ROUTE → body on stdout, 0 on 2xx.
+# _flc_get ROUTE → body on stdout, 0 on 2xx.
 # A transport failure is NOT an empty result: the guide is emphatic that a
 # client must never render "no sessions" when it means "I could not ask".
-_fc_get() {
+_flc_get() {
   local raw code
-  raw="$(_fc_curl GET "$1")" || { print -u2 "fcode: session layer unreachable at $FLEET_URL"; return 2 }
+  raw="$(_flc_curl GET "$1")" || { print -u2 "fleetctl: session layer unreachable at $FLEET_URL"; return 2 }
   code="${raw##*$'\n'}"; raw="${raw%$'\n'*}"
-  [[ -z $code ]] && { print -u2 "fcode: session layer unreachable at $FLEET_URL"; return 2 }
+  [[ -z $code ]] && { print -u2 "fleetctl: session layer unreachable at $FLEET_URL"; return 2 }
   if [[ $code != 2* ]]; then
-    print -u2 "fcode: HTTP $code — $(print -r -- "$raw" | _fc_py 'import sys,json
+    print -u2 "fleetctl: HTTP $code — $(print -r -- "$raw" | _flc_py 'import sys,json
 try: print(json.load(sys.stdin)["error"]["message"])
 except Exception: print("(unparseable error body)")')"
     return 1
@@ -77,15 +79,15 @@ except Exception: print("(unparseable error body)")')"
   print -r -- "$raw"
 }
 
-_fc_py() { python3 -c "$1" "${@:2}" }
+_flc_py() { python3 -c "$1" "${@:2}" }
 
 # ── reading ─────────────────────────────────────────────────────────────────
 
 # Every plural response can be partial. `items` alone is a lie of omission when
 # a machine did not answer, so `complete` is checked on every listing and the
 # unreachable machines are named rather than silently dropped.
-_fc_sessions() {
-  _fc_get "/v1/sessions?scope=fleet" | _fc_py '
+_flc_sessions() {
+  _flc_get "/v1/sessions?scope=fleet" | _flc_py '
 import sys, json
 d = json.load(sys.stdin)
 if not d.get("complete", True):
@@ -100,10 +102,10 @@ for s in d.get("items", []):
                      (s.get("attach") or {}).get("kind","")]))'
 }
 
-fcode_ls() {
+fleetctl_ls() {
   local partial=0 out
-  out="$(_fc_sessions 2>/tmp/.fcode.err)" || return $?
-  [[ -s /tmp/.fcode.err ]] && { partial=1; print -u2 "fcode: PARTIAL VIEW — $(</tmp/.fcode.err)"; }
+  out="$(_flc_sessions 2>/tmp/.fcode.err)" || return $?
+  [[ -s /tmp/.fcode.err ]] && { partial=1; print -u2 "fleetctl: PARTIAL VIEW — $(</tmp/.fcode.err)"; }
   # Here-string, not a pipe: a piped `while` runs in a subshell in zsh, where
   # `local` is outside any function scope and prints its declaration instead
   # of quietly declaring.
@@ -119,7 +121,7 @@ fcode_ls() {
     esac
     printf "%s %-11s %-13s %s\n      %s\n" "$mark" "$machine" "$sstate" "$id" "${cwd/#$HOME/~}"
   done <<< "$out"
-  (( partial )) && print -u2 "fcode: some machines did not answer; sessions there are NOT shown and are NOT known to be gone"
+  (( partial )) && print -u2 "fleetctl: some machines did not answer; sessions there are NOT shown and are NOT known to be gone"
   return 0
 }
 
@@ -128,8 +130,8 @@ fcode_ls() {
 # Needed before attaching: a session on this machine is reachable from the
 # terminal you are in, one on a peer is not. Without this a client SSHes to
 # its own host for every local session.
-_fc_self() {
-  _fc_get /v1/machines | _fc_py '
+_flc_self() {
+  _flc_get /v1/machines | _flc_py '
 import sys, json
 d = json.load(sys.stdin)
 for m in d.get("items", []):
@@ -142,9 +144,9 @@ for m in d.get("items", []):
 # "gone" — it may be sitting on the machine that failed to answer, and
 # treating those the same is how a launcher offers to recreate work that is
 # already running.
-_fc_resolve() {
+_flc_resolve() {
   local want="$1" out partial=0
-  out="$(_fc_sessions 2>/tmp/.fcode.err)" || return 2
+  out="$(_flc_sessions 2>/tmp/.fcode.err)" || return 2
   [[ -s /tmp/.fcode.err ]] && partial=1
   local -a exact=() pfx=()
   local machine sstate id rest
@@ -157,12 +159,12 @@ _fc_resolve() {
   case ${#hit} in
     1) print -r -- "${hit[1]}"; return 0 ;;
     0) if (( partial )); then
-         print -u2 "fcode: no session matches '$want' — but the fleet view was PARTIAL, so this is UNKNOWN, not absent"
+         print -u2 "fleetctl: no session matches '$want' — but the fleet view was PARTIAL, so this is UNKNOWN, not absent"
          return 2
        fi
-       print -u2 "fcode: no session matches '$want'"
+       print -u2 "fleetctl: no session matches '$want'"
        return 1 ;;
-    *) print -u2 "fcode: '$want' matches ${#hit} sessions:"
+    *) print -u2 "fleetctl: '$want' matches ${#hit} sessions:"
        printf '  %s\n' "${(@)hit//$'\t'/  }" >&2
        return 1 ;;
   esac
@@ -173,60 +175,60 @@ _fc_resolve() {
 # The service never attaches anything: attaching gives a terminal to a person,
 # and no person is on the far end of an HTTP request. It hands back argv, and
 # whether that argv runs here or over ssh is this client's business.
-fcode_attach() {
+fleetctl_attach() {
   local target self machine id
-  target="$(_fc_resolve "$1")" || return $?
+  target="$(_flc_resolve "$1")" || return $?
   machine="${target%%$'\t'*}"; id="${target#*$'\t'}"
-  self="$(_fc_self)" || return $?
+  self="$(_flc_self)" || return $?
 
   local hint
-  hint="$(_fc_get "/v1/machines/$machine/sessions/$(_fc_urlenc "$id")")" || return $?
+  hint="$(_flc_get "/v1/machines/$machine/sessions/$(_flc_urlenc "$id")")" || return $?
   local -a cmdv
-  cmdv=("${(@f)$(print -r -- "$hint" | _fc_py '
+  cmdv=("${(@f)$(print -r -- "$hint" | _flc_py '
 import sys, json
 a = (json.load(sys.stdin) or {}).get("attach")
 if not a or not a.get("command"): sys.exit(3)
 print("\n".join(a["command"]))')}") || {
-    print -u2 "fcode: this session reports no attach hint — the driver has no interactive attachment to offer"
+    print -u2 "fleetctl: this session reports no attach hint — the driver has no interactive attachment to offer"
     return 1
   }
 
   if [[ $machine == $self ]]; then
-    print -u2 "fcode: attaching locally to $id"
+    print -u2 "fleetctl: attaching locally to $id"
     exec "${cmdv[@]}"
   fi
   # Remote: the service told us how to attach ON THAT MACHINE; getting there
   # is ours. Quote every argument — ids contain spaces and emoji.
   local remote_cmd
   remote_cmd="$(printf '%q ' "${cmdv[@]}")"
-  print -u2 "fcode: attaching on $machine to $id"
+  print -u2 "fleetctl: attaching on $machine to $id"
   exec ${=${(f)FLEET_SSH_FMT/\%s/$machine}} "$remote_cmd"
 }
 
-_fc_urlenc() { _fc_py 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1" }
+_flc_urlenc() { _flc_py 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1" }
 
 # ── create ──────────────────────────────────────────────────────────────────
-fcode_new() {
+fleetctl_new() {
   local machine="$1" name="$2" cwd="$3"
   [[ -n $machine && -n $name && -n $cwd ]] || { print -u2 "usage: fcode new <machine> <name> <cwd>"; return 2 }
   # An idempotency key is required, not optional: a create that times out and
   # is retried without one produces two agents in one working directory, and
   # nothing afterwards can detect it.
   local key body raw code
-  key="$(_fc_py 'import uuid; print(uuid.uuid4())')"
-  body="$(_fc_py 'import json,sys; print(json.dumps({"name":sys.argv[1],"cwd":sys.argv[2]}))' "$name" "$cwd")"
-  raw="$(_fc_curl POST "/v1/machines/$machine/sessions" "$body" "Idempotency-Key: $key")" || {
-    print -u2 "fcode: session layer unreachable"; return 2 }
+  key="$(_flc_py 'import uuid; print(uuid.uuid4())')"
+  body="$(_flc_py 'import json,sys; print(json.dumps({"name":sys.argv[1],"cwd":sys.argv[2]}))' "$name" "$cwd")"
+  raw="$(_flc_curl POST "/v1/machines/$machine/sessions" "$body" "Idempotency-Key: $key")" || {
+    print -u2 "fleetctl: session layer unreachable"; return 2 }
   code="${raw##*$'\n'}"; raw="${raw%$'\n'*}"
   if [[ $code != 2* ]]; then
-    print -u2 "fcode: create failed (HTTP $code) — $(print -r -- "$raw" | _fc_py 'import sys,json
+    print -u2 "fleetctl: create failed (HTTP $code) — $(print -r -- "$raw" | _flc_py 'import sys,json
 try: print(json.load(sys.stdin)["error"]["message"])
 except Exception: print(sys.stdin.read())')"
     return 1
   fi
   # Key everything afterwards on the id the SERVER returned. It is not
   # promised to equal the name you asked for.
-  print -r -- "$raw" | _fc_py 'import sys,json
+  print -r -- "$raw" | _flc_py 'import sys,json
 s=json.load(sys.stdin); print(s["id"])'
 }
 
@@ -235,26 +237,26 @@ s=json.load(sys.stdin); print(s["id"])'
 # Ids are recyclable, so a destroy quotes back the start time from the read.
 # If the session at that id is not the one that was read, the service refuses
 # with 409 rather than destroying a stranger's work.
-fcode_kill() {
+fleetctl_kill() {
   local target machine id
-  target="$(_fc_resolve "$1")" || return $?
+  target="$(_flc_resolve "$1")" || return $?
   machine="${target%%$'\t'*}"; id="${target#*$'\t'}"
 
   local started
-  started="$(_fc_get "/v1/machines/$machine/sessions/$(_fc_urlenc "$id")" | _fc_py '
+  started="$(_flc_get "/v1/machines/$machine/sessions/$(_flc_urlenc "$id")" | _flc_py '
 import sys,json; print(json.load(sys.stdin).get("startedAt",""))')" || return $?
-  local route="/v1/machines/$machine/sessions/$(_fc_urlenc "$id")"
-  [[ -n $started ]] && route+="?startedAt=$(_fc_urlenc "$started")"
+  local route="/v1/machines/$machine/sessions/$(_flc_urlenc "$id")"
+  [[ -n $started ]] && route+="?startedAt=$(_flc_urlenc "$started")"
 
   local raw code
-  raw="$(_fc_curl DELETE "$route")" || { print -u2 "fcode: session layer unreachable"; return 2 }
+  raw="$(_flc_curl DELETE "$route")" || { print -u2 "fleetctl: session layer unreachable"; return 2 }
   code="${raw##*$'\n'}"; raw="${raw%$'\n'*}"
   case $code in
-    2*) print -u2 "fcode: closed $id on $machine"; return 0 ;;
-    409) print -u2 "fcode: REFUSED — the session at '$id' is not the one just read."
+    2*) print -u2 "fleetctl: closed $id on $machine"; return 0 ;;
+    409) print -u2 "fleetctl: REFUSED — the session at '$id' is not the one just read."
          print -u2 "       Re-read it before deciding; do not retry blindly."
          return 1 ;;
-    *)  print -u2 "fcode: close failed (HTTP $code) — $(print -r -- "$raw" | _fc_py 'import sys,json
+    *)  print -u2 "fleetctl: close failed (HTTP $code) — $(print -r -- "$raw" | _flc_py 'import sys,json
 try: print(json.load(sys.stdin)["error"]["message"])
 except Exception: print("(no body)")')"
         return 1 ;;
@@ -265,9 +267,9 @@ except Exception: print("(no body)")')"
 #
 # The thing the old launcher could not do at all. Events fire on transitions,
 # never on content, so a quiet stream is normal rather than broken.
-fcode_watch() {
+fleetctl_watch() {
   local token; token="$(<$FLEET_TOKEN_FILE)"
-  print -u2 "fcode: watching ${FLEET_URL} — transitions only, silence is normal. ^C to stop."
+  print -u2 "fleetctl: watching ${FLEET_URL} — transitions only, silence is normal. ^C to stop."
   # A subscription is not free on the far side: watching everything opens one
   # helper per session on every machine in the fleet, and those helpers hold
   # file descriptors on a multiplexer shared with whatever else uses it. A
@@ -286,7 +288,7 @@ fcode_watch() {
   print -r -- "header = \"Authorization: Bearer ${token//[$'\t\r\n ']}\"" |
     curl -sN --config - -H "Accept: text/event-stream" "${FLEET_URL}/v1/events" > "$fifo" &
   pid=$!
-  _fc_py '
+  _flc_py '
 import sys, json, datetime
 for line in sys.stdin:
     if not line.startswith("data: "): continue
@@ -303,10 +305,10 @@ for line in sys.stdin:
 }
 
 # ── health ──────────────────────────────────────────────────────────────────
-fcode_up() {
+fleetctl_up() {
   local h
-  h="$(_fc_get /v1/health)" || { print -u2 "fcode: session layer DOWN at $FLEET_URL"; return 1 }
-  print -r -- "$h" | _fc_py '
+  h="$(_flc_get /v1/health)" || { print -u2 "fleetctl: session layer DOWN at $FLEET_URL"; return 1 }
+  print -r -- "$h" | _flc_py '
 import sys, json
 d = json.load(sys.stdin)
 b = d.get("build", {})
@@ -317,7 +319,7 @@ cur = d.get("cursor")
 print(f"session layer: up   build {rev}   {go}   cursor {cur}")'
   # Machines are reported too: a service that is up while a peer is not is a
   # different situation from a fleet that is fine.
-  _fc_get /v1/machines | _fc_py '
+  _flc_get /v1/machines | _flc_py '
 import sys, json
 d = json.load(sys.stdin)
 for m in d.get("items", []):
@@ -328,20 +330,20 @@ if not d.get("complete", True): print("  (view incomplete)")'
 }
 
 # ── entry point ─────────────────────────────────────────────────────────────
-fcode() {
+fleetctl() {
   case "$1" in
-    ""|ls|list) fcode_ls ;;
-    up|status)  fcode_up ;;
-    watch)      fcode_watch ;;
-    new)        shift; fcode_new "$@" ;;
-    kill)       shift; fcode_kill "$@" ;;
+    ""|ls|list) fleetctl_ls ;;
+    up|status)  fleetctl_up ;;
+    watch)      fleetctl_watch ;;
+    new)        shift; fleetctl_new "$@" ;;
+    kill)       shift; fleetctl_kill "$@" ;;
     help|-h|--help)
-      print -r -- "fcode                list the fleet"
-      print -r -- "fcode <prefix>       attach (local or over ssh, decided by the service)"
-      print -r -- "fcode watch          stream state changes"
-      print -r -- "fcode up             health + machines"
-      print -r -- "fcode new <machine> <name> <cwd>"
-      print -r -- "fcode kill <prefix>" ;;
-    *)          fcode_attach "$1" ;;
+      print -r -- "fleetctl                list the fleet"
+      print -r -- "fleetctl <prefix>       attach (local or over ssh, decided by the service)"
+      print -r -- "fleetctl watch          stream state changes"
+      print -r -- "fleetctl up             health + machines"
+      print -r -- "fleetctl new <machine> <name> <cwd>"
+      print -r -- "fleetctl kill <prefix>" ;;
+    *)          fleetctl_attach "$1" ;;
   esac
 }
