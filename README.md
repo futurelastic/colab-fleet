@@ -69,7 +69,7 @@ other machines. Supervisors become clients.
 >
 > **The specification is still the primary artifact.** Building against it
 > resolved seven of its nine recorded defects, added three types it turned out
-> to need, and produced a findings log of 38 measurements — every one of them a
+> to need, and produced a findings log of 43 measurements — every one of them a
 > place the document or the code was wrong before something ran.
 
 ## What it owns
@@ -125,14 +125,14 @@ of them, not the other way round.
    surprised us.
 
 If you are picking this up cold and want the short version: read the session
-spec's **§14** (five things that do not work) and **Appendix A's closing
-section** (the one pattern that recurred at four different altitudes).
+spec's **§14** (the defects, seven of nine now resolved — the open ones are
+marked) and **Appendix A's closing section** (the one pattern that has now
+recurred at five different altitudes).
 
 The session spec is organised so you can tell current truth from history:
 **§1–§13 are normative**, **§14 lists what the document requires but cannot
-enforce** — read it before trusting any guarantee, one of the five is a
-security defect — and **Appendix A is the findings log**, the measurements and
-bugs that produced the rules.
+enforce** — read it before trusting any guarantee — and **Appendix A is the
+findings log**, the measurements and bugs that produced the rules.
 
 That appendix is kept rather than smoothed away on purpose: knowing a design was
 wrong once, and how it was found out, is worth more than a clean document. A
