@@ -335,9 +335,26 @@ composer and not sent it, delivering more text would corrupt their line, so the
 service refuses and tells you. That refusal is a feature; do not retry through
 it. Check the receipt rather than assuming success.
 
-**Delivery is confirmed before submit.** If the text cannot be confirmed on
-screen, you get an `unknown` outcome naming the stranded text instead of a
-cheerful success — because "sent" and "landed" are different claims.
+**Delivery is confirmed before submit** — and that is narrower than it sounds.
+The service checks the text RENDERED before it submits, so text that never
+arrives gets an `unknown` naming it rather than a cheerful success. What the
+check does not cover is the submit itself.
+
+**So read `queued` as exactly this: the service pasted your text, watched it
+appear, and issued a submit it cannot verify.** It is not a promise the line
+went in. A `queued` receipt does not entitle you to assume the composer is now
+empty — if that matters to you, re-read the session's state.
+
+The gap is not theoretical. A session that has been created but has not finished
+starting will accept the paste, render it, and drop the submit, leaving the text
+sitting in the composer — measured at two runs in three — and the receipt is
+`queued` throughout. **Wait for a session to report `idle` before sending to it**,
+rather than sending as soon as `create` returns.
+
+One consequence worth planning for: this class of stranding leaves no record, so
+the `resumeIfStranded` retry below does not apply to it, and every later `send`
+to that session is refused for holding unsent input. Re-reading state is how you
+find out.
 
 **If `send` answers `unknown`, retry it with `resumeIfStranded: true`.** That
 outcome means the text reached the composer but could not be confirmed in time,

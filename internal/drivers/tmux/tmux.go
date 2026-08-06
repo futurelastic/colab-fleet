@@ -363,12 +363,23 @@ func runReal(ctx context.Context, name string, args ...string) ([]byte, error) {
 // reports is inferred from a terminal screen (see classify.go). Setting it
 // true would be the §5.6 violation the field exists to make visible.
 //
-// ConfirmsDelivery is false. The driver can put text into a session and can
-// see afterwards that the composer is empty, but "the composer is empty"
-// does not distinguish "the agent received it" from "something else cleared
-// it". Distinguishing submitted from queued requires a signal the substrate
-// does not provide, so this driver reports queued and says so here rather
-// than claiming a confirmation it inferred.
+// ConfirmsDelivery is false, and for TWO reasons rather than the one
+// originally written here.
+//
+// The first is a limit on observing an OUTCOME: the driver can see afterwards
+// that the composer is empty, but "the composer is empty" does not distinguish
+// "the agent received it" from "something else cleared it".
+//
+// The second is a limit on verifying its own ACTION, and it is the one this
+// note used to omit. Send issues a submit keystroke and then returns without
+// looking: the confirmation it performs happens BEFORE the submit and proves
+// only that the text rendered. So the driver cannot say the submit registered
+// either — not merely that it cannot see what came of it. Those are different
+// claims, and collapsing them made `queued` read as stronger than it is.
+//
+// Respond does not have this gap: it calls promptCleared afterwards and
+// downgrades to unknown. Send has no equivalent, which is why its receipt now
+// names the submit as unverified rather than scoping the doubt to the agent.
 //
 // SupportsResume is true, and it is the one capability this substrate has
 // outright: sessions belong to the multiplexer, not to this process, so
@@ -974,7 +985,14 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// here, and claiming otherwise is the emulation §5.6 forbids.
 	return fleet.DeliveryReceipt{
 		Outcome: fleet.OutcomeQueued,
-		Reason:  "delivered to the pane; agent receipt is not observable on this substrate",
+		// Names the real frontier. The earlier wording — "agent receipt is not
+		// observable" — scoped the uncertainty to the last hop, the agent
+		// consuming the input, and so read as a promise that the submit itself
+		// had happened. It has not been checked: nothing between the send-keys
+		// above and this return looks at the pane. The confirmation earlier in
+		// this function proves the text RENDERED, which is a different claim.
+		Reason: "text rendered in the composer and a submit was issued; whether the submit " +
+			"registered is not verified, and agent receipt is not observable on this substrate",
 	}, nil
 }
 
