@@ -38,6 +38,17 @@ type fakeMux struct {
 	buffers map[string]string
 	pasted  map[string]string
 	noEcho  bool // simulate a pane that never renders what was pasted
+	// swallowSubmit simulates the defect Send now checks for: the text is
+	// delivered and rendered, the submit keystroke goes nowhere, and the
+	// composer is left holding the line.
+	swallowSubmit bool
+}
+
+// composerHolding renders a frame whose composer holds text — the shape of a
+// pane whose submit did not register.
+func composerHolding(text string) string {
+	return "  transcript line\n✻ Brewed for 1m 0s\n" + rule + "\n❯ " +
+		strings.TrimSpace(text) + "\n" + rule + "\n  ⏵⏵ auto mode on"
 }
 
 func (f *fakeMux) setCapture(paneID, text string) {
@@ -200,6 +211,7 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		// keystroke.
 		var pane string
 		clear := false
+		newline := false
 		for i := 0; i < len(args); i++ {
 			if args[i] == "-t" && i+1 < len(args) {
 				pane = args[i+1]
@@ -207,10 +219,27 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			if args[i] == "C-u" {
 				clear = true
 			}
+			if args[i] == "C-m" || args[i] == "Enter" {
+				newline = true
+			}
 		}
 		if clear && pane != "" {
 			delete(f.pasted, pane)
 			f.captures[pane] = idleFixtureFor("cleared")
+		}
+		// Model what a SUBMIT does, which the fake previously left implicit.
+		// It mattered once the driver started confirming that the submit
+		// registered: with no model, the composer read empty either way and
+		// the confirmation could not fail, so a test asserting on it would
+		// have passed without exercising anything.
+		if newline && pane != "" {
+			if f.swallowSubmit {
+				// The failure this models: the keystroke goes nowhere and the
+				// delivered text is left sitting in the composer.
+				f.captures[pane] = composerHolding(f.pasted[pane])
+			} else {
+				delete(f.pasted, pane)
+			}
 		}
 		return nil, nil
 	case "display-message":
@@ -1547,5 +1576,112 @@ func TestResumingAStrandedSendAlsoWakesThePane(t *testing.T) {
 	}
 	if submits != 1 {
 		t.Fatalf("expected exactly one submit from the resume, saw %d", submits)
+	}
+}
+
+// A session that cannot receive yet must be REFUSED, not delivered to.
+//
+// Measured on a live fleet: delivering to a session that has not finished
+// starting renders the text in the composer and drops the submit, two runs in
+// three, while the receipt said "queued". Create returns as soon as the
+// process is spawned, so this window is the ordinary case for anything that
+// creates a session and immediately sends to it.
+//
+// The signal is the composer's presence, not a delay. A pane with no composer
+// painted has no input widget, and the widget is drawn by the component that
+// reads keys — so its absence is evidence about the input path rather than
+// about elapsed time. A timing guess would pass on this machine and fail on a
+// slower one, which is the bug wearing a different hat.
+func TestSendRefusesASessionThatCannotReceiveYet(t *testing.T) {
+	f := twoSessions()
+	// A pane mid-startup: output, but no composer fenced by rules.
+	f.captures["%1"] = "starting up\nloading configuration\n"
+	d := newTestDriver(f)
+
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "do the thing",
+		driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %q (%s), want refused — delivering here strands the text",
+			got.Outcome, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "idle") {
+		t.Errorf("reason = %q; it must tell the caller what to wait for", got.Reason)
+	}
+	// And nothing may have been delivered. A refusal that pasted first would
+	// leave the session holding text nobody can account for.
+	for _, c := range f.callsSnapshot() {
+		switch c[0] {
+		case "load-buffer":
+			t.Error("text was delivered despite the refusal")
+		case "send-keys":
+			t.Error("a keystroke was sent despite the refusal")
+		}
+	}
+}
+
+// The fail-closed half. When the submit does not register, the receipt must
+// say so rather than reporting the same "queued" a working send reports.
+//
+// This is the case that was silent: the text renders (so the pre-submit
+// confirmation is satisfied), the keystroke goes nowhere, and the caller is
+// told the delivery was queued. Nothing afterwards contradicted it.
+func TestSendReportsUnknownWhenTheSubmitDoesNotRegister(t *testing.T) {
+	f := twoSessions()
+	f.swallowSubmit = true
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const text = "an instruction that must not vanish"
+
+	got, err := d.Send(context.Background(), testCaller, ref, text,
+		driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome == fleet.OutcomeQueued {
+		t.Fatal("a submit that went nowhere was reported as queued — this is the silent " +
+			"failure the confirmation exists to end")
+	}
+	if got.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("outcome = %q, want unknown", got.Outcome)
+	}
+	if !strings.Contains(got.Reason, "resumeIfStranded") {
+		t.Errorf("reason = %q; it must name the way back in", got.Reason)
+	}
+
+	// AND the driver must have recorded it, or the recovery it just advised is
+	// refused for lack of a record. That was the real shape of this gap: the
+	// stranded record was written only when the text failed to RENDER, so a
+	// dropped submit left nothing behind and resumeIfStranded could not help.
+	if !d.strandedMatches(ref.ID, text) {
+		t.Fatal("no stranded record was kept, so the resume this receipt recommends " +
+			"would be refused and the text is unreachable")
+	}
+}
+
+// The confirmation must not fire on the composer's own placeholder. The
+// runtime draws a faint hint into an EMPTY composer, and reading that as
+// leftover text would report every healthy send as stranded — the same
+// mistake, in the opposite direction, that produced a round of false evidence
+// on this repo's tracker.
+func TestSubmitConfirmationTreatsAFaintPlaceholderAsEmpty(t *testing.T) {
+	f := twoSessions()
+	f.captures["%1"] = "  transcript line\n✻ Brewed for 1m 0s\n" + rule +
+		"\n❯ \x1b[2mtry asking about the build\x1b[0m\n" + rule + "\n  ⏵⏵ auto mode on"
+	d := newTestDriver(f)
+
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello",
+		driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeQueued {
+		t.Errorf("outcome = %q (%s); a composer holding only its dim placeholder is EMPTY, "+
+			"and treating it as unsent text reports healthy sends as stranded",
+			got.Outcome, got.Reason)
 	}
 }

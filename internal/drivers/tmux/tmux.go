@@ -119,6 +119,13 @@ const (
 	submitConfirmWindow   = 4 * time.Second
 	submitConfirmInterval = 150 * time.Millisecond
 
+	// sendReceptiveWindow bounds Send's wait for the runtime to be able to
+	// receive input. Deliberately SHORT: §4.4 caps a call at the driver's
+	// declared deadline, so this covers the race, not a startup. Beyond it
+	// Send refuses and says what to wait for.
+	sendReceptiveWindow   = 2 * time.Second
+	sendReceptiveInterval = 200 * time.Millisecond
+
 	// promptDeliveryWindow bounds how long §2.1's initial prompt waits for
 	// the runtime to become ready. Generous, because starting an agent is
 	// slow and a prompt arriving late is better than one arriving into a
@@ -841,6 +848,47 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		}, nil
 	}
 
+	// THE RUNTIME MUST BE ABLE TO RECEIVE BEFORE ANYTHING IS DELIVERED.
+	//
+	// Measured: delivering to a session that has not finished starting renders
+	// the text in the composer and drops the submit, two runs in three, while
+	// the receipt still said "queued". Nothing here looked, because Create
+	// returns as soon as the process is spawned and Send trusted that.
+	//
+	// The check is the composer's presence, not a delay — see receptive for
+	// why that is evidence about the input path rather than about elapsed
+	// time, and for what it does not prove.
+	//
+	// It refuses rather than waiting out a startup, and that is a deliberate
+	// reading of §4.4: a runtime takes far longer to paint than this driver's
+	// declared deadline allows, so a Send that blocked until a new session was
+	// ready would overrun its own declaration. A refusal is also the honest
+	// outcome — §2.4 exists for input that would corrupt a session, and text
+	// delivered into a runtime that is not listening strands exactly that way.
+	if ready, blocked := d.awaitReceptive(ctx, target.paneID); !ready {
+		if blocked {
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason: "session is showing a selection menu; delivered text would " +
+					"drive the menu rather than be received as input (§2.4)",
+			}, nil
+		}
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "session is not able to receive input yet: no composer has been " +
+				"painted, so the runtime is still starting or is not listening. " +
+				"Delivering now would render the text and lose the submit. Wait for " +
+				"the session to report idle, then send again",
+		}, nil
+	}
+
+	// Re-read the screen AFTER the readiness gate. The enumeration above was
+	// taken before the wait, and acting on it here would decide "is somebody
+	// typing" from a screen that is now stale by as long as the wait took.
+	if out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", target.paneID,
+		"-S", "-"+strconv.Itoa(d.captureLines)); err == nil {
+		captures[target.paneID] = string(out)
+	}
 	screenNow := newScreen(captures[target.paneID])
 
 	// A blocking menu is its own refusal, named honestly. Pasting text into a
@@ -983,16 +1031,38 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// Queued, not submitted: see Capabilities. The bytes were handed to
 	// the substrate; whether the agent consumed them is not observable
 	// here, and claiming otherwise is the emulation §5.6 forbids.
+	// CONFIRM THE SUBMIT REGISTERED, by watching the composer empty.
+	//
+	// Everything before this point is inference about whether a keystroke
+	// would be received; this is evidence about whether it was. Without it a
+	// dropped submit is indistinguishable from a delivered one — same receipt,
+	// same silence — and the caller learns about it, if ever, from a session
+	// that mysteriously never answers.
+	//
+	// Recorded as stranded so the resumeIfStranded path can finish it. That
+	// path previously could not reach this class of failure at all: the record
+	// was only written when the text failed to RENDER, so a submit that went
+	// nowhere left nothing behind, the resume was refused for lack of a
+	// record, and every later send was refused for a busy composer.
+	if !d.confirmSubmitted(ctx, target.paneID) {
+		d.noteStranded(ref.ID, text)
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeUnknown,
+			Reason: "the text was delivered and a submit was issued, but the composer still " +
+				"holds it — the submit did not register. It is sitting there unsent; retry " +
+				"the same send with resumeIfStranded to submit it",
+		}, nil
+	}
+
 	return fleet.DeliveryReceipt{
 		Outcome: fleet.OutcomeQueued,
-		// Names the real frontier. The earlier wording — "agent receipt is not
-		// observable" — scoped the uncertainty to the last hop, the agent
-		// consuming the input, and so read as a promise that the submit itself
-		// had happened. It has not been checked: nothing between the send-keys
-		// above and this return looks at the pane. The confirmation earlier in
-		// this function proves the text RENDERED, which is a different claim.
-		Reason: "text rendered in the composer and a submit was issued; whether the submit " +
-			"registered is not verified, and agent receipt is not observable on this substrate",
+		// Still queued, not submitted: an emptied composer says the SUBMIT
+		// took, not that the agent consumed the input — and §4.3's
+		// ConfirmsDelivery stays false for exactly that distinction. What the
+		// confirmation buys is that this receipt no longer covers the case
+		// where nothing was submitted at all.
+		Reason: "text rendered in the composer and the submit registered (the composer " +
+			"emptied); agent receipt is not observable on this substrate",
 	}, nil
 }
 
@@ -1969,6 +2039,112 @@ func (d *Driver) promptCleared(ctx context.Context, paneID, was string) bool {
 		case <-ctx.Done():
 			return false
 		case <-time.After(promptClearInterval):
+		}
+	}
+}
+
+// receptive reports whether a pane's runtime is in a state where a keystroke
+// will be received, by looking for the COMPOSER.
+//
+// # Why the composer is the signal, and not a timer
+//
+// The composer is the runtime's input widget. It is painted by the same
+// component that reads keys, and it cannot appear on screen before that
+// component is running — so its presence is evidence about the input path
+// itself rather than about elapsed time. A clock proves nothing: the same
+// wall-clock delay is comfortable on an idle machine and far too short on a
+// loaded one, after a cold boot, or when the startup files a created session
+// now reads are slow. That is the same class of assumption the login-shell
+// work already had to stop making.
+//
+// # What it does NOT prove, said plainly
+//
+// A painted composer is strong evidence, not proof, that a keystroke will be
+// consumed: the widget could in principle be drawn a moment before the input
+// loop attaches. This is why it is only half the mechanism. The other half is
+// confirmSubmitted, which checks AFTERWARDS whether the submit actually took —
+// positive evidence rather than inference. The gate removes the common case;
+// the confirmation makes the remaining case honest instead of silent.
+//
+// blocked reports a selection menu, which is receptive to keys but not to
+// TEXT: pasting into one drives the menu instead of delivering a message.
+func (d *Driver) receptive(ctx context.Context, paneID string) (ready, blocked bool) {
+	out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID,
+		"-S", "-"+strconv.Itoa(d.captureLines))
+	if err != nil {
+		// Fail closed: an unreadable pane is not a receptive one. Returning
+		// "ready" here on the theory that the capture is probably fine is how
+		// this defect is reintroduced.
+		return false, false
+	}
+	sc := newScreen(string(out))
+	if _, b := selectionPrompt(sc); b {
+		return false, true
+	}
+	_, found := composerText(sc)
+	return found, false
+}
+
+// awaitReceptive waits, within the call's own budget, for the runtime to be
+// able to receive input.
+//
+// It does NOT wait for startup. §4.4 bounds every call by the driver's
+// declared deadline, and a runtime takes far longer to paint than that
+// deadline allows — so a Send that blocked until a freshly created session was
+// ready would be a driver overrunning its own declaration. What this covers is
+// the short race, and beyond that it reports not-ready so the caller is told
+// rather than silently stranded.
+//
+// deliverInitialPrompt keeps its own, much longer readiness loop for the one
+// case where waiting out a full startup is the point.
+func (d *Driver) awaitReceptive(ctx context.Context, paneID string) (ready, blocked bool) {
+	deadline := d.now().Add(sendReceptiveWindow)
+	for {
+		ready, blocked = d.receptive(ctx, paneID)
+		if ready || blocked {
+			return ready, blocked
+		}
+		if d.now().After(deadline) || ctx.Err() != nil {
+			return false, false
+		}
+		select {
+		case <-ctx.Done():
+			return false, false
+		case <-time.After(sendReceptiveInterval):
+		}
+	}
+}
+
+// confirmSubmitted reports whether the submit registered, by observing that
+// the composer EMPTIED.
+//
+// This is the fail-closed half. Everything before it is inference about
+// whether the runtime would accept a keystroke; this is evidence about whether
+// it did. A composer that still holds the delivered text after the submit is a
+// stranding, and saying so — rather than returning the receipt that says
+// "queued" — is the difference between a caller that can recover and a caller
+// that never finds out.
+//
+// A wholly dim composer counts as empty: that is the runtime's own placeholder
+// hint drawn into an EMPTY box, and reading it as leftover text is the mistake
+// that produced a round of false evidence on this repo's tracker.
+func (d *Driver) confirmSubmitted(ctx context.Context, paneID string) bool {
+	deadline := d.now().Add(submitConfirmWindow)
+	for {
+		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID,
+			"-S", "-"+strconv.Itoa(d.captureLines))
+		if err == nil {
+			if text, found := composerText(newScreen(string(out))); found && text == "" {
+				return true
+			}
+		}
+		if d.now().After(deadline) || ctx.Err() != nil {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(submitConfirmInterval):
 		}
 	}
 }
