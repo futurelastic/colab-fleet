@@ -9,6 +9,7 @@ import (
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
+	"strings"
 )
 
 // fakeCtl is a control-mode client that never spawns anything. Tests push
@@ -563,4 +564,92 @@ func TestSubscribeCapsContentClients(t *testing.T) {
 	if n == 0 {
 		t.Error("capped to nothing; a subscription with no content clients loses its change triggers")
 	}
+}
+
+// The account blocking is one fact about the machine, and a supervisor should
+// be told once. Before this, 48 sessions each discovered it by being dispatched
+// work and stalling — every discovery costing a session that was already sent.
+func TestSubscribeAnnouncesAndRetractsAnAccountBlock(t *testing.T) {
+	f := twoSessions()
+	r := &ctlRegistry{}
+	d := newSubDriver(f, r)
+
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	const rule = "────────────────────"
+	f.setCapture("%1", "transcript\n  ⎿  You've hit your weekly limit · resets Aug 10 at 12am (Asia/Tokyo)\n"+
+		rule+"\n❯ \n"+rule+"\n")
+	fire(r.contentFor("alpha💬"), "output")
+
+	p, ok := awaitQuota(t, s)
+	if !ok {
+		t.Fatal("the account started refusing work and the stream never said so")
+	}
+	if !p.Blocked || p.Quota == nil || !strings.Contains(p.Quota.ResetHint, "aug 10") {
+		t.Errorf("payload = %+v, want blocked with a reset hint", p)
+	}
+	if p.Machine != "testbox" {
+		t.Errorf("machine = %q, want testbox", p.Machine)
+	}
+
+	// Recovery is a positive statement, not an absence to infer.
+	f.setCapture("%1", fixtureWorking)
+	fire(r.contentFor("alpha💬"), "output")
+
+	p, ok = awaitQuota(t, s)
+	if !ok {
+		t.Fatal("the account recovered and the stream never retracted the block")
+	}
+	if p.Blocked || p.Quota != nil {
+		t.Errorf("payload = %+v, want an explicit unblocked", p)
+	}
+}
+
+// A subscriber connecting mid-outage must not wait for a transition that has
+// already happened.
+func TestSubscribeAnnouncesABlockAlreadyInForce(t *testing.T) {
+	f := twoSessions()
+	r := &ctlRegistry{}
+	d := newSubDriver(f, r)
+
+	const rule = "────────────────────"
+	f.setCapture("%1", "transcript\n  ⎿  You've hit your weekly limit · resets Aug 10\n"+rule+"\n❯ \n"+rule+"\n")
+	if _, err := d.List(context.Background(), testCaller, driver.ListFilter{}); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	fire(r.contentFor("alpha💬"), "output")
+
+	p, ok := awaitQuota(t, s)
+	if !ok || !p.Blocked {
+		t.Fatalf("a subscriber joining during an outage was told nothing (got %+v, %v)", p, ok)
+	}
+}
+
+func awaitQuota(t *testing.T, s driver.EventStream) (fleet.MachineQuotaPayload, bool) {
+	t.Helper()
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		ev, ok := nextWithin(t, s, time.Until(deadline))
+		if !ok {
+			return fleet.MachineQuotaPayload{}, false
+		}
+		if ev.Kind == fleet.EventMachineQuota {
+			p, ok := ev.Payload.(fleet.MachineQuotaPayload)
+			if !ok {
+				t.Fatalf("payload type %T, want MachineQuotaPayload", ev.Payload)
+			}
+			return p, true
+		}
+	}
+	return fleet.MachineQuotaPayload{}, false
 }

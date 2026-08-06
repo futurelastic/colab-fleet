@@ -241,6 +241,10 @@ type eventStream struct {
 	errc    chan error
 	trigger chan struct{}
 
+	// quota tracking, owned by run() alone — no lock.
+	quotaKnown bool
+	quotaBlock *fleet.QuotaBlock
+
 	mu      sync.Mutex
 	conns   map[string]ctlConn // session id -> content client
 	closed  bool
@@ -531,6 +535,32 @@ func (s *eventStream) run(ctx context.Context, trigger <-chan struct{}, known ma
 				}
 			}
 			continue
+		}
+
+		// The account's own state, before the per-session diff. A supervisor
+		// that acts on this stops dispatching; a supervisor that waits for
+		// the session diff learns the same thing one stalled session at a
+		// time, which is how the fact was learned 48 times before.
+		//
+		// The first pass announces a block that is already in force — a
+		// subscriber connecting mid-outage must not have to wait for a
+		// transition that already happened — but says nothing when there is
+		// none, because "not blocked" is the unremarkable case and an event
+		// for it on every new subscription is noise.
+		if q := s.d.quotaBlock(); (q != nil) != (s.quotaBlock != nil) || !s.quotaKnown {
+			if q != nil || s.quotaKnown {
+				s.emit(ctx, fleet.Event{
+					Machine: s.d.machine,
+					Kind:    fleet.EventMachineQuota,
+					Payload: fleet.MachineQuotaPayload{
+						Machine: s.d.machine,
+						Blocked: q != nil,
+						Quota:   q,
+					},
+				})
+			}
+			s.quotaKnown = true
+			s.quotaBlock = q
 		}
 
 		seen := map[string]bool{}

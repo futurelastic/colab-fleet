@@ -2383,6 +2383,67 @@ may display and must not parse.
 > asked — and a detector that is right only while the announcement is visible
 > is a detector that is wrong for as long as it matters.
 
+**F55 · F54's fix was correct and still reported 48 sessions idle.** Deployed,
+verified on the machine that inspired it — and the peer, the one actually
+blocked, did not move. The reason was a line of code written before a lesson
+this same file had already recorded an hour earlier: the notice was matched only
+as the LAST live line. On the real screen it never is.
+
+```
+  ⎿  You've hit your weekly limit · resets Aug 10 at 12am (Asia/Tokyo)
+     /usage-credits to finish what you're working on.
+  ✻ Churned for 15s
+```
+
+The runtime prints the notice, finishes its own sentence, then settles its
+status line — precisely the shape `lastTurnFailed` was written for. **A finding
+recorded in prose does not propagate to the code that needed it.** F54 widened
+where the fact lives (pane → account) and left untouched where the fact is
+*seen*, and one unexamined line kept the whole mechanism at zero.
+
+What separates a live block from a replayed one is what comes AFTER: a session
+that carried on has agent output below the notice, and agent output carries the
+response bullet. Chrome does not. So the window is eight lines and the divider
+is the bullet. Two bugs fell out of looking: scanning upward met the
+continuation line first, matched it, and returned — finding the block and
+discarding the reset time, the one detail an operator wants.
+
+**And the same corroboration must run in reverse.** A notice sits on screen long
+after the limit lifts, because nobody types into a session that refused them, so
+nothing overwrites it. Measured on a working machine: two sessions reporting
+`quota_blocked` from expired notices while two others on that account worked. A
+session working NOW outranks a screen that has not changed since it was refused
+— the same divider as above, with the evidence in another pane instead of a
+lower line.
+
+> **A rule about freshness needs a clock on both ends.** F54 asked how long the
+> condition outlives its evidence. It did not ask how long the evidence outlives
+> the condition, and both errors put a session in the wrong state.
+
+**F56 · The supervisor learned one fact 48 times, and never concluded it.** The
+same outage, from the consumer's side: autopilot recorded 48 stall reasons and
+never formed the single statement that explained all of them. It could not.
+Nothing told it — it learned by dispatching work and watching it fail, so every
+discovery cost a session already sent.
+
+Reporting state correctly is necessary and does not fix this. A scheduler that
+must POLL to discover it is refused has already paid before it can act. So the
+account's state is now an **event** — `machine.quota`, the only event here whose
+subject is not a session, and the only one whose right response is to stop doing
+something. It fires at the transition, announces a block already in force to a
+subscriber that joins mid-outage, and retracts explicitly rather than by
+silence.
+
+The honest limit, searched for before it was assumed: **there is no advance
+warning to escalate on.** 400 lines of scrollback across 51 panes on two
+machines contain no approaching-limit notice; local runtime state records the
+rate tier and never consumption against it. The first refusal is the earliest
+signal that exists.
+
+> **When a consumer must ask to find out, the answer arrives after the cost.**
+> A fact worth acting on is worth pushing — and reporting it accurately N times
+> is not the same as telling someone once.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

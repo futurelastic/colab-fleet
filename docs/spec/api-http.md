@@ -357,11 +357,24 @@ resumption needs no client code. The server honours that header when no
 | `session.state` | ref + `SessionState` |
 | `session.closed` | ref + final state |
 | `source.status` | a machine's reachability changed |
+| `machine.quota` | `{ "machine", "blocked": bool, "quota"? }` — this machine's **account** started or stopped refusing work |
 | `control.resync` | `{ "reason": "epoch_changed" \| "cursor_expired" }` |
 
 `source.status` exists so a client learns a peer went away as an **event**,
 rather than inferring it from data that stopped arriving. Inferring absence
 from silence is the failure mode this whole specification is organised against.
+
+`machine.quota` is the only event whose subject is not a session, and the only
+one a scheduler should act on by **not** doing something. It fires once at the
+transition, carries the reset time when the runtime printed one, and is
+announced to a subscriber that connects while a block is already in force —
+joining late must not mean learning nothing.
+
+The alternative, measured: an account hit its weekly limit and 48 autopilot
+sessions each discovered it separately, by being dispatched work and stalling.
+Every discovery cost a session that had already been sent. There is no earlier
+signal available — the runtime prints no warning before it refuses, so the
+first refusal is the notice.
 
 On `control.resync` the client refetches state and resubscribes. The service
 never resumes silently from an arbitrary point (§7.3) — an announced gap is

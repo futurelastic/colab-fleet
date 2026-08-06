@@ -475,12 +475,33 @@ This is the part to get right before you build a UI on it.
 | a session's **status** changes (idle → working, → waiting_input) | `session.state` |
 | the agent prints output, the spinner ticks, the screen scrolls | **no** |
 | a machine becomes unreachable | `source.status` |
+| this machine's **account** starts or stops refusing work | `machine.quota` |
 
 Events fire on **transitions**, not on content. A session that stays `working`
 for twenty minutes produces one event at the start, not a stream — which is
 what you want, and also means **a quiet stream is normal**. Do not treat
 silence as a broken connection; on a fleet of ~100 sessions, minutes can pass
 with nothing to say.
+
+### Act on `machine.quota` before you dispatch
+
+If you schedule work, this is the one event that should change what you do
+next. `blocked: true` means every session on that machine will refuse — so stop
+dispatching there, and let in-flight turns finish rather than starting new ones.
+`blocked: false` is an explicit all-clear, not something to infer from silence.
+
+The failure it prevents was measured: when an account hit its weekly limit, a
+supervisor learned it 48 times, once per session it had already dispatched and
+which then stalled. It recorded 48 stall reasons and never formed the one
+conclusion that explained all of them.
+
+Two honest limits. There is **no advance warning** — the runtime prints nothing
+before refusing, so the first refusal is the earliest signal that exists; if you
+want a margin, keep it in your own dispatch budget, not in this event.  And
+`quota.resetHint` is prose the runtime printed (`"aug 10 at 12am (asia/tokyo)"`),
+so show it to a human rather than parsing it into a timer — the service itself
+never uses it to expire a block. What clears a block is a session on that
+machine being observed working.
 
 ### What subscribing costs
 

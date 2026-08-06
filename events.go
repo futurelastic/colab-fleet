@@ -14,7 +14,24 @@ const (
 	// a disappearance, and that is the one thing it must not be mistaken for.
 	EventSessionRenamed EventKind = "session.renamed"
 	EventSourceStatus   EventKind = "source.status"
-	EventControlResync  EventKind = "control.resync"
+	// EventMachineQuota reports that this machine's ACCOUNT started or
+	// stopped refusing work — a fact about the machine, not about any one
+	// session, and the only event here whose subject is not a session.
+	//
+	// It exists because of how a supervisor learned this without it. When an
+	// account hit its weekly limit, 48 autopilot sessions each discovered it
+	// separately, by being told to work and stalling; the supervisor recorded
+	// 48 stall reasons and never formed the single conclusion that explained
+	// all of them. Every one of those discoveries was a session that had
+	// already been dispatched — the cost is paid before the fact is learned.
+	//
+	// One event, at the transition, lets a supervisor stop dispatching
+	// instead of finding out N times that it should have. It is the earliest
+	// honest signal available: the runtime gives no advance warning, so the
+	// first refusal IS the notice (see the package findings on what was
+	// searched for and not found).
+	EventMachineQuota  EventKind = "machine.quota"
+	EventControlResync EventKind = "control.resync"
 )
 
 // ResyncReason is control.resync's payload discriminant (api-http.md §4,
@@ -33,6 +50,18 @@ type SessionStatePayload struct {
 	State SessionState `json:"state"`
 }
 
+// MachineQuotaPayload is machine.quota's payload.
+//
+// Blocked is explicit rather than implied by Quota being nil, so a recovery
+// event is a positive statement ("this account works again") and not an
+// absence a subscriber has to interpret — §5.7's rule applied to the event
+// plane.
+type MachineQuotaPayload struct {
+	Machine MachineId   `json:"machine"`
+	Blocked bool        `json:"blocked"`
+	Quota   *QuotaBlock `json:"quota,omitempty"`
+}
+
 // ControlResyncPayload is control.resync's payload.
 type ControlResyncPayload struct {
 	Reason ResyncReason `json:"reason"`
@@ -47,6 +76,7 @@ type ControlResyncPayload struct {
 //   - EventSessionCreated -> Session
 //   - EventSessionState, EventSessionClosed -> SessionStatePayload
 //   - EventSourceStatus -> SourceStatus
+//   - EventMachineQuota -> MachineQuotaPayload
 //   - EventControlResync -> ControlResyncPayload
 //
 // The spec does not pin down the exact SSE line framing — whether Kind

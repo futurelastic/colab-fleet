@@ -596,6 +596,33 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	// Only idle is rewritten. A session mid-turn, at a prompt, or holding
 	// unsent text has a more specific truth to tell, and a remembered
 	// account fact must not overwrite something observed just now.
+	//
+	// The same corroboration works in reverse, and must. A limit notice sits
+	// on the screen long after the limit lifts — nobody types into a session
+	// that refused them, so nothing overwrites it — and read literally it says
+	// "blocked" forever. Measured on a working machine: two sessions reporting
+	// quota_blocked from notices that had already expired, while two others on
+	// that same account were working.
+	//
+	// A session working NOW is proof the account is not refusing work, and it
+	// outranks a screen that has not changed since it was refused. So the
+	// notice becomes what it is — history — and the session reports what it
+	// otherwise is: settled, with nothing running and no question pending.
+	// This is F53's divider again, with the evidence in another pane instead
+	// of a lower line.
+	if sawWorking {
+		for i := range sessions {
+			if sessions[i].State.Status != fleet.StatusQuotaBlocked {
+				continue
+			}
+			st := sessions[i].State
+			st.Status = fleet.StatusIdle
+			st.Quota = nil
+			st.Evidence = "a limit notice is on screen, but another session on this account is working now, so the notice is history"
+			sessions[i].State = st
+		}
+	}
+
 	if q := d.quotaBlock(); q != nil {
 		for i := range sessions {
 			if sessions[i].State.Status != fleet.StatusIdle {
@@ -609,6 +636,22 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 				st.Evidence += " (reported reset: " + q.ResetHint + ")"
 			}
 			sessions[i].State = st
+		}
+	}
+
+	// Every block carries a real since. The per-session path builds its
+	// QuotaBlock in classify, which has no clock, so it left the zero time —
+	// which serialises as year 1 and is worse than absent: a caller computing
+	// "blocked for how long" gets two millennia. The status's own since is the
+	// right answer, and it already survives restarts.
+	for i := range sessions {
+		if q := sessions[i].State.Quota; q != nil && q.Since.IsZero() {
+			blocked := *q
+			blocked.Since = now
+			if since := sessions[i].State.Since; since != nil && !since.IsZero() {
+				blocked.Since = *since
+			}
+			sessions[i].State.Quota = &blocked
 		}
 	}
 

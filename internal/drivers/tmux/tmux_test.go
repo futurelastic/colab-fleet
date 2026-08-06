@@ -1251,3 +1251,64 @@ func TestOneWorkingSessionClearsTheQuotaBlock(t *testing.T) {
 		}
 	}
 }
+
+// A notice outlives the limit it announced: nobody types into a session that
+// refused them, so the screen never changes. Read literally it says "blocked"
+// forever — measured on a working machine as two sessions blocked by expired
+// notices while two others on that account worked.
+func TestWorkingSessionOverrulesAnExpiredNoticeOnAnotherScreen(t *testing.T) {
+	ctx := context.Background()
+	const rule = "────────────────────"
+	f := twoSessions()
+	f.captures["%1"] = "transcript\n✻ Brewing… (3s · ↓ 1.2k tokens)\n" + rule + "\n❯ \n" + rule + "\n"
+	f.captures["%2"] = "  ⎿  You've hit your session limit · resets 3:40pm (Asia/Saigon)\n" +
+		"     /upgrade to increase your usage limit.\n" + rule + "\n❯ \n" + rule + "\n"
+	d := newTestDriver(f)
+
+	col, err := d.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawWorking bool
+	for _, s := range col.Items() {
+		switch s.State.Status {
+		case fleet.StatusWorking:
+			sawWorking = true
+		case fleet.StatusQuotaBlocked:
+			t.Errorf("%s reported blocked while another session on the account works", s.ID)
+		}
+		if s.State.Quota != nil {
+			t.Errorf("%s: an overruled notice left a quota block behind", s.ID)
+		}
+	}
+	if !sawWorking {
+		t.Fatal("fixture never produced a working session; the test proves nothing")
+	}
+}
+
+// A block always carries a real since. The per-session path builds it in
+// classify, which has no clock; the zero time serialises as year 1, so a
+// caller asking "blocked for how long" got two millennia.
+func TestQuotaBlockCarriesARealSince(t *testing.T) {
+	ctx := context.Background()
+	const rule = "────────────────────"
+	f := twoSessions()
+	notice := "  ⎿  You've hit your weekly limit · resets Aug 10 at 12am (Asia/Tokyo)\n" + rule + "\n❯ \n" + rule + "\n"
+	f.captures["%1"] = notice
+	f.captures["%2"] = notice
+	d := newTestDriver(f)
+
+	col, err := d.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range col.Items() {
+		q := s.State.Quota
+		if q == nil {
+			t.Fatalf("%s: no quota block on a blocked session", s.ID)
+		}
+		if q.Since.IsZero() {
+			t.Errorf("%s: since is the zero time, which claims a date in year 1", s.ID)
+		}
+	}
+}
