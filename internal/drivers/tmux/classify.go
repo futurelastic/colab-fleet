@@ -105,6 +105,10 @@ const (
 	runningSuffixMarker = "…"
 	// finishedInfix is the finished spinner's shape: "<Verb> for <duration>".
 	finishedInfix = " for "
+	// responseBullet marks a line the AGENT produced. Chrome does not carry
+	// it, which makes it the divider between "the runtime said this just now"
+	// and "the agent has since carried on".
+	responseBullet = "⏺"
 )
 
 // screen is a pane's captured text, split into non-empty trailing lines
@@ -496,17 +500,24 @@ func usageLimit(s screen) (resetHint string, blocked bool) {
 			break
 		}
 	}
-	// The notice must be the LAST thing printed. Anything after it — a response
-	// bullet, more output — means the session carried on, so the notice is
-	// history rather than a live block.
+	// The notice must be the last thing the AGENT printed — not literally the
+	// last line, which was too strict and missed the real shape.
 	//
-	// This is stricter than a tail window, and deliberately: after a resume the
-	// runtime re-renders old output, so a session that hit a limit yesterday
-	// shows the notice again with its later work beneath it. A window of even
-	// two or three lines reads that as blocked. An operational runbook for this
-	// fleet states the rule exactly — judge by the LAST live line — and that is
-	// the only formulation that survives replay.
-	const liveTail = 1
+	// Measured on a blocked machine: the runtime prints the notice, then its
+	// own continuation line, then settles its status line. So the notice is
+	// never last, and a one-line rule saw nothing on a fleet that had been
+	// refusing work for days. The identical shape was already recorded for a
+	// failed turn — error first, status line after — and this function was
+	// written before that lesson was applied here.
+	//
+	// What still separates a live block from a replayed one is what comes
+	// AFTER: a session that carried on has agent output below the notice, and
+	// agent output is marked by the runtime's own response bullet. Chrome —
+	// the status line, continuation lines, blanks — is not. So scan a window,
+	// and disqualify the notice if the agent said anything after it.
+	const liveTail = 8
+	var found bool
+	var hint string
 	seen := 0
 	for i := end - 1; i >= 0 && seen < liveTail; i-- {
 		line := strings.ToLower(strings.TrimSpace(s.lines[i]))
@@ -514,6 +525,11 @@ func usageLimit(s screen) (resetHint string, blocked bool) {
 			continue
 		}
 		seen++
+		// The runtime's response bullet means the agent produced output after
+		// whatever is above it — so anything found from here up is history.
+		if strings.HasPrefix(line, responseBullet) {
+			return "", false
+		}
 		hit := (strings.Contains(line, "limit") &&
 			(strings.Contains(line, "hit your") || strings.Contains(line, "reached") ||
 				strings.Contains(line, "usage"))) ||
@@ -523,18 +539,29 @@ func usageLimit(s screen) (resetHint string, blocked bool) {
 		}
 		// A reset time when the screen offers one — the number an operator
 		// actually needs, and the difference between "wait" and "switch".
+		//
+		// Keep scanning after a hit that carries no time. The notice spans
+		// more than one line ("…weekly limit · resets Aug 10" then
+		// "/usage-credits to finish…"), and scanning upward meets the
+		// continuation FIRST — so returning on the first hit found the block
+		// and threw the reset time away, which is the one detail an operator
+		// wants.
+		found = true
+		if hint != "" {
+			continue
+		}
 		for _, marker := range []string{"resets ", "try again ", "available again "} {
 			if k := strings.Index(line, marker); k >= 0 {
 				rest := strings.TrimSpace(line[k+len(marker):])
 				if len(rest) > 40 {
 					rest = rest[:40]
 				}
-				return rest, true
+				hint = rest
+				break
 			}
 		}
-		return "", true
 	}
-	return "", false
+	return hint, found
 }
 
 // lastTurnFailed reports whether the live region shows the most recent turn

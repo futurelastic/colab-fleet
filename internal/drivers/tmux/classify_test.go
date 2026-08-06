@@ -929,3 +929,37 @@ func TestComposerDigestIsOfTheComposerNotTheScreen(t *testing.T) {
 		t.Error("the published digest is of the whole screen — discard can never match it")
 	}
 }
+
+// The real shape from a blocked machine: notice, the runtime's own
+// continuation line, then a settled status line. A one-line rule saw nothing
+// on a fleet that had been refusing work for days.
+func TestLimitNoticeFollowedByChromeIsStillLive(t *testing.T) {
+	const rule = "────────────────────"
+	live := "  Ran 1 shell command\n" +
+		"  ⎿  You've hit your weekly limit · resets Aug 10 at 12am (Asia/Tokyo)\n" +
+		"     /usage-credits to finish what you're working on.\n" +
+		"✻ Churned for 15s\n" + rule + "\n❯ \n" + rule + "\n"
+
+	st := classifyAged(live, true, false)
+	if st.Status != fleet.StatusQuotaBlocked {
+		t.Errorf("status = %s, want quota_blocked — the notice is two lines up, not gone", st.Status)
+	}
+	if st.Quota == nil || !strings.Contains(st.Quota.ResetHint, "aug 10") {
+		t.Errorf("reset hint missing or wrong: %+v", st.Quota)
+	}
+}
+
+// ...but agent output after the notice still means the session carried on.
+// That is the divider: chrome below it is the runtime finishing its sentence,
+// a response bullet below it is work that happened afterwards.
+func TestLimitNoticeFollowedByAgentOutputIsHistory(t *testing.T) {
+	const rule = "────────────────────"
+	replayed := "  ⎿  You've hit your weekly limit · resets Aug 10\n" +
+		"⏺ Retried after the reset and it worked.\n" +
+		"✻ Brewed for 2m 0s\n" + rule + "\n❯ \n" + rule + "\n"
+
+	st := classifyAged(replayed, true, false)
+	if st.Status == fleet.StatusQuotaBlocked {
+		t.Error("a notice with agent output beneath it was read as a live block")
+	}
+}
