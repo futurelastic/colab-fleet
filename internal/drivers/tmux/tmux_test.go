@@ -1474,3 +1474,78 @@ func TestAccountBlockCoversSessionsItCouldNotClassify(t *testing.T) {
 		}
 	}
 }
+
+// The THIRD submit site (#22), reached only through the recovery path: a
+// delivery this driver could not confirm, resumed by the caller.
+//
+// It is the site most exposed to a dropped newline and it was the one left
+// out. The pane is idle by definition — the branch only runs when a composer
+// has been sitting on an unsubmitted line — so if a lone newline is ever
+// swallowed anywhere, it is swallowed here.
+//
+// It also fails worse than the others. This path returns `submitted`, the
+// strongest outcome in the enum, without verifying anything; and it calls
+// forgetStranded immediately afterwards, discarding the driver's own record of
+// the text on the strength of a keystroke nobody checked. A swallowed newline
+// here turns a recoverable stranding into a permanent one and reports success.
+//
+// Reaching it needs a stranded record AND a busy composer. The first send
+// manufactures both: a pane that never renders what was pasted cannot be
+// confirmed, so the driver records the text and reports unknown.
+func TestResumingAStrandedSendAlsoWakesThePane(t *testing.T) {
+	f := twoSessions()
+	f.noEcho = true
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const text = "the instruction that stranded"
+
+	first, err := d.Send(context.Background(), testCaller, ref, text, driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("setup: first send outcome = %q, want unknown so the text is recorded as stranded",
+			first.Outcome)
+	}
+	for _, c := range f.callsSnapshot() {
+		if c[0] == "send-keys" {
+			t.Fatal("setup: the unconfirmed send must not have submitted anything; " +
+				"any send-keys below would then be ambiguous")
+		}
+	}
+
+	// The composer now holds unsent text, which is the state the resume branch
+	// requires before it will act.
+	f.setCapture("%1", fixtureUnsent)
+
+	got, err := d.Send(context.Background(), testCaller, ref, text,
+		driver.SendOptions{Submit: true, ResumeIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeSubmitted {
+		t.Fatalf("resume outcome = %q (%s), want submitted", got.Outcome, got.Reason)
+	}
+
+	submits := 0
+	for _, c := range f.callsSnapshot() {
+		if c[0] != "send-keys" {
+			continue
+		}
+		keys := sentKeys(c)
+		if len(keys) == 0 || !isNewlineKey(keys[len(keys)-1]) {
+			continue
+		}
+		submits++
+		if len(keys) < 2 {
+			t.Fatalf("the resume submitted with %v — a lone newline into the one pane that is "+
+				"idle by definition, on the path that then DISCARDS the stranded record", keys)
+		}
+		if wake := keys[len(keys)-2]; !printableKey(wake) {
+			t.Errorf("key before the newline is %q, not printable; keys were %v", wake, keys)
+		}
+	}
+	if submits != 1 {
+		t.Fatalf("expected exactly one submit from the resume, saw %d", submits)
+	}
+}

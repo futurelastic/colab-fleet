@@ -854,7 +854,20 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// not there to compare (F49), and the messages most likely to strand
 		// are exactly the long ones.
 		if opts.ResumeIfStranded && d.strandedMatches(ref.ID, text) {
-			if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "C-m"); err != nil {
+			// Wake key before the newline, the same shape as the other two
+			// submit sites (#21). This pane is idle BY DEFINITION — the branch
+			// only runs when a composer has been sitting on an unsubmitted
+			// line — so if a lone newline is ever dropped there, it is dropped
+			// here.
+			//
+			// The measurement behind the original change is not settled: it
+			// was made by reading a pane, and a composer holding only its own
+			// faint placeholder produces exactly the reading "nothing
+			// happened, the text is still there". What justifies this edit is
+			// consistency, not that number — three submit sites, one shape,
+			// and no reason for this one to differ. The cost either way is a
+			// trailing space.
+			if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "Space", "C-m"); err != nil {
 				return fleet.DeliveryReceipt{}, fmt.Errorf("send: submitting stranded text: %w", err)
 			}
 			d.forgetStranded(ref.ID)
