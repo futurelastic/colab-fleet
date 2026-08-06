@@ -191,6 +191,12 @@ type Driver struct {
 	idem      *idemStore
 	retention time.Duration
 
+	// quota is the account-level block (§2.3's QuotaBlock), remembered
+	// because it outlives the screen that announced it and survives a
+	// restart — a weekly limit measured on this fleet had four days to run,
+	// and the service is deployed by restarting it.
+	quota *fleet.QuotaBlock
+
 	// stranded remembers, per session, text this driver delivered and could
 	// not confirm — the record a resume is checked against. In memory only:
 	// it describes what is sitting in a composer right now, and a composer
@@ -303,6 +309,7 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 		idem, _ = newIdemStore(nil, d.retention, d.now)
 	}
 	d.idem = idem
+	d.loadQuota()
 	return d
 }
 
@@ -562,6 +569,48 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	}
 	d.mu.Unlock()
 	d.noteStatuses(obs)
+
+	// A usage limit belongs to the ACCOUNT, not to whichever pane happened to
+	// print the notice, and it outlives that notice by days. Observe it once
+	// per read: any session showing it sets the block, any session actually
+	// working clears it.
+	var sawLimit, sawWorking bool
+	var hint string
+	for i := range sessions {
+		switch sessions[i].State.Status {
+		case fleet.StatusQuotaBlocked:
+			sawLimit = true
+			if q := sessions[i].State.Quota; q != nil && q.ResetHint != "" {
+				hint = q.ResetHint
+			}
+		case fleet.StatusWorking:
+			sawWorking = true
+		}
+	}
+	d.noteQuotaBlock(sawLimit, hint, sawWorking, now)
+
+	// Apply it. A session that reads idle on a machine whose account is
+	// refusing work is not available, and idle is the status that means send
+	// it work — the whole failure this exists to prevent.
+	//
+	// Only idle is rewritten. A session mid-turn, at a prompt, or holding
+	// unsent text has a more specific truth to tell, and a remembered
+	// account fact must not overwrite something observed just now.
+	if q := d.quotaBlock(); q != nil {
+		for i := range sessions {
+			if sessions[i].State.Status != fleet.StatusIdle {
+				continue
+			}
+			st := sessions[i].State
+			st.Status = fleet.StatusQuotaBlocked
+			st.Quota = q
+			st.Evidence = "this machine's account is refusing work; the session itself looks idle"
+			if q.ResetHint != "" {
+				st.Evidence += " (reported reset: " + q.ResetHint + ")"
+			}
+			sessions[i].State = st
+		}
+	}
 
 	count := len(sessions)
 	src := fleet.SourceStatus{
@@ -1495,6 +1544,60 @@ func composerHoldsCollapsedPaste(painted string) bool {
 		}
 	}
 	return false
+}
+
+// noteQuotaBlock remembers that this machine's account is refusing work, and
+// forgets it the moment something proves otherwise.
+//
+// Called with what the current read saw: whether any session showed a limit
+// notice, and whether any session was observed working. One working session is
+// proof the account works, and is the only thing that clears the block — a
+// reset time is scraped prose and must not be trusted to expire it.
+func (d *Driver) noteQuotaBlock(sawLimit bool, hint string, sawWorking bool, now time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch {
+	case sawWorking:
+		if d.quota != nil {
+			d.quota = nil
+			d.saveQuotaLocked()
+		}
+	case sawLimit && d.quota == nil:
+		d.quota = &fleet.QuotaBlock{Since: now, ResetHint: hint}
+		d.saveQuotaLocked()
+	case sawLimit && hint != "" && d.quota.ResetHint == "":
+		// A later notice may carry a reset time the first one did not.
+		d.quota.ResetHint = hint
+		d.saveQuotaLocked()
+	}
+}
+
+// quotaBlock reports the remembered account block, if any.
+func (d *Driver) quotaBlock() *fleet.QuotaBlock {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.quota == nil {
+		return nil
+	}
+	q := *d.quota
+	return &q
+}
+
+func (d *Driver) saveQuotaLocked() {
+	if d.store == nil {
+		return
+	}
+	_ = d.store.Save("quota", d.quota)
+}
+
+func (d *Driver) loadQuota() {
+	if d.store == nil {
+		return
+	}
+	var q fleet.QuotaBlock
+	if found, err := d.store.Load("quota", &q); err == nil && found && !q.Since.IsZero() {
+		d.quota = &q
+	}
 }
 
 // noteStranded records text this driver delivered and could not confirm.

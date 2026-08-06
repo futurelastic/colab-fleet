@@ -1183,3 +1183,71 @@ func TestResumeSubmitsOnlyWhatThisDriverStranded(t *testing.T) {
 		}
 	})
 }
+
+// A usage limit belongs to the account and lasts days; the notice is on screen
+// for seconds. Measured on a live fleet: 51 sessions, the notice visible in 2
+// panes, 0 reported blocked, 48 reporting idle — the status that means "send it
+// work" — while the account had four days left to run.
+func TestQuotaBlockOutlivesTheNoticeThatAnnouncedIt(t *testing.T) {
+	ctx := context.Background()
+	const rule = "────────────────────"
+	f := twoSessions()
+	// beta shows the limit; alpha looks perfectly idle, as most panes do.
+	f.captures["%2"] = "transcript\nYou've hit your weekly limit · resets Aug 10 at 12am\n" +
+		rule + "\n❯ \n" + rule + "\n"
+	d := newTestDriver(f)
+
+	col, err := d.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range col.Items() {
+		if s.State.Status != fleet.StatusQuotaBlocked {
+			t.Errorf("%s reported %s; every session on a refusing account is blocked",
+				s.ID, s.State.Status)
+		}
+	}
+
+	// The notice scrolls away, which is what actually happened.
+	f.setCapture("%2", idleFixtureFor("beta"))
+	col, err = d.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range col.Items() {
+		if s.State.Status != fleet.StatusQuotaBlocked {
+			t.Errorf("%s went back to %s once the notice scrolled away — the block is remembered, not read",
+				s.ID, s.State.Status)
+		}
+		if s.State.Quota == nil || s.State.Quota.ResetHint == "" {
+			t.Errorf("%s lost the reset hint; a caller should not scrape it from prose", s.ID)
+		}
+	}
+}
+
+// One working session is proof the account works. Nothing else clears the
+// block — least of all the scraped reset time, which is prose the runtime may
+// reword and which a supervisor next door already parsed into garbage.
+func TestOneWorkingSessionClearsTheQuotaBlock(t *testing.T) {
+	ctx := context.Background()
+	const rule = "────────────────────"
+	f := twoSessions()
+	f.captures["%2"] = "transcript\nYou've hit your weekly limit\n" + rule + "\n❯ \n" + rule + "\n"
+	d := newTestDriver(f)
+	if _, err := d.List(ctx, testCaller, driver.ListFilter{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The account recovers: a session starts working again.
+	f.setCapture("%1", "transcript\n✻ Brewing… (3s · ↓ 1.2k tokens)\n"+rule+"\n❯ \n"+rule+"\n")
+	f.setCapture("%2", idleFixtureFor("beta"))
+	col, err := d.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range col.Items() {
+		if s.State.Status == fleet.StatusQuotaBlocked {
+			t.Errorf("%s still blocked after a session was observed working", s.ID)
+		}
+	}
+}

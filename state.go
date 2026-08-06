@@ -148,6 +148,40 @@ const (
 	WaitingUnsentInput WaitingReason = "unsent-input"
 )
 
+// QuotaBlock describes an account-level refusal that outlives the screen that
+// announced it.
+//
+// # Why a remembered fact rather than a screen read
+//
+// A usage limit is not a property of a session. It is a property of the
+// ACCOUNT every session on the machine shares, it lasts days, and it appears on
+// screen for only as long as nothing else prints. Measured on a live fleet
+// hours after one began: 51 sessions, the notice still visible in 2 panes, and
+// every other session showing an ordinary idle screen it would happily accept
+// work into.
+//
+// Reading it from the screen therefore answers a different question than the
+// one a caller is asking. "Is this session showing a limit notice right now" is
+// a flicker; "can this machine do any work" is the state, and only the second
+// prevents a supervisor dispatching to 48 sessions that cannot run.
+//
+// # How it clears, and why that is not a timer
+//
+// One session observed WORKING clears it, because a running turn is proof the
+// account works — direct evidence, from the same reads already being made.
+//
+// ResetHint is not used to clear it. It is scraped prose ("Aug 10 at 12am"),
+// the runtime is free to reword it, and a supervisor next door parsed the same
+// line into "Aug 10 at 12am (Asia/Tokyo)      /usage-" with the next widget
+// glued on. A hint is worth showing a human and is not worth acting on.
+type QuotaBlock struct {
+	// Since is when a limit notice was first seen on this machine.
+	Since Timestamp `json:"since"`
+	// ResetHint is the runtime's own words about when it lifts, when it said
+	// anything. Display it; do not parse it.
+	ResetHint string `json:"resetHint,omitempty"`
+}
+
 // TurnEnd says how the most recent turn FINISHED, when the screen says
 // anything about it.
 //
@@ -225,6 +259,12 @@ type SessionState struct {
 	// tell. Empty for every other status, and empty on waiting_input means
 	// unclassified — see WaitingReason.
 	WaitingOn WaitingReason `json:"waitingOn,omitempty"`
+
+	// Quota carries the account-level block when Status is quota_blocked —
+	// including a reset hint in the runtime's own words, so a caller need not
+	// scrape it out of the evidence prose the way every consumer of this
+	// screen has had to.
+	Quota *QuotaBlock `json:"quota,omitempty"`
 
 	// LastTurn reports how the most recent turn ended, when the screen says
 	// anything about it. Nil is the ordinary case and means nothing was said —

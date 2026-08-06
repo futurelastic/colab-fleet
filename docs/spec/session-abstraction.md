@@ -2343,6 +2343,46 @@ tests only because the composer is in every fixture.
 > transitional panels are exactly where a screen-reader is least tested and
 > most wrong.
 
+**F54 · The condition lasted four days; our detection lasted one screen.** An
+account hit its weekly limit and every autopilot session on that machine
+stopped. Hours later, measured live:
+
+| | |
+|---|---|
+| sessions on the machine | 51 |
+| panes still showing the limit notice | 2 |
+| sessions we reported `quota_blocked` | **0** |
+| sessions we reported `idle` | **48** |
+
+F50 taught that a quota-blocked session must not read as `idle`, and F52 moved
+it to the status the spec had defined. Both were about the instant the notice is
+on screen. **Neither noticed that the notice is transient and the condition is
+not** — the runtime prints it once, anything else printing scrolls it away, and
+the account stays refusing for days.
+
+So the fix worked exactly as designed and protected almost nothing. A
+supervisor reading the fleet would dispatch to 48 sessions that could not run,
+which is the failure F50 was written to prevent, arriving by a different route.
+
+**A usage limit is a property of the ACCOUNT, not of a pane.** It is now
+remembered per machine, persisted (a weekly limit outlives any restart, and
+restarting is how this service is deployed), and applied to sessions that would
+otherwise read `idle`. Only `idle` is rewritten: a session mid-turn, at a
+prompt, or holding unsent text has a more specific truth observed just now, and
+a remembered fact must not overwrite it.
+
+**It clears on evidence, not on a clock.** One session observed WORKING proves
+the account works. The scraped reset time is deliberately not used to expire it
+— a supervisor next door parsed the same line into `"Aug 10 at 12am
+(Asia/Tokyo)      /usage-"`, with the next widget glued on. That hint is worth
+showing a human and is not worth acting on, so it travels as a field a caller
+may display and must not parse.
+
+> **Ask how long the condition lasts, then ask how long its evidence stays on
+> screen.** Where those differ, reading the screen answers a question nobody
+> asked — and a detector that is right only while the announcement is visible
+> is a detector that is wrong for as long as it matters.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

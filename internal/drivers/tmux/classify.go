@@ -1047,7 +1047,9 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 		// checked the enum — see F52. waiting_input was always slightly false
 		// here: the session is not blocked on a HUMAN, it is blocked on a
 		// clock or an account, and no answer from a caller unblocks it.
-		return fleet.InferredState(fleet.StatusQuotaBlocked, evidence, nil), ambNone
+		st := fleet.InferredState(fleet.StatusQuotaBlocked, evidence, nil)
+		st.Quota = &fleet.QuotaBlock{ResetHint: hint}
+		return st, ambNone
 	}
 
 	running, foundSpinner := spinner(s)

@@ -233,6 +233,12 @@ starts recreating work that is already running.
 
 Two rules that will save you an incident:
 
+- **`quota_blocked` is an ACCOUNT fact, so it applies to sessions that look
+  perfectly idle.** The service remembers it from whichever session announced
+  it, keeps it across restarts, and clears it when any session is seen working
+  again. `state.quota.resetHint` carries the runtime's own words about when it
+  lifts — **display it, do not parse it**; it is scraped prose and another
+  consumer of the same line ended up with the next widget glued onto the end.
 - **`quota_blocked` means the provider refused it** — alive, but out of quota.
   Nothing you send will unblock it; it clears with time or a different account.
   Do not dispatch work to it and do not treat it as stuck.
