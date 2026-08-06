@@ -140,9 +140,26 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		return nil, nil
 	case "capture-pane":
 		// Single-pane capture, as used to confirm delivery.
+		//
+		// THE -e FLAG IS MODELLED, and it has to be. Without -e the real
+		// multiplexer strips attributes, and the classifier is documented to
+		// need them: the composer's placeholder is distinguished from typed
+		// text by DIMNESS ALONE. A fake that returned the same bytes either way
+		// made a missing -e invisible to every test, which is exactly how three
+		// capture sites shipped without it.
+		withEscapes := false
+		for _, a := range args {
+			if a == "-e" {
+				withEscapes = true
+			}
+		}
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "-t" {
-				return []byte(f.captures[args[i+1]] + "\n" + f.pasted[args[i+1]]), nil
+				body := f.captures[args[i+1]] + "\n" + f.pasted[args[i+1]]
+				if !withEscapes {
+					body = stripSGR(body)
+				}
+				return []byte(body), nil
 			}
 		}
 		return nil, nil

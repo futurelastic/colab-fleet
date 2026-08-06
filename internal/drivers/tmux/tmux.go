@@ -496,14 +496,13 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 		if i > 0 {
 			capArgs = append(capArgs, ";")
 		}
-		capArgs = append(capArgs,
-			"display-message", "-p", mark+strconv.Itoa(i), ";",
-			// -e keeps escape sequences: the composer's placeholder is
-			// distinguishable from typed input only by being rendered dim,
-			// and stripping colour here would discard the one signal that
-			// separates "nobody typed anything" from "do not overwrite me".
-			"capture-pane", "-p", "-e", "-t", r.paneID, "-S", "-"+strconv.Itoa(d.captureLines),
-		)
+		// The shape comes from classifyCaptureArgs, which is where the -e
+		// rationale lives: the composer's placeholder is distinguishable from
+		// typed input only by being rendered dim, and stripping colour here
+		// would discard the one signal separating "nobody typed anything"
+		// from "do not overwrite me".
+		capArgs = append(capArgs, "display-message", "-p", mark+strconv.Itoa(i), ";")
+		capArgs = append(capArgs, classifyCaptureArgs(r.paneID, d.captureLines)...)
 	}
 	capOut, err := d.run(ctx, d.bin, capArgs...)
 	if err != nil {
@@ -885,11 +884,16 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// Re-read the screen AFTER the readiness gate. The enumeration above was
 	// taken before the wait, and acting on it here would decide "is somebody
 	// typing" from a screen that is now stale by as long as the wait took.
-	if out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", target.paneID,
-		"-S", "-"+strconv.Itoa(d.captureLines)); err == nil {
-		captures[target.paneID] = string(out)
-	}
+	//
+	// Through captureForClassify, which owns the escape-carrying shape this
+	// decision depends on. The first version of this re-read dropped the
+	// escapes and so read the composer's dim placeholder as text a human had
+	// typed — refusing delivery to any idle session showing a hint, and
+	// blaming an operator who did not exist.
 	screenNow := newScreen(captures[target.paneID])
+	if sc, ok := d.captureForClassify(ctx, target.paneID); ok {
+		screenNow = sc
+	}
 
 	// A blocking menu is its own refusal, named honestly. Pasting text into a
 	// selection prompt does not deliver a message — it drives the menu, which
@@ -1263,9 +1267,9 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	// that did — the same reason send confirms before submitting.
 	deadline := d.now().Add(promptClearWindow)
 	for {
-		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-e", "-J", "-t", live.paneID)
-		if err == nil {
-			if left, _ := composerText(newScreen(string(out))); left == "" {
+		sc, ok := d.captureForClassify(ctx, live.paneID)
+		if ok {
+			if left, _ := composerText(sc); left == "" {
 				return fleet.Ack{Accepted: true}, nil
 			}
 		}
@@ -1772,6 +1776,12 @@ func (d *Driver) confirmLanded(ctx context.Context, paneID, text string) bool {
 	// kind of prose that changes underneath a matcher.
 	deadline := d.now().Add(submitConfirmWindow)
 	for {
+		// NOT classifyCaptureArgs, and deliberately so: this is the one
+		// capture in the driver that does not feed the classifier. It does a
+		// substring match against text this driver just pasted, strips the
+		// attributes itself, and wants -J so a wrapped paste matches as one
+		// line. Attributes would be discarded a line below regardless, so the
+		// escape-carrying shape would buy nothing here.
 		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID, "-S", "-6")
 		if err == nil {
 			painted := stripSGR(string(out))
@@ -2026,9 +2036,8 @@ func (d *Driver) persistedRecord(id string) (sessionRecord, bool) {
 func (d *Driver) promptCleared(ctx context.Context, paneID, was string) bool {
 	deadline := d.now().Add(promptClearWindow)
 	for {
-		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-e", "-t", paneID, "-S", "-"+strconv.Itoa(d.captureLines))
-		if err == nil {
-			if now := parsePrompt(newScreen(string(out))); now == nil || now.Nonce != was {
+		if sc, ok := d.captureForClassify(ctx, paneID); ok {
+			if now := parsePrompt(sc); now == nil || now.Nonce != was {
 				return true
 			}
 		}
@@ -2069,15 +2078,13 @@ func (d *Driver) promptCleared(ctx context.Context, paneID, was string) bool {
 // blocked reports a selection menu, which is receptive to keys but not to
 // TEXT: pasting into one drives the menu instead of delivering a message.
 func (d *Driver) receptive(ctx context.Context, paneID string) (ready, blocked bool) {
-	out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID,
-		"-S", "-"+strconv.Itoa(d.captureLines))
-	if err != nil {
+	sc, ok := d.captureForClassify(ctx, paneID)
+	if !ok {
 		// Fail closed: an unreadable pane is not a receptive one. Returning
 		// "ready" here on the theory that the capture is probably fine is how
 		// this defect is reintroduced.
 		return false, false
 	}
-	sc := newScreen(string(out))
 	if _, b := selectionPrompt(sc); b {
 		return false, true
 	}
@@ -2131,10 +2138,8 @@ func (d *Driver) awaitReceptive(ctx context.Context, paneID string) (ready, bloc
 func (d *Driver) confirmSubmitted(ctx context.Context, paneID string) bool {
 	deadline := d.now().Add(submitConfirmWindow)
 	for {
-		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID,
-			"-S", "-"+strconv.Itoa(d.captureLines))
-		if err == nil {
-			if text, found := composerText(newScreen(string(out))); found && text == "" {
+		if sc, ok := d.captureForClassify(ctx, paneID); ok {
+			if text, found := composerText(sc); found && text == "" {
 				return true
 			}
 		}
@@ -2147,4 +2152,57 @@ func (d *Driver) confirmSubmitted(ctx context.Context, paneID string) bool {
 		case <-time.After(submitConfirmInterval):
 		}
 	}
+}
+
+// captureForClassify reads a pane in THE shape the classifier requires.
+//
+// # Why this exists as a function rather than as a convention
+//
+// Every screen the classifier parses must carry escape sequences. `newScreen`
+// keeps a `raw` copy of each line for one reason, stated on the type: the
+// composer's placeholder is distinguished from text a human typed by DIMNESS
+// ALONE. There is no wording difference to fall back on — the hint is ordinary
+// prose — so a capture without `-e` cannot express the difference at all, and
+// `composerText` reports the placeholder as unsent input.
+//
+// That is not a cosmetic error. A composer believed to hold unsent input makes
+// `Send` refuse, so an idle session showing a hint becomes UNREACHABLE through
+// the API, and the refusal blames an operator who does not exist. Three
+// separate sites shipped with the flag missing, each added in good faith,
+// because the flag is easy to omit and nothing objected.
+//
+// So the shape is owned here instead of being repeated. Callers ask for "a
+// screen for classification" and cannot express a wrong one.
+//
+// # The shape, and why these flags
+//
+//	-p  write to stdout rather than a buffer.
+//	-e  KEEP escape sequences. The whole point; see above.
+//	-S  start N lines back, so the classifier sees the tail it reasons about.
+//
+// `-J` is deliberately ABSENT. It joins wrapped lines, and the classifier
+// already handles continuation lines itself — a long message wrapping below
+// the prompt is expected and parsed. More to the point, this is the shape the
+// batched enumeration has always used, which is the path every status in this
+// fleet has been read through; adopting a different one here would change what
+// the classifier sees everywhere, on no evidence.
+// classifyCaptureArgs is THE argv shape, and the only place it is written.
+//
+// Separate from captureForClassify because the batched enumeration cannot call
+// that helper: it packs many captures into ONE subprocess invocation, which is
+// the constant-spawn property its own doc comment calls load-bearing. Sharing
+// the argv rather than the function is what keeps the two paths from drifting,
+// which is the drift this whole issue is about.
+func classifyCaptureArgs(paneID string, lines int) []string {
+	return []string{"capture-pane", "-p", "-e", "-t", paneID, "-S", "-" + strconv.Itoa(lines)}
+}
+
+func (d *Driver) captureForClassify(ctx context.Context, paneID string) (screen, bool) {
+	out, err := d.run(ctx, d.bin, classifyCaptureArgs(paneID, d.captureLines)...)
+	if err != nil {
+		// Fail closed, and let the caller decide what that means. An
+		// unreadable pane is not an empty one.
+		return screen{}, false
+	}
+	return newScreen(string(out)), true
 }
