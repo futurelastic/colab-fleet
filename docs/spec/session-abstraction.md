@@ -2440,6 +2440,25 @@ machines contain no approaching-limit notice; local runtime state records the
 rate tier and never consumption against it. The first refusal is the earliest
 signal that exists.
 
+**F57 · `unknown` was excluded from the account block for being a truth. It is
+the opposite.** F54 rewrote only `idle`, reasoning that any other status "has a
+more specific truth to tell". That is right for `working`, `waiting_input` and
+unsent text, and exactly wrong for `unknown` — which is this driver stating it
+could not determine a truth at all (§5.7).
+
+The cost was visible within a minute of watching the blocked machine: four
+sessions flapping `unknown` → `quota_blocked` → `unknown` across consecutive
+reads. Their panes redraw a footer counter, so the screen digest changed, so
+the ambiguity that resolves to `idle` never settled — and a session that never
+reaches `idle` never reached the rewrite. Eight spurious state events per cycle
+on a fleet where nothing was happening.
+
+> **A rule that lists which states outrank a remembered fact must say where
+> `unknown` sits, explicitly.** It reads like a status and behaves like one in
+> a switch, and it is the one value in the set that asserts nothing — so every
+> precedence rule written without naming it will place it wrongly, in whichever
+> direction the code happened to fall.
+
 > **When a consumer must ask to find out, the answer arrives after the cost.**
 > A fact worth acting on is worth pushing — and reporting it accurately N times
 > is not the same as telling someone once.

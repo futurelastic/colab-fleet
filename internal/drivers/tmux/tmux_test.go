@@ -1312,3 +1312,29 @@ func TestQuotaBlockCarriesARealSince(t *testing.T) {
 		}
 	}
 }
+
+// unknown is not a competing truth — it is this driver saying it could not
+// determine one, and an account fact is more specific than that. Left out at
+// first, which showed up as four sessions flapping between unknown and
+// quota_blocked across consecutive reads, on panes that redraw a counter.
+func TestAccountBlockCoversSessionsItCouldNotClassify(t *testing.T) {
+	ctx := context.Background()
+	const rule = "────────────────────"
+	f := twoSessions()
+	f.captures["%1"] = "transcript\nYou've hit your weekly limit · resets Aug 10\n" + rule + "\n❯ \n" + rule + "\n"
+	// A pane with no spinner and an empty composer, seen once: the driver has
+	// nothing to settle it against, so it classifies unknown.
+	f.captures["%2"] = "transcript\n" + rule + "\n❯ \n" + rule + "\n"
+	d := newTestDriver(f)
+
+	col, err := d.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range col.Items() {
+		if s.State.Status == fleet.StatusUnknown {
+			t.Errorf("%s left unknown while the account is refusing work — "+
+				"unknown is the absence of a truth, not a better one", s.ID)
+		}
+	}
+}

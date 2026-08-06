@@ -593,9 +593,21 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	// refusing work is not available, and idle is the status that means send
 	// it work — the whole failure this exists to prevent.
 	//
-	// Only idle is rewritten. A session mid-turn, at a prompt, or holding
-	// unsent text has a more specific truth to tell, and a remembered
-	// account fact must not overwrite something observed just now.
+	// Two statuses are rewritten, and the second was left out at first.
+	//
+	// idle, because idle is the status that means send it work.
+	//
+	// unknown, because unknown is not a competing truth — it is this driver
+	// saying it could not determine one (§5.7), and an account fact IS more
+	// specific than that. Leaving it out had a visible cost: four sessions on
+	// a blocked machine flapped unknown → quota_blocked → unknown across
+	// consecutive reads, because their panes redraw a counter, so the digest
+	// changed and the ambiguity that resolves to idle never settled. Eight
+	// spurious state events per cycle on a fleet where nothing was happening.
+	//
+	// Nothing else is rewritten. working, waiting_input and unsent text each
+	// carry something observed just now, and a remembered fact must not
+	// overwrite an observation.
 	//
 	// The same corroboration works in reverse, and must. A limit notice sits
 	// on the screen long after the limit lifts — nobody types into a session
@@ -625,13 +637,19 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 
 	if q := d.quotaBlock(); q != nil {
 		for i := range sessions {
-			if sessions[i].State.Status != fleet.StatusIdle {
+			var seen string
+			switch sessions[i].State.Status {
+			case fleet.StatusIdle:
+				seen = "the session itself looks idle"
+			case fleet.StatusUnknown:
+				seen = "the session's own screen was inconclusive"
+			default:
 				continue
 			}
 			st := sessions[i].State
 			st.Status = fleet.StatusQuotaBlocked
 			st.Quota = q
-			st.Evidence = "this machine's account is refusing work; the session itself looks idle"
+			st.Evidence = "this machine's account is refusing work; " + seen
 			if q.ResetHint != "" {
 				st.Evidence += " (reported reset: " + q.ResetHint + ")"
 			}
