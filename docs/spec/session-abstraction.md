@@ -78,6 +78,8 @@ SessionSpec {
   model?     : string
   effort?    : string
   name?      : string             // human-facing label
+  marker?    : string             // session-type stamp appended to the name
+  remoteControl?: boolean         // reachable by remote clients; absent ≠ false
   prompt?    : string             // initial input
   contextRef?: AbsolutePath       // see §5.3 — never inline, never argv
 }
@@ -85,7 +87,36 @@ SessionSpec {
 
 `agent`, `model` and `effort` are **hints**, not guarantees. A driver that
 cannot honour one must say so at creation rather than silently substituting a
-default; see §4.3.
+default; see §4.3. `remoteControl` is a hint in the same family.
+
+**A created session must be the same KIND of session the substrate's own
+launcher produces.** This is normative, and it is the rule the three fields
+above exist to make satisfiable. A service that creates a second-class session
+— one that cannot be reached remotely, or lacks the environment an agent needs
+to call a tool, or does not carry the naming its ecosystem keys on — has forked
+the model, and a fork in the model is what this specification exists to remove.
+The failure is worth stating precisely because of its shape: such a session
+**starts, lists, reads and drives perfectly**, and the divergence appears later,
+elsewhere, looking like an agent fault rather than a creation fault.
+
+**`remoteControl` absent is not `remoteControl: false`.** Absent means "whatever
+a first-class session on this substrate gets", which is what a caller who has
+never heard of the field wants. Only an explicit `false` opts out. A boolean
+whose zero value silently meant "off" would make every unaware caller produce
+the second-class shape — which is precisely the defect.
+
+**Naming rules belong to the driver, not to a client.** A driver that applies
+conventions — sanitizing, numbering a collision, stamping a type — must apply
+them to every creation path, not leave them to whichever client happens to know
+about them. Rules enforced by one client are not rules; they are a convention
+that holds until a second client exists. Where a driver derives a name, the
+resolved string is what the session carries **everywhere its identity appears**
+— the id, any remote-control binding, the agent's own name — from birth.
+Resolving the name after building the invocation, so that one of those is bound
+to a name the session does not have, is the same invisible-until-later failure
+as above.
+
+> Origin: Appendix A, F51.
 
 ### 2.2 SessionRef
 

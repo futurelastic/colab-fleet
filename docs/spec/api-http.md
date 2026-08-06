@@ -139,7 +139,8 @@ and no mainstream HTTP client defaults to protecting you from that.
 POST /v1/machines/{machine}/sessions
 Idempotency-Key: <caller-supplied, required>
 { "runtime": "...", "cwd": "/abs/path", "agent": "...", "model": "...",
-  "effort": "...", "name": "...", "prompt": "...", "contextRef": "/abs/path" }
+  "effort": "...", "name": "...", "marker": "...", "remoteControl": true,
+  "prompt": "...", "contextRef": "/abs/path" }
 
 → 201 { "machine": "...", "id": "...", "name": "...", "state": {...} }
 → 200 (same body) if the key was already seen — the existing session
@@ -153,6 +154,42 @@ and the caller cannot detect it afterwards.
 
 `contextRef` is a path. Inline context is not accepted, and context never
 reaches a command line (§5.3).
+
+**`name` is a request, not the id.** The driver owns the naming rules
+(session-abstraction.md §2.1) and may sanitize the name, number it against
+sessions already live, or append `marker`. **Read the returned `id`** — it is
+the resolved string, and it is what every later call must address. A caller
+that assumes the name it sent is the id it got will address the wrong session
+the first time two carry the same name.
+
+**`remoteControl` omitted is not `false`.** Omitted means "whatever a
+first-class session on this substrate gets". Send `false` only to deliberately
+create a session that cannot be reached remotely.
+
+```
+GET /v1/machines/{machine}/sessions/{id}/environment?runtime=
+→ 200 { "known": true, "shell": "...", "login": true, "interactive": true,
+        "names": ["..."], "path": ["...", "..."],
+        "serviceNames": ["..."], "servicePath": ["..."],
+        "capturedAt": "..." }
+→ 200 { "known": false, "reason": "..." }   ← a real answer, not an error
+→ 501 unsupported, if the runtime cannot report one
+```
+
+What environment a session's process actually received. **`names` carries
+variable names and never values** — the environment in question is the one
+holding credentials, and a read that returned them would be a worse defect than
+any it diagnoses. `path` is the one value present, because a search path is not
+a secret and is the drift this endpoint was added for.
+
+`serviceNames`/`servicePath` are the same enumeration for the **service's own**
+process, so a reader can see what the session's startup contributed rather than
+only what it ended up with. An empty difference is the interesting case: it
+means the startup files added nothing, which means an agent needing credentials
+will start normally and fail at its first tool call.
+
+`known: false` is an ordinary 200 (§5.7). "The session had no environment" and
+"we never found out" are opposite answers, and a driver must not collapse them.
 
 ```
 GET /v1/machines/{machine}/sessions/{id}?runtime=

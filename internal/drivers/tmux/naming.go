@@ -1,0 +1,184 @@
+package tmux
+
+import (
+	"context"
+	"strconv"
+	"strings"
+)
+
+// Session naming, owned by this driver.
+//
+// # Why the rules live here rather than in a client
+//
+// They were previously applied by the on-machine launcher and by nothing else.
+// A session created through the API took `spec.Name` verbatim, so three things
+// diverged at once: a name the launcher would have rewritten was accepted
+// as-is, a name that collided was a hard failure where the launcher would have
+// numbered it, and the result carried no type marker, so tooling that keys on
+// one saw a different shape.
+//
+// Rules applied by whichever client got there first are not rules; they are a
+// convention that holds until a second client exists. This driver is the one
+// place every creation path passes through, so it is where they belong. A
+// client MAY pre-sanitize — it will get the same answer, because these
+// functions are idempotent — but it is no longer the only thing standing
+// between a bad name and the multiplexer.
+//
+// # The invariant that matters most
+//
+// The resolved name is used for the multiplexer session, for the remote-control
+// binding, and for the agent's own name — the SAME string in all three places,
+// from birth. Those three drifting apart is what makes a session unreachable
+// from a remote client while still looking healthy locally, and it is not
+// something a caller can repair afterwards.
+
+// nameBody is the alphabet a sanitized name is built from. It is deliberately
+// the LOWERCASE ASCII set plus three separators: not because other characters
+// are rejected, but because this set defines what counts as decoration below.
+const nameBody = "abcdefghijklmnopqrstuvwxyz0123456789._-"
+
+func isNameBody(r rune) bool { return strings.ContainsRune(nameBody, r) }
+
+// sanitizeName removes what the multiplexer cannot hold, and nothing else.
+//
+// A denylist rather than an allowlist, which is safe here for a specific
+// reason: names reach the multiplexer and the agent bound as ARGV, never
+// spliced into a shell command string (see loginWrap), so an arbitrary
+// printable byte is not an injection risk on the create path. Narrowing to an
+// allowlist would instead break every name carrying a non-ASCII marker, which
+// is most of them.
+//
+// Each removal has a cause:
+//
+//   - control characters: unrepresentable, and they corrupt the field-separated
+//     enumeration this driver parses.
+//   - ':' — the multiplexer's own target separator, so a name containing one
+//     addresses something else.
+//   - '.' becomes '-', because the multiplexer silently mangles '.' to '_' and
+//     a name that changes underneath you is worse than one you chose.
+//   - a LEADING '-', which any argv parser downstream reads as a flag.
+func sanitizeName(raw string) string {
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r < 0x20 || r == 0x7f:
+			// dropped
+		case r == ':':
+			// dropped
+		case r == '.':
+			b.WriteRune('-')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimLeft(b.String(), "-")
+}
+
+// decoration returns the trailing run of characters a sanitized name would
+// never be built from — the session-type marker, or a suffix some other tool
+// wrote.
+//
+// Stated structurally, WITHOUT naming any particular marker. Hardcoding a set
+// of glyphs here would move the coupling rather than remove it, and a new
+// session type would break a driver that has no business knowing the
+// vocabulary. What this driver enforces is the SHAPE of the rule: a marker is
+// carried, never stacked.
+func decoration(name string) string {
+	runes := []rune(name)
+	i := len(runes)
+	for i > 0 && !isNameBody(runes[i-1]) {
+		i--
+	}
+	// A name that is ENTIRELY outside the body alphabet is not a decorated
+	// name, it is just a name. Requiring at least one body rune in front is
+	// what keeps "everything is decoration" from being the answer.
+	if i == 0 {
+		return ""
+	}
+	return string(runes[i:])
+}
+
+// applyMarker appends the caller's session-type marker unless the name already
+// carries a decoration of its own.
+//
+// Carry it, never stack it. Without this guard a name that already ends in a
+// marker gains a second one on every pass, and the doubled form is a different
+// session name — so the next lookup misses and creates yet another.
+func applyMarker(name, marker string) string {
+	if marker == "" || decoration(name) != "" {
+		return name
+	}
+	return name + marker
+}
+
+// numberedName produces the n-th candidate for a colliding name, inserting the
+// counter BEFORE any trailing decoration.
+//
+// Before, not after, because the decoration is what tooling keys on: a marker
+// that has a number after it is no longer a trailing marker, and the session
+// stops being recognisable as its own type at exactly the moment there are two
+// of them.
+func numberedName(name string, n int) string {
+	if n < 2 {
+		return name
+	}
+	deco := decoration(name)
+	base := strings.TrimSuffix(name, deco)
+	return base + "-" + strconv.Itoa(n) + deco
+}
+
+// liveNames lists the multiplexer's current session names.
+//
+// One subprocess, not one per candidate. The alternative — probing each
+// candidate with has-session — costs a spawn per collision and needs the exact
+// -t "=NAME" pin to be correct, because an unpinned target resolves by prefix
+// and an AMBIGUOUS prefix reports "no such session" rather than a hit. That
+// reads as "the name is free" and hands the multiplexer a name it will refuse.
+// Enumerating sidesteps the whole trap.
+func (d *Driver) liveNames(ctx context.Context) map[string]bool {
+	out, err := d.run(ctx, d.bin, "list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		// No enumeration is not the same as no sessions, and this must not
+		// invent an empty fleet: returning nil makes resolveName skip
+		// numbering, and the create that follows fails loudly on a duplicate
+		// name rather than silently targeting somebody else's session.
+		return nil
+	}
+	names := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			names[line] = true
+		}
+	}
+	return names
+}
+
+// maxNameAttempts bounds the collision search. A machine with this many
+// same-named sessions has a problem numbering cannot fix, and an unbounded
+// loop here would spin instead of saying so.
+const maxNameAttempts = 64
+
+// resolveName turns a requested name into the one canonical string this
+// session will carry everywhere.
+//
+// Order matters and is not arbitrary: sanitize, then mark, then number. A
+// number applied before the marker would be swallowed by the marker guard, and
+// a marker applied after numbering would sit behind the counter where nothing
+// keying on a trailing marker can see it.
+func (d *Driver) resolveName(ctx context.Context, requested, marker string) (string, bool) {
+	name := applyMarker(sanitizeName(requested), sanitizeName(marker))
+	if name == "" {
+		return "", false
+	}
+	taken := d.liveNames(ctx)
+	if taken == nil {
+		return name, true
+	}
+	for n := 1; n <= maxNameAttempts; n++ {
+		candidate := numberedName(name, n)
+		if !taken[candidate] {
+			return candidate, true
+		}
+	}
+	return "", false
+}

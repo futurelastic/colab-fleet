@@ -74,6 +74,7 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux.HandleFunc("GET /v1/sessions", withAuth(cfg, handleListSessions(svc)))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions", withAuth(cfg, mutating(svc, cfg, handleCreateSession(svc))))
 	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}", withAuth(cfg, handleGetSession(svc)))
+	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}/environment", withAuth(cfg, handleSessionEnvironment(svc)))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/input", withAuth(cfg, mutating(svc, cfg, handleSendInput(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/respond", withAuth(cfg, mutating(svc, cfg, handleRespond(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/interrupt", withAuth(cfg, mutating(svc, cfg, handleInterrupt(svc))))
@@ -401,6 +402,13 @@ type createSessionBody struct {
 	Name       string             `json:"name"`
 	Prompt     string             `json:"prompt"`
 	ContextRef fleet.AbsolutePath `json:"contextRef"`
+
+	// Marker and RemoteControl close the gap that made an API-created
+	// session a different KIND of session from a launcher-created one. See
+	// fleet.SessionSpec for both. RemoteControl is a pointer because
+	// "absent" and "false" must not be the same request.
+	Marker        string `json:"marker"`
+	RemoteControl *bool  `json:"remoteControl"`
 }
 
 func handleCreateSession(svc *Service) http.HandlerFunc {
@@ -436,6 +444,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			Machine: machine, Runtime: body.Runtime, Cwd: body.Cwd,
 			Agent: body.Agent, Model: body.Model, Effort: body.Effort,
 			Name: body.Name, Prompt: body.Prompt, ContextRef: body.ContextRef,
+			Marker: body.Marker, RemoteControl: body.RemoteControl,
 		}
 
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
@@ -453,6 +462,51 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			SessionRef: ref, Runtime: spec.Runtime, Cwd: spec.Cwd,
 			Agent: spec.Agent, Model: spec.Model, State: state,
 		})
+	}
+}
+
+// handleSessionEnvironment reports what a session's process actually received
+// (fleet.SessionEnvironment).
+//
+// It answers "did this session get what a launcher-created one gets" from a
+// read rather than from an ssh session and two process-manager unit files, and
+// it is the reason the login-shell wrapping is an accepted dependency rather
+// than an invisible one: the service still does not own the shell startup file,
+// but it can now say what came out of it.
+//
+// A driver that cannot answer is reported as such, not as an empty
+// environment — §5.7, and doubly so here, where "no variables" and "we did not
+// look" would otherwise be the same response.
+func handleSessionEnvironment(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		machine := fleet.MachineId(r.PathValue("machine"))
+		id := r.PathValue("id")
+
+		d, resErr := svc.resolveSessionDriver(machine, fleet.RuntimeId(r.URL.Query().Get("runtime")))
+		if resErr != nil {
+			writeError(w, resErr)
+			return
+		}
+		reporter, ok := d.(driver.EnvironmentReporter)
+		if !ok {
+			writeError(w, &fleet.Error{
+				Kind:    fleet.ErrorUnsupported,
+				Message: "this runtime cannot report a session's environment",
+				Machine: machine,
+			})
+			return
+		}
+
+		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
+		ctx, cancel := context.WithTimeout(r.Context(), deadline)
+		defer cancel()
+
+		env, err := reporter.Environment(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id})
+		if err != nil {
+			writeDriverError(w, machine, deadline, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, env)
 	}
 }
 

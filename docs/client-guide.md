@@ -387,6 +387,8 @@ Idempotency-Key: 4f1c9e2a-…          ← REQUIRED
   "name": "alpha",                   ← what you want it called; a REQUEST, not a guarantee
   "runtime": "claude-code-tmux",     ← optional; omitted means the machine's only runtime
   "agent": "…", "model": "…", "effort": "…",   ← optional hints (see below)
+  "marker": "…",                     ← optional session-type stamp appended to the name
+  "remoteControl": true,             ← optional; OMITTED IS NOT false (see below)
   "prompt": "first instruction",     ← optional, delivered once the agent is ready
   "contextRef": "/abs/path" }        ← optional, a PATH — never inline content
 ```
@@ -434,6 +436,55 @@ is up; you do not need to wait and send it yourself.
 
 Pass context by path (`contextRef`), never inline. Prompts and context never
 reach a command line.
+
+**A created session is meant to be the same kind of session the machine's own
+launcher makes** — reachable from a remote client, carrying the environment its
+agent needs to call a tool, named by the machine's conventions. You do not have
+to ask for any of that; it is what you get by not opting out.
+
+**`remoteControl` omitted is not `remoteControl: false`.** Omitted means "give
+me a first-class session". Send `false` only when you deliberately want one that
+cannot be reached remotely. This asymmetry is deliberate: a plain boolean would
+make every client that has never heard of the field silently create sessions
+nobody can reach from a phone.
+
+**`marker` stamps the session type onto the name**, because on some substrates
+the name is the only channel there is — it is what listings, remote clients and
+humans all see. The driver carries a marker and never stacks one: a name that
+already ends in a marker keeps the one it has. What a marker *means* is yours;
+the service has no vocabulary of its own.
+
+**`name` may be rewritten, and this is when it matters.** The driver sanitises
+it, and numbers it if a session of that name is already live — so asking twice
+for `alpha` gives you `alpha` and then something else. That is the reason the
+advice above ("read `id`, do not assume it equals `name`") is not theoretical.
+
+### Did this session get what a launcher-created one gets?
+
+```
+GET /v1/machines/{machine}/sessions/{id}/environment
+```
+
+```json
+→ 200 { "known": true, "shell": "…", "login": true, "interactive": true,
+        "names": ["HOME", "PATH", "…"], "path": ["/usr/local/bin", "…"],
+        "serviceNames": ["…"], "servicePath": ["…"] }
+```
+
+`names` are variable **names only** — never values, because the environment
+being described is the one holding credentials. `path` is the exception, and a
+deliberate one: a search path is not a secret, and PATH is what drifts.
+
+The useful reading is the **difference** between `names` and `serviceNames`: the
+latter is the service's own process, so what is in the first and not the second
+is what the session's startup files contributed. If that difference is empty,
+the startup files added nothing — which means an agent that needs credentials
+will start normally, list normally, read normally, and fail at its first tool
+call.
+
+`known: false` comes back as an ordinary `200` with a `reason`. It means nobody
+found out, which is not the same as "the session had no environment" — do not
+treat the two alike.
 
 ## 8. Events — subscribe, do not poll
 

@@ -172,6 +172,8 @@ type Driver struct {
 	deadline     time.Duration
 	captureLines int
 	build        CommandBuilder
+	shell        string
+	bareExec     bool
 	run          execFunc
 	dial         ctlDialer
 	now          func() time.Time
@@ -202,6 +204,11 @@ type Driver struct {
 	// it describes what is sitting in a composer right now, and a composer
 	// does not survive the multiplexer, let alone a service restart.
 	stranded map[string]string
+
+	// environments remembers what each created session's process received
+	// (see environment.go). In memory only, for the reason stated on
+	// Environment.
+	environments map[string]fleet.SessionEnvironment
 }
 
 type observation struct {
@@ -272,6 +279,28 @@ func WithCommandBuilder(b CommandBuilder) Option {
 		}
 	}
 }
+
+// WithLoginShell sets the interpreter a created session's argv is wrapped in.
+// Default: $SHELL, or a platform default when the process manager does not
+// export one — which is the common case, not the exception.
+func WithLoginShell(path string) Option {
+	return func(d *Driver) {
+		if path != "" {
+			d.shell = path
+		}
+	}
+}
+
+// WithBareExec runs the agent directly, with no shell in front of it.
+//
+// This is the OLD behaviour and it is not the default, because it is what made
+// a created session second-class: with no shell there is no startup file, and
+// with no startup file there are no credentials, so the agent starts perfectly
+// and fails at its first tool call. Available because a substrate whose agent
+// needs no such environment should not pay for an interactive shell it does not
+// need — but a caller reaching for it is opting out of parity, and should know
+// that is what it is.
+func WithBareExec() Option { return func(d *Driver) { d.bareExec = true } }
 
 // withExec injects a fake multiplexer. Unexported: tests only.
 func withExec(f execFunc) Option { return func(d *Driver) { d.run = f } }
@@ -1285,9 +1314,23 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		_ = d.idem.release(key)
 	}
 
-	name := spec.Name
-	if name == "" {
-		name = "fleet-" + d.nonce()
+	// The name is resolved BEFORE the argv is built, and this ordering is the
+	// seam the whole creation contract hangs on.
+	//
+	// The resolved string is what the multiplexer session is called, what the
+	// remote-control binding is keyed on, and what the agent calls itself. A
+	// builder handed the REQUESTED name would bind remote control to a name
+	// the session does not have — which fails exactly the way this whole area
+	// fails: silently, later, and somewhere else.
+	requested := spec.Name
+	if requested == "" {
+		requested = "fleet-" + d.nonce()
+	}
+	name, ok := d.resolveName(ctx, requested, spec.Marker)
+	if !ok {
+		return fleet.SessionRef{}, fmt.Errorf(
+			"create: could not derive a free session name from %q; either it sanitizes "+
+				"to nothing, or too many sessions already carry it", requested)
 	}
 	if spec.Cwd == "" {
 		return fleet.SessionRef{}, errors.New("create: cwd is required")
@@ -1305,7 +1348,21 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		return fleet.SessionRef{}, fmt.Errorf("create: recording intent: %w", err)
 	}
 
-	argv := d.build(spec, contextFile)
+	// The builder sees the RESOLVED name, not the requested one — see above.
+	built := spec
+	built.Name = name
+	argv := d.build(built, contextFile)
+
+	// Wrap the agent in a login+interactive shell so it inherits the same
+	// environment a launcher-created session does, and stage a record of what
+	// it actually ended up with. See environment.go for why interactive is not
+	// optional and why the record carries no values.
+	recordPath := ""
+	if !d.bareExec {
+		recordPath = d.envRecordPath()
+		argv = loginWrap(d.loginShell(), recordPath, argv)
+	}
+
 	args := append([]string{
 		"new-session", "-d", "-s", name, "-c", string(spec.Cwd), "--",
 	}, argv...)
@@ -1322,6 +1379,9 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		return fleet.SessionRef{}, fmt.Errorf("create: recording result: %w", err)
 	}
 
+	if recordPath != "" {
+		go d.captureEnvironment(name, recordPath)
+	}
 	if spec.Prompt != "" {
 		go d.deliverInitialPrompt(req, ref, spec.Prompt)
 	}
@@ -1332,8 +1392,29 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 //
 // Note what is absent: the prompt. It is delivered after the session is up
 // (see Create) precisely so it stays out of this argv.
+//
+// # Why the remote-control flags are here by default
+//
+// They were missing, and their absence was invisible at creation: the session
+// started, listed, read and drove perfectly, and was simply unreachable from
+// any remote client. That is most of the value of creating one remotely in the
+// first place — a session you must be sitting at the machine to use is a
+// session you could have created by sitting at the machine.
+//
+// The binding is keyed on spec.Name, which Create has already resolved to the
+// canonical string. The session name, the remote-control binding and the
+// agent's own name are therefore the SAME string from birth, which is what
+// makes a session findable by the one identifier every surface shows.
 func claudeCodeCommand(spec fleet.SessionSpec, contextFile string) []string {
 	argv := []string{"claude"}
+	// Nil means "whatever a first-class session gets", which on this
+	// substrate is enabled — an unaware caller must not silently receive the
+	// second-class shape. Only an explicit false opts out.
+	if spec.RemoteControl == nil || *spec.RemoteControl {
+		if spec.Name != "" {
+			argv = append(argv, "--remote-control", spec.Name, "-n", spec.Name)
+		}
+	}
 	if spec.Agent != "" {
 		argv = append(argv, "--agent", string(spec.Agent))
 	}

@@ -245,3 +245,19 @@ type Driver interface {
 	// one with polling underneath (§5.6).
 	Subscribe(ctx context.Context, req fleet.Request, filter SubscribeFilter) (EventStream, error)
 }
+
+// EnvironmentReporter is an OPTIONAL capability: a driver that can say what
+// environment a session's process actually received.
+//
+// Optional rather than part of Driver, because this is not a question every
+// substrate can answer and adding it to the interface would force every driver
+// to write a stub that says so. A service type-asserts for it and reports the
+// absence honestly (§5.7), which is the same shape as any other capability
+// nobody has claimed.
+//
+// The record must never carry variable VALUES — see fleet.SessionEnvironment.
+// The reason the type exists at all is that the environment in question is
+// the one holding credentials.
+type EnvironmentReporter interface {
+	Environment(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionEnvironment, error)
+}

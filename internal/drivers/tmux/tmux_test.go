@@ -152,6 +152,16 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			b.WriteString("\n")
 		}
 		return []byte(b.String()), nil
+	case "list-sessions":
+		// Names only, as the naming resolver asks for them. Modelled rather
+		// than left to the default no-op because "no sessions exist" is the
+		// answer that makes every collision test pass without colliding.
+		var b strings.Builder
+		for _, s := range f.sessions {
+			b.WriteString(s.name)
+			b.WriteString("\n")
+		}
+		return []byte(b.String()), nil
 	case "new-session":
 		if f.failCreate {
 			return nil, errors.New("cannot create session")

@@ -36,6 +36,36 @@ type SessionSpec struct {
 	Name   string `json:"name,omitempty"`
 	Prompt string `json:"prompt,omitempty"`
 
+	// Marker is a session-type stamp appended to the resolved name.
+	//
+	// It exists because the name is, on some substrates, the only channel
+	// there is: it is what every listing, every remote client and every
+	// human sees, and tooling that groups sessions by type has nothing else
+	// to key on. A session created without one is not broken, it is
+	// invisible to that tooling — which is a difference a caller could not
+	// previously ask for OR detect.
+	//
+	// The driver carries a marker, never stacks it: a name that already
+	// ends in one keeps the one it has. The service assigns no vocabulary
+	// of its own — what a marker MEANS is the caller's business.
+	Marker string `json:"marker,omitempty"`
+
+	// RemoteControl requests that the session be reachable by remote
+	// clients rather than only from a terminal on the machine running it.
+	//
+	// Nil means "do whatever a first-class session on this substrate gets",
+	// which is what an unaware caller wants and, on the tmux driver, means
+	// enabled. It is a tri-state on purpose: the zero value of a bool would
+	// silently mean "off", and the entire defect this field closes is that
+	// sessions created through the API were quietly second-class — a
+	// caller could not ask for the difference and could not detect it
+	// afterwards.
+	//
+	// Like Agent, Model and Effort this is a HINT. A driver on a substrate
+	// with no such notion must say so at creation rather than accept the
+	// request and produce a session that cannot be reached.
+	RemoteControl *bool `json:"remoteControl,omitempty"`
+
 	// ContextRef is a path, never inline content (§5.3). It must never
 	// reach a command line — anything that matches processes by argv can
 	// otherwise match and terminate a session whose prompt merely contains
