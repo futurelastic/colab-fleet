@@ -192,6 +192,88 @@ The binary binds loopback and requires a bearer token; there is no
 unauthenticated mode, including in development. Configure via `FLEET_ADDR` and
 `FLEET_TOKEN`.
 
+## Which agent-CLI versions this is tested against
+
+**A span, not a version: `2.1.220` through `2.1.223`.** Those are the versions
+actually being driven on the machines this runs on, measured from the running
+processes rather than from what is installed.
+
+A single "tested against X" line would be true and misleading, because **a
+session keeps the binary it was started with**. Long-lived sessions therefore
+outlive upgrades, and one machine drives several versions at once. Measured on
+two machines whose *installed* CLI is identical (`2.1.223` on both):
+
+| | versions running concurrently |
+|---|---|
+| one machine | `2.1.223` ×48 · `2.1.222` ×21 |
+| the other | `2.1.220` ×18 · `2.1.223` ×10 · `2.1.222` ×4 · `2.1.221` ×2 |
+
+Four patch releases live at once on one box, the oldest three releases behind
+what is installed. So **the installed version tells you very little about what
+this driver is talking to**, and upgrading the CLI does not migrate the
+sessions already running.
+
+### Why this matters more here than it usually would
+
+The driver does not call an API. It reads a **terminal UI**: a composer marker,
+menu footers, dim (SGR 2) placeholder styling, spinner glyphs, a
+running-versus-finished suffix. Every one of those is a rendering detail a patch
+release may change, and a changed glyph does not raise an error — it silently
+reclassifies. Detection is therefore structural wherever it can be, and no
+single footer string is relied on alone.
+
+### The status footer is LIVE STATE, not configuration and not version
+
+Worth stating explicitly, because the natural assumption is wrong in a way that
+sends people to the wrong fix.
+
+The standing footer's tail varies between machines and between sessions on the
+same machine. It is **not** explained by CLI version — the differing forms
+appear under the same version — and it is **not** a settings difference. It is
+composed from counts of things running right now. Three shapes observed on one
+machine, at one instant, under one set of versions:
+
+```
+auto mode on (shift+tab to cycle) · ⇥ 3 agents
+auto mode on · 1 monitor · ⇥ 3 agents
+auto mode on · 2 monitors · ⇥ 3 agents
+```
+
+The trailing count is the machine-wide number of running **background agents**
+(confirmed against the CLI's own `agents` listing: 3 background agents renders
+`3 agents`), and a **monitors** segment appears alongside it — displacing the
+generic hint when present.
+
+Two consequences, and the second is the one people get wrong:
+
+- It changes whenever a background agent or monitor starts or finishes, so it
+  **can never be a sole anchor** for classification. Anything keyed on the
+  footer tail is keyed on a number that moves under it.
+- It **cannot be normalised away by aligning configuration**. There is no
+  setting to match, because it is not a setting. Two machines with byte-identical
+  configuration and the same CLI version will still render different tails
+  whenever they are doing different amounts of work — which is most of the time.
+
+### Running the checks against a live fleet
+
+The scripts under `scripts/` drive a real service and, indirectly, the agent
+CLI. One environmental fact will bite anything scripted:
+
+**`claude` is not resolvable from a non-interactive shell.** It is installed
+under a user-local `bin` that is added to `PATH` by the *interactive* startup
+file, so a non-interactive login shell — which is what `ssh host '…'`, a cron
+job, or a process manager gives you — does not see it. Measured on both machines
+here; a plain `ssh` session gets `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and the
+command is simply not found.
+
+The symptom is unhelpful: a session that starts and dies, leaving a dead pane
+and no error anywhere a caller can read.
+
+So anything scripted must either use an absolute path to the CLI or invoke it
+through a **login and interactive** shell (`-lic`, not `-lc`). This is the same
+distinction the driver itself has to make when it wraps a created session — see
+`internal/drivers/tmux/environment.go`, which documents the measurement.
+
 ## Decided — pointers, not copies
 
 Settled questions, with the reasoning where it lives. Reopen them on new
