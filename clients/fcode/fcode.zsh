@@ -1,6 +1,6 @@
-# fcode-ui — the incumbent launcher's UI, with the fleet service underneath.
+# fcode — the incumbent launcher's UI, with the fleet service underneath.
 #
-# `fcode.zsh` (beside this file) is a standalone client with its own small
+# `fleetctl.zsh` (beside this file) is a standalone client with its own small
 # interface. This file is the opposite approach and the more useful one for
 # deciding anything: it keeps the launcher you already use — the picker, the
 # folder browser, the grouping, the naming rules, every keybinding — and
@@ -9,52 +9,76 @@
 # That isolates the variable. If the interface is identical, then anything you
 # notice is the session layer, which is the only thing being evaluated.
 #
-#   source /path/to/ccode.zsh          # your existing launcher, unchanged
-#   source /path/to/fcode-ui.zsh       # this file
+#   source /path/to/<launcher>.zsh     # your existing launcher, unchanged
+#   source /path/to/fcode.zsh          # this file
 #
-#   fcode     sessions on THIS machine        (mirrors the local launcher)
-#   sfcode    sessions on EVERY machine       (mirrors the remote one)
+#   fcode     pick a machine, then that machine's sessions
+#   sfcode    deprecated — prints a notice and forwards to `fcode`
 #
-# The pair mirrors the incumbent's own split, and for the same reason: one is
-# what you use while working on a machine, the other is how you reach the rest
-# of the fleet. `fcode` runs unchanged on either machine — it asks the local
-# service for its own view and never needs to know its own name.
+# ONE MACHINE AT A TIME, ALWAYS
+#
+# `fcode` opens a MACHINE PICKER first, then the launcher's own session picker
+# scoped to the machine you chose. Not a machine column — a machine *choice*.
+#
+# There is deliberately NO fleet-wide list, not even as an option, because the
+# wide list is what produced the two defects this gate exists to close:
+#
+#   1. Rows could not say which machine they came from. The listing emitted the
+#      incumbent's `name<TAB>label<TAB>rel` so the UI above it stayed untouched
+#      — which was the right call while proving equivalence, and became
+#      unreadable the moment the list spanned machines.
+#   2. A name existing on BOTH machines always resolved to the local one, so
+#      the far copy could not be reached at all. Names come from folder names,
+#      the folders are synced, so collision is the normal case.
+#
+# A picker fixes (1) by making it unnecessary rather than by widening the row,
+# and fixes (2) by making the ambiguity inexpressible: the machine is context,
+# not a field you must read correctly on every line.
 #
 # `ccode` and `sccode` keep working exactly as before. The overrides below
 # delegate to the originals unless FCODE_ACTIVE is set, and only `fcode` sets
-# it — so a bug here cannot change what the incumbent does.
+# it — so a bug here cannot change what the incumbent does. Nothing in the
+# incumbent's own file is edited; delete the source line and this all reverts.
 #
 # Config (no machine names in this file):
 #   FLEET_URL         this machine's service        (required)
 #   FLEET_TOKEN_FILE  token for this client         (default ~/.config/colab-fleet/token)
 #   FLEET_SSH_FMT     how to reach a peer, %s = machine  (default "ssh -t %s")
-#   FCODE_MACHINE     limit the view to one machine (default: the whole fleet)
+#   FCODE_MACHINE     pin to one machine, skipping the picker (scripts, habit)
 #
 # WHAT CHANGES, AND WHAT DOES NOT
 #
-#   listing   → one HTTP call to the local service, covering EVERY machine.
-#               The incumbent's remote mode runs `tmux ls` over ssh on one
-#               host; this sees the fleet, and says so when a machine did not
-#               answer instead of showing a shorter list.
+#   listing   → one HTTP call to the local service, for the PINNED machine.
+#               Pinned to this machine it asks scope=local, which is the same
+#               question the incumbent's local mode answers — so the rows are
+#               byte-identical. Pinned elsewhere it asks the fleet and keeps
+#               that machine's items.
 #   attach    → the service says how; this decides where. A session on another
 #               machine attaches without a second launcher on the far side.
-#   kill      → corroborated by start time, so a recycled id cannot be
+#               The machine comes from the PIN, never from a first match.
+#   kill      → same, corroborated by start time, so a recycled id cannot be
 #               mistaken for the session you looked at.
-#   rename    → NOT routed. The API has no rename operation, so renaming a
-#               session on another machine is not expressible; the picker's
-#               rename still acts locally and will not find a remote session.
-#               Recorded rather than faked.
-#   new       → NOT overridden. The incumbent builds a rich command (agent
-#               flags, MCP credentials, restore behaviour) that the driver's
-#               spawn path does not reproduce yet. Creating still goes through
-#               the launcher you already trust; pretending otherwise would
-#               change more than the session layer.
+#   rename    → ROUTED to the pinned machine (both halves: the session id via
+#               /rename, and the agent's own name via /input). Earlier versions
+#               of this file and its README said the API had no rename
+#               operation. That was true when written; the operation exists,
+#               and an unrouted rename on a pinned remote session silently
+#               acted locally and found nothing — the same wrong-machine class
+#               as (2) above.
+#   new       → REFUSED when pinned to another machine, naming that machine.
+#               Creating there should go through the service, but the driver
+#               spawns `tmux new-session -- claude …` while the launcher runs
+#               `zsh -lc '… exec claude --remote-control …'`: a service-created
+#               session is not reachable from the phone client and inherits the
+#               daemon's environment instead of the login shell's credentials.
+#               That is a service change. Until it lands, refuse and say so —
+#               never create silently on the wrong machine.
 
 (( $+functions[_ccode_sessions_rooted] )) || {
-  print -u2 "fcode-ui: source your ccode.zsh first — this file overrides parts of it."
+  print -u2 "fcode: source your launcher first — this file overrides parts of it."
   return 1
 }
-[[ -n ${FLEET_URL:-} ]] || print -u2 "fcode-ui: set FLEET_URL to this machine's colab-fleet service."
+[[ -n ${FLEET_URL:-} ]] || print -u2 "fcode: set FLEET_URL to this machine's colab-fleet service."
 
 : ${FLEET_TOKEN_FILE:=$HOME/.config/colab-fleet/token}
 : ${FLEET_SSH_FMT:=ssh -t %s}
@@ -67,6 +91,7 @@ typeset -g  _fcode_scope=local
 
 typeset -gA _fcode_machine_of      # cache only: id → machine. NEVER depended on.
 typeset -g  _fcode_partial=0       # was the last listing missing a machine?
+typeset -g  _fcode_self=""         # this machine's own name, per the service
 
 # _fcode_machine_for NAME → the machine holding that session, or empty.
 #
@@ -81,15 +106,126 @@ typeset -g  _fcode_partial=0       # was the last listing missing a machine?
 # reported not knowing which machine held it. The lesson is not "populate the
 # map differently" but "do not keep state across a boundary the caller is free
 # to put a subshell on". Asking is one request and cannot go stale.
+#
+# # Why it resolves against the PIN and not the first match
+#
+# It used to return the first item whose id matched, and a fleet listing puts
+# the answering machine first. With three names live on both machines, every
+# one of them resolved local and the far copy was unreachable — the picker
+# showed both rows, indistinguishably, and both attached to the same session.
+#
+# First-match is only sound when names are globally unique, and they are not:
+# names derive from folder names and the folders are synced to both machines.
+# So the pin decides. What is still ASKED is whether the name exists THERE —
+# answering "yes, on the pinned machine" without checking would trade a
+# wrong-machine attach for a confident attach to nothing.
 _fcode_machine_for() {
   local name="$1"
   [[ -n ${_fcode_machine_of[$name]:-} ]] && { print -r -- "${_fcode_machine_of[$name]}"; return }
-  _fcode_body GET "/v1/sessions?scope=${_fcode_scope}" | python3 -c '
+  local body
+  body="$(_fcode_body GET "/v1/sessions?scope=${_fcode_scope}")" || return 1
+  print -r -- "$body" | FCODE_WANT="$name" python3 -c '
+import sys, json, os
+want = os.environ["FCODE_WANT"]
+pin  = os.environ.get("FCODE_MACHINE") or ""
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+for s in d.get("items", []):
+    if s.get("id") != want: continue
+    if pin and s.get("machine") != pin: continue   # the pin decides, never position
+    print(s.get("machine","")); break'
+}
+
+# This machine, as the service names it. Asked rather than derived: the client
+# is deliberately free of machine names, and `hostname` is not guaranteed to
+# match what the fleet calls this host.
+_fcode_whoami() {
+  [[ -n $_fcode_self ]] && { print -r -- "$_fcode_self"; return }
+  # Fetch, THEN parse. Piping a failed request straight into python prints a
+  # JSONDecodeError traceback over the caller's terminal and returns python's
+  # exit status, so an unreachable service reads as a client crash. This is the
+  # first call `fcode` makes, so that traceback would be the whole first
+  # impression of a service being down.
+  local body
+  body="$(_fcode_body GET /v1/machines)" || return 1
+  _fcode_self="$(print -r -- "$body" | python3 -c '
 import sys, json
-want = sys.argv[1]
-for s in json.load(sys.stdin).get("items", []):
-    if s.get("id") == want:
-        print(s.get("machine","")); break' "$name"
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+for m in d.get("items", []):
+    if m.get("self"): print(m["machine"]); break')" || return 1
+  print -r -- "$_fcode_self"
+}
+
+# ── the machine picker ──────────────────────────────────────────────────────
+#
+# The screen that was missing. The pin mechanism (FCODE_MACHINE) already
+# existed and the entry point already set a scope per command; what no code
+# path offered was a way for a person to choose.
+#
+# Reuses the incumbent's own picker so the keys are the ones already in your
+# fingers — ↑/↓, j/k, Enter, Esc/q — and owns the alternate screen for its own
+# duration, in an always{} block, exactly as the launcher's menu flow does.
+# Otherwise a Ctrl-C at the machine list would leave the terminal on the alt
+# buffer with the cursor hidden.
+_fcode_pick_machine() {
+  emulate -L zsh
+  local body
+  body="$(_fcode_body GET /v1/machines)" || {
+    print -u2 "fcode: cannot reach the session layer at ${FLEET_URL} — refusing rather than guessing a machine"
+    return 1
+  }
+
+  # machine<|>self<|>status, self first: you are usually staying put.
+  local -a rows
+  rows=("${(@f)$(print -r -- "$body" | python3 -c '
+import sys, json
+items = json.load(sys.stdin).get("items", [])
+items.sort(key=lambda m: (not m.get("self"), m.get("machine","")))
+for m in items:
+    print("%s<|>%s<|>%s" % (m.get("machine",""), "1" if m.get("self") else "0",
+                            m.get("status","")))')}")
+
+  local -a names labels
+  local line m is_self st mark
+  for line in "${rows[@]}"; do
+    [[ -z $line ]] && continue
+    m="${line%%<|>*}"; line="${line#*<|>}"
+    is_self="${line%%<|>*}"; st="${line#*<|>}"
+    [[ -z $m ]] && continue
+    (( is_self )) && { _fcode_self="$m"; mark="  (this machine)" } || mark=""
+    # A machine that is not `ok` stays SELECTABLE. It is reported, not hidden:
+    # hiding it would make an unreachable machine indistinguishable from one
+    # that does not exist, which is the failure this whole layer exists to
+    # avoid. Choosing it gets an honest empty listing with a reason.
+    [[ $st == ok ]] || mark="${mark}  ⚠️  ${st:-unknown}"
+    names+=("$m")
+    labels+=("$(_ccode_glyph "$m" $( (( is_self )) && print local || print remote )) ${m}${mark}")
+  done
+
+  (( ${#names} )) || { print -u2 "fcode: the session layer knows no machines"; return 1 }
+
+  # One machine is not a choice. The incumbent's folder browser skips its own
+  # root picker on a single root for the same reason.
+  (( ${#names} == 1 )) && { REPLY="$names[1]"; return 0 }
+
+  local rc=1
+  {
+    [[ -t 1 ]] && _ccode_screen_enter
+    trap ':' INT
+    _CCODE_PICK_SKIP=(); _CCODE_PICK_RIGHT=0
+    if _ccode_pick "Which machine?  (↑/↓ · Enter · Esc/q cancel)" "${labels[@]}"; then
+      REPLY="${names[$_CCODE_IDX]}"; rc=0
+    fi
+  } always {
+    trap - INT
+    _ccode_screen_leave
+  }
+  return $rc
 }
 
 # ── keep the originals, once ────────────────────────────────────────────────
@@ -140,14 +276,23 @@ _ccode_sessions_rooted() {
     return 1
   }
 
-  # machine<|>name<|>cwd, plus a PARTIAL marker if a machine did not answer.
+  # machine<|>name<|>cwd, plus a PARTIAL marker if the PINNED machine is the one
+  # that did not answer.
+  #
+  # A fleet-scope call fans out to every peer, so before the pin existed any
+  # unreachable machine printed a warning here — including machines whose
+  # sessions this listing was never going to show. Scoped to the pin, the
+  # warning stops being noise and starts being the whole story: if the pinned
+  # machine is down, this list is not partial, it is empty for a reason.
   local -a rows
   rows=("${(@f)$(print -r -- "$body" | python3 -c '
 import sys, json, os
 d = json.load(sys.stdin)
 want = os.environ.get("FCODE_MACHINE") or ""
-if not d.get("complete", True):
-    down = [s["machine"] for s in d.get("sources", []) if s.get("status") != "ok"]
+down = [s.get("machine","") for s in d.get("sources", []) if s.get("status") != "ok"]
+if want:
+    down = [m for m in down if m == want]
+if down:
     print("PARTIAL<|>" + ",".join(down) + "<|>")
 for s in d.get("items", []):
     if want and s.get("machine") != want: continue
@@ -160,13 +305,14 @@ for s in d.get("items", []):
     name="${line%%<|>*}"; dir="${line#*<|>}"
     if [[ $machine == PARTIAL ]]; then
       _fcode_partial=1
-      print -u2 "⚠️  fcode: no answer from: ${name} — its sessions are NOT listed and are NOT known to be gone"
+      print -u2 "⚠️  fcode: no answer from ${name} — its sessions are NOT listed and are NOT known to be gone"
       continue
     fi
     [[ -z $name ]] && continue
-    # A name can exist on two machines. Prefer the one already recorded (the
-    # fleet listing puts this machine first), because attaching locally is the
-    # cheaper and safer of the two.
+    # With a pin every item is from the pinned machine, so this map has one
+    # possible value per name and the collision that made it wrong is gone.
+    # It stays a cache and stays never-depended-on: the subshell in
+    # `... <<< "$(_ccode_sessions_rooted)"` still discards it.
     [[ -n ${_fcode_machine_of[$name]:-} ]] || _fcode_machine_of[$name]="$machine"
     label="$(_ccode_label_of_dir "$dir")"
     rel=""
@@ -207,10 +353,7 @@ _ccode_local_attach() {
   fi
 
   local self body
-  self="$(_fcode_body GET /v1/machines | python3 -c '
-import sys, json
-for m in json.load(sys.stdin).get("items", []):
-    if m.get("self"): print(m["machine"]); break')"
+  self="$(_fcode_whoami)"
 
   body="$(_fcode_body GET "/v1/machines/${machine}/sessions/$(python3 -c '
 import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$name")")" || {
@@ -225,11 +368,17 @@ if not cmd: sys.exit(3)
 print("\n".join(cmd))')}") || {
     print -u2 "fcode: \"$name\" reports no attach hint"; return 1 }
 
-  _ccode_tab_title "$name" 2>/dev/null
+  # The pin has to survive the choice that set it. Once you are attached the
+  # machine picker is three screens ago, and a session named after a folder
+  # that exists on both machines looks exactly the same either way — so the tab
+  # carries the machine, and takes the incumbent's own remote cue (a SQUARE
+  # glyph instead of a circle, same hue) when it is not this one.
   if [[ $machine == $self ]]; then
+    _ccode_tab_title "$name" local 2>/dev/null
     "${cmdv[@]}"
     return
   fi
+  _ccode_tab_title "${name}·${machine}" remote 2>/dev/null
   # Remote: quote every argument — ids carry spaces and emoji.
   local remote_cmd; remote_cmd="$(printf '%q ' "${cmdv[@]}")"
   ${=${FLEET_SSH_FMT/\%s/$machine}} "$remote_cmd"
@@ -276,16 +425,50 @@ import sys, json; print(json.load(sys.stdin).get("startedAt",""))')"
   fi
 }
 
+# ── rename ──────────────────────────────────────────────────────────────────
+#
+# `POST /v1/machines/{m}/sessions/{id}/rename` exists (api-http.md §3.2). This
+# file and its README both used to say the API had no rename operation and
+# recorded it as deliberately-not-faked. That was true when it was written, and
+# a documented limitation is a claim with an expiry date: this one outlived the
+# API that justified it, and an unrouted rename on a pinned remote session
+# acted locally and quietly found nothing.
+#
+# Renaming is TWO writes, and doing only the first is its own silent failure:
+# the id the operator sees changes while the agent keeps announcing the old
+# name in its own UI. The launcher does both (rename-session, then send-keys
+# "/rename"), so both are routed.
+_fcode_rename() {                     # $1 = old name  $2 = new name  $3 = machine
+  emulate -L zsh
+  local old="$1" new="$2" machine="$3" enc started
+  enc="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$old")"
+  started="$(_fcode_body GET "/v1/machines/${machine}/sessions/${enc}" | python3 -c '
+import sys, json; print(json.load(sys.stdin).get("startedAt",""))')"
+
+  # Same reason DELETE wants it: acting on the wrong session here succeeds
+  # SILENTLY and leaves it wearing somebody else's name.
+  local route="/v1/machines/${machine}/sessions/${enc}/rename"
+  [[ -n $started ]] && route+="?startedAt=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$started")"
+
+  local payload
+  payload="$(FCODE_NEW="$new" python3 -c 'import json,os; print(json.dumps({"name": os.environ["FCODE_NEW"]}))')"
+  _fcode_body POST "$route" "$payload" >/dev/null || {
+    print -u2 "fcode: could not rename \"$old\" on $machine — the name may be taken there, or it changed since you looked"
+    return 1
+  }
+  return 0
+}
+
 # ── the multiplexer shim ────────────────────────────────────────────────────
 #
-# The picker calls `tmux kill-session` and `tmux has-session` INLINE, not
-# through a function, so there is nothing to override — and a bare
-# `kill-session` run here would either fail for a session on another machine
-# or, worse, match a same-named session on this one.
+# The launcher calls `tmux kill-session`, `has-session`, `rename-session`,
+# `send-keys` and `new-session` INLINE, not through a function, so there is
+# nothing to override — and a bare call run here would either fail for a
+# session on another machine or, worse, match a same-named session on this one.
 #
 # Shimming the multiplexer command itself is not a trick to get around that;
-# it is precisely the boundary being replaced. Two verbs are intercepted and
-# routed by which machine actually holds the session. Everything else is
+# it is precisely the boundary being replaced. The verbs below are intercepted
+# and routed by which machine actually holds the session. Everything else is
 # handed to the real binary untouched, and the whole shim is inert unless
 # FCODE_ACTIVE is set.
 tmux() {
@@ -310,33 +493,179 @@ tmux() {
       fi
       _ccode_local kill "$name"
       return ;;
+
+    rename-session)
+      # `tmux rename-session -t "=OLD" NEW`
+      [[ $2 == -t && -n $3 && -n $4 ]] || { command tmux "$@"; return }
+      name="${3#=}"
+      machine="$(_fcode_machine_for "$name")"
+      [[ -z $machine ]] && { command tmux "$@"; return }
+      _fcode_rename "$name" "$4" "$machine"
+      return ;;
+
+    send-keys)
+      # The launcher's second half of a rename: `send-keys -t "=NEW" "/rename
+      # NEW" Enter`, typed into the agent so its own UI agrees with the id.
+      # Routed through the input endpoint, which is the same act.
+      [[ $2 == -t && -n $3 && -n $4 ]] || { command tmux "$@"; return }
+      name="${3#=}"
+      machine="$(_fcode_machine_for "$name")"
+      [[ -z $machine ]] && { command tmux "$@"; return }
+      [[ $machine == "$(_fcode_whoami)" ]] && { command tmux "$@"; return }
+      local enc payload submit=0 outcome
+      [[ "${@[-1]}" == Enter ]] && submit=1
+      enc="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$name")"
+      payload="$(FCODE_TEXT="$4" FCODE_SUBMIT="$submit" python3 -c '
+import json, os
+print(json.dumps({"text": os.environ["FCODE_TEXT"],
+                  "submit": os.environ["FCODE_SUBMIT"] == "1"}))')"
+      # A refusal is a 200 carrying a reason, not an HTTP error (api-http.md
+      # §3.2) — so success here is not the same as the text having landed.
+      outcome="$(_fcode_body POST "/v1/machines/${machine}/sessions/${enc}/input" "$payload" | python3 -c '
+import sys, json
+d = json.load(sys.stdin) or {}
+print("%s\t%s" % (d.get("outcome",""), d.get("reason","")))' 2>/dev/null)"
+      case "${outcome%%$'\t'*}" in
+        submitted|queued) return 0 ;;
+        "")               print -u2 "fcode: could not reach \"$name\" on $machine to type into it"; return 1 ;;
+        *)                print -u2 "fcode: $machine refused the input for \"$name\" — ${outcome#*$'\t'}"
+                          print -u2 "       The session id was renamed; the agent still announces the old name."
+                          return 1 ;;
+      esac ;;
+
+    new-session)
+      # Creating on a pinned remote machine is a SERVICE change, not a client
+      # one, and it is out of scope here. `POST /v1/machines/{m}/sessions`
+      # exists and is semantic, but the driver spawns
+      #   tmux new-session -d -s … -- claude …
+      # while the launcher runs
+      #   zsh -lc '… exec claude --remote-control "$n" -n "$n"'
+      # Two consequences, neither visible in a listing: no --remote-control, so
+      # the session is unreachable from the phone client; and no login shell,
+      # so it inherits the daemon's environment and has none of the credentials
+      # the rc file exports. `claudeCodeCommand` is documented as "the default
+      # CommandBuilder", so the seam is deliberate and the work is configuring
+      # it.
+      #
+      # Until that lands: REFUSE, and name the machine. Falling through to the
+      # real binary would create the session HERE while the picker, the header
+      # and the tab all say elsewhere — the same silent-wrong-machine defect
+      # this gate exists to close, wearing a different hat.
+      machine="${FCODE_MACHINE:-}"
+      [[ -z $machine || $machine == "$(_fcode_whoami)" ]] && { command tmux "$@"; return }
+      print -u2 "fcode: pinned to ${machine} — refusing to create a session HERE."
+      print -u2 "       Creating on another machine has to go through the session layer,"
+      print -u2 "       which cannot yet reproduce the launcher's remote-control flag or"
+      print -u2 "       its credentials. Run fcode on ${machine}, or pick this machine."
+      return 1 ;;
+
     *) command tmux "$@"; return ;;
   esac
+}
+
+# ── the pinned machine, in the launcher's own header ────────────────────────
+#
+# The launcher builds its menu header from `hostname`, which is right for it
+# and wrong here: with a pin, the sessions on screen may be another machine's
+# while the header names this one. Wrapping the flow is enough — the header
+# arrives as $1 — and it keeps the edit on this side of the boundary.
+if (( ! $+functions[_fcode_orig_flow] )); then
+  functions[_fcode_orig_flow]=$functions[_ccode_flow]
+fi
+_ccode_flow() {
+  (( ${FCODE_ACTIVE:-0} )) || { _fcode_orig_flow "$@"; return }
+  local machine="${FCODE_MACHINE:-}" hdr="$1"; shift
+  if [[ -n $machine ]]; then
+    if [[ $machine == "$(_fcode_whoami)" ]]; then
+      hdr="Sessions on ${machine}  (this machine)"
+    else
+      hdr="Sessions on ${machine}  ⟵ pinned"
+    fi
+  fi
+  _fcode_orig_flow "$hdr" "$@"
 }
 
 # ── entry point ─────────────────────────────────────────────────────────────
 #
 # Same flow as the incumbent, with FCODE_ACTIVE set for the duration. Anything
-# the launcher spawns that re-enters ccode (a restored tab, a nested call) sees
+# the launcher spawns that re-enters it (a restored tab, a nested call) sees
 # the flag exported, so it stays on the same session layer rather than silently
 # reverting.
-_fcode_run() {
+#
+# The pin is chosen HERE, before the launcher is entered, because everything
+# downstream — the listing, the header, attach, kill, rename, the refusal to
+# create — reads it. Choosing it later would mean a screen that shows sessions
+# before it knows whose they are.
+#
+# Scope follows the pin rather than the entry point:
+#
+#   pinned to this machine → scope=local. The same question the incumbent's
+#     local mode asks, so the rows come back byte-identical. That is this
+#     client's own standard for "the gate changed nothing it should not".
+#   pinned elsewhere → scope=fleet, keeping that machine's items. There is a
+#     documented `machine=` filter on the listing endpoint (api-http.md §3.2)
+#     that the service does not implement yet; filtering here costs one pass
+#     over a list we already have.
+fcode() {
   emulate -L zsh
-  local -x FCODE_ACTIVE=1
-  local -x _fcode_scope="$1"; shift
   if [[ -z ${FLEET_URL:-} ]]; then
     print -u2 "fcode: FLEET_URL is not set — refusing rather than guessing a port"
     return 2
   fi
+
+  # Resolve this machine's name ONCE, up front, and EXPORT it.
+  #
+  # Everything below asks "is the pin this machine?", much of it from inside
+  # `$( )`. A global cache cannot help there — §2 of NOTES.md, the same lesson
+  # that removed the name→machine map: a subshell throws away what it learns.
+  # An exported value goes the other way, so one request answers all of them.
+  #
+  # It doubles as the reachability check, deliberately before any UI: finding
+  # out the session layer is down is better than finding out after drawing a
+  # machine picker built from nothing.
+  local -x _fcode_self=""
+  # Two different failures, said differently. "I could not ask" and "it
+  # answered and no machine claimed to be this one" send you to opposite ends
+  # of the system, and this client's whole posture is that a report which
+  # cannot distinguish them is not a report.
+  _fcode_self="$(_fcode_whoami)" || {
+    print -u2 "fcode: cannot reach the session layer at ${FLEET_URL}"
+    return 1
+  }
+  # Pinning against "" would silently take every comparison below down the
+  # remote branch — an empty answer must not become a quiet wrong one.
+  [[ -n $_fcode_self ]] || {
+    print -u2 "fcode: the session layer at ${FLEET_URL} answered, but no machine claims to be this one"
+    return 1
+  }
+
+  local pin="${FCODE_MACHINE:-}"
+  if [[ -z $pin ]]; then
+    if (( $# )); then
+      # `fcode <name>` is the incumbent's fast path: no UI, act now. Putting a
+      # picker in front of it would be a regression in the one path the trial
+      # promised to leave alone — so it pins to THIS machine, which is exactly
+      # what the incumbent does with the same arguments. Explicit, and never a
+      # first-match guess.
+      pin="$_fcode_self"
+    else
+      _fcode_pick_machine || { print "Cancelled."; return 1 }
+      pin="$REPLY"
+    fi
+  fi
+
+  local -x FCODE_ACTIVE=1
+  local -x FCODE_MACHINE="$pin"
+  local -x _fcode_scope=fleet
+  [[ $pin == $_fcode_self ]] && _fcode_scope=local
+
   ccode "$@"
 }
 
-# Sessions on this machine. The replacement for the local launcher, and it is
-# the same command on every machine: scope=local means "whoever you are".
-fcode()  { _fcode_run local "$@" }
-
-# Sessions everywhere. The replacement for the remote launcher — but where that
-# one ssh'd into a second launcher on one named host, this asks the local
-# service, which fans out to every configured peer and reports the ones that
-# did not answer instead of quietly showing fewer sessions.
-sfcode() { _fcode_run fleet "$@" }
+# Folded into `fcode`, which now asks which machine instead of having one
+# command per answer. Kept as a forwarder because it is in muscle memory and in
+# shell history; it goes once that stops being true.
+sfcode() {
+  print -u2 "sfcode: merged into fcode — it now asks which machine. Forwarding…"
+  fcode "$@"
+}
