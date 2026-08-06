@@ -534,30 +534,85 @@ print("%s\t%s" % (d.get("outcome",""), d.get("reason","")))' 2>/dev/null)"
       esac ;;
 
     new-session)
-      # Creating on a pinned remote machine is a SERVICE change, not a client
-      # one, and it is out of scope here. `POST /v1/machines/{m}/sessions`
-      # exists and is semantic, but the driver spawns
-      #   tmux new-session -d -s … -- claude …
-      # while the launcher runs
-      #   zsh -lc '… exec claude --remote-control "$n" -n "$n"'
-      # Two consequences, neither visible in a listing: no --remote-control, so
-      # the session is unreachable from the phone client; and no login shell,
-      # so it inherits the daemon's environment and has none of the credentials
-      # the rc file exports. `claudeCodeCommand` is documented as "the default
-      # CommandBuilder", so the seam is deliberate and the work is configuring
-      # it.
+      # Create on the pinned machine THROUGH the session layer, then attach.
       #
-      # Until that lands: REFUSE, and name the machine. Falling through to the
-      # real binary would create the session HERE while the picker, the header
-      # and the tab all say elsewhere — the same silent-wrong-machine defect
-      # this gate exists to close, wearing a different hat.
+      # This replaces a refusal. The refusal was correct while the service
+      # produced a different KIND of session — no remote-control binding, and
+      # no login shell, so none of the credentials an agent's tool servers
+      # need. Both are now the service's job and it does them; the environment
+      # a created session receives is even readable back from it.
+      #
+      # Falling through to the real binary is still wrong for the same reason
+      # it always was: it would create the session HERE while the picker, the
+      # header and the tab all say elsewhere.
       machine="${FCODE_MACHINE:-}"
       [[ -z $machine || $machine == "$(_fcode_whoami)" ]] && { command tmux "$@"; return }
-      print -u2 "fcode: pinned to ${machine} — refusing to create a session HERE."
-      print -u2 "       Creating on another machine has to go through the session layer,"
-      print -u2 "       which cannot yet reproduce the launcher's remote-control flag or"
-      print -u2 "       its credentials. Run fcode on ${machine}, or pick this machine."
-      return 1 ;;
+
+      # The launcher's own invocation is
+      #   new-session -s <name> -c <dir> zsh -lc '…' ccode <name> <dir>
+      # so the two things the service needs are already in argv. Read them by
+      # flag rather than by position: the trailing argv is the launcher's
+      # business and may grow.
+      local want_name="" want_dir="" i=1
+      while (( i <= $# )); do
+        case "${@[i]}" in
+          -s) (( i++ )); want_name="${@[i]}" ;;
+          -c) (( i++ )); want_dir="${@[i]}" ;;
+        esac
+        (( i++ ))
+      done
+      if [[ -z $want_name || -z $want_dir ]]; then
+        print -u2 "fcode: cannot create on ${machine} — no name/-c directory in this invocation"
+        return 1
+      fi
+
+      # An idempotency key is REQUIRED (§10) and one is minted per invocation.
+      #
+      # Deliberately not derived from name+directory: the launcher numbers a
+      # colliding name precisely so a second session in one project is a normal
+      # thing to want, and a deterministic key would hand back the FIRST
+      # session instead of creating it. The failure that trade buys — a create
+      # that times out, gets retried by the human, and produces two agents in
+      # one directory — is the one a person can see and undo, whereas silently
+      # attaching to somebody else's older session is not.
+      local key payload created id
+      key="fcode-$(date +%s)-$$-${RANDOM}"
+      payload="$(FCODE_NAME="$want_name" FCODE_DIR="$want_dir" python3 -c '
+import json, os
+print(json.dumps({"name": os.environ["FCODE_NAME"], "cwd": os.environ["FCODE_DIR"]}))')"
+
+      created="$(_fcode_body POST "/v1/machines/${machine}/sessions" "$payload" \
+                   "Idempotency-Key: ${key}")" || {
+        print -u2 "fcode: ${machine} would not create \"${want_name}\" — the service refused or is unreachable"
+        return 1 }
+
+      # READ THE ID BACK. It is not necessarily the name that was asked for:
+      # the service owns the naming rules, so it sanitizes the name and numbers
+      # it when a session of that name is already live. Measured: asking for
+      # "gate.verify" returns "gate-verify" plus the type marker.
+      #
+      # Everything after this point must use the returned id. Assuming the
+      # requested name addresses the new session is right until the first
+      # collision, and then it silently addresses SOMEBODY ELSE'S session —
+      # which is the whole class of wrong-machine, wrong-session defect this
+      # file exists to close.
+      id="$(print -r -- "$created" | python3 -c '
+import sys, json
+d = json.load(sys.stdin) or {}
+i = d.get("id")
+if not i: sys.exit(3)
+print(i)')" || {
+        print -u2 "fcode: ${machine} created a session but returned no id"; return 1 }
+
+      if [[ $id != $want_name ]]; then
+        print -u2 "fcode: ${machine} named it \"${id}\" (asked for \"${want_name}\")"
+      fi
+
+      # Attach through the same path every other session uses, by id. It
+      # resolves which machine holds the session and ssh's there when that is
+      # not this one, so nothing about attaching is special-cased here.
+      _ccode_local_attach "$id"
+      return ;;
 
     *) command tmux "$@"; return ;;
   esac
