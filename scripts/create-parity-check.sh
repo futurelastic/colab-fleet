@@ -149,13 +149,31 @@ COUNT=$(printf '%s' "$ADDED" | sed -n 1p)
 NAMES=$(printf '%s' "$ADDED" | sed -n 2p)
 PATHS=$(printf '%s' "$ADDED" | sed -n 3p)
 
-echo "   variables the startup files added: ${COUNT}"
+echo "   variables beyond the service's own environment: ${COUNT}"
 echo "   PATH entries session/service: ${PATHS}"
-[ "$COUNT" -gt 0 ] || fail "the startup files contributed NOTHING.
-      The session has exactly the service's own environment, which is the
-      defect this work exists to fix: the agent will start normally and fail
-      at its first tool call."
-echo "   added: ${NAMES}"
+[ "$COUNT" -gt 0 ] || fail "the session has exactly the service's own environment.
+      Nothing was contributed by anything, which is the defect this work exists
+      to fix: the agent will start normally and fail at its first tool call."
+echo "   present: ${NAMES}"
+echo
+echo "   ⚠ THIS COUNT DOES NOT ISOLATE THE LOGIN-SHELL WRAP, and saying so is the"
+echo "     point. The multiplexer SERVER carries an environment of its own that"
+echo "     every session inherits. On a machine where a human started that server"
+echo "     from a terminal it is ALREADY rich — measured while building this: the"
+echo "     server's global environment held the agent's tool-server credentials"
+echo "     directly — so this section passes whether or not the wrap does anything."
+echo
+echo "     What the wrap is for is the OTHER case: when the service starts the"
+echo "     server (first session after a reboot, or a machine nobody has attached"
+echo "     to), the server inherits the SERVICE's environment and every session"
+echo "     for that server's lifetime is credential-less. Same code, same machine,"
+echo "     opposite outcome, decided days earlier."
+echo
+echo "     The decisive check reproduces that condition against a deliberately"
+echo "     sterile server and lives with the driver:"
+echo "       FLEET_TMUX_INTEGRATION=1 go test ./internal/drivers/tmux/ \\"
+echo "         -run TestCreatedSessionGetsStartupEnvironmentEvenOnASterileServer"
+echo "     Run it. This section is corroboration, not proof."
 
 # --- 3. remote-control binding ----------------------------------------------
 echo "== 3. remote-control binding =="
