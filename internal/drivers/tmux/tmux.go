@@ -902,7 +902,28 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 				"send with resumeIfStranded to submit it",
 		}, nil
 	}
-	if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "C-m"); err != nil {
+	// The wake key: `Space` before the newline, in ONE send-keys call.
+	//
+	// The FIRST keystroke into an idle pane is swallowed when that keystroke is
+	// Enter — measured 6 times out of 6 on real sessions. A printable key in
+	// the same position is not swallowed, and once it has landed the pane is no
+	// longer idle, so the newline that follows it submits.
+	//
+	// A paste is not a keystroke. So after paste-buffer the submit is ALWAYS
+	// the first keystroke, which means a lone newline here hits the failing
+	// case on every delivery into a pane that has gone idle — most of them.
+	// The confirmation above proves the text RENDERED; it does not make the
+	// submit land, and the two failures look identical from outside: a receipt
+	// that says submitted and a composer still holding the line.
+	//
+	// Both keys go in one invocation because they are both key names — no `-l`
+	// — and because a second call would reintroduce a race between them.
+	//
+	// The trailing space is accepted as harmless: a submitted line one space
+	// longer changes nothing downstream. Do NOT tidy it with a `BSpace` before
+	// the newline — that puts a non-printable key back in the first-keystroke
+	// slot, which is precisely the untested case.
+	if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "Space", "C-m"); err != nil {
 		return fleet.DeliveryReceipt{}, fmt.Errorf("send: submitting: %w", err)
 	}
 
@@ -1402,7 +1423,16 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	// C-m rather than Enter — see confirmLanded for the measurement behind
 	// this. A prompt that swallows the keypress leaves the session blocked,
 	// which is the failure this operation exists to end.
-	keys := []string{"C-m"}
+	//
+	// And `Space` before it, for the same reason as the submit in send(): the
+	// first keystroke into an idle pane is swallowed when it is Enter, measured
+	// 6 of 6. "Accept the highlighted option" is the one branch here that would
+	// otherwise send a lone newline into exactly that slot — the `Choice > 0`
+	// branch below already leads with a printable digit and never showed the
+	// fault, which is itself corroboration. Escape is left alone: what was
+	// measured is the Enter case, and guessing past the measurement is how the
+	// wrong key ends up shipped.
+	keys := []string{"Space", "C-m"}
 	switch {
 	case resp.Cancel:
 		keys = []string{"Escape"}

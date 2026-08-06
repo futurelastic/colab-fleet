@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
@@ -743,6 +744,131 @@ func TestSubmitUsesControlM(t *testing.T) {
 				t.Errorf("submit key = %q, want C-m", last)
 			}
 		}
+	}
+}
+
+// sentKeys returns the key names from a `send-keys` invocation — everything
+// after the `-t <pane>` target. It is deliberately dumb: the assertion below is
+// about the ORDER of the keys on the wire, and anything smarter would be
+// re-implementing the driver instead of checking it.
+func sentKeys(argv []string) []string {
+	for i := 0; i < len(argv); i++ {
+		if argv[i] == "-t" {
+			return argv[i+2:]
+		}
+	}
+	return argv[1:]
+}
+
+// A "printable key" is one that puts a character on screen — the property the
+// measurement turns on. Named control keys (C-m, Enter, Escape, BSpace) are
+// not printable; `Space` and the digits are.
+func printableKey(k string) bool {
+	if k == "Space" {
+		return true
+	}
+	r := []rune(k)
+	return len(r) == 1 && unicode.IsPrint(r[0])
+}
+
+func isNewlineKey(k string) bool { return k == "C-m" || k == "Enter" }
+
+// The FIRST keystroke into an idle pane is swallowed when that keystroke is
+// Enter — measured 6 times out of 6 on real sessions, where the same pane
+// accepted a printable key and then submitted on the very next newline. A paste
+// is not a keystroke, so after paste-buffer the submit is always the first
+// keystroke: a lone newline strands the delivered text in the composer while
+// the receipt reports success.
+//
+// So every submit must carry a printable wake key IMMEDIATELY before its
+// newline, in the same invocation — a second call would race, and a gap would
+// put the newline back in the first-keystroke slot.
+//
+// The trailing space is deliberate. Tidying it away with a `BSpace` before the
+// newline would restore a non-printable key as the first post-idle keystroke,
+// which is the untested case; this test fails that shape too, because BSpace is
+// not printable.
+func TestEverySubmitCarriesAPrintableWakeKeyBeforeTheNewline(t *testing.T) {
+	prompted := func() *fakeMux {
+		f := twoSessions()
+		f.captures["%1"] = fixtureTrustPrompt
+		return f
+	}
+	cases := []struct {
+		name string
+		mux  *fakeMux
+		act  func(*Driver) error
+	}{
+		{
+			// The post-paste submit: the site the defect was measured on.
+			name: "send",
+			mux:  twoSessions(),
+			act: func(d *Driver) error {
+				_, err := d.Send(context.Background(), testCaller,
+					fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "do the thing",
+					driver.SendOptions{Submit: true})
+				return err
+			},
+		},
+		{
+			// "Accept the highlighted option" — the other path that used to
+			// send a bare newline into a pane that has been idle by definition,
+			// since it has been sitting on a question.
+			name: "respond/accept-highlighted",
+			mux:  prompted(),
+			act: func(d *Driver) error {
+				_, err := d.Respond(context.Background(), testCaller,
+					fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.Response{})
+				return err
+			},
+		},
+		{
+			// Never affected — it leads with a printable digit — and that is
+			// exactly why it corroborates the diagnosis. Pinned so a later
+			// tidy-up cannot quietly remove the wake key that is already there.
+			name: "respond/by-choice",
+			mux:  prompted(),
+			act: func(d *Driver) error {
+				_, err := d.Respond(context.Background(), testCaller,
+					fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.Response{Choice: 2})
+				return err
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDriver(tc.mux)
+			if err := tc.act(d); err != nil {
+				t.Fatal(err)
+			}
+			submits := 0
+			for _, c := range tc.mux.callsSnapshot() {
+				if c[0] != "send-keys" {
+					continue
+				}
+				keys := sentKeys(c)
+				var last string
+				if len(keys) > 0 {
+					last = keys[len(keys)-1]
+				}
+				if !isNewlineKey(last) {
+					continue // not a submit — Escape, C-u and friends
+				}
+				submits++
+				if len(keys) < 2 {
+					t.Fatalf("submit sent %v — a lone newline is swallowed as the first "+
+						"keystroke into an idle pane (6/6), stranding the text in the composer", keys)
+				}
+				if wake := keys[len(keys)-2]; !printableKey(wake) {
+					t.Errorf("key before the newline is %q, which is not printable; keys were %v — "+
+						"only a printable key was measured to wake the pane", wake, keys)
+				}
+			}
+			if submits == 0 {
+				t.Fatal("no submit invocation was made at all; this assertion checked nothing")
+			}
+		})
 	}
 }
 
