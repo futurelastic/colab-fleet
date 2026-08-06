@@ -2435,10 +2435,19 @@ subscriber that joins mid-outage, and retracts explicitly rather than by
 silence.
 
 The honest limit, searched for before it was assumed: **there is no advance
-warning to escalate on.** 400 lines of scrollback across 51 panes on two
-machines contain no approaching-limit notice; local runtime state records the
-rate tier and never consumption against it. The first refusal is the earliest
+warning to escalate on.** Three corpora, chosen because they fail differently —
+400 lines of scrollback across 51 panes on two machines (what is on screen now),
+the runtime's own on-disk state (which records the rate tier and never
+consumption against it), and 475 session transcripts from the preceding three
+weeks (what was ever on screen). No approaching-limit notice in any of them.
+The runtime does not warn, it refuses, so the first refusal is the earliest
 signal that exists.
+
+This is worth stating as a negative result rather than a gap, because the
+tempting response to "escalate before the limit" is a detector for warning text,
+and the text is not there. A margin has to live in the scheduler's own dispatch
+budget. What this service can honestly offer is the transition, delivered the
+moment it happens, to something that has not yet spent a session finding out.
 
 **F57 · `unknown` was excluded from the account block for being a truth. It is
 the opposite.** F54 rewrote only `idle`, reasoning that any other status "has a

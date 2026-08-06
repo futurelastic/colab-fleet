@@ -495,9 +495,11 @@ supervisor learned it 48 times, once per session it had already dispatched and
 which then stalled. It recorded 48 stall reasons and never formed the one
 conclusion that explained all of them.
 
-Two honest limits. There is **no advance warning** — the runtime prints nothing
-before refusing, so the first refusal is the earliest signal that exists; if you
-want a margin, keep it in your own dispatch budget, not in this event.  And
+Two honest limits. There is **no advance warning** — searched for across live
+panes, the runtime's on-disk state, and three weeks of transcripts before it was
+assumed. The runtime does not warn, it refuses, so the first refusal is the
+earliest signal that exists; if you want a margin, keep it in your own dispatch
+budget, not in this event.  And
 `quota.resetHint` is prose the runtime printed (`"aug 10 at 12am (asia/tokyo)"`),
 so show it to a human rather than parsing it into a timer — the service itself
 never uses it to expire a block. What clears a block is a session on that
