@@ -1,13 +1,16 @@
 # fleetctl — a standalone client for colab-fleet: no launcher required.
 #
-# Where fcode.zsh borrows the launcher's interface, this one has its own and
-# depends on nothing: useful in a script, on a machine with no launcher
-# installed, or when you want to see the service's answers unmediated.
+# It depends on nothing: useful in a script, on a machine with no launcher
+# installed, or when you want to see the service's answers unmediated. That
+# independence is why it is the client shipped WITH the service — it is
+# executable documentation of the HTTP API, and it names no machine, no host
+# alias and no local convention anywhere in this file.
 #
-# The command is `fleetctl` rather than `fcode` so that sourcing both files is
-# safe — they would otherwise define the same name.
+# A launcher-shaped client used to sit beside this one. It was glue around a
+# specific machine's launcher rather than a client of this API, so it moved to
+# the workspace that owns that launcher. Nothing here depended on it.
 #
-#   source /path/to/colab-fleet/clients/fcode.zsh
+#   source /path/to/colab-fleet/clients/fleetctl.zsh
 #
 #   fleetctl                       list every session in the fleet
 #   fleetctl <prefix>              attach to the one session matching <prefix>
@@ -104,8 +107,8 @@ for s in d.get("items", []):
 
 fleetctl_ls() {
   local partial=0 out
-  out="$(_flc_sessions 2>/tmp/.fcode.err)" || return $?
-  [[ -s /tmp/.fcode.err ]] && { partial=1; print -u2 "fleetctl: PARTIAL VIEW — $(</tmp/.fcode.err)"; }
+  out="$(_flc_sessions 2>/tmp/.fleetctl.err)" || return $?
+  [[ -s /tmp/.fleetctl.err ]] && { partial=1; print -u2 "fleetctl: PARTIAL VIEW — $(</tmp/.fleetctl.err)"; }
   # Here-string, not a pipe: a piped `while` runs in a subshell in zsh, where
   # `local` is outside any function scope and prints its declaration instead
   # of quietly declaring.
@@ -146,8 +149,8 @@ for m in d.get("items", []):
 # already running.
 _flc_resolve() {
   local want="$1" out partial=0
-  out="$(_flc_sessions 2>/tmp/.fcode.err)" || return 2
-  [[ -s /tmp/.fcode.err ]] && partial=1
+  out="$(_flc_sessions 2>/tmp/.fleetctl.err)" || return 2
+  [[ -s /tmp/.fleetctl.err ]] && partial=1
   local -a exact=() pfx=()
   local machine sstate id rest
   while IFS=$'\t' read -r machine sstate id rest; do
@@ -210,7 +213,7 @@ _flc_urlenc() { _flc_py 'import sys,urllib.parse; print(urllib.parse.quote(sys.a
 # ── create ──────────────────────────────────────────────────────────────────
 fleetctl_new() {
   local machine="$1" name="$2" cwd="$3"
-  [[ -n $machine && -n $name && -n $cwd ]] || { print -u2 "usage: fcode new <machine> <name> <cwd>"; return 2 }
+  [[ -n $machine && -n $name && -n $cwd ]] || { print -u2 "usage: fleetctl new <machine> <name> <cwd>"; return 2 }
   # An idempotency key is required, not optional: a create that times out and
   # is retried without one produces two agents in one working directory, and
   # nothing afterwards can detect it.
@@ -282,7 +285,7 @@ fleetctl_watch() {
   # curl directly would leave no pid to kill; `wait`ing on it would not carry
   # its output through the pipe.
   local fifo pid
-  fifo="$(mktemp -u -t fcode-watch)"
+  fifo="$(mktemp -u -t fleetctl-watch)"
   mkfifo "$fifo" || return 1
   trap 'kill $pid 2>/dev/null; rm -f "$fifo"' INT TERM EXIT HUP
   print -r -- "header = \"Authorization: Bearer ${token//[$'\t\r\n ']}\"" |
