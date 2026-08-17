@@ -10,6 +10,15 @@ import "time"
 // comparing raw Timestamps across machines is not safe.
 type Timestamp = time.Time
 
+// PermissionModeBypass is the one non-default permission posture this fleet's
+// runtime has: the agent stops asking before it acts.
+//
+// A closed set of one, named rather than left as a free string, so an
+// unrecognised mode is refused at the boundary instead of being handed to a CLI
+// that may or may not understand it — §2.3's rule for statuses, applied to an
+// input a caller controls.
+const PermissionModeBypass = "bypass"
+
 // SessionSpec is what a caller supplies to start a session (§2.1).
 //
 // Machine names the target host. The HTTP wire form
@@ -72,10 +81,106 @@ type SessionSpec struct {
 	// the string being hunted for.
 	ContextRef AbsolutePath `json:"contextRef,omitempty"`
 
+	// Env is variables the session's process must carry.
+	//
+	// # Why a session needs any, and why the API not having them was disqualifying
+	//
+	// An agent inside a session has to be able to identify itself to the tooling
+	// around it — which session am I, where is the context staged for me, which
+	// prior conversation am I re-attaching to. A supervisor answers that by
+	// exporting variables into the session at creation. Without a field for it,
+	// a session created through this API is a different kind of session from one
+	// the supervisor starts itself, which is the whole class of defect §2.1's
+	// first-class-session work exists to close.
+	//
+	// # Values never reach a command line (§5.3)
+	//
+	// The obvious mechanism — the multiplexer's own per-session `-e NAME=value`
+	// flag — puts every value in an argv that any process on the machine can
+	// read. That is precisely the rule §5.3 states for prompts and context, and
+	// nothing about an environment variable makes it safer; the opposite, since
+	// a credential is far likelier to arrive here than in a prompt.
+	//
+	// So values are staged in a file the session reads and unlinks, exactly as
+	// ContextRef is a path rather than content. A driver that cannot deliver
+	// them out of band must REFUSE the create rather than start a session
+	// missing them — a session that comes up without its identity looks healthy
+	// and fails later, somewhere else.
+	//
+	// # The shape a value may have, and why it is bounded
+	//
+	// Names must look like environment variable names; values may not contain a
+	// newline or a NUL. The bound is honest rather than incidental: the staging
+	// format is line-oriented, and a value with an embedded newline would
+	// silently become two variables — the same fabrication-out-of-value-content
+	// this driver already had to defend against when recording an environment.
+	// A refused create says so; a truncated one does not.
+	Env map[string]string `json:"env,omitempty"`
+
+	// Resume names a prior conversation this session continues.
+	//
+	// Distinct from DriverCapabilities.SupportsResume, which answers a different
+	// question — whether sessions survive a service restart. A caller reading
+	// that as "I can continue a conversation" would be wrong with nothing to
+	// correct it, which is why this is a field of its own rather than a
+	// capability flag.
+	//
+	// It is a HINT like Agent and Model: a runtime with no such notion must say
+	// so at creation rather than start a fresh session that merely looks right.
+	//
+	// A resumed session commonly meets the runtime's resume chooser on the way
+	// up. That question is deliberately NOT in Consents — see PromptKind and the
+	// driver's own note: the option that means "the conversation I named" cannot
+	// be identified from the option text, and a consent that guesses would pick
+	// somebody's other session.
+	Resume string `json:"resume,omitempty"`
+
+	// PermissionMode requests a runtime permission posture other than the
+	// default. The only value this fleet's runtime has is "bypass" — the mode
+	// in which the agent stops asking before acting.
+	//
+	// It is deliberately not a bool. A boolean field named for today's single
+	// dangerous mode ages into a lie the moment a second mode exists, and the
+	// closed set makes an unrecognised value a refusal rather than a silent
+	// default — §2.3's discipline applied to an input.
+	//
+	// The service requires the `send` grant for this on top of `create`: a
+	// session in this mode acts without asking, and the mode also raises an
+	// acceptance screen that has to be answered. A principal permitted only to
+	// start sessions must not be able to start THAT one.
+	PermissionMode string `json:"permissionMode,omitempty"`
+
+	// Consents lists the boot questions the caller answers in advance, so the
+	// driver may clear them instead of leaving a new session parked in front of
+	// one.
+	//
+	// # Why a list, and why the kinds are named
+	//
+	// TrustCwd (below) shipped first and covers exactly one question. The moment
+	// a second arrived — the acceptance screen a non-default PermissionMode
+	// raises — it was clear the shape was wrong: one boolean per question means
+	// a new field per runtime screen forever, and a caller cannot express "these
+	// two, not that third one".
+	//
+	// Naming the kinds keeps the safety property that matters. A consent is
+	// scoped to a question the driver can RECOGNISE (PromptKind), the option is
+	// then found by reading the runtime's own option text, and an unrecognised
+	// or ambiguously-worded screen is answered not at all. Nothing here is a
+	// standing permission to answer whatever appears.
+	//
+	// Not every kind is consentable: see the driver. A question whose
+	// affirmative option cannot be identified from its own text has no safe
+	// consent, and offering one would be offering a coin flip.
+	Consents []PromptKind `json:"consents,omitempty"`
+
 	// TrustCwd carries the caller's consent to the runtime's own question
 	// about Cwd — "is this a project you created or one you trust?" — so the
 	// driver may answer it on the caller's behalf instead of leaving the new
 	// session parked in front of it.
+	//
+	// Superseded by Consents, and kept because it shipped: it means exactly
+	// `consents: ["folder-trust"]`, and a caller sending both is not in
+	// conflict — the union is taken.
 	//
 	// # Why the consent is a field on the create request
 	//
@@ -109,6 +214,25 @@ type SessionSpec struct {
 	// it — the caller learns which it got by reading the session's state, where
 	// an unanswered question is still reported in full.
 	TrustCwd bool `json:"trustCwd,omitempty"`
+}
+
+// ConsentsTo reports whether the caller consented, in this create request, to
+// having a question of this kind answered on its behalf.
+//
+// It is the one place the older TrustCwd boolean and the newer Consents list are
+// reconciled, so no driver has to remember that two spellings of one consent
+// exist. The union is taken deliberately: a caller sending both said the same
+// thing twice, which is agreement, not conflict.
+func (s SessionSpec) ConsentsTo(kind PromptKind) bool {
+	if kind == PromptFolderTrust && s.TrustCwd {
+		return true
+	}
+	for _, k := range s.Consents {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // SessionRef addresses a session (§2.2). Ids are machine-scoped and

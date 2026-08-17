@@ -414,6 +414,34 @@ type createSessionBody struct {
 	// about Cwd. See fleet.SessionSpec.TrustCwd for what it means, and
 	// handleCreateSession for why it needs a second grant.
 	TrustCwd bool `json:"trustCwd"`
+
+	// Env, Resume, PermissionMode and Consents close the gap that kept a
+	// supervisor driving the substrate directly instead of this API: a session
+	// created here could not carry its identity, continue a conversation, or be
+	// started in a non-default permission posture. See fleet.SessionSpec for
+	// each, and handleCreateSession for which of them need the send grant.
+	Env            map[string]string  `json:"env"`
+	Resume         string             `json:"resume"`
+	PermissionMode string             `json:"permissionMode"`
+	Consents       []fleet.PromptKind `json:"consents"`
+}
+
+// createNeedsSend names the part of a create body that requires the send grant,
+// or "" when the body asks for nothing beyond starting a session.
+//
+// It returns the NAME rather than a boolean so the refusal can say which field
+// caused it. A caller told only "you need send" re-reads the whole request
+// guessing; one told "consents requires it" fixes it in a line.
+func createNeedsSend(body createSessionBody) string {
+	switch {
+	case body.TrustCwd:
+		return "trustCwd"
+	case len(body.Consents) > 0:
+		return "consents"
+	case body.PermissionMode != "":
+		return "permissionMode"
+	}
+	return ""
 }
 
 func handleCreateSession(svc *Service) http.HandlerFunc {
@@ -435,26 +463,35 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			return
 		}
 
-		// `trustCwd` asks the driver to produce a KEYPRESS on the caller's
-		// behalf, which is what `respond` does and what `send` grants (see
-		// grantForVerb: answering a prompt shares that grant because it has the
-		// same blast radius). Folding it into `create` would let a principal
-		// granted only "start sessions" drive an existing dialog through the
-		// create route, which is the sort of quiet privilege widening that is
-		// invisible until it is someone's incident.
+		// Two things in this body ask for more than a create.
+		//
+		// A CONSENT (`trustCwd`, `consents`) asks the driver to produce a
+		// KEYPRESS on the caller's behalf, which is what `respond` does and what
+		// `send` grants (see grantForVerb: answering a prompt shares that grant
+		// because it has the same blast radius).
+		//
+		// A non-default `permissionMode` asks for a session that ACTS WITHOUT
+		// ASKING — and raises an acceptance screen that then has to be answered.
+		// A principal permitted only to start sessions must not be able to start
+		// that one; between "may start a session" and "may start a session that
+		// needs no permission for anything", the second is plainly the larger
+		// authority.
+		//
+		// Folding either into `create` would be the sort of quiet privilege
+		// widening that is invisible until it is someone's incident: nobody
+		// reviewing a grants table would see it.
 		//
 		// Only checked when this machine is the one serving the create. A
 		// relayed create is authorized by the PEER, against the same
 		// credential, under its own table — §13's "proxying does not launder
 		// authorization" — and a second opinion here could only disagree with
 		// the host that actually holds the session.
-		if body.TrustCwd && (machine == "" || machine == svc.Self()) {
+		if elevated := createNeedsSend(body); elevated != "" && (machine == "" || machine == svc.Self()) {
 			if p, ok := principalOf(r); ok && !p.Allows(GrantSend) {
 				writeError(w, &fleet.Error{
 					Kind: fleet.ErrorUnauthorized,
 					Message: "principal " + p.Name + " does not hold the " +
-						string(GrantSend) + " grant, which trustCwd requires: " +
-						"answering the folder-trust question is a keypress, not a create (§6)",
+						string(GrantSend) + " grant, which " + elevated + " requires (§6)",
 					Machine: machine,
 				})
 				return
@@ -476,7 +513,8 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			Agent: body.Agent, Model: body.Model, Effort: body.Effort,
 			Name: body.Name, Prompt: body.Prompt, ContextRef: body.ContextRef,
 			Marker: body.Marker, RemoteControl: body.RemoteControl,
-			TrustCwd: body.TrustCwd,
+			TrustCwd: body.TrustCwd, Env: body.Env, Resume: body.Resume,
+			PermissionMode: body.PermissionMode, Consents: body.Consents,
 		}
 
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))

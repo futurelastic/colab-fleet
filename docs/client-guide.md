@@ -408,6 +408,10 @@ Idempotency-Key: 4f1c9e2a-…          ← REQUIRED
   "remoteControl": true,             ← optional; OMITTED IS NOT false (see below)
   "prompt": "first instruction",     ← optional, delivered once the agent is ready
   "trustCwd": true,                  ← optional consent to the folder-trust question (see below)
+  "consents": ["folder-trust"],      ← optional, the general form of the line above
+  "env": {"MY_SESSION_ID": "…"},     ← optional, delivered out of band — never argv
+  "resume": "<conversation id>",     ← optional, continue a prior conversation
+  "permissionMode": "bypass",        ← optional, needs the send grant
   "contextRef": "/abs/path" }        ← optional, a PATH — never inline content
 ```
 
@@ -481,6 +485,45 @@ Two things it is not:
 If you do not send it, nothing changes: the driver answers nothing, and
 `state.prompt` reports the question in full for you to answer through
 `respond` (§6) whenever you decide to.
+
+**`consents` is the general form**, and `trustCwd` is now shorthand for
+`["folder-trust"]` — both work, and sending both is agreement rather than
+conflict. Today's other consentable question is `bypass-permissions`, the
+acceptance screen a non-default `permissionMode` raises.
+
+`resume-chooser` is deliberately **not** consentable and a create asking for it
+is refused. The other two ask yes/no about something you described in your own
+request; the chooser asks *which* conversation, and its options are summaries of
+prior sessions with nothing in the text identifying yours. Read `state.prompt`
+and answer that one by index.
+
+### Giving the session what it needs to be itself
+
+Three fields exist because a session created through this API used to be a
+lesser session than one a supervisor started directly — and the difference did
+not show up at creation, only later, somewhere else.
+
+**`env`** is how the agent inside identifies itself to your tooling: which
+session it is, where its context is staged, which bridge it is re-attaching to.
+Values are staged in a 0600 file the session reads and unlinks — **never in a
+command line**, because the payload most likely to be a credential must not be
+the one exception to that rule. Two bounds, both refusals rather than
+truncations: names must look like variable names, and a value may not contain a
+newline or NUL (the format is line-oriented, and a newline would arrive as a
+second variable invented out of your value).
+
+**`resume`** continues a prior conversation. Do not confuse it with
+`supportsResume` in `/v1/runtimes`, which reports whether sessions survive a
+service restart — same word, different question.
+
+**`permissionMode`** takes one value, `bypass`. It needs the `send` grant like a
+consent does: a session in that mode acts without asking, which is a larger
+authority than starting one. An unrecognised value is refused, not passed
+through to the runtime.
+
+One rule shared by everything that reaches the agent's own argv — `agent`,
+`model`, `effort`, `resume`: **a value may not begin with `-`**, or the CLI reads
+it as a flag rather than as your value.
 
 Pass context by path (`contextRef`), never inline. Prompts and context never
 reach a command line.

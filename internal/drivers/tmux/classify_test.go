@@ -663,7 +663,7 @@ func TestStatusLineRejectsChrome(t *testing.T) {
 		"❯ ",                          // the composer, which sits BELOW the status line
 		"❯ please refactor for me",    // ... and can contain the finished infix
 		"⏵⏵ auto mode on (shift+tab)", // mode footer
-		"▸ Opus 5 · some-repo", // model footer
+		"▸ Opus 5 · some-repo",        // model footer
 		"⎿  $ cd /some/path",          // tool output
 		"────────────────────", // composer fencing
 		"- a bulleted line", // ASCII punctuation: transcript prose

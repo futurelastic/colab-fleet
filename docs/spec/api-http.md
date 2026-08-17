@@ -140,7 +140,9 @@ POST /v1/machines/{machine}/sessions
 Idempotency-Key: <caller-supplied, required>
 { "runtime": "...", "cwd": "/abs/path", "agent": "...", "model": "...",
   "effort": "...", "name": "...", "marker": "...", "remoteControl": true,
-  "prompt": "...", "contextRef": "/abs/path", "trustCwd": false }
+  "prompt": "...", "contextRef": "/abs/path", "trustCwd": false,
+  "env": {"NAME": "value"}, "resume": "<conversation id>",
+  "permissionMode": "bypass", "consents": ["folder-trust"] }
 
 → 201 { "machine": "...", "id": "...", "name": "...", "state": {...} }
 → 200 (same body) if the key was already seen — the existing session
@@ -180,6 +182,40 @@ dialog is a keypress, it is the same blast radius as `respond`, and folding it
 into `create` would make this route a second, unreviewed way to drive a
 session. On a relayed create the check belongs to the peer serving it, against
 the same credential — §13's "proxying does not launder authorization".
+
+**`consents` generalises `trustCwd`**, which remains valid and means exactly
+`["folder-trust"]`. Each entry is a `PromptKind` the driver can RECOGNISE; the
+affirmative option is then found by reading the runtime's own option text, and an
+unrecognised or ambiguously-worded screen is answered not at all. Not every kind
+is consentable: `resume-chooser` is refused, because its options are summaries of
+prior conversations and nothing in them identifies the one the caller named —
+consent there would be a coin flip, and losing it resumes a stranger's work. Same
+`send` grant as `trustCwd`.
+
+**`env` is delivered out of band, never on a command line.** Values are staged in
+a 0600 file the session reads and unlinks; nothing reaches an argv, because the
+payload likeliest to be a credential must not be the one exception to §5.3. Names
+must look like variable names, and a value may not contain a newline or NUL — the
+staging format is line-oriented, and a newline would arrive as a second variable
+invented out of value content. Violations are `invalid`, never truncated. A driver
+with no out-of-band channel refuses the create rather than starting a session
+missing its identity.
+
+**`resume` continues a prior conversation.** Not to be confused with
+`supportsResume` in `/v1/runtimes`, which answers whether sessions survive a
+service restart — a different question with an unfortunately similar name. A
+resumed session commonly meets the resume chooser; see `consents` for why that
+one is yours to answer.
+
+**`permissionMode` requests a non-default permission posture.** One value:
+`bypass`. It requires the **`send` grant** too — a session in that mode acts
+without asking, and between "may start a session" and "may start a session that
+needs no permission for anything", the second is plainly the larger authority.
+An unrecognised value is refused rather than passed through.
+
+Caller-supplied values that land in the agent's argv (`agent`, `model`, `effort`,
+`resume`) may not begin with `-`: the CLI would read them as flags, which would
+turn a create grant into "run the agent with arguments of my choosing".
 
 ```
 GET /v1/machines/{machine}/sessions/{id}/environment?runtime=

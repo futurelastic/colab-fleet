@@ -1445,6 +1445,37 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if contextFile != "" && !filepath.IsAbs(contextFile) {
 		return fleet.SessionRef{}, fmt.Errorf("create: contextRef must be absolute, got %q", contextFile)
 	}
+	if err := validateEnv(spec.Env); err != nil {
+		return fleet.SessionRef{}, fmt.Errorf("create: %w", err)
+	}
+	// Refuse rather than start a session missing what the caller asked for. The
+	// bare-exec shape has no shell to apply an environment file in, so a create
+	// carrying variables cannot be honoured there — and a session that comes up
+	// without the identity its supervisor gave it looks perfectly healthy and
+	// fails later, somewhere else, which is the failure mode this whole area
+	// keeps producing.
+	if len(spec.Env) > 0 && d.bareExec {
+		return fleet.SessionRef{}, errors.New(
+			"create: this driver is configured without the login-shell wrap, so it has " +
+				"no out-of-band channel for env; refusing rather than starting a session without it")
+	}
+	if spec.PermissionMode != "" && spec.PermissionMode != fleet.PermissionModeBypass {
+		return fleet.SessionRef{}, fmt.Errorf(
+			"create: unknown permissionMode %q (this runtime has one: %q)",
+			spec.PermissionMode, fleet.PermissionModeBypass)
+	}
+	if spec.Resume != "" && !safeArgvValue(spec.Resume) {
+		return fleet.SessionRef{}, fmt.Errorf(
+			"create: resume %q would be read as a flag by the agent, not as a conversation id",
+			spec.Resume)
+	}
+	for _, k := range spec.Consents {
+		if _, ok := consentableKinds[k]; !ok {
+			return fleet.SessionRef{}, fmt.Errorf(
+				"create: %q is not a consentable question — see the driver's note on "+
+					"why some boot questions have no safe affirmative option", k)
+		}
+	}
 
 	// Intent first. A crash between here and the session starting leaves a
 	// pending record, which the next attempt resolves by looking rather
@@ -1462,10 +1493,15 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// environment a launcher-created session does, and stage a record of what
 	// it actually ended up with. See environment.go for why interactive is not
 	// optional and why the record carries no values.
+	envPath, err := d.stageEnv(spec.Env)
+	if err != nil {
+		_ = d.idem.release(key)
+		return fleet.SessionRef{}, fmt.Errorf("create: staging env: %w", err)
+	}
 	recordPath := ""
 	if !d.bareExec {
 		recordPath = d.envRecordPath()
-		argv = loginWrap(d.loginShell(), recordPath, argv)
+		argv = loginWrap(d.loginShell(), recordPath, envPath, argv)
 	}
 
 	args := append([]string{
@@ -1476,7 +1512,18 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		// nothing. Releasing it keeps a retry from being answered with a
 		// session that was never started.
 		_ = d.idem.release(key)
+		// And the staged file is now certain to have no reader. It may hold a
+		// credential, so it goes now rather than at the sweep below.
+		if envPath != "" {
+			_ = os.Remove(envPath)
+		}
 		return fleet.SessionRef{}, fmt.Errorf("create: %w", err)
+	}
+	if envPath != "" {
+		// The wrapper unlinks it the moment it has read it. This is the case
+		// where it never does — the shell died, the agent binary was missing —
+		// and a file of values must not outlive the session it was staged for.
+		go d.sweepStagedEnv(envPath)
 	}
 
 	ref := fleet.SessionRef{Machine: d.machine, ID: name, Name: name}
@@ -1512,6 +1559,14 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 // makes a session findable by the one identifier every surface shows.
 func claudeCodeCommand(spec fleet.SessionSpec, contextFile string) []string {
 	argv := []string{"claude"}
+	// A pin is data from a caller and lands in this argv beside real flags. A
+	// value beginning with "-" is therefore not a value at all — the agent CLI
+	// reads it as another flag, and a create grant becomes "run the agent with
+	// arguments of my choosing". Nothing rejected these before; safeArgvValue
+	// is applied to every caller-supplied element from here down.
+	if spec.Resume != "" && safeArgvValue(string(spec.Resume)) {
+		argv = append(argv, "--resume", spec.Resume)
+	}
 	// Nil means "whatever a first-class session gets", which on this
 	// substrate is enabled — an unaware caller must not silently receive the
 	// second-class shape. Only an explicit false opts out.
@@ -1520,19 +1575,40 @@ func claudeCodeCommand(spec fleet.SessionSpec, contextFile string) []string {
 			argv = append(argv, "--remote-control", spec.Name, "-n", spec.Name)
 		}
 	}
-	if spec.Agent != "" {
+	if spec.Agent != "" && safeArgvValue(string(spec.Agent)) {
 		argv = append(argv, "--agent", string(spec.Agent))
 	}
-	if spec.Model != "" {
+	if spec.Model != "" && safeArgvValue(spec.Model) {
 		argv = append(argv, "--model", spec.Model)
 	}
-	if spec.Effort != "" {
+	if spec.Effort != "" && safeArgvValue(spec.Effort) {
 		argv = append(argv, "--effort", spec.Effort)
+	}
+	if spec.PermissionMode == fleet.PermissionModeBypass {
+		argv = append(argv, "--dangerously-skip-permissions")
 	}
 	if contextFile != "" {
 		argv = append(argv, "--append-system-prompt-file", contextFile)
 	}
 	return argv
+}
+
+// safeArgvValue reports whether a caller-supplied value may be passed as an
+// argv element.
+//
+// It answers one question: can this be mistaken for a flag? A leading "-" is
+// the whole hazard — the agent CLI would read it as an option rather than as
+// the value of the option before it, so a `model` of "--dangerously-skip-
+// permissions" starts a session nobody asked for. The rest of the character set
+// is left alone on purpose: these values never traverse a shell (the argv is
+// exec'd directly, and the login wrap binds it as positional parameters), so
+// quoting hazards do not arise and a stricter filter would only reject
+// legitimate names this driver has no business vetting.
+//
+// Empty is not safe either: an empty element would silently pair the flag with
+// whatever follows it.
+func safeArgvValue(v string) bool {
+	return v != "" && !strings.HasPrefix(v, "-")
 }
 
 // Respond answers a prompt the session is blocked on (§3).
@@ -1704,25 +1780,27 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 	ctx, cancel := context.WithTimeout(context.Background(), promptDeliveryWindow)
 	defer cancel()
 
-	// One consent, spent once. A trust question re-read on the next poll —
-	// because the keypress has not repainted yet — must not be answered twice:
+	// One consent, spent once — per kind, because a session can meet more than
+	// one boot question on the way up. A question re-read on the next poll,
+	// because the keypress has not repainted yet, must not be answered twice:
 	// the second digit lands in whatever screen replaced it.
-	trusted := false
+	answered := map[fleet.PromptKind]bool{}
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		ready, blocking := d.promptReadiness(ctx, ref.ID)
 		switch {
-		case blocking != nil && spec.TrustCwd && !trusted:
-			// The caller named this working directory in the create request
-			// and asked, in the same request, for the runtime's question about
-			// it to be answered yes. The decision is the caller's; this is
-			// only its execution — which is the line prompt.go draws when it
-			// says a service that decided what to answer would have become a
+		case blocking != nil && spec.ConsentsTo(blocking.Kind) && !answered[blocking.Kind]:
+			// The caller described this session in the create request — its
+			// working directory, its permission mode — and consented, in the
+			// same request, to the runtime's boot question about what it
+			// described. The decision is the caller's; this is only its
+			// execution, which is the line prompt.go draws when it says a
+			// service that decided what to answer would have become a
 			// supervisor.
-			if choice, ok := affirmativeTrustOption(blocking); ok {
-				trusted = true
+			if choice, ok := affirmativeOption(blocking); ok {
+				answered[blocking.Kind] = true
 				_, _ = d.Respond(ctx, req, ref, fleet.Response{
 					Choice: choice, Nonce: blocking.Nonce,
 				})
@@ -1741,7 +1819,30 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 	}
 }
 
-// affirmativeTrustOption picks the option that GRANTS trust, by index.
+// consentableKinds maps each boot question a caller may consent to onto the
+// words that identify its affirmative option.
+//
+// # Why the resume chooser is absent, and must stay absent
+//
+// It is the obvious fourth entry and it has no safe answer. The other two ask a
+// yes/no about something the caller DESCRIBED in its own create request — this
+// directory, this permission mode — so "the option that agrees" is a fact about
+// the screen. The resume chooser asks WHICH conversation to continue, and its
+// options are summaries of somebody's prior sessions. Nothing in the option text
+// identifies the one the caller named; a consent here would be a coin flip
+// dressed as an agreement, and losing it resumes a stranger's work.
+//
+// A caller that wants it answered reads `state.prompt` and answers by index
+// through `respond`, which is exactly the split prompt.go describes: this
+// service says what is being asked, a supervisor decides what to answer.
+var consentableKinds = map[fleet.PromptKind][]string{
+	// "Yes, I trust this folder"
+	fleet.PromptFolderTrust: {"trust", "folder"},
+	// "Yes, I accept" — on the screen whose other option is "No, exit"
+	fleet.PromptBypassAcceptance: {"accept"},
+}
+
+// affirmativeOption picks the option that AGREES, by index.
 //
 // It reads the option text and nothing else, for the reason classifyPromptKind
 // states at length: options are strings the runtime emits, while the question
@@ -1754,11 +1855,15 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 //
 // Exactly one option may match. Zero means this is not the screen we were told
 // about; two means the wording has changed under us (a "No, I don't trust this
-// folder" would match the same needles), and in both cases the honest move is
-// to answer nothing and leave a question on screen for a human — the same
-// direction §5.6 sends every other unreadable case.
-func affirmativeTrustOption(p *fleet.SessionPrompt) (int, bool) {
-	if p == nil || p.Kind != fleet.PromptFolderTrust {
+// folder" matches the same needles), and in both cases the honest move is to
+// answer nothing and leave a question on screen for a human — the same direction
+// §5.6 sends every other unreadable case.
+func affirmativeOption(p *fleet.SessionPrompt) (int, bool) {
+	if p == nil {
+		return 0, false
+	}
+	needles, ok := consentableKinds[p.Kind]
+	if !ok {
 		return 0, false
 	}
 	found := 0
@@ -1767,7 +1872,14 @@ func affirmativeTrustOption(p *fleet.SessionPrompt) (int, bool) {
 		// No "does it start with no" refinement. That is guessing at wording
 		// in order to keep answering a screen we have just been told we can no
 		// longer read — the ambiguity below is the answer, not an obstacle.
-		if strings.Contains(lower, "trust") && strings.Contains(lower, "folder") {
+		all := true
+		for _, n := range needles {
+			if !strings.Contains(lower, n) {
+				all = false
+				break
+			}
+		}
+		if all {
 			if found != 0 {
 				return 0, false
 			}

@@ -26,7 +26,7 @@ func TestEnvironmentRecordNeverContainsAValue(t *testing.T) {
 	record := filepath.Join(dir, "rec")
 
 	const secret = "s3cr3t-value-that-must-not-appear"
-	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, "/bin/echo", "ran")
+	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, "", "/bin/echo", "ran")
 	cmd.Env = append(os.Environ(), "FLEET_TEST_TOKEN="+secret)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("wrapper failed: %v (%s)", err, out)
@@ -69,7 +69,7 @@ func TestEnvironmentRecordDoesNotInventNamesFromMultilineValues(t *testing.T) {
 	dir := t.TempDir()
 	record := filepath.Join(dir, "rec")
 
-	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, "/bin/echo", "ran")
+	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, "", "/bin/echo", "ran")
 	cmd.Env = append(os.Environ(), "FLEET_TEST_MULTI=first\nPHANTOM=injected\nlast")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("wrapper failed: %v (%s)", err, out)
@@ -93,7 +93,7 @@ func TestSessionStartsEvenWhenTheRecordCannotBeWritten(t *testing.T) {
 	sh := shellForTest(t)
 	unwritable := filepath.Join(t.TempDir(), "no-such-dir", "rec")
 
-	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", unwritable, "/bin/echo", "AGENT-RAN")
+	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", unwritable, "", "/bin/echo", "AGENT-RAN")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the agent did not run when the record was unwritable: %v (%s)", err, out)

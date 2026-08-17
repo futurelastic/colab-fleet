@@ -165,6 +165,8 @@ func TestAuditActorMatchesTheCallerItLogs(t *testing.T) {
 func TestTrustCwdNeedsSendOnTopOfCreate(t *testing.T) {
 	srv := principalSrv(t, []Principal{
 		{Name: "spawner", Token: "tok-new", Grants: []Grant{GrantRead, GrantCreate}},
+		{Name: "spawner", Token: "tok-new-consents", Grants: []Grant{GrantRead, GrantCreate}},
+		{Name: "spawner", Token: "tok-new-permissionMode", Grants: []Grant{GrantRead, GrantCreate}},
 		{Name: "driver", Token: "tok-drive", Grants: []Grant{GrantRead, GrantCreate, GrantSend}},
 	})
 	create := func(token, body string) int {
@@ -195,5 +197,17 @@ func TestTrustCwdNeedsSendOnTopOfCreate(t *testing.T) {
 	}
 	if denied(create("tok-drive", consenting)) {
 		t.Error("a principal holding both grants was refused its own consent")
+	}
+
+	// Same bar for the other two things a create body can ask for beyond
+	// starting a session, and for the same reason: one produces a keypress, the
+	// other produces a session that acts without asking.
+	for _, tc := range []struct{ name, body string }{
+		{"consents", `{"runtime":"stub","cwd":"/w","consents":["folder-trust"]}`},
+		{"permissionMode", `{"runtime":"stub","cwd":"/w","permissionMode":"bypass"}`},
+	} {
+		if !denied(create("tok-new-"+tc.name, tc.body)) {
+			t.Errorf("%s: a principal without send got it through the create route", tc.name)
+		}
 	}
 }

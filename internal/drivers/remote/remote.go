@@ -597,6 +597,15 @@ type createBody struct {
 	// directory is on the peer. Dropping it here would produce the failure it
 	// exists to prevent, one machine away and only there.
 	TrustCwd bool `json:"trustCwd,omitempty"`
+
+	// Everything a session needs to be the same KIND of session on a peer as it
+	// is locally. A field dropped here does not fail: it produces a session that
+	// starts, looks healthy, and is missing something — one machine away, which
+	// is the hardest place to notice it.
+	Env            map[string]string  `json:"env,omitempty"`
+	Resume         string             `json:"resume,omitempty"`
+	PermissionMode string             `json:"permissionMode,omitempty"`
+	Consents       []fleet.PromptKind `json:"consents,omitempty"`
 }
 
 // Create starts a session on the peer, forwarding the caller's idempotency
@@ -623,7 +632,8 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		Runtime: spec.Runtime, Cwd: spec.Cwd, Agent: spec.Agent,
 		Model: spec.Model, Effort: spec.Effort, Name: spec.Name,
 		Prompt: spec.Prompt, ContextRef: spec.ContextRef,
-		TrustCwd: spec.TrustCwd,
+		TrustCwd: spec.TrustCwd, Env: spec.Env, Resume: spec.Resume,
+		PermissionMode: spec.PermissionMode, Consents: spec.Consents,
 	}
 	var out fleet.Session
 	path := "/v1/machines/" + url.PathEscape(string(d.machine)) + "/sessions"

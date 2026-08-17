@@ -217,17 +217,27 @@ fleetctl_new() {
   # meets that question parks in front of it until a human answers: nobody is
   # sitting at that terminal, and the work never starts. It needs the `send`
   # grant as well as `create`, because answering is a keypress.
-  local trust=0
-  local -a rest
+  local trust=0 resume="" mode=""
+  local -a rest env_pairs
   local a
-  for a in "$@"; do
-    case $a in
-      --trust-cwd) trust=1 ;;
-      *) rest+=("$a") ;;
+  # --env may repeat; values never reach a command line ON THE SERVICE side, but
+  # they DO sit in this client's argv, which is visible in `ps`. For anything
+  # secret, post the JSON body yourself rather than typing it here.
+  while (( $# )); do
+    case $1 in
+      --trust-cwd)      trust=1 ;;
+      --resume)         resume="$2"; shift ;;
+      --permission-mode) mode="$2"; shift ;;
+      --env)            env_pairs+=("$2"); shift ;;
+      *)                rest+=("$1") ;;
     esac
+    shift
   done
   local machine="${rest[1]}" name="${rest[2]}" cwd="${rest[3]}"
-  [[ -n $machine && -n $name && -n $cwd ]] || { print -u2 "usage: fleetctl new <machine> <name> <cwd> [--trust-cwd]"; return 2 }
+  [[ -n $machine && -n $name && -n $cwd ]] || {
+    print -u2 "usage: fleetctl new <machine> <name> <cwd> [--trust-cwd] [--resume <id>]"
+    print -u2 "                    [--permission-mode bypass] [--env NAME=value ...]"
+    return 2 }
   # An idempotency key is required, not optional: a create that times out and
   # is retried without one produces two agents in one working directory, and
   # nothing afterwards can detect it.
@@ -236,7 +246,17 @@ fleetctl_new() {
   body="$(_flc_py 'import json,sys
 b={"name":sys.argv[1],"cwd":sys.argv[2]}
 if sys.argv[3]=="1": b["trustCwd"]=True
-print(json.dumps(b))' "$name" "$cwd" "$trust")"
+if sys.argv[4]: b["resume"]=sys.argv[4]
+if sys.argv[5]: b["permissionMode"]=sys.argv[5]
+env={}
+for pair in sys.argv[6:]:
+    name,sep,value=pair.partition("=")
+    if not sep:
+        print("fleetctl: --env wants NAME=value, got %r" % pair, file=sys.stderr)
+        raise SystemExit(2)
+    env[name]=value
+if env: b["env"]=env
+print(json.dumps(b))' "$name" "$cwd" "$trust" "$resume" "$mode" "${env_pairs[@]}")" || return 2
   raw="$(_flc_curl POST "/v1/machines/$machine/sessions" "$body" "Idempotency-Key: $key")" || {
     print -u2 "fleetctl: session layer unreachable"; return 2 }
   code="${raw##*$'\n'}"; raw="${raw%$'\n'*}"
@@ -441,7 +461,8 @@ fleetctl() {
       print -r -- "fleetctl <prefix>       attach (local or over ssh, decided by the service)"
       print -r -- "fleetctl watch          stream state changes"
       print -r -- "fleetctl up             health + machines"
-      print -r -- "fleetctl new <machine> <name> <cwd> [--trust-cwd]"
+      print -r -- "fleetctl new <machine> <name> <cwd> [--trust-cwd] [--resume <id>]"
+      print -r -- "                    [--permission-mode bypass] [--env NAME=value ...]"
       print -r -- "fleetctl kill <prefix>"
       print -r -- "fleetctl answer <kind> <choice> [--dry-run]   answer every prompt of one kind" ;;
     *)          fleetctl_attach "$1" ;;

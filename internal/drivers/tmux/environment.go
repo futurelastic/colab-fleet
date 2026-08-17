@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -110,19 +111,136 @@ func (d *Driver) loginShell() string {
 // command. Nothing the caller supplies is ever parsed as shell syntax, so the
 // usual quoting hazard around a name or a working directory does not exist
 // here at all.
-const envRecordScript = `{ printf '%s\n' "$PATH"; env -0 | tr -d '\n' | tr '\0' '\n' | sed 's/=.*//' | sort; } > "$1" 2>/dev/null || true
-shift
+// The caller's own variables are applied FIRST, from `$2`, before the record is
+// written — so the record is evidence about the environment the agent actually
+// got, rather than about the one it would have had. Three properties again:
+//
+//   - No value ever reaches an argv (§5.3). The multiplexer's own `-e
+//     NAME=value` flag would put every value where any process can read it,
+//     which is the rule this project already applies to prompts and context,
+//     and a credential is likelier here than in either.
+//
+//   - Each line is applied WITHOUT re-parsing. `read -r` takes one whole line,
+//     and `export "$line"` treats it as a single assignment operand — so a value
+//     containing spaces, quotes, `$(...)` or a semicolon is exported verbatim
+//     rather than executed. This is the same reasoning as binding the agent argv
+//     to positional parameters: nothing the caller supplies is ever shell syntax.
+//
+//   - The file is unlinked as soon as it is read, and a failure to apply it
+//     cannot cost the session — but it also must not be silent, which is why
+//     the driver validates the content before staging rather than trusting the
+//     shell to complain.
+const envRecordScript = `if [ -n "$2" ]; then
+  while IFS= read -r fleet_env_line; do
+    [ -n "$fleet_env_line" ] && export "$fleet_env_line"
+  done < "$2" 2>/dev/null
+  rm -f "$2" 2>/dev/null
+fi
+{ printf '%s\n' "$PATH"; env -0 | tr -d '\n' | tr '\0' '\n' | sed 's/=.*//' | sort; } > "$1" 2>/dev/null || true
+shift 2
 exec "$@"`
 
 // loginWrap wraps the agent argv in a login+interactive shell, and returns the
 // argv the multiplexer should run.
 //
-// recordPath may be empty, in which case the environment is still inherited
-// from the shell but nothing is recorded — the wrap is the fix, the record is
-// the evidence, and one working without the other is a legitimate state.
-func loginWrap(shell, recordPath string, argv []string) []string {
-	wrapped := []string{shell, "-lic", envRecordScript, "colab-fleet", recordPath}
+// recordPath and envPath may each be empty, independently: the wrap is the fix,
+// the record is the evidence, and the caller's variables are a third thing. Any
+// one working without the others is a legitimate state.
+func loginWrap(shell, recordPath, envPath string, argv []string) []string {
+	wrapped := []string{shell, "-lic", envRecordScript, "colab-fleet", recordPath, envPath}
 	return append(wrapped, argv...)
+}
+
+// stageEnv writes the caller's variables where the wrapper will read them.
+//
+// Mode 0600, and in the service's own state directory when there is one: the
+// file may hold a credential for the seconds between create and the session
+// reading it. It is unlinked by the wrapper; the caller schedules a sweep in
+// case the session never starts, because a file holding secrets that survives a
+// failed create is worse than the create failing.
+func (d *Driver) stageEnv(env map[string]string) (string, error) {
+	if len(env) == 0 {
+		return "", nil
+	}
+	names := make([]string, 0, len(env))
+	for name := range env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	for _, name := range names {
+		b.WriteString(name)
+		b.WriteString("=")
+		b.WriteString(env[name])
+		b.WriteString("\n")
+	}
+
+	dir := os.TempDir()
+	if d.store != nil {
+		if sub := filepath.Join(d.store.Dir(), "env"); os.MkdirAll(sub, 0o700) == nil {
+			dir = sub
+		}
+	}
+	path := filepath.Join(dir, "spec-env-"+d.nonce())
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// sweepStagedEnv removes a staged env file the session never read.
+//
+// The wrapper unlinks it as its first act, so in the ordinary case this finds
+// nothing — which is the point. What it covers is the create that produced a
+// session that died before its shell ran: the file would otherwise sit there
+// holding whatever the caller put in it, indefinitely, with nothing that ever
+// looks at it again.
+func (d *Driver) sweepStagedEnv(path string) {
+	time.Sleep(envCaptureWindow)
+	_ = os.Remove(path)
+}
+
+// validateEnv rejects what the staging format cannot carry faithfully.
+//
+// The line-oriented file is the reason for the bound, and the bound is stated
+// rather than worked around: a value containing a newline would arrive as two
+// variables, inventing a name out of value content. That exact fabrication was
+// measured once already in this file's own recording path — a value containing
+// "FAKE=injected" produced a variable called FAKE — and the answer there was to
+// change the format. Here the format is the caller's to respect, so the honest
+// move is to refuse the create and say which variable is the problem.
+func validateEnv(env map[string]string) error {
+	for name, value := range env {
+		if !validEnvName(name) {
+			return fmt.Errorf("env: %q is not a usable variable name "+
+				"(letters, digits and underscore, not starting with a digit)", name)
+		}
+		if strings.ContainsAny(value, "\n\x00") {
+			return fmt.Errorf("env: the value of %s contains a newline or NUL, which the "+
+				"staging format cannot carry without inventing a second variable", name)
+		}
+	}
+	return nil
+}
+
+func validEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r == '_':
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // envRecordPath picks somewhere to stage one session's record.

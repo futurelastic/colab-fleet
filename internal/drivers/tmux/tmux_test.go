@@ -1858,7 +1858,7 @@ func TestTrustConsentIsSpentOnce(t *testing.T) {
 // --- the option a consenting caller's trust is spent on ---------------------
 
 // Never the highlighted one, and never on a prompt this is not about.
-func TestAffirmativeTrustOptionReadsTheOptionsOnly(t *testing.T) {
+func TestAffirmativeOptionReadsTheOptionsOnly(t *testing.T) {
 	classified := func(fixture string) *fleet.SessionPrompt {
 		p := parsePrompt(newScreen(fixture))
 		if p == nil {
@@ -1869,14 +1869,14 @@ func TestAffirmativeTrustOptionReadsTheOptionsOnly(t *testing.T) {
 	}
 
 	trust := classified(fixtureTrustPrompt)
-	got, ok := affirmativeTrustOption(trust)
+	got, ok := affirmativeOption(trust)
 	if !ok || got != 1 {
 		t.Errorf("trust prompt = (%d, %v), want (1, true)", got, ok)
 	}
 
 	// The bypass screen highlights option 1 too, and option 1 is "No, exit".
 	// A trust consent must not reach it at all.
-	if _, ok := affirmativeTrustOption(classified(fixtureBypassPrompt)); ok {
+	if _, ok := affirmativeOption(classified(fixtureBypassPrompt)); ok {
 		t.Error("a bypass-acceptance screen was answered by a folder-trust consent")
 	}
 
@@ -1886,7 +1886,7 @@ func TestAffirmativeTrustOptionReadsTheOptionsOnly(t *testing.T) {
 		"❯ 1. Yes, I trust this folder\n" +
 		"  2. No, I do not trust this folder\n" +
 		"Enter to confirm · Esc to cancel")
-	if _, ok := affirmativeTrustOption(reworded); ok {
+	if _, ok := affirmativeOption(reworded); ok {
 		t.Error("an ambiguous rewording was answered anyway; one of the two matches " +
 			"means the opposite of consent")
 	}
