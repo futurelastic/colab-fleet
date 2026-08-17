@@ -1,0 +1,16 @@
+production: null
+# production: supplied by --production, --deploy, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17)
+deploy: manual
+# deploy: supplied by --production, --deploy, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17)
+room: public
+# room: supplied by --room, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17)
+writes: serial-direct
+# writes: supplied by --writes, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17)
+channels: [procedure]
+# channels: supplied by --channels, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17)
+exposure: self
+# exposure: supplied by --exposure, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17) — merging to trunk reaches nothing by itself; the service changes only when a human runs the documented build-install-restart procedure on each machine
+trunk: main
+# trunk: detected (the repo's default branch, 2026-08-17)
+stack: Go — standard library only, no third-party dependencies
+# stack: supplied by --stack (2026-08-17)
