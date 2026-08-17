@@ -696,14 +696,23 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 // driver must not "helpfully" convert it: mapping a refusal to an error
 // would train callers to retry it, which is exactly what the refusal exists
 // to stop.
+//
+// ResumeIfStranded must travel with the rest of opts (#33). Without it, the
+// owning daemon evaluates the flag as false and applies §2.4's refusal to a
+// delivery the caller was explicitly retrying to resume — the caller's own
+// advice from the first, unconfirmed send becomes impossible to follow on
+// exactly the path it was given from. This field is easy to forget again:
+// it is not part of the wire body's zero-cost fields, it exists solely to
+// be turned on, so a caller who never sets it produces no symptom at all.
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	body := struct {
-		Text   string `json:"text"`
-		Submit bool   `json:"submit"`
-	}{Text: text, Submit: opts.Submit}
+		Text             string `json:"text"`
+		Submit           bool   `json:"submit"`
+		ResumeIfStranded bool   `json:"resumeIfStranded,omitempty"`
+	}{Text: text, Submit: opts.Submit, ResumeIfStranded: opts.ResumeIfStranded}
 
 	var out fleet.DeliveryReceipt
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/input",

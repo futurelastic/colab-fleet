@@ -292,6 +292,36 @@ func TestRefusalSurvivesAsAValueNotAnError(t *testing.T) {
 	}
 }
 
+// #33: Send builds its request body by hand rather than marshalling
+// driver.SendOptions directly — unlike Respond, which forwards its argument
+// verbatim — so a field added to that struct does not reach the wire until
+// this driver is told about it separately. ResumeIfStranded was added to
+// SendOptions and to the owning daemon's own body decoder, and never added
+// here. The owning daemon therefore received a plain send, evaluated the
+// flag as its zero value, and refused under §2.4 a delivery the caller was
+// explicitly retrying to resume — on every path except the one where the
+// caller happened to already be on the machine that owns the session.
+func TestSendForwardsResumeIfStranded(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeSubmitted}, &rec)
+	d := New("peerbox", srv.URL)
+
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "the stranded text",
+		driver.SendOptions{Submit: true, ResumeIfStranded: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	var body struct {
+		ResumeIfStranded bool `json:"resumeIfStranded"`
+	}
+	if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+		t.Fatalf("body = %q: %v", rec.body, err)
+	}
+	if !body.ResumeIfStranded {
+		t.Fatalf("body = %q, want resumeIfStranded:true carried through to the owning daemon (§2.4, #33)", rec.body)
+	}
+}
+
 // §4.4: a caller may shorten a deadline, never lengthen it, and the peer is
 // told the bound so it can fail fast rather than working on a request the
 // caller has already abandoned.
