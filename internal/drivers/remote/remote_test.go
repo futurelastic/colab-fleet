@@ -322,6 +322,112 @@ func TestSendForwardsResumeIfStranded(t *testing.T) {
 	}
 }
 
+// #45: createBody is, like Send's body before #33, a hand-maintained mirror
+// of the struct it represents rather than a marshal of it — and Marker and
+// RemoteControl were the two fields that mirror never grew. A session
+// created through this driver therefore came up on the peer without its
+// session-type stamp and, worse, without the remote-control binding #20
+// exists to give every session — reachable only from a terminal on the
+// machine that made it, indistinguishable at the response from a session
+// that got the binding on purpose.
+func TestCreateForwardsMarkerAndRemoteControl(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 201, fleet.Session{
+		SessionRef: fleet.SessionRef{Machine: "peerbox", ID: "new-1"},
+		Runtime:    "claude-code-tmux",
+		State:      fleet.InferredState(fleet.StatusStarting, "just created", nil),
+	}, &rec)
+	d := New("peerbox", srv.URL)
+
+	on := true
+	_, err := d.Create(context.Background(), caller, "caller-key-42", fleet.SessionSpec{
+		Cwd: "/w", Marker: "supervised", RemoteControl: &on,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var body struct {
+		Marker        string `json:"marker"`
+		RemoteControl *bool  `json:"remoteControl"`
+	}
+	if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+		t.Fatalf("body = %q: %v", rec.body, err)
+	}
+	if body.Marker != "supervised" {
+		t.Errorf("marker = %q, want %q carried to the owning daemon (#45)", body.Marker, "supervised")
+	}
+	if body.RemoteControl == nil || !*body.RemoteControl {
+		t.Errorf("remoteControl = %v, want true carried to the owning daemon (#45, #20)", body.RemoteControl)
+	}
+}
+
+// RemoteControl is a tri-state for a reason session.go's own doc comment
+// gives: nil means "give me whatever a first-class session gets" and false
+// means "deliberately unreachable" — two different requests a caller must be
+// able to tell apart, which is exactly what a plain bool cannot hold. This
+// asserts all three states survive the trip onto the wire body, because the
+// encoding choice that forwards true and false correctly is also the one
+// that can quietly collapse "absent" into "false" if got wrong (see the
+// comment on createBody's RemoteControl field for which choice avoids that).
+func TestCreateRemoteControlTriState(t *testing.T) {
+	no := false
+	yes := true
+	cases := []struct {
+		name    string
+		rc      *bool
+		wantKey bool // must the "remoteControl" key appear on the wire at all?
+		want    *bool
+	}{
+		{name: "absent", rc: nil, wantKey: false},
+		{name: "explicit true", rc: &yes, wantKey: true, want: &yes},
+		{name: "explicit false", rc: &no, wantKey: true, want: &no},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var rec capture
+			srv := peerServing(t, 201, fleet.Session{
+				SessionRef: fleet.SessionRef{Machine: "peerbox", ID: "new-1"},
+				Runtime:    "claude-code-tmux",
+				State:      fleet.InferredState(fleet.StatusStarting, "just created", nil),
+			}, &rec)
+			d := New("peerbox", srv.URL)
+
+			if _, err := d.Create(context.Background(), caller, "caller-key-42", fleet.SessionSpec{
+				Cwd: "/w", RemoteControl: tc.rc,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			var wire map[string]any
+			if err := json.Unmarshal([]byte(rec.body), &wire); err != nil {
+				t.Fatalf("body = %q: %v", rec.body, err)
+			}
+			_, present := wire["remoteControl"]
+			if present != tc.wantKey {
+				t.Fatalf("body = %q, remoteControl present = %v, want %v", rec.body, present, tc.wantKey)
+			}
+
+			var body struct {
+				RemoteControl *bool `json:"remoteControl"`
+			}
+			if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+				t.Fatalf("body = %q: %v", rec.body, err)
+			}
+			if tc.want == nil {
+				if body.RemoteControl != nil {
+					t.Errorf("remoteControl = %v, want absent (nil), not collapsed into false (#45)", *body.RemoteControl)
+				}
+			} else {
+				if body.RemoteControl == nil || *body.RemoteControl != *tc.want {
+					t.Errorf("remoteControl = %v, want %v", body.RemoteControl, *tc.want)
+				}
+			}
+		})
+	}
+}
+
 // §4.4: a caller may shorten a deadline, never lengthen it, and the peer is
 // told the bound so it can fail fast rather than working on a request the
 // caller has already abandoned.

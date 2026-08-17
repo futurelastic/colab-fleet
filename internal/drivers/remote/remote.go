@@ -606,6 +606,33 @@ type createBody struct {
 	Resume         string             `json:"resume,omitempty"`
 	PermissionMode string             `json:"permissionMode,omitempty"`
 	Consents       []fleet.PromptKind `json:"consents,omitempty"`
+
+	// Marker is the session-type stamp (fleet.SessionSpec.Marker) — dropping
+	// it does not fail the create, it just leaves the peer's copy invisible
+	// to whatever tooling on THAT machine groups sessions by type.
+	Marker string `json:"marker,omitempty"`
+
+	// RemoteControl must stay a *bool, forwarded as the caller's pointer, not
+	// copied through a plain bool. fleet.SessionSpec.RemoteControl is a
+	// tri-state on purpose: nil ("give me whatever a first-class session
+	// gets") and false ("deliberately unreachable") are different requests,
+	// and a bool has no zero value that means neither — it is always false,
+	// which is indistinguishable from "the caller asked to be unreachable".
+	// Encoding that through a plain bool would silently turn every unaware
+	// caller's create into an explicit opt-out, on the one substrate
+	// (federated) where the caller has no way to notice, which is precisely
+	// the defect #20 introduced this field to close.
+	//
+	// omitempty is safe on the pointer specifically because
+	// encoding/json's emptiness check for a pointer is nil-ness, not the
+	// pointed-to value: a nil RemoteControl omits the key (peer sees
+	// "absent", i.e. give the default), while &false still encodes as
+	// `"remoteControl":false` (peer sees an explicit refusal). The same tag
+	// on a plain bool would instead test the bool's own zero value, so
+	// `false` — whether the caller set it or never touched the field — goes
+	// unsent either way, which is exactly the collapse this field exists to
+	// prevent.
+	RemoteControl *bool `json:"remoteControl,omitempty"`
 }
 
 // Create starts a session on the peer, forwarding the caller's idempotency
@@ -634,6 +661,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		Prompt: spec.Prompt, ContextRef: spec.ContextRef,
 		TrustCwd: spec.TrustCwd, Env: spec.Env, Resume: spec.Resume,
 		PermissionMode: spec.PermissionMode, Consents: spec.Consents,
+		Marker: spec.Marker, RemoteControl: spec.RemoteControl,
 	}
 	var out fleet.Session
 	path := "/v1/machines/" + url.PathEscape(string(d.machine)) + "/sessions"
