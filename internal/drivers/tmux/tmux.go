@@ -1861,6 +1861,16 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 // A caller that wants it answered reads `state.prompt` and answers by index
 // through `respond`, which is exactly the split prompt.go describes: this
 // service says what is being asked, a supervisor decides what to answer.
+//
+// # PromptSettingsTrust is absent too, for a third reason
+//
+// Its affirmative agrees to an ADMINISTRATOR's managed-policy payload, not to
+// anything the caller described in its own request — see prompt.go's doc
+// comment on the kind. A consent here would let a session-creating caller
+// accept a policy change on behalf of an operator who never saw it, which
+// this layer is not in a position to speak for. Absence from this map is
+// enough: the loop in Create refuses any Consents entry with no map key, the
+// same mechanism that refuses PromptResumeChooser above.
 var consentableKinds = map[fleet.PromptKind][]string{
 	// "Yes, I trust this folder"
 	fleet.PromptFolderTrust: {"trust", "folder"},

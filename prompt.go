@@ -55,11 +55,27 @@ const (
 	PromptResumeChooser PromptKind = "resume-chooser"
 	// PromptFolderTrust: "do you trust the files in this folder".
 	PromptFolderTrust PromptKind = "folder-trust"
-	// PromptSettingsTrust: "do you trust the pre-approved permissions this
-	// directory's settings carry". A DIFFERENT question from PromptFolderTrust,
-	// and separated because consenting to one is not consenting to the other:
-	// naming a working directory says nothing about whether its checked-in
-	// settings should be allowed to skip prompts.
+	// PromptSettingsTrust: an ADMINISTRATOR's managed-policy payload asking to
+	// be approved. Not a working directory's own settings at all — read out of
+	// the runtime binary, its neighbours are `policySettings`,
+	// `managed-settings.json`, `managed-settings.d`, `/etc/claude-code` and the
+	// per-user/device Managed Preferences directory, which are sources an
+	// administrator controls, not sources a working directory carries.
+	// (`projectSettings` is a different source in that same enumeration, and
+	// raises no dialog at all.) The screen re-arms whenever that payload
+	// changes, which is why it is its own kind rather than folded into
+	// PromptFolderTrust.
+	//
+	// It is deliberately NOT consentable, and for a different reason than
+	// PromptFolderTrust: a create-time consent here would let a
+	// session-creating caller accept an ADMINISTRATOR's policy change on
+	// behalf of an operator who never saw it — categorically outside what a
+	// caller of this layer can speak for. Folder trust is not that: the caller
+	// genuinely does own the directory it just named in its own request.
+	//
+	// (Read from one installed build; this repository's README pins the span
+	// it is tested against, and that build sits outside it — a fact read from
+	// one build is evidence about that build, not a guarantee across the span.)
 	PromptSettingsTrust PromptKind = "settings-trust"
 	// PromptToolPermission: a tool asking to run something.
 	PromptToolPermission PromptKind = "tool-permission"

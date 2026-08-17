@@ -758,12 +758,17 @@ func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
 	// The complete set of boot-screen options it ships is:
 	//
 	//	Yes, I trust this folder        No, continue without these permissions
-	//	Yes, I trust these settings     No, exit
-	//	Yes, I accept                   No, exit Claude Code
+	//	Yes, I trust these settings     No, exit Claude Code
+	//	Yes, I accept                   No, exit
+	//
+	// (Read from one installed build; this repository's README pins the span
+	// it is tested against, and that build sits outside it. A fact read from one
+	// build is evidence about that build, not a guarantee across the span.)
 	//
 	// The words that identify that screen — "Bypass Permissions mode" — are in
-	// its QUESTION. Its options are generic, and two other screens end in
-	// "No, exit" as well.
+	// its QUESTION. Its options are generic, and exactly one other screen's
+	// negative opens with the identical words — "No, exit Claude Code" — so a
+	// rule keyed on that phrase would not even isolate this screen alone.
 	//
 	// So it cannot be classified here without reading the question, and the
 	// question is exactly what this function must not read: it is written by the

@@ -688,7 +688,12 @@ func TestClassifyPromptKind(t *testing.T) {
 	}{
 		{"resume chooser", []string{"Resume from summary (recommended)", "Resume full session as-is", "Don't ask me again"}, fleet.PromptResumeChooser},
 		{"folder trust", []string{"Yes, I trust this folder", "No, continue without these permissions"}, fleet.PromptFolderTrust},
-		{"settings trust", []string{"Yes, I trust these settings", "No, exit"}, fleet.PromptSettingsTrust},
+		// Paired with its actual runtime negative, "No, exit Claude Code" — not
+		// the bypass-acceptance screen's "No, exit", which sits at a different
+		// offset in the binary. Classification does not care (only the
+		// affirmative is read), but an invented pairing here is the same defect
+		// a previous fixture in this same function was written to end.
+		{"settings trust", []string{"Yes, I trust these settings", "No, exit Claude Code"}, fleet.PromptSettingsTrust},
 		// THE REAL acceptance screen, verbatim from the runtime binary — and it
 		// classifies as nothing. The case this replaced asserted the kind using
 		// an option reading "Yes, I accept the bypass permissions mode", a
