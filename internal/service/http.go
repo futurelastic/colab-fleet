@@ -409,6 +409,11 @@ type createSessionBody struct {
 	// "absent" and "false" must not be the same request.
 	Marker        string `json:"marker"`
 	RemoteControl *bool  `json:"remoteControl"`
+
+	// TrustCwd is the caller's consent to the runtime's folder-trust question
+	// about Cwd. See fleet.SessionSpec.TrustCwd for what it means, and
+	// handleCreateSession for why it needs a second grant.
+	TrustCwd bool `json:"trustCwd"`
 }
 
 func handleCreateSession(svc *Service) http.HandlerFunc {
@@ -430,6 +435,32 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			return
 		}
 
+		// `trustCwd` asks the driver to produce a KEYPRESS on the caller's
+		// behalf, which is what `respond` does and what `send` grants (see
+		// grantForVerb: answering a prompt shares that grant because it has the
+		// same blast radius). Folding it into `create` would let a principal
+		// granted only "start sessions" drive an existing dialog through the
+		// create route, which is the sort of quiet privilege widening that is
+		// invisible until it is someone's incident.
+		//
+		// Only checked when this machine is the one serving the create. A
+		// relayed create is authorized by the PEER, against the same
+		// credential, under its own table — §13's "proxying does not launder
+		// authorization" — and a second opinion here could only disagree with
+		// the host that actually holds the session.
+		if body.TrustCwd && (machine == "" || machine == svc.Self()) {
+			if p, ok := principalOf(r); ok && !p.Allows(GrantSend) {
+				writeError(w, &fleet.Error{
+					Kind: fleet.ErrorUnauthorized,
+					Message: "principal " + p.Name + " does not hold the " +
+						string(GrantSend) + " grant, which trustCwd requires: " +
+						"answering the folder-trust question is a keypress, not a create (§6)",
+					Machine: machine,
+				})
+				return
+			}
+		}
+
 		d, resErr := svc.resolveSessionDriver(machine, body.Runtime)
 		if resErr != nil {
 			writeError(w, resErr)
@@ -445,6 +476,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			Agent: body.Agent, Model: body.Model, Effort: body.Effort,
 			Name: body.Name, Prompt: body.Prompt, ContextRef: body.ContextRef,
 			Marker: body.Marker, RemoteControl: body.RemoteControl,
+			TrustCwd: body.TrustCwd,
 		}
 
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))

@@ -407,6 +407,7 @@ Idempotency-Key: 4f1c9e2a-…          ← REQUIRED
   "marker": "…",                     ← optional session-type stamp appended to the name
   "remoteControl": true,             ← optional; OMITTED IS NOT false (see below)
   "prompt": "first instruction",     ← optional, delivered once the agent is ready
+  "trustCwd": true,                  ← optional consent to the folder-trust question (see below)
   "contextRef": "/abs/path" }        ← optional, a PATH — never inline content
 ```
 
@@ -449,7 +450,37 @@ if you like; do not build logic that depends on the distinction.
 
 `state.status` on a fresh session is usually `starting` — the agent is not
 ready yet. If you passed a `prompt`, the service delivers it once the runtime
-is up; you do not need to wait and send it yourself.
+is up; you do not need to wait and send it yourself. A question the runtime
+puts up on the way there **delays** that delivery, it does not cancel it: the
+service keeps waiting, and the prompt goes in once the session is receptive.
+
+**`trustCwd` is your consent to one question, about the directory you just
+named.** Some runtimes ask, on the first session in a directory, whether you
+trust it — and they ask before the agent can do anything at all. On a fleet
+nobody is sitting at that terminal, so the session boots, parks, and does no
+work; measured on a live fleet, one sat on that question for two days while
+reading as an ordinary `waiting_input`.
+
+Send `trustCwd: true` and the driver answers it for you, by finding the option
+that grants trust and choosing it by index — never by accepting the highlight,
+which on a neighbouring boot screen means `No, exit`. If the wording has moved
+far enough that the granting option cannot be identified unambiguously, nothing
+is answered and the question stays on screen for a human.
+
+Two things it is not:
+
+- **Not a standing permission.** It is scoped to the `folder-trust` question on
+  the one session being created. Nothing else is auto-answered — a
+  tool-permission dialog or the bypass-acceptance screen asks something else,
+  and neither is reachable this way.
+- **Not free.** It requires the `send` grant on top of `create`, because it
+  produces a keypress. A principal that may start sessions but not drive them
+  gets `unauthorized`, and that is the point: otherwise `create` becomes a
+  second way to answer dialogs that nobody reviewing grants would notice.
+
+If you do not send it, nothing changes: the driver answers nothing, and
+`state.prompt` reports the question in full for you to answer through
+`respond` (§6) whenever you decide to.
 
 Pass context by path (`contextRef`), never inline. Prompts and context never
 reach a command line.

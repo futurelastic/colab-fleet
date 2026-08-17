@@ -71,6 +71,44 @@ type SessionSpec struct {
 	// otherwise match and terminate a session whose prompt merely contains
 	// the string being hunted for.
 	ContextRef AbsolutePath `json:"contextRef,omitempty"`
+
+	// TrustCwd carries the caller's consent to the runtime's own question
+	// about Cwd — "is this a project you created or one you trust?" — so the
+	// driver may answer it on the caller's behalf instead of leaving the new
+	// session parked in front of it.
+	//
+	// # Why the consent is a field on the create request
+	//
+	// A runtime that asks this asks it BEFORE the session can do anything, and
+	// it asks nobody in particular: on a fleet there is no human at that
+	// terminal. Every client then meets the same wall — the create returns 201,
+	// the session boots, and the work never starts. Measured on a live fleet: a
+	// session parked on this question for two days, reading as merely
+	// `waiting_input`, while the machine it was on had a supervisor watching.
+	//
+	// The decision is not the service's to take, and prompt.go says why at
+	// length: a session service that decided what to answer would have become a
+	// supervisor (§1). But it is not the service's to WITHHOLD either. The
+	// caller already named this directory in this request — the same caller,
+	// the same act, the same blast radius — and it is the only party in the
+	// exchange with standing to say "yes, I trust it".
+	//
+	// So the consent travels WITH the directory it is about. It is scoped to
+	// exactly one question (PromptFolderTrust) on exactly one session, the one
+	// being created; it is never a standing permission, and it authorizes
+	// nothing about the tool-permission or bypass screens, which ask something
+	// else entirely and are deliberately not reachable this way.
+	//
+	// The zero value is the safe one: absent means the driver answers nothing,
+	// which is what every existing caller already gets.
+	//
+	// # It is a HINT, like Agent and Model
+	//
+	// A runtime with no such question honours this by having nothing to do. A
+	// driver that cannot answer prompts at all leaves the session as it found
+	// it — the caller learns which it got by reading the session's state, where
+	// an unanswered question is still reported in full.
+	TrustCwd bool `json:"trustCwd,omitempty"`
 }
 
 // SessionRef addresses a session (§2.2). Ids are machine-scoped and

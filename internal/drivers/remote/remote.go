@@ -593,6 +593,10 @@ type createBody struct {
 	Name       string             `json:"name,omitempty"`
 	Prompt     string             `json:"prompt,omitempty"`
 	ContextRef fleet.AbsolutePath `json:"contextRef,omitempty"`
+	// TrustCwd travels because the consent is about the DIRECTORY, and the
+	// directory is on the peer. Dropping it here would produce the failure it
+	// exists to prevent, one machine away and only there.
+	TrustCwd bool `json:"trustCwd,omitempty"`
 }
 
 // Create starts a session on the peer, forwarding the caller's idempotency
@@ -619,6 +623,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		Runtime: spec.Runtime, Cwd: spec.Cwd, Agent: spec.Agent,
 		Model: spec.Model, Effort: spec.Effort, Name: spec.Name,
 		Prompt: spec.Prompt, ContextRef: spec.ContextRef,
+		TrustCwd: spec.TrustCwd,
 	}
 	var out fleet.Session
 	path := "/v1/machines/" + url.PathEscape(string(d.machine)) + "/sessions"

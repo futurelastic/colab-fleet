@@ -963,3 +963,46 @@ func TestLimitNoticeFollowedByAgentOutputIsHistory(t *testing.T) {
 		t.Error("a notice with agent output beneath it was read as a live block")
 	}
 }
+
+// --- what a client is handed to RENDER -------------------------------------
+
+// The published question must be text, not terminal bytes.
+//
+// This is the exact line measured on a live fleet, the runtime's hyperlink
+// around "Security guide" included. Before OSC sequences were stripped, that
+// hyperlink reached clients intact — inside `prompt.question`, which exists to
+// be shown to a human at the moment they are deciding whether to trust a
+// directory. A colour code garbles matching; this one garbles the ASK.
+func TestPromptQuestionCarriesNoTerminalEscapes(t *testing.T) {
+	const linked = "  Quick safety check: Is this a project you created or one you trust?\n" +
+		"  These will apply without asking. Only proceed if you trust this configuration.\n" +
+		"  \x1b]8;id=zaxmda;https://code.claude.com/docs/en/security\x1b\\Security guide\x1b]8;;\x1b\\\n" +
+		"❯ 1. Yes, I trust this folder\n" +
+		"  2. No, exit\n" +
+		"Enter to confirm · Esc to cancel"
+
+	p := parsePrompt(newScreen(linked))
+	if p == nil {
+		t.Fatal("no prompt parsed")
+	}
+	if strings.ContainsRune(p.Question, '\x1b') {
+		t.Errorf("question carries escape bytes: %q", p.Question)
+	}
+	// The label inside the hyperlink is what the human sees, so it survives.
+	if !strings.Contains(p.Question, "Security guide") {
+		t.Errorf("stripping ate the visible label: %q", p.Question)
+	}
+	if strings.Contains(p.Question, "code.claude.com") {
+		t.Errorf("the URI is part of the sequence, not of the text: %q", p.Question)
+	}
+}
+
+// A sequence the capture cut in half is left alone. Consuming to end-of-line on
+// an unterminated escape would eat visible text, silently, in the one function
+// every other read is built on.
+func TestUnterminatedEscapeDoesNotEatTheLine(t *testing.T) {
+	const cut = "trailing words\x1b]8;id=x;https://example"
+	if got := stripEscapes(cut); !strings.Contains(got, "trailing words") {
+		t.Errorf("stripEscapes(%q) = %q", cut, got)
+	}
+}

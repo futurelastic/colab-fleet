@@ -66,6 +66,9 @@ const (
 	sgrDimOn  = "\x1b[2m"
 	sgrReset  = "\x1b[0m"
 	sgrEscape = '\x1b'
+	// oscBEL is the older of the two OSC terminators. Both are in use on this
+	// substrate, so both are recognised — see stripEscapes.
+	oscBEL = '\x07'
 )
 
 const (
@@ -129,7 +132,7 @@ func newScreen(raw string) screen {
 	raws := make([]string, 0, len(all))
 	for _, l := range all {
 		raws = append(raws, l)
-		out = append(out, strings.TrimRight(stripSGR(l), " \t\r"))
+		out = append(out, strings.TrimRight(stripEscapes(l), " \t\r"))
 	}
 	// Drop trailing blank lines: capture-pane pads to the pane height.
 	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
@@ -139,28 +142,72 @@ func newScreen(raw string) screen {
 	return screen{lines: out, raw: raws}
 }
 
-// stripSGR removes ANSI select-graphic-rendition sequences so text matching
-// works on what a human sees rather than on how it is painted.
-func stripSGR(s string) string {
+// stripEscapes removes the ANSI sequences a pane carries so text matching works
+// on what a human sees rather than on how it is painted.
+//
+// Two families, because both were found on one screen:
+//
+//   - CSI (`ESC [ … m/K/H`) — colour and cursor movement. Matching without
+//     removing these was the original reason this function exists.
+//
+//   - OSC (`ESC ] … BEL` or `ESC ] … ESC \`) — chiefly the hyperlink the
+//     runtime wraps around link text. This one was NOT removed, and unlike a
+//     colour code it does not merely disturb matching: the surviving bytes are
+//     PUBLISHED. Measured on a live fleet, a folder-trust prompt's question
+//     reached a client as
+//
+//     …only proceed if you trust this configuration. \x1b]8;id=…;https://…\x1b\\Security guide\x1b]8;;\x1b\\
+//
+//     A client rendering that shows escape debris to a human at exactly the
+//     moment it is asking them to make a security decision.
+//
+// Both are consumed only when TERMINATED. A capture can cut a sequence at the
+// right edge of the pane, and a scanner that swallowed to end-of-line on an
+// unterminated one would eat visible text — silently, and the text it would eat
+// is the text being classified.
+func stripEscapes(s string) string {
 	if !strings.ContainsRune(s, sgrEscape) {
 		return s
 	}
 	var b strings.Builder
 	for i := 0; i < len(s); {
-		if s[i] == sgrEscape && i+1 < len(s) && s[i+1] == '[' {
-			j := i + 2
-			for j < len(s) && s[j] != 'm' && s[j] != 'K' && s[j] != 'H' {
-				j++
-			}
-			if j < len(s) {
-				i = j + 1
-				continue
+		if s[i] == sgrEscape && i+1 < len(s) {
+			switch s[i+1] {
+			case '[':
+				j := i + 2
+				for j < len(s) && s[j] != 'm' && s[j] != 'K' && s[j] != 'H' {
+					j++
+				}
+				if j < len(s) {
+					i = j + 1
+					continue
+				}
+			case ']':
+				// OSC ends at BEL, or at ST (`ESC \`).
+				if j, ok := oscEnd(s, i+2); ok {
+					i = j
+					continue
+				}
 			}
 		}
 		b.WriteByte(s[i])
 		i++
 	}
 	return b.String()
+}
+
+// oscEnd finds the index just past an OSC terminator, or reports that the
+// sequence is unterminated in this fragment.
+func oscEnd(s string, from int) (int, bool) {
+	for j := from; j < len(s); j++ {
+		if s[j] == oscBEL {
+			return j + 1, true
+		}
+		if s[j] == sgrEscape && j+1 < len(s) && s[j+1] == '\\' {
+			return j + 2, true
+		}
+	}
+	return 0, false
 }
 
 // allDim reports whether every visible character of a raw fragment is

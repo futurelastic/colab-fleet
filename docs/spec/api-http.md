@@ -140,7 +140,7 @@ POST /v1/machines/{machine}/sessions
 Idempotency-Key: <caller-supplied, required>
 { "runtime": "...", "cwd": "/abs/path", "agent": "...", "model": "...",
   "effort": "...", "name": "...", "marker": "...", "remoteControl": true,
-  "prompt": "...", "contextRef": "/abs/path" }
+  "prompt": "...", "contextRef": "/abs/path", "trustCwd": false }
 
 → 201 { "machine": "...", "id": "...", "name": "...", "state": {...} }
 → 200 (same body) if the key was already seen — the existing session
@@ -165,6 +165,21 @@ the first time two carry the same name.
 **`remoteControl` omitted is not `false`.** Omitted means "whatever a
 first-class session on this substrate gets". Send `false` only to deliberately
 create a session that cannot be reached remotely.
+
+**`trustCwd` is consent to one question about the `cwd` in this same request**:
+the runtime's folder-trust dialog, which on some runtimes stands between a new
+session and doing anything at all. With it, the driver answers that dialog by
+locating the option that grants trust and choosing it by index — never by
+accepting the highlighted default, which on a neighbouring boot screen means
+`No, exit` — and answers nothing if the wording is ambiguous. Absent means the
+driver answers nothing, which is what every caller written before this field
+already gets.
+
+It requires the **`send` grant in addition to `create`** (§6): answering a
+dialog is a keypress, it is the same blast radius as `respond`, and folding it
+into `create` would make this route a second, unreviewed way to drive a
+session. On a relayed create the check belongs to the peer serving it, against
+the same credential — §13's "proxying does not launder authorization".
 
 ```
 GET /v1/machines/{machine}/sessions/{id}/environment?runtime=

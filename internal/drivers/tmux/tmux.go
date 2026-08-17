@@ -1487,8 +1487,8 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if recordPath != "" {
 		go d.captureEnvironment(name, recordPath)
 	}
-	if spec.Prompt != "" {
-		go d.deliverInitialPrompt(req, ref, spec.Prompt)
+	if spec.Prompt != "" || spec.TrustCwd {
+		go d.settleNewSession(req, ref, built)
 	}
 	return ref, nil
 }
@@ -1661,8 +1661,11 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	}, nil
 }
 
-// deliverInitialPrompt waits for the runtime to be ready, then sends §2.1's
-// initial prompt.
+// settleNewSession carries a freshly created session from "the process is
+// spawned" to "it is doing the work it was created for": it waits for the
+// runtime to be ready and then sends §2.1's initial prompt, and — only when the
+// caller asked for it — answers the folder-trust question the runtime puts in
+// front of that.
 //
 // # Why this cannot happen inside Create
 //
@@ -1683,25 +1686,51 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // So delivery happens after Create returns, bounded, and only once the
 // interface is ready to receive. Failure is not silent: the prompt is simply
 // absent, and the session's state says what it is doing instead.
-func (d *Driver) deliverInitialPrompt(req fleet.Request, ref fleet.SessionRef, prompt string) {
+//
+// # A blocking question is waited THROUGH, not given up on
+//
+// This loop used to return the moment it saw any prompt, on the reasoning that
+// answering one is a decision it does not hold. That reasoning is still right,
+// and returning was still wrong: the two are separate acts. A human who answers
+// the trust question ten seconds later gets a session that is ready, willing,
+// and holding no work — because the instruction it was created with was
+// discarded while the modal was up, and nothing anywhere records that it
+// existed. Measured on a live fleet: a session parked on that question for two
+// days, and the work it was spawned for nowhere.
+//
+// So a prompt this routine may not answer is now a reason to keep waiting for
+// the rest of the window, not a reason to stop.
+func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec fleet.SessionSpec) {
 	ctx, cancel := context.WithTimeout(context.Background(), promptDeliveryWindow)
 	defer cancel()
 
+	// One consent, spent once. A trust question re-read on the next poll —
+	// because the keypress has not repainted yet — must not be answered twice:
+	// the second digit lands in whatever screen replaced it.
+	trusted := false
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		ready, blocked := d.promptReadiness(ctx, ref.ID)
-		if blocked {
-			// A prompt is waiting for a human — commonly the trust question
-			// a newly created session asks about its working directory.
-			// Answering it is a decision (§6 grants it separately), and a
-			// driver that clicked through it would be consenting to
-			// something nobody asked it to consent to.
-			return
-		}
-		if ready {
-			_, _ = d.Send(ctx, req, ref, prompt, driver.SendOptions{Submit: true})
+		ready, blocking := d.promptReadiness(ctx, ref.ID)
+		switch {
+		case blocking != nil && spec.TrustCwd && !trusted:
+			// The caller named this working directory in the create request
+			// and asked, in the same request, for the runtime's question about
+			// it to be answered yes. The decision is the caller's; this is
+			// only its execution — which is the line prompt.go draws when it
+			// says a service that decided what to answer would have become a
+			// supervisor.
+			if choice, ok := affirmativeTrustOption(blocking); ok {
+				trusted = true
+				_, _ = d.Respond(ctx, req, ref, fleet.Response{
+					Choice: choice, Nonce: blocking.Nonce,
+				})
+			}
+		case ready:
+			if spec.Prompt != "" {
+				_, _ = d.Send(ctx, req, ref, spec.Prompt, driver.SendOptions{Submit: true})
+			}
 			return
 		}
 		select {
@@ -1712,29 +1741,71 @@ func (d *Driver) deliverInitialPrompt(req fleet.Request, ref fleet.SessionRef, p
 	}
 }
 
-// promptReadiness reports whether the session can receive input, and whether
-// it is instead blocked on a prompt.
-func (d *Driver) promptReadiness(ctx context.Context, id string) (ready, blocked bool) {
+// affirmativeTrustOption picks the option that GRANTS trust, by index.
+//
+// It reads the option text and nothing else, for the reason classifyPromptKind
+// states at length: options are strings the runtime emits, while the question
+// is written by the agent and is therefore injectable. And it does not fall
+// back to the highlighted option — prompt.go's own example is two boot prompts
+// with the same shape whose safe answer sits at different indices:
+//
+//	❯ 1. Yes, I trust this folder        ❯ 1. No, exit
+//	  2. No, continue without these        2. Yes, I accept
+//
+// Exactly one option may match. Zero means this is not the screen we were told
+// about; two means the wording has changed under us (a "No, I don't trust this
+// folder" would match the same needles), and in both cases the honest move is
+// to answer nothing and leave a question on screen for a human — the same
+// direction §5.6 sends every other unreadable case.
+func affirmativeTrustOption(p *fleet.SessionPrompt) (int, bool) {
+	if p == nil || p.Kind != fleet.PromptFolderTrust {
+		return 0, false
+	}
+	found := 0
+	for i, o := range p.Options {
+		lower := strings.ToLower(o)
+		// No "does it start with no" refinement. That is guessing at wording
+		// in order to keep answering a screen we have just been told we can no
+		// longer read — the ambiguity below is the answer, not an obstacle.
+		if strings.Contains(lower, "trust") && strings.Contains(lower, "folder") {
+			if found != 0 {
+				return 0, false
+			}
+			found = i + 1
+		}
+	}
+	return found, found != 0
+}
+
+// promptReadiness reports whether the session can receive input, and the prompt
+// it is blocked on instead when it cannot.
+//
+// The prompt is returned rather than a bare "blocked" boolean because the two
+// callers of that fact need different things from it: one only has to keep
+// waiting, and one has to decide whether this is the question its caller
+// consented to answer. A boolean can only carry the first.
+func (d *Driver) promptReadiness(ctx context.Context, id string) (ready bool, blocking *fleet.SessionPrompt) {
 	callCtx, cancel := d.bounded(ctx)
 	defer cancel()
 	rows, captures, err := d.enumerate(callCtx)
 	if err != nil {
-		return false, false
+		return false, nil
 	}
 	for _, r := range rows {
 		if r.session != id {
 			continue
 		}
 		sc := newScreen(captures[r.paneID])
-		if _, b := selectionPrompt(sc); b {
-			return false, true
+		if p := parsePrompt(sc); p != nil {
+			p.Kind = classifyPromptKind(p)
+			return false, p
 		}
 		text, found := composerText(sc)
 		// Ready means the composer exists and is empty: the interface has
 		// painted, and nothing is already sitting in it.
-		return found && text == "", false
+		return found && text == "", nil
 	}
-	return false, false
+	return false, nil
 }
 
 // confirmLanded waits until the composer actually shows the delivered text.
@@ -1784,7 +1855,7 @@ func (d *Driver) confirmLanded(ctx context.Context, paneID, text string) bool {
 		// escape-carrying shape would buy nothing here.
 		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID, "-S", "-6")
 		if err == nil {
-			painted := stripSGR(string(out))
+			painted := stripEscapes(string(out))
 			if strings.Contains(painted, needle) || composerHoldsCollapsedPaste(painted) {
 				return true
 			}
@@ -2102,7 +2173,7 @@ func (d *Driver) receptive(ctx context.Context, paneID string) (ready, blocked b
 // the short race, and beyond that it reports not-ready so the caller is told
 // rather than silently stranded.
 //
-// deliverInitialPrompt keeps its own, much longer readiness loop for the one
+// settleNewSession keeps its own, much longer readiness loop for the one
 // case where waiting out a full startup is the point.
 func (d *Driver) awaitReceptive(ctx context.Context, paneID string) (ready, blocked bool) {
 	deadline := d.now().Add(sendReceptiveWindow)

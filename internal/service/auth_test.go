@@ -154,3 +154,46 @@ func TestAuditActorMatchesTheCallerItLogs(t *testing.T) {
 			"who asked the peer", actor)
 	}
 }
+
+// `trustCwd` is a keypress wearing a create's clothes.
+//
+// It asks the driver to answer a dialog on the caller's behalf, which is what
+// `respond` does and what `send` grants. A principal holding only "start
+// sessions" must not reach it — otherwise the create route quietly becomes a
+// second, unaudited way to drive a session's dialogs, and nobody configuring
+// grants would see it.
+func TestTrustCwdNeedsSendOnTopOfCreate(t *testing.T) {
+	srv := principalSrv(t, []Principal{
+		{Name: "spawner", Token: "tok-new", Grants: []Grant{GrantRead, GrantCreate}},
+		{Name: "driver", Token: "tok-drive", Grants: []Grant{GrantRead, GrantCreate, GrantSend}},
+	})
+	create := func(token, body string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost,
+			srv.URL+"/v1/machines/testbox/sessions", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Idempotency-Key", "k-"+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	const plain = `{"runtime":"stub","cwd":"/w"}`
+	const consenting = `{"runtime":"stub","cwd":"/w","trustCwd":true}`
+	denied := func(c int) bool { return c == 401 || c == 403 }
+
+	if denied(create("tok-new", plain)) {
+		t.Error("a create grant no longer buys an ordinary create")
+	}
+	if !denied(create("tok-new", consenting)) {
+		t.Error("a principal without send answered a dialog through the create route")
+	}
+	if denied(create("tok-drive", consenting)) {
+		t.Error("a principal holding both grants was refused its own consent")
+	}
+}

@@ -212,14 +212,31 @@ _flc_urlenc() { _flc_py 'import sys,urllib.parse; print(urllib.parse.quote(sys.a
 
 # ── create ──────────────────────────────────────────────────────────────────
 fleetctl_new() {
-  local machine="$1" name="$2" cwd="$3"
-  [[ -n $machine && -n $name && -n $cwd ]] || { print -u2 "usage: fleetctl new <machine> <name> <cwd>"; return 2 }
+  # --trust-cwd consents, in this same request, to the runtime's folder-trust
+  # question about the directory being named here. Without it a session that
+  # meets that question parks in front of it until a human answers: nobody is
+  # sitting at that terminal, and the work never starts. It needs the `send`
+  # grant as well as `create`, because answering is a keypress.
+  local trust=0
+  local -a rest
+  local a
+  for a in "$@"; do
+    case $a in
+      --trust-cwd) trust=1 ;;
+      *) rest+=("$a") ;;
+    esac
+  done
+  local machine="${rest[1]}" name="${rest[2]}" cwd="${rest[3]}"
+  [[ -n $machine && -n $name && -n $cwd ]] || { print -u2 "usage: fleetctl new <machine> <name> <cwd> [--trust-cwd]"; return 2 }
   # An idempotency key is required, not optional: a create that times out and
   # is retried without one produces two agents in one working directory, and
   # nothing afterwards can detect it.
   local key body raw code
   key="$(_flc_py 'import uuid; print(uuid.uuid4())')"
-  body="$(_flc_py 'import json,sys; print(json.dumps({"name":sys.argv[1],"cwd":sys.argv[2]}))' "$name" "$cwd")"
+  body="$(_flc_py 'import json,sys
+b={"name":sys.argv[1],"cwd":sys.argv[2]}
+if sys.argv[3]=="1": b["trustCwd"]=True
+print(json.dumps(b))' "$name" "$cwd" "$trust")"
   raw="$(_flc_curl POST "/v1/machines/$machine/sessions" "$body" "Idempotency-Key: $key")" || {
     print -u2 "fleetctl: session layer unreachable"; return 2 }
   code="${raw##*$'\n'}"; raw="${raw%$'\n'*}"
@@ -424,7 +441,7 @@ fleetctl() {
       print -r -- "fleetctl <prefix>       attach (local or over ssh, decided by the service)"
       print -r -- "fleetctl watch          stream state changes"
       print -r -- "fleetctl up             health + machines"
-      print -r -- "fleetctl new <machine> <name> <cwd>"
+      print -r -- "fleetctl new <machine> <name> <cwd> [--trust-cwd]"
       print -r -- "fleetctl kill <prefix>"
       print -r -- "fleetctl answer <kind> <choice> [--dry-run]   answer every prompt of one kind" ;;
     *)          fleetctl_attach "$1" ;;

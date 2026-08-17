@@ -157,7 +157,7 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			if args[i] == "-t" {
 				body := f.captures[args[i+1]] + "\n" + f.pasted[args[i+1]]
 				if !withEscapes {
-					body = stripSGR(body)
+					body = stripEscapes(body)
 				}
 				return []byte(body), nil
 			}
@@ -1700,5 +1700,194 @@ func TestSubmitConfirmationTreatsAFaintPlaceholderAsEmpty(t *testing.T) {
 		t.Errorf("outcome = %q (%s); a composer holding only its dim placeholder is EMPTY, "+
 			"and treating it as unsent text reports healthy sends as stranded",
 			got.Outcome, got.Reason)
+	}
+}
+
+// --- what happens to a new session that boots into a question ---------------
+
+// settleHarness watches a pane the way a test needs to and the fake cannot: it
+// records the payload of every delivery (the fake models a submit by EMPTYING
+// the composer, so the delivered text is gone by the time an assertion runs),
+// and it notes whether the trust question was answered by index.
+//
+// When answers is true it also moves the screen on: a fake whose pane never
+// changes cannot tell "answered it" from "kept pressing keys at a screen that
+// was never going to move", which is the whole point of spending a consent once.
+type settleHarness struct {
+	mu        sync.Mutex
+	mux       *fakeMux
+	delivered []string
+	answered  bool
+	chosen    []string
+}
+
+func newSettleHarness(t *testing.T, capture string, answers bool) (*settleHarness, *Driver) {
+	t.Helper()
+	h := &settleHarness{mux: twoSessions()}
+	h.mux.captures["%1"] = capture
+	exec := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) > 3 && args[0] == "load-buffer" {
+			if raw, err := os.ReadFile(args[3]); err == nil {
+				h.mu.Lock()
+				h.delivered = append(h.delivered, string(raw))
+				h.mu.Unlock()
+			}
+		}
+		if len(args) > 0 && args[0] == "send-keys" {
+			for _, a := range args[3:] {
+				if a == "1" || a == "2" || a == "Escape" {
+					h.mu.Lock()
+					h.answered = true
+					h.chosen = append(h.chosen, a)
+					h.mu.Unlock()
+					if answers {
+						h.mux.setCapture("%1", idleFixtureFor("alpha"))
+					}
+				}
+			}
+		}
+		return h.mux.exec(ctx, name, args...)
+	}
+	d := New("testbox", withExec(exec), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return time.Unix(1785760000, 0) }))
+	return h, d
+}
+
+func (h *settleHarness) sawDelivery(text string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, d := range h.delivered {
+		if strings.Contains(d, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *settleHarness) keysPressed() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.chosen...)
+}
+
+// waitFor polls rather than sleeping a guessed amount: the settle loop's own
+// interval is long on purpose (a startup is slow), so a fixed sleep would be
+// either flaky or the slowest test in the package.
+func waitFor(t *testing.T, why string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", why)
+}
+
+// A caller that consented at create time gets past the question, and the work
+// it created the session for is what arrives on the other side.
+func TestTrustCwdAnswersTheFolderQuestionAndThenDelivers(t *testing.T) {
+	h, d := newSettleHarness(t, fixtureTrustPrompt, true)
+
+	go d.settleNewSession(testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+		fleet.SessionSpec{Cwd: "/work/alpha", Prompt: "do the thing", TrustCwd: true})
+
+	waitFor(t, "the work to be delivered after the question was answered", func() bool {
+		return h.sawDelivery("do the thing")
+	})
+	// By index, and by the index that GRANTS trust — the fixture's option 2 is
+	// the one that declines, and Escape would kill the session outright.
+	if got := h.keysPressed(); len(got) == 0 || got[0] != "1" {
+		t.Errorf("keys pressed at the question = %v, want the granting option first", got)
+	}
+}
+
+// The regression that cost a session two days of its life.
+//
+// Without consent the driver answers NOTHING — but it must not walk away
+// either. It used to: the loop returned the moment it saw a prompt, so the
+// instruction the session was created with was discarded while the modal was
+// up, and a human answering the question a minute later got a ready, empty
+// session with no record that any work had ever been attached to it.
+func TestABlockingQuestionIsWaitedThroughRatherThanGivenUpOn(t *testing.T) {
+	h, d := newSettleHarness(t, fixtureTrustPrompt, false)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.settleNewSession(testCaller,
+			fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+			fleet.SessionSpec{Cwd: "/work/alpha", Prompt: "the work it was created for"})
+	}()
+
+	// A human answers, some time after the create returned.
+	time.Sleep(100 * time.Millisecond)
+	h.mux.setCapture("%1", idleFixtureFor("alpha"))
+
+	waitFor(t, "the work to be delivered once the question cleared", func() bool {
+		return h.sawDelivery("the work it was created for")
+	})
+	<-done
+
+	if got := h.keysPressed(); len(got) != 0 {
+		t.Errorf("the driver answered a question nobody consented to: %v", got)
+	}
+}
+
+// Consent is spent once. A trust question still on screen at the next poll —
+// the keypress has not repainted yet — must not be answered twice: the second
+// digit lands in whatever screen replaced it.
+func TestTrustConsentIsSpentOnce(t *testing.T) {
+	h, d := newSettleHarness(t, fixtureTrustPrompt, false) // screen never moves
+
+	go d.settleNewSession(testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+		fleet.SessionSpec{Cwd: "/work/alpha", TrustCwd: true})
+	waitFor(t, "the question to be answered", func() bool { return len(h.keysPressed()) > 0 })
+
+	// Several more polls go by with the same question on screen.
+	time.Sleep(4 * promptPollInterval)
+	if got := h.keysPressed(); len(got) != 1 {
+		t.Errorf("keys pressed = %v, want exactly one; a repeated answer lands in "+
+			"whatever screen replaced the question", got)
+	}
+}
+
+// --- the option a consenting caller's trust is spent on ---------------------
+
+// Never the highlighted one, and never on a prompt this is not about.
+func TestAffirmativeTrustOptionReadsTheOptionsOnly(t *testing.T) {
+	classified := func(fixture string) *fleet.SessionPrompt {
+		p := parsePrompt(newScreen(fixture))
+		if p == nil {
+			t.Fatalf("fixture did not parse: %q", fixture)
+		}
+		p.Kind = classifyPromptKind(p)
+		return p
+	}
+
+	trust := classified(fixtureTrustPrompt)
+	got, ok := affirmativeTrustOption(trust)
+	if !ok || got != 1 {
+		t.Errorf("trust prompt = (%d, %v), want (1, true)", got, ok)
+	}
+
+	// The bypass screen highlights option 1 too, and option 1 is "No, exit".
+	// A trust consent must not reach it at all.
+	if _, ok := affirmativeTrustOption(classified(fixtureBypassPrompt)); ok {
+		t.Error("a bypass-acceptance screen was answered by a folder-trust consent")
+	}
+
+	// Reworded so that two options match the needles: the honest answer is to
+	// answer nothing and leave the question for a human.
+	reworded := classified("  Quick safety check\n" +
+		"❯ 1. Yes, I trust this folder\n" +
+		"  2. No, I do not trust this folder\n" +
+		"Enter to confirm · Esc to cancel")
+	if _, ok := affirmativeTrustOption(reworded); ok {
+		t.Error("an ambiguous rewording was answered anyway; one of the two matches " +
+			"means the opposite of consent")
 	}
 }
