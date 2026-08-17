@@ -308,7 +308,7 @@ POST /v1/machines/{machine}/sessions/{id}/respond
 - `choice` is 1-based. Omit it to accept the highlighted default, and `cancel:
   true` dismisses instead of answering.
 - `kind` names the question when the service recognises it — `resume-chooser`,
-  `folder-trust`, `tool-permission`, `bypass-permissions`. Filter on it if you
+  `folder-trust`, `settings-trust`, `tool-permission`. Filter on it if you
   automate answers, so you only ever answer questions you know. **An absent
   kind is not permission**: it means the service did not recognise the prompt,
   and answering it blind is how an automation kills a session.
@@ -489,7 +489,29 @@ If you do not send it, nothing changes: the driver answers nothing, and
 **`consents` is the general form**, and `trustCwd` is now shorthand for
 `["folder-trust"]` — both work, and sending both is agreement rather than
 conflict. Today's other consentable question is `bypass-permissions`, the
-acceptance screen a non-default `permissionMode` raises.
+acceptance screen a non-default `permissionMode` raises — and it comes with a
+condition worth understanding, because it explains something you will otherwise
+find puzzling in `state.prompt`.
+
+**That screen never carries a `kind`, and the consent still works.** Read out of
+the runtime's own binary, its options are `Yes, I accept` and `No, exit`; the
+words that identify it — "Bypass Permissions mode" — appear only in its
+question. This service classifies prompts from their OPTIONS and never from
+their question, because the question is written by the agent and is therefore
+something an agent can forge: a ship decision was once labelled with this very
+kind because an agent had typed "No auth bypass" into its own prompt.
+
+So the driver identifies that screen a different way — by the fact that it
+passed the flag which raises it, to this session, moments earlier. Consent to
+`bypass-permissions` therefore only takes effect **when the same request also
+set `permissionMode`**. Sent on its own it does nothing, deliberately: without
+that provenance the only evidence available is generic wording, and generic
+wording is how an automation accepts a dialog nobody has seen.
+
+The consequence for you: an unclassified boot screen may well be this one, so
+**do not read an absent `kind` here as "some prompt I have never heard of"** the
+way you safely can elsewhere. It is the one screen whose absence of a kind is
+expected rather than informative.
 
 `resume-chooser` is deliberately **not** consentable and a create asking for it
 is refused. The other two ask yes/no about something you described in your own

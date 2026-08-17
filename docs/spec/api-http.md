@@ -361,7 +361,10 @@ our judgement of its error code: when true, sending anything resumes the
 session and no human is required.
 
 `state.prompt.kind` — when present — names what is being asked
-(`resume-chooser`, `folder-trust`, `tool-permission`, `bypass-permissions`).
+(`resume-chooser`, `folder-trust`, `settings-trust`, `tool-permission`).
+`bypass-permissions` is deliberately absent from what CLASSIFICATION can produce:
+its options are generic and its identifying words sit in the question, which this
+service does not read. See the client guide.
 It is **advisory and fails to absent**: an unrecognised prompt carries no kind.
 
 A client may auto-answer a kind it knows. It must **never** treat an absent

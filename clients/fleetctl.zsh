@@ -394,7 +394,8 @@ fleetctl_answer() {
   if [[ -z $kind || -z $choice ]]; then
     print -u2 "usage: fleetctl answer <kind> <choice> [--dry-run]"
     print -u2 "  e.g. fleetctl answer resume-chooser 1"
-    print -u2 "  kinds: resume-chooser · folder-trust · tool-permission · bypass-permissions"
+    print -u2 "  kinds: resume-chooser · folder-trust · settings-trust · tool-permission"
+    print -u2 "  (bypass-permissions is never classified from a screen — see the client guide)"
     print -u2 "  Both arguments are required on purpose: no default kind, no default choice."
     return 2
   fi

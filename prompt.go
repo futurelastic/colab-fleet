@@ -55,9 +55,32 @@ const (
 	PromptResumeChooser PromptKind = "resume-chooser"
 	// PromptFolderTrust: "do you trust the files in this folder".
 	PromptFolderTrust PromptKind = "folder-trust"
+	// PromptSettingsTrust: "do you trust the pre-approved permissions this
+	// directory's settings carry". A DIFFERENT question from PromptFolderTrust,
+	// and separated because consenting to one is not consenting to the other:
+	// naming a working directory says nothing about whether its checked-in
+	// settings should be allowed to skip prompts.
+	PromptSettingsTrust PromptKind = "settings-trust"
 	// PromptToolPermission: a tool asking to run something.
 	PromptToolPermission PromptKind = "tool-permission"
-	// PromptBypassAcceptance: the bypass-permissions acceptance screen.
+	// PromptBypassAcceptance: the permission-mode acceptance screen.
+	//
+	// # This kind is never produced by option matching, and that is deliberate
+	//
+	// It was, in intent, for a long time — by a rule requiring "bypass" and
+	// "permissions" in one option. That rule could not fire. Read out of the
+	// runtime's own binary rather than sampled from a screen capture, the
+	// options it ships for that screen are "Yes, I accept" and "No, exit".
+	// The identifying words live in the question, and the question is the one
+	// thing option matching must not read (see the doc above: a ship decision
+	// was once labelled with THIS kind because an agent typed "No auth bypass"
+	// into its own prompt).
+	//
+	// So a driver may emit this kind only when it has evidence the screen text
+	// cannot give it — for example, having started the session in that mode
+	// itself. A caller must therefore treat its ABSENCE as uninformative here
+	// in a way that does not apply to the other kinds: an unclassified boot
+	// screen may well be this one.
 	PromptBypassAcceptance PromptKind = "bypass-permissions"
 )
 

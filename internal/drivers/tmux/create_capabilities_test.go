@@ -196,25 +196,23 @@ func TestUnknownPermissionModeIsRefused(t *testing.T) {
 
 // --- consents ---------------------------------------------------------------
 
-// The wording this fixture uses is the one the CLASSIFIER recognises, and it is
-// deliberately not the repo's captured `fixtureBypassPrompt`.
+// The permission-mode acceptance screen, with the option text the runtime
+// actually ships — read out of its binary, not sampled from a capture.
 //
-// Those two disagree, which is a finding filed separately: the captured screen's
-// options are "No, exit" / "Yes, I accept", and classifyPromptKind needs
-// "bypass" and "permissions" to appear in one option, so the captured screen
-// classifies as NOTHING. Using it here would test that gap rather than this
-// consent. What this file is entitled to assert is that a screen the classifier
-// DOES recognise gets the accepting option chosen — the rest is #8's territory.
-const fixtureBypassRecognised = `  By proceeding, you accept all responsibility for actions taken.
+// It classifies as NOTHING, and that is correct: its identifying words are in
+// the question, and option matching must not read questions. This test is
+// therefore about the other half of the answer — the driver identifying the
+// screen from what it DID, having passed the flag that raises it.
+const fixtureAcceptanceReal = `  By proceeding, you accept all responsibility for actions taken while running in Bypass Permissions mode.
 ❯ 1. No, exit
-  2. Yes, I accept the bypass permissions mode
+  2. Yes, I accept
 Enter to confirm · Esc to cancel`
 
-// The second consentable question. Same machinery as folder-trust, and the
-// index matters more here: on this screen the HIGHLIGHTED option is "No, exit",
-// so a consent that accepted the default would kill the session it was starting.
-func TestBypassAcceptanceIsAnsweredByTheOptionThatAccepts(t *testing.T) {
-	h, d := newSettleHarness(t, fixtureBypassRecognised, true)
+// The index matters more here than anywhere: the HIGHLIGHTED option is
+// "No, exit", so a consent that accepted the default would kill the very
+// session it was starting.
+func TestAcceptanceScreenIsAnsweredWhenTheCallerAskedForThatMode(t *testing.T) {
+	h, d := newSettleHarness(t, fixtureAcceptanceReal, true)
 
 	go d.settleNewSession(testCaller,
 		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
@@ -231,6 +229,57 @@ func TestBypassAcceptanceIsAnsweredByTheOptionThatAccepts(t *testing.T) {
 	if len(got) == 0 || got[0] != "2" {
 		t.Errorf("keys pressed = %v, want option 2 first — option 1 on this screen is "+
 			"\"No, exit\", which would have killed the session", got)
+	}
+}
+
+// Provenance is required, not decorative. The identical screen, with the
+// identical consent, is answered by NOTHING when this driver did not start the
+// session in that mode — because then it has no grounds beyond wording, and the
+// wording is generic enough to belong to a dialog nobody has seen.
+func TestTheSameScreenIsNotAnsweredWithoutTheModeThatRaisesIt(t *testing.T) {
+	h, d := newSettleHarness(t, fixtureAcceptanceReal, false)
+
+	go d.settleNewSession(testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+		fleet.SessionSpec{
+			Cwd: "/work/alpha",
+			// Consent given, but no permission mode was requested.
+			Consents: []fleet.PromptKind{fleet.PromptBypassAcceptance},
+		})
+
+	time.Sleep(3 * promptPollInterval)
+	if got := h.keysPressed(); len(got) != 0 {
+		t.Errorf("keys pressed = %v; a screen was accepted on wording alone, with no "+
+			"evidence this driver caused it", got)
+	}
+}
+
+// And the fixture the whole issue turned on: the two matchers must agree about
+// this screen. The classifier must not name it, and the consent path must
+// identify it only with provenance — a future edit that loosens either one
+// breaks here rather than silently shipping an inert or over-eager consent.
+func TestTheAcceptanceScreenIsUnclassifiableButStillReachable(t *testing.T) {
+	p := parsePrompt(newScreen(fixtureAcceptanceReal))
+	if p == nil {
+		t.Fatal("the fixture does not parse as a prompt at all")
+	}
+	if k := classifyPromptKind(p); k != "" {
+		t.Errorf("classifyPromptKind named this screen %q; its identifying words are in "+
+			"the QUESTION, and matching those is what the options-only rule forbids", k)
+	}
+	consented := fleet.SessionSpec{
+		PermissionMode: fleet.PermissionModeBypass,
+		Consents:       []fleet.PromptKind{fleet.PromptBypassAcceptance},
+	}
+	if !acceptanceScreen(consented, p) {
+		t.Error("with the mode requested and the consent given, the driver still could " +
+			"not identify the screen it caused")
+	}
+	if acceptanceScreen(fleet.SessionSpec{PermissionMode: fleet.PermissionModeBypass}, p) {
+		t.Error("identified without a consent")
+	}
+	if acceptanceScreen(consented, parsePrompt(newScreen(fixtureTrustPrompt))) {
+		t.Error("the folder-trust screen was mistaken for the acceptance screen")
 	}
 }
 

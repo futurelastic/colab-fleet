@@ -1810,6 +1810,12 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 			return
 		}
 		ready, blocking := d.promptReadiness(ctx, ref.ID)
+		// An unclassified screen may still be one this driver can identify —
+		// not from what it says, but from what this driver did to produce it.
+		// See acceptanceScreen.
+		if blocking != nil && blocking.Kind == "" && acceptanceScreen(spec, blocking) {
+			blocking.Kind = fleet.PromptBypassAcceptance
+		}
 		switch {
 		case blocking != nil && spec.ConsentsTo(blocking.Kind) && !answered[blocking.Kind]:
 			// The caller described this session in the create request — its
@@ -1858,8 +1864,12 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 var consentableKinds = map[fleet.PromptKind][]string{
 	// "Yes, I trust this folder"
 	fleet.PromptFolderTrust: {"trust", "folder"},
-	// "Yes, I accept" — on the screen whose other option is "No, exit"
-	fleet.PromptBypassAcceptance: {"accept"},
+	// PromptBypassAcceptance is consentable but has NO entry here, because its
+	// affirmative option is the generic "Yes, I accept" and this table is
+	// applied to whatever screen happens to be on the pane. A needle that loose
+	// would accept some future dialog nobody has seen. It is resolved by
+	// provenance instead — see acceptanceScreen.
+	fleet.PromptBypassAcceptance: nil,
 }
 
 // affirmativeOption picks the option that AGREES, by index.
@@ -1878,6 +1888,56 @@ var consentableKinds = map[fleet.PromptKind][]string{
 // folder" matches the same needles), and in both cases the honest move is to
 // answer nothing and leave a question on screen for a human — the same direction
 // §5.6 sends every other unreadable case.
+// acceptanceScreen reports whether an unclassified boot screen is the
+// permission-mode acceptance one, using evidence the screen cannot supply.
+//
+// # Identify it by what we did, not by what it says
+//
+// The classifier cannot name this screen: its identifying words are in the
+// question, its options are the generic "Yes, I accept" / "No, exit", and
+// reading questions is the thing option-matching exists to avoid. Loosening the
+// classifier to match "accept" would put this kind on screens nobody has seen,
+// in a package whose kinds are used by clients to decide what to auto-answer.
+//
+// But this driver is not a bystander here. It PASSED the flag that raises this
+// screen, moments ago, to this session. That is provenance, it is unavailable
+// to the classifier, and it is far stronger evidence than any wording: an agent
+// can print any sentence it likes into its own prompt, and cannot cause the
+// driver to have started it in a mode it was never asked for.
+//
+// Three conditions, all required:
+//
+//   - the caller asked for the mode whose acceptance screen this is;
+//   - the caller consented to this kind in the same request;
+//   - the screen is a two-option accept/decline pair, matched on OPTION text
+//     only, which is the material the invariant does allow.
+//
+// The last one is what keeps a coincidence from being read as agreement. It
+// deliberately does not identify the screen on its own — only in the presence
+// of the first two, which no agent-authored prompt can manufacture.
+func acceptanceScreen(spec fleet.SessionSpec, p *fleet.SessionPrompt) bool {
+	if spec.PermissionMode != fleet.PermissionModeBypass {
+		return false
+	}
+	if !spec.ConsentsTo(fleet.PromptBypassAcceptance) {
+		return false
+	}
+	if p == nil || len(p.Options) != 2 {
+		return false
+	}
+	accepts, declines := 0, 0
+	for _, o := range p.Options {
+		lower := strings.ToLower(o)
+		if strings.Contains(lower, "accept") {
+			accepts++
+		}
+		if strings.Contains(lower, "exit") || strings.Contains(lower, "no,") {
+			declines++
+		}
+	}
+	return accepts == 1 && declines == 1
+}
+
 func affirmativeOption(p *fleet.SessionPrompt) (int, bool) {
 	if p == nil {
 		return 0, false
@@ -1885,6 +1945,13 @@ func affirmativeOption(p *fleet.SessionPrompt) (int, bool) {
 	needles, ok := consentableKinds[p.Kind]
 	if !ok {
 		return 0, false
+	}
+	// A consentable kind with no needles is one identified by provenance rather
+	// than by wording (see acceptanceScreen). Its affirmative is the option that
+	// accepts — the same options-only material, applied to a screen we already
+	// have independent grounds to believe we are looking at.
+	if needles == nil {
+		needles = []string{"accept"}
 	}
 	found := 0
 	for i, o := range p.Options {

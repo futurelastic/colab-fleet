@@ -744,11 +744,41 @@ func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
 		return fleet.PromptResumeChooser
 	case hasOption("trust", "folder"):
 		return fleet.PromptFolderTrust
-	case hasOption("bypass", "permissions"):
-		return fleet.PromptBypassAcceptance
+	case hasOption("trust", "settings"):
+		return fleet.PromptSettingsTrust
 	case hasOption("don't ask again"), hasOption("allow this"):
 		return fleet.PromptToolPermission
 	}
+	// Nothing here matches the permission-mode ACCEPTANCE screen, and that is a
+	// finding rather than an omission.
+	//
+	// A rule for it existed and could never fire. It required "bypass" and
+	// "permissions" to appear in one option, and the runtime's binary — read
+	// directly, rather than sampled from a capture — contains no such option.
+	// The complete set of boot-screen options it ships is:
+	//
+	//	Yes, I trust this folder        No, continue without these permissions
+	//	Yes, I trust these settings     No, exit
+	//	Yes, I accept                   No, exit Claude Code
+	//
+	// The words that identify that screen — "Bypass Permissions mode" — are in
+	// its QUESTION. Its options are generic, and two other screens end in
+	// "No, exit" as well.
+	//
+	// So it cannot be classified here without reading the question, and the
+	// question is exactly what this function must not read: it is written by the
+	// agent, and a ship decision was once labelled with this very kind because
+	// the AGENT had typed "No auth bypass" into its own prompt. A rule that
+	// matched a generic "accept" would be worse still — it would put a kind on
+	// screens this driver has never seen, and a client filtering on kind before
+	// auto-answering would then answer them.
+	//
+	// The consent path reaches that screen a different way, and the difference
+	// is the whole point: the driver knows it started the session in that mode,
+	// so it identifies the screen by what it DID rather than by what the screen
+	// says. See consentableKinds and settleNewSession. Provenance is available
+	// there and is not available here, which is why the answer differs by
+	// caller rather than by wording.
 	return ""
 }
 

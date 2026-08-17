@@ -687,8 +687,14 @@ func TestClassifyPromptKind(t *testing.T) {
 		want fleet.PromptKind
 	}{
 		{"resume chooser", []string{"Resume from summary (recommended)", "Resume full session as-is", "Don't ask me again"}, fleet.PromptResumeChooser},
-		{"folder trust", []string{"Yes, I trust this folder", "No, continue without these"}, fleet.PromptFolderTrust},
-		{"bypass", []string{"Yes, I accept the bypass permissions mode", "No, exit"}, fleet.PromptBypassAcceptance},
+		{"folder trust", []string{"Yes, I trust this folder", "No, continue without these permissions"}, fleet.PromptFolderTrust},
+		{"settings trust", []string{"Yes, I trust these settings", "No, exit"}, fleet.PromptSettingsTrust},
+		// THE REAL acceptance screen, verbatim from the runtime binary — and it
+		// classifies as nothing. The case this replaced asserted the kind using
+		// an option reading "Yes, I accept the bypass permissions mode", a
+		// string that does not exist in the runtime. It passed for as long as it
+		// did precisely because it was invented alongside the rule it verified.
+		{"permission-mode acceptance is NOT classifiable", []string{"No, exit", "Yes, I accept"}, ""},
 		{"tool permission", []string{"Yes, allow this command", "Yes, and don't ask again", "No, tell Claude what to do"}, fleet.PromptToolPermission},
 		{"something never seen before", []string{"Deploy to production", "Cancel"}, ""},
 		{"no options at all", nil, ""},
