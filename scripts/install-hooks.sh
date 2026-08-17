@@ -1,10 +1,10 @@
 #!/bin/sh
-# install-hooks.sh — trỏ git tới .githooks/ (idempotent, chạy 1 lần/repo/máy).
-# core.hooksPath nằm trong .git/config nên là cấu hình per-machine, không sync.
+# install-hooks.sh — points git at .githooks/ (idempotent, run once per repo per machine).
+# core.hooksPath lives in .git/config, so it is per-machine config and does not sync.
 set -e
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
-  echo "❌ Không phải git repo. Chạy 'git init' trước."
+  echo "Not a git repo. Run 'git init' first."
   exit 1
 }
 cd "$repo_root"
@@ -12,4 +12,4 @@ cd "$repo_root"
 chmod +x .githooks/* 2>/dev/null || true
 git config core.hooksPath .githooks
 
-echo "✅ core.hooksPath = .githooks (hook pre-commit gitleaks đã bật)."
+echo "core.hooksPath = .githooks (pre-commit hook enabled)."

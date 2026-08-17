@@ -12,7 +12,7 @@ build/
 .vite/
 vendor/
 
-# ─── Secrets / credentials (KHÔNG commit) ───
+# ─── Secrets / credentials (never commit) ───
 .env
 .env.*
 !.env.example
@@ -27,3 +27,43 @@ id_rsa*
 
 # ─── Editor ───
 .idea/
+
+# ─── Agent-settings runtime (never commit) — see #41 ───
+# .claude/settings.local.json records pre-approved tool permissions, and
+# those entries routinely name internal hosts, addresses and home-directory
+# paths — the exact vocabulary this public repo must never carry. Until now
+# it was ignored on exactly one machine, by that machine's *global* git
+# ignore file (`git check-ignore -v` names the global file, nothing in this
+# repo); that rule does not travel to a peer, a fresh clone, or CI. Measured
+# on a second machine: the directory was present, untracked and unignored,
+# so a single `git add -A` there would have committed it.
+#
+# The directory itself is deliberately NOT ignored below: .claude/ is also
+# where a shared, reviewed settings file could be committed on purpose
+# later, and ignoring the whole directory would make `git add` silently do
+# nothing to that file too. Listing the local/runtime file patterns instead
+# reaches every checkout by construction, leaves that door open, and still
+# fails safe on a machine nobody has set up by hand yet.
+**/.claude/settings.local.json
+**/.claude/*.local.json
+**/.claude/*.lock
+**/.claude/scheduled_tasks.json
+**/.claude/agent-registry.json
+**/.claude/first-run
+**/.claude/assistant-daemon-state.json
+**/.claude/routines/.state/
+**/.claude/worktrees/
+**/.claude/checkpoints/
+**/.claude/mailbox/
+**/.claude/agent-memory-local
+
+# ─── Local-only notes (by suffix, not by name) ───
+# A few prose files here — working notes, migration notes, this machine's
+# own CLAUDE.local.md — carry more than a permissions list: host names, a
+# grant table. They stay out of this file *by name* on purpose: listing
+# NOTES.local.md or MIGRATION.local.md here would publish that those files,
+# and therefore that subject matter, exist, even though nobody outside could
+# read them. A suffix pattern makes the same promise without naming
+# anything, so it is committed instead: any future *.local.md is ignored on
+# every checkout before anyone has to hand-repair it machine by machine.
+*.local.md

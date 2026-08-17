@@ -1,10 +1,37 @@
 #!/bin/sh
-# pre-commit — chặn commit chứa secret bằng gitleaks.
-# Bypass khẩn cấp: git commit --no-verify  (chỉ khi chắc chắn KHÔNG có secret)
+# pre-commit — blocks a commit that carries a secret (gitleaks) or a
+# local-only/agent-settings file that slipped past .gitignore.
+# Emergency bypass: git commit --no-verify  (only when certain nothing is wrong)
 
+# ─── Local-only path guard ───
+# .gitignore keeps these out of `git add -A`, but an ignore rule is not a
+# scan: a rename, a `git add -f`, or a path .gitignore does not yet know
+# about still lands silently. This is the second half — it looks at what is
+# actually STAGED, the same set gitleaks below scans, and refuses the ones
+# .gitignore exists to keep out in the first place. See #41: a local-settings
+# file that records pre-approved tool permissions routinely names internal
+# hosts and home-directory paths, and neither this hook (a credential
+# scanner) nor CI's secret scan had ever looked for that shape before.
+blocked_paths="$(git diff --cached --name-only --diff-filter=ACMR | grep -E \
+  '(^|/)\.claude/(settings\.local\.json|[^/]*\.local\.json|[^/]*\.lock|scheduled_tasks\.json|agent-registry\.json|first-run|assistant-daemon-state\.json|routines/\.state/|worktrees/|checkpoints/|mailbox/|agent-memory-local)(/|$)|(^|/)[^/]*\.local\.md$' \
+  || true)"
+
+if [ -n "$blocked_paths" ]; then
+  echo ""
+  echo "BLOCKED — staged path matches a local-only rule .gitignore keeps out of this repo:"
+  echo "$blocked_paths" | sed 's/^/   /'
+  echo ""
+  echo "These carry machine-local settings or notes (see #41) — internal hosts,"
+  echo "home-directory paths, or other vocabulary this public repo must never"
+  echo "carry. Unstage the path, or if this specific file is a deliberate,"
+  echo "reviewed exception: git commit --no-verify"
+  exit 1
+fi
+
+# ─── Secret scan (gitleaks) ───
 if ! command -v gitleaks >/dev/null 2>&1; then
-  echo "⚠️  gitleaks chưa được cài — bỏ qua quét secret cho commit này."
-  echo "    Cài bằng: brew install gitleaks"
+  echo "gitleaks is not installed — skipping the secret scan for this commit."
+  echo "Install with: brew install gitleaks"
   exit 0
 fi
 
@@ -13,9 +40,9 @@ status=$?
 
 if [ "$status" -ne 0 ]; then
   echo ""
-  echo "❌ gitleaks phát hiện secret trong staged changes — commit bị CHẶN."
-  echo "   • Gỡ secret khỏi diff rồi commit lại, HOẶC"
-  echo "   • Nếu chắc chắn là false positive: git commit --no-verify"
+  echo "BLOCKED — gitleaks found a secret in the staged changes."
+  echo "   * Remove the secret from the diff and commit again, or"
+  echo "   * If this is certainly a false positive: git commit --no-verify"
   exit 1
 fi
 
