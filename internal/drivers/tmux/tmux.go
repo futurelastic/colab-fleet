@@ -67,6 +67,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -216,6 +217,12 @@ type Driver struct {
 	// (see environment.go). In memory only, for the reason stated on
 	// Environment.
 	environments map[string]fleet.SessionEnvironment
+
+	// counters is this driver's self-observability registry — see
+	// counters.go. Its own mutex, not d.mu: nothing about a count is
+	// otherwise related to session state, and sharing a lock would only
+	// make counting something contend with it for no reason.
+	counters counterSet
 }
 
 type observation struct {
@@ -1833,7 +1840,7 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 			}
 		case ready:
 			if spec.Prompt != "" {
-				_, _ = d.Send(ctx, req, ref, spec.Prompt, driver.SendOptions{Submit: true})
+				d.deliverInitialPrompt(ctx, req, ref, spec.Prompt)
 			}
 			return
 		}
@@ -1843,6 +1850,95 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 		case <-time.After(promptPollInterval):
 		}
 	}
+}
+
+// deliverInitialPrompt sends §2.1's initial prompt and, unlike the single
+// discarded call this replaced, does something with what Send tells it.
+//
+// # What this receipt could never do before
+//
+// Create already returned 201 by the time this runs, so nobody is waiting on
+// this specific call the way an ordinary caller waits on Send's HTTP
+// response. That is what made the old `_, _ = d.Send(...)` different from
+// every other place this driver ignores nothing: it was not indifference to
+// a receipt, it was the one receipt with no possible reader. #44 measured
+// what that cost — 3 of 5 multi-line initial prompts stranded in a single
+// run, all recovered by a human who happened to read the session's own
+// state and call the resume path, none of the six ever told without being
+// asked.
+//
+// # One retry, inside the window, through the path already proven correct
+//
+// #44's own measurement is why this is a retry and not a redesign: every
+// strand in that run cleared on the very next attempt, seconds later, with
+// nothing different but time — consistent with a busy machine's repaint
+// racing the submit keystroke, worse as load grows, not a defect in the
+// delivery logic. And a retry already has somewhere honest to go: Send's
+// first attempt calls noteStranded on any unconfirmed outcome, exactly as it
+// does for a caller-initiated send, so a second Send with ResumeIfStranded
+// walks the same recovery path a human used by hand — the identical
+// mechanism, not a parallel one built for this call site.
+//
+// A retry that silently succeeds would hide the one number #44 says matters:
+// how often this needs to happen at all. counterInitialPromptRetried is
+// incremented on every retry regardless of its outcome, so a machine
+// clearing every strand on retry still shows up in the count — that rate is
+// the load signal, not something to launder away by only counting failures.
+//
+// # What still reaches #11 unchanged, and what does not
+//
+// noteStranded's record lives in d.stranded, which #11 already tracks as
+// in-memory and restart-fragile. This function adds no new writer to that
+// map — both the first attempt and the retry go through the same Send this
+// driver's other callers already use, so this call site is not a third
+// writer of anything. What it DOES do is call Send up to twice where the
+// discarded version called it once, so a machine under exactly the load
+// pattern #44 measured now writes that entry twice as often on the losing
+// side of the race before either clearing it (resumeIfStranded's own
+// forgetStranded) or giving up. That is a real cost of retrying and is
+// recorded here rather than left for #11 to discover on its own.
+//
+// # Why the second failure is a log line and a counter, not a new event kind
+//
+// events.go's EventKind is `api-http.md §4`'s closed, normative set, and this
+// driver has no channel into the hub outside the subscription engine's own
+// poll-diff loop (internal/service/events.go). Inventing a delivery-specific
+// event here would mean a spec change and a new cross-package wire this
+// function has no business owning. It is also not the only way a
+// subscriber learns: the composer is, physically, still holding the text,
+// so the very next classify of this pane reports `waiting_input` with
+// `WaitingOn: unsent-input` — the same read #44 measured working 6 times out
+// of 6 for detection — and the subscription engine already emits
+// `session.state` the moment that status differs from what a live
+// subscriber last saw, with no code added here. What was missing was never
+// the detection path; it was that Create's caller has no reason to be
+// looking. counterInitialPromptStranded and the log line exist for the
+// caller who is not subscribed and never will be — an operator asking
+// afterwards "did this happen, how often" — which is exactly the shape #9
+// describes wanting and not having.
+func (d *Driver) deliverInitialPrompt(ctx context.Context, req fleet.Request, ref fleet.SessionRef, prompt string) {
+	receipt, err := d.Send(ctx, req, ref, prompt, driver.SendOptions{Submit: true})
+	if err != nil || receipt.Outcome != fleet.OutcomeUnknown {
+		// Delivered and confirmed, refused outright (not this call's
+		// problem to retry into), or a transport-level error Send itself
+		// already wraps and named — none of those are the race this retry
+		// exists for.
+		return
+	}
+
+	d.counters.incr(counterInitialPromptRetried)
+	retry, err := d.Send(ctx, req, ref, prompt, driver.SendOptions{Submit: true, ResumeIfStranded: true})
+	if err == nil && retry.Outcome == fleet.OutcomeSubmitted {
+		return
+	}
+
+	// Still sitting there after the one retry the measured pattern earns it.
+	// The text and the record of it are exactly where an ordinary stranded
+	// send leaves them (composer, d.stranded) — nothing here is lost, only
+	// unannounced, which this closes.
+	d.counters.incr(counterInitialPromptStranded)
+	log.Printf("tmux: initial prompt still unsent after one retry session=%s machine=%s",
+		ref.ID, d.machine)
 }
 
 // consentableKinds maps each boot question a caller may consent to onto the

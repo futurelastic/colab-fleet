@@ -1986,6 +1986,144 @@ func TestTrustConsentIsSpentOnce(t *testing.T) {
 	}
 }
 
+// --- the initial prompt's own delivery, once nobody is waiting on it --------
+
+// The regression #44 measured, exercised through the full asynchronous path
+// a real create takes: a session settles, its initial prompt lands and
+// renders, the submit keystroke goes nowhere, and — before this fix —
+// settleNewSession's discarded receipt (`_, _ = d.Send(...)`) meant nothing
+// ever tried again. `done` closing is settleNewSession returning; against the
+// code as it stood, the assertion after it fails, because nothing in that
+// code path ever calls Send a second time and the stranded record this
+// fixture already proves Send itself keeps (noteStranded) just sits there.
+//
+// swallowSubmit is left permanently on — unlike #44's own pane, which was
+// receptive again "seconds later, nothing changed but time" — because the
+// retry this fix adds does not depend on that: it resumes through the
+// SAME mechanism a human already used successfully 6 times out of 6 (see
+// deliverInitialPrompt's doc comment), which corroborates against this
+// driver's own record of what it delivered rather than re-reading the
+// screen for confirmation. A fixture that turned swallowSubmit off between
+// attempts would be testing a gentler scenario than #44 needed recovered
+// from.
+func TestSettleNewSessionRecoversFromASwallowedInitialPromptSubmit(t *testing.T) {
+	f := twoSessions()
+	f.captures["%1"] = idleFixtureFor("alpha") // ready immediately, no boot question
+	f.swallowSubmit = true
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const text = "the work it was created for, long enough to strand"
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.settleNewSession(testCaller, ref,
+			fleet.SessionSpec{Cwd: "/work/alpha", Prompt: text})
+	}()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("settleNewSession never returned")
+	}
+
+	if d.strandedMatches(ref.ID, text) {
+		t.Error("the initial prompt is still stranded after settle finished; the one " +
+			"retry #44 asks for did not run")
+	}
+
+	// A retry that clears silently would hide the one number #44 says
+	// matters: how often this needs to happen at all. The counter must go
+	// up on a retry that SUCCEEDS, not only on one that does not.
+	got := d.counters.Snapshot()
+	if got[counterInitialPromptRetried] != 1 {
+		t.Errorf("initial_prompt.delivery_retried = %d, want 1", got[counterInitialPromptRetried])
+	}
+	if got[counterInitialPromptStranded] != 0 {
+		t.Errorf("initial_prompt.delivery_stranded = %d, want 0 — the retry cleared it",
+			got[counterInitialPromptStranded])
+	}
+}
+
+// promptDeliveredThenInterrupted wraps a fakeMux so its composer holds this
+// driver's OWN delivered text right up through the first attempt's own
+// confirmation read — the shape TestSendReportsUnknownWhenTheSubmitDoesNotRegister
+// already establishes strands honestly — and only THEN goes dark, modelling
+// a session that stops being able to receive input at all before the retry
+// looks, rather than staying receptive the way #44's own pane did.
+func promptDeliveredThenInterrupted(f *fakeMux, paneID, goesDark string) execFunc {
+	swallows := 0
+	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, err := f.exec(ctx, name, args...)
+		if len(args) > 0 && args[0] == "send-keys" {
+			for _, a := range args {
+				if a == "C-m" || a == "Enter" {
+					swallows++
+					if swallows == 1 {
+						// The first attempt's own confirmation read (the very
+						// next capture-pane call) must still see what it
+						// actually delivered, or this fixture would be
+						// testing a different failure than #44's. Mutating
+						// here — after f.exec already applied the swallow —
+						// changes what the SECOND attempt sees without
+						// touching the first's.
+						f.setCapture(paneID, goesDark)
+					}
+				}
+			}
+		}
+		return out, err
+	}
+}
+
+// The other half of #44's design constraint: when the one retry is not
+// enough, that must be counted too, not folded silently into "eventually
+// worked".
+//
+// resumeIfStranded corroborates against this driver's OWN record of what it
+// delivered (noteStranded), not against the screen — #49 established that a
+// multi-line paste collapses on screen and cannot be read back, so exact
+// text matching against the pane was never the available check. What CAN
+// still fail between two attempts is readiness itself: the session stops
+// painting a composer at all. Modelled here as exactly that, so the retry's
+// own awaitReceptive gate refuses it before resumeIfStranded is ever
+// reached, and the prompt is still unsent when deliverInitialPrompt gives up.
+//
+// Driving deliverInitialPrompt directly, not through settleNewSession's
+// polling wrapper: the wrapper's own readiness loop adds enumeration calls
+// whose count is not this test's concern, and pinning the swallow to a
+// specific send-keys occurrence (rather than a capture-pane index like
+// TestConfirmLandedIgnoresResidueAndAttributesOnlyTheNewMarker uses) is
+// stable across however many reads the readiness gate happens to take.
+func TestDeliverInitialPromptCountsAStrandTheRetryCannotClear(t *testing.T) {
+	f := twoSessions()
+	f.captures["%1"] = idleFixtureFor("alpha")
+	f.swallowSubmit = true
+	d := New("testbox",
+		withExec(promptDeliveredThenInterrupted(f, "%1", "starting up\nloading configuration\n")),
+		withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return time.Unix(1785760000, 0) }))
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const text = "an instruction that must not vanish silently"
+
+	d.deliverInitialPrompt(context.Background(), testCaller, ref, text)
+
+	got := d.counters.Snapshot()
+	if got[counterInitialPromptRetried] != 1 {
+		t.Errorf("initial_prompt.delivery_retried = %d, want 1", got[counterInitialPromptRetried])
+	}
+	if got[counterInitialPromptStranded] != 1 {
+		t.Errorf("initial_prompt.delivery_stranded = %d, want 1 — the retry never reached "+
+			"a session able to receive it", got[counterInitialPromptStranded])
+	}
+	// And the original record is untouched — a caller who does eventually
+	// look still finds the same resumeIfStranded path #44 measured working
+	// by hand, 6 times out of 6, once the session is receptive again.
+	if !d.strandedMatches(ref.ID, text) {
+		t.Error("the stranded record was lost; the manual recovery path #44 measured " +
+			"working would now find nothing to resume")
+	}
+}
+
 // --- the option a consenting caller's trust is spent on ---------------------
 
 // Never the highlighted one, and never on a prompt this is not about.
