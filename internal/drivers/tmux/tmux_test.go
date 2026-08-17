@@ -1106,6 +1106,137 @@ func TestCollapsedPasteCountsAsDelivered(t *testing.T) {
 	}
 }
 
+// captureCounter wraps a fakeMux so a test can change what the composer
+// shows PARTWAY through a confirmation loop — the shape every test below
+// needs, because the defect under test only shows up across two readings: a
+// residue that was already there, and a change that happened after it.
+func captureCounter(f *fakeMux, onNthCapture int, then func()) execFunc {
+	calls := 0
+	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, err := f.exec(ctx, name, args...)
+		if len(args) > 0 && args[0] == "capture-pane" {
+			calls++
+			if calls == onNthCapture {
+				then()
+			}
+		}
+		return out, err
+	}
+}
+
+// Issue #37: `confirmLanded` used to accept ANY collapsed-paste marker as
+// evidence that THIS delivery landed — including a marker that was sitting
+// in the composer before this delivery ever pasted anything. This is the
+// false positive half of that defect: attribution must come from a marker
+// this delivery caused to APPEAR, never from one merely present.
+//
+// Reverting `confirmLanded` to `composerHoldsCollapsedPaste(painted)` (no
+// `before`, no `gained`) makes this test fail: the residue alone satisfies
+// that check on the very first read, before this delivery's own marker (#11)
+// has appeared at all.
+func TestConfirmLandedIgnoresResidueAndAttributesOnlyTheNewMarker(t *testing.T) {
+	const residue = "transcript\n" + rule + "\n❯ [Pasted text #10 +12 lines]\n" + rule
+	const residuePlusOurs = "transcript\n" + rule +
+		"\n❯ [Pasted text #10 +12 lines][Pasted text #11 +30 lines]\n" + rule
+
+	f := twoSessions()
+	f.setCapture("%1", residue)
+	d := newTestDriver(f)
+	before := d.paintedMarkers(context.Background(), "%1")
+	if len(before) != 1 {
+		t.Fatalf("setup: before-snapshot = %v, want exactly the one pre-existing marker", before)
+	}
+
+	// Sanity: this residue is exactly the shape the OLD check treated as
+	// landing evidence, so the contrast below is not assumed.
+	if !composerHoldsCollapsedPaste(residue) {
+		t.Fatal("setup: residue must look like positive evidence under the old check, " +
+			"or this test proves nothing about the fix")
+	}
+
+	// This delivery's own paste renders on the SECOND capture, not the first —
+	// modelling the render lag confirmLanded's own doc comment describes.
+	d2 := New("testbox", withExec(captureCounter(f, 2, func() {
+		f.setCapture("%1", residuePlusOurs)
+	})), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return time.Unix(1785760000, 0) }))
+
+	key, atCount, ok := d2.confirmLanded(context.Background(), "%1", strings.Repeat("x\n", 30), before)
+	if !ok {
+		t.Fatal("never confirmed landed, even after this delivery's own marker appeared")
+	}
+	want := pasteKey{index: 11, lines: 30}
+	if key != want {
+		t.Errorf("attributed %+v, want %+v — the NEW marker, not the pre-existing residue (#10)", key, want)
+	}
+	if atCount != 1 {
+		t.Errorf("atCount = %d, want 1", atCount)
+	}
+}
+
+// Issue #37's measured false negative: two consecutive `unknown` receipts for
+// a delivery the agent had already received and was acting on, because
+// `confirmSubmitted` watched only for the composer to go fully EMPTY — which
+// residue that has nothing to do with this delivery can prevent forever.
+//
+// Reverting `confirmSubmitted` to the composer-emptied-only check makes this
+// test fail: the residue marker (#10) never leaves in this fixture, so the
+// composer is never empty, and the old check has no other way to notice that
+// THIS delivery's own block (#11) cleared.
+func TestConfirmSubmittedDetectsOurBlockLeavingDespiteResidue(t *testing.T) {
+	const bothBlocks = "transcript\n" + rule +
+		"\n❯ [Pasted text #10 +12 lines][Pasted text #11 +30 lines]\n" + rule
+	const residueOnly = "transcript\n" + rule + "\n❯ [Pasted text #10 +12 lines]\n" + rule
+
+	f := twoSessions()
+	f.setCapture("%1", bothBlocks)
+
+	// Sanity: the composer never reads empty in this fixture, before or
+	// after — the old single-signal check could not pass here no matter how
+	// long it waited.
+	for _, painted := range []string{bothBlocks, residueOnly} {
+		if text, found := composerText(newScreen(painted)); !found || text == "" {
+			t.Fatalf("setup: composerText(%q) = %q, %v; want non-empty so the old "+
+				"composer-emptied check is genuinely defeated by this fixture", painted, text, found)
+		}
+	}
+
+	ours := pasteKey{index: 11, lines: 30}
+	d := New("testbox", withExec(captureCounter(f, 2, func() {
+		f.setCapture("%1", residueOnly) // our block (#11) submitted and cleared; #10 remains
+	})), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return time.Unix(1785760000, 0) }))
+
+	// Bounded, unlike the driver's own frozen test clock: the sanity check
+	// above proves the composer-emptied signal alone never resolves in this
+	// fixture, so a build missing the count-dropped signal would spin this
+	// loop for real wall-clock time, not fail fast. This bound is generous
+	// next to the ~150ms the fix needs (one poll interval), and only exists
+	// to keep a regression from hanging the suite instead of failing it.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if !d.confirmSubmitted(ctx, "%1", ours, 1) {
+		t.Fatal("did not detect the submit — this delivery's own marker count dropped to 0, " +
+			"which must be reported as submitted even though residue keeps the composer non-empty")
+	}
+}
+
+// Issue #37's third bullet: attribution must fail CLOSED, not guess, when
+// more than one marker grows across a single delivery — something other than
+// this delivery also changed the composer in the same window, and claiming
+// either key would be the unfounded confidence the whole fix removes.
+func TestGainedFailsClosedWhenTwoKeysGrowAtOnce(t *testing.T) {
+	before := map[pasteKey]int{{index: 1, lines: 5}: 1}
+	after := map[pasteKey]int{
+		{index: 1, lines: 5}: 1, // unchanged
+		{index: 2, lines: 7}: 1, // grew
+		{index: 3, lines: 9}: 1, // grew
+	}
+	if key, ok := gained(before, after); ok {
+		t.Fatalf("attributed %+v while two keys grew at once; ambiguity must yield no attribution", key)
+	}
+}
+
 // Rename changes the very thing callers address a session by, so it is
 // corroborated exactly as Close is — and its failure is quieter than Close's:
 // renaming the wrong session succeeds silently and leaves two sessions

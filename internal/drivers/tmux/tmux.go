@@ -960,6 +960,14 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	}
 	f.Close()
 
+	// The composer's marker state, read immediately before this delivery's
+	// own paste — not reused from screenNow above, which was captured before
+	// the pending-composer gate and can be stale by however long that check
+	// took. Everything confirmLanded and confirmSubmitted attribute to THIS
+	// delivery is a CHANGE relative to this snapshot; see markerCounts for
+	// why the presence of a marker was never enough on its own.
+	before := d.paintedMarkers(ctx, target.paneID)
+
 	bufName := "fleet-" + d.nonce()
 	args := []string{
 		"load-buffer", "-b", bufName, f.Name(), ";",
@@ -992,19 +1000,28 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// where `C-m` submitted immediately, same text, seconds apart. They are
 	// the same character in principle; they are not the same in practice, and
 	// only one of them has been seen to work when the other did not.
-	if !d.confirmLanded(ctx, target.paneID, text) {
+	key, atCount, landed := d.confirmLanded(ctx, target.paneID, text, before)
+	if !landed {
 		// The text is in the composer and was not submitted. Say so plainly:
 		// the caller must decide whether to retry or clear it, and silence
 		// here is how a session ends up holding an instruction nobody knows
 		// about.
+		//
+		// Two established facts, kept apart on purpose: no literal prefix
+		// rendered, AND no single new paste marker could be pinned on this
+		// delivery alone — either nothing has landed yet, or something
+		// landed at the same moment as an unrelated change and this driver
+		// will not guess which is ours. Either way the honest instruction is
+		// the same as before.
 		// Record what we left behind, so the caller has a way to finish this
 		// rather than being told where the text is and left there.
 		d.noteStranded(ref.ID, text)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: "text was delivered to the composer but did not render in time " +
-				"to be submitted safely; it is sitting there unsent — retry the same " +
-				"send with resumeIfStranded to submit it",
+				"to be confirmed landed, and no single new paste marker could be " +
+				"attributed to this delivery alone; it may be sitting there unsent " +
+				"— retry the same send with resumeIfStranded to submit it",
 		}, nil
 	}
 	// The wake key: `Space` before the newline, in ONE send-keys call.
@@ -1035,7 +1052,9 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// Queued, not submitted: see Capabilities. The bytes were handed to
 	// the substrate; whether the agent consumed them is not observable
 	// here, and claiming otherwise is the emulation §5.6 forbids.
-	// CONFIRM THE SUBMIT REGISTERED, by watching the composer empty.
+	// CONFIRM THE SUBMIT REGISTERED, by watching the composer empty OR by
+	// watching this delivery's own attributed marker clear — see
+	// confirmSubmitted for why the second path had to be added.
 	//
 	// Everything before this point is inference about whether a keystroke
 	// would be received; this is evidence about whether it was. Without it a
@@ -1048,13 +1067,14 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// was only written when the text failed to RENDER, so a submit that went
 	// nowhere left nothing behind, the resume was refused for lack of a
 	// record, and every later send was refused for a busy composer.
-	if !d.confirmSubmitted(ctx, target.paneID) {
+	if !d.confirmSubmitted(ctx, target.paneID, key, atCount) {
 		d.noteStranded(ref.ID, text)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
-			Reason: "the text was delivered and a submit was issued, but the composer still " +
-				"holds it — the submit did not register. It is sitting there unsent; retry " +
-				"the same send with resumeIfStranded to submit it",
+			Reason: "the text landed and was attributed to this delivery, and a submit was " +
+				"issued, but this delivery's own block did not clear and the composer did " +
+				"not empty — the submit did not register for it. It is sitting there " +
+				"unsent; retry the same send with resumeIfStranded to submit it",
 		}, nil
 	}
 
@@ -1920,7 +1940,9 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) (ready bool, bl
 	return false, nil
 }
 
-// confirmLanded waits until the composer actually shows the delivered text.
+// confirmLanded waits until the composer actually shows the delivered text,
+// and reports WHICH collapsed-paste block — if any — belongs to this
+// delivery specifically.
 //
 // A render can lag a busy TUI by longer than a naive fixed pause, and giving
 // up too early is not free: the text is already in the box, so a premature
@@ -1933,10 +1955,23 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) (ready bool, bl
 // Matching is on a prefix of the delivered text: the composer wraps long
 // input across lines and may decorate it, so requiring an exact whole-string
 // match would fail on precisely the long instructions that matter most.
-func (d *Driver) confirmLanded(ctx context.Context, paneID, text string) bool {
+//
+// `before` is the composer's marker state captured immediately prior to this
+// delivery's own paste (see Send). A marker that was already there is
+// somebody else's — an earlier stranding this driver or a human left behind
+// — and it must never count as evidence for a delivery it has nothing to do
+// with. Any marker satisfied the check this replaced, which is exactly the
+// defect being fixed: a send into a composer already holding residue
+// confirmed against that residue, and the submit check that followed it
+// could then never pass, because the residue this delivery never touched
+// never leaves. Measured on a live session: one ~30-line instruction
+// produced two consecutive false negatives while the agent had received
+// exactly one clean copy and was acting on it, the composer meanwhile
+// holding two stacked placeholders.
+func (d *Driver) confirmLanded(ctx context.Context, paneID, text string, before map[pasteKey]int) (pasteKey, int, bool) {
 	needle := strings.TrimSpace(text)
 	if needle == "" {
-		return true
+		return pasteKey{}, 0, true
 	}
 	// A prefix, because the composer wraps and the tail may be off-screen.
 	if len(needle) > 24 {
@@ -1953,10 +1988,13 @@ func (d *Driver) confirmLanded(ctx context.Context, paneID, text string) bool {
 	// it would have been every long message after it.
 	//
 	// The collapsed form is still positive evidence of landing — it says the
-	// composer accepted a paste — so it is accepted as such. It is matched
-	// structurally (a bracketed marker on the composer line naming a count of
-	// lines) rather than by its wording, because the wording is exactly the
-	// kind of prose that changes underneath a matcher.
+	// composer accepted a paste — so it is accepted as such, but ONLY the
+	// marker `gained` attributes to this delivery: the one whose count rose
+	// relative to `before`. Two markers rising at once means something other
+	// than this delivery also wrote to the composer in the same window, and
+	// `gained` fails to no attribution rather than guessing between them —
+	// this loop keeps polling on that ambiguity exactly as it would on
+	// silence, because more evidence may yet resolve it before the deadline.
 	deadline := d.now().Add(submitConfirmWindow)
 	for {
 		// NOT classifyCaptureArgs, and deliberately so: this is the one
@@ -1964,52 +2002,141 @@ func (d *Driver) confirmLanded(ctx context.Context, paneID, text string) bool {
 		// substring match against text this driver just pasted, strips the
 		// attributes itself, and wants -J so a wrapped paste matches as one
 		// line. Attributes would be discarded a line below regardless, so the
-		// escape-carrying shape would buy nothing here.
+		// escape-carrying shape would buy nothing here. `before` was captured
+		// with this same shape, in paintedMarkers, so the two readings are
+		// comparable.
 		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID, "-S", "-6")
 		if err == nil {
 			painted := stripEscapes(string(out))
-			if strings.Contains(painted, needle) || composerHoldsCollapsedPaste(painted) {
-				return true
+			if strings.Contains(painted, needle) {
+				return pasteKey{}, 0, true
+			}
+			after := markerCounts(painted)
+			if key, ok := gained(before, after); ok {
+				return key, after[key], true
 			}
 		}
 		if d.now().After(deadline) || ctx.Err() != nil {
-			return false
+			return pasteKey{}, 0, false
 		}
 		select {
 		case <-ctx.Done():
-			return false
+			return pasteKey{}, 0, false
 		case <-time.After(submitConfirmInterval):
 		}
 	}
 }
 
-// composerHoldsCollapsedPaste reports whether the composer line shows the
-// runtime's summary of a pasted block rather than the pasted text itself.
+// pasteKey identifies one collapsed-paste summary well enough to tell it from
+// the one before it.
 //
-// Structural rather than worded: a composer line carrying a bracketed marker
-// that mentions a line count. The runtime is free to reword "Pasted text"; it
-// is not free to stop saying how many lines it swallowed, because that is the
-// only thing the summary is FOR.
-func composerHoldsCollapsedPaste(painted string) bool {
+// Index is the runtime's own counter ("#10"), which is monotonic within a
+// session and is therefore the strong identifier. It is optional: a runtime
+// that prints only a line count still gets attribution, because a SECOND block
+// of the same size is a second entry under the same key and the counting below
+// notices the difference. What is not optional is the line count — it is the
+// only thing the summary exists to say.
+type pasteKey struct{ index, lines int }
+
+// markerCounts is the composer's paste state: how many collapsed blocks it
+// shows, of which shapes.
+//
+// # Why a count of shapes rather than "is a marker present"
+//
+// A marker says "this composer holds a pasted block". It does NOT say the block
+// is the one just delivered, and both confirmations used to read it as if it
+// did. Any earlier stranded paste satisfies the same test, so a send into a
+// composer with residue confirmed against somebody else's leftovers, and the
+// submit check — which watched for the composer to EMPTY — could then never
+// pass, because the residue never leaves.
+//
+// The compounding is what made it urgent. The receipt's own advice on failure
+// is "retry with resumeIfStranded", the retry pastes again, the composer is
+// less empty than before, and the next receipt is wrong for the same reason:
+// the state degrades because the caller did what the receipt told it to.
+// Measured on a live session, one ~30-line instruction produced two consecutive
+// false negatives while the agent had received exactly one clean copy and was
+// acting on it, with the composer holding two placeholders.
+//
+// So the unit of evidence is the CHANGE in this map across a delivery, never
+// the presence of a marker.
+func markerCounts(painted string) map[pasteKey]int {
+	out := map[pasteKey]int{}
 	for _, line := range strings.Split(painted, "\n") {
 		if !strings.Contains(line, composerRuneMarker) {
 			continue
 		}
 		rest := line[strings.Index(line, composerRuneMarker):]
-		open := strings.Index(rest, "[")
-		if open < 0 {
-			continue
-		}
-		close := strings.Index(rest[open:], "]")
-		if close < 0 {
-			continue
-		}
-		inside := strings.ToLower(rest[open : open+close])
-		if strings.Contains(inside, "line") && strings.ContainsAny(inside, "0123456789") {
-			return true
+		for {
+			open := strings.Index(rest, "[")
+			if open < 0 {
+				break
+			}
+			shut := strings.Index(rest[open:], "]")
+			if shut < 0 {
+				break
+			}
+			inside := rest[open+1 : open+shut]
+			rest = rest[open+shut:]
+			lower := strings.ToLower(inside)
+			if !strings.Contains(lower, "line") || !strings.ContainsAny(lower, "0123456789") {
+				continue
+			}
+			out[pasteKey{index: numberAfter(inside, '#'), lines: numberAfter(inside, '+')}]++
 		}
 	}
-	return false
+	return out
+}
+
+// numberAfter reads the run of digits following a marker rune, or 0 when the
+// rune is absent. A runtime that stops printing "#" loses the strong
+// identifier and keeps the weak one; it does not lose attribution entirely.
+func numberAfter(s string, marker byte) int {
+	i := strings.IndexByte(s, marker)
+	if i < 0 {
+		return 0
+	}
+	n, digits := 0, 0
+	for j := i + 1; j < len(s) && s[j] >= '0' && s[j] <= '9'; j++ {
+		n = n*10 + int(s[j]-'0')
+		digits++
+		if digits > 6 {
+			return 0 // not a count; this pane is attacker-influenced text
+		}
+	}
+	if digits == 0 {
+		return 0
+	}
+	return n
+}
+
+// gained reports the key whose count went UP between two readings — the block
+// this delivery is responsible for.
+//
+// Ambiguity fails to "no attribution" rather than to a guess: if two keys grew,
+// something other than this delivery also wrote to the composer, and claiming
+// either would be the same unfounded confidence this whole change removes.
+func gained(before, after map[pasteKey]int) (pasteKey, bool) {
+	var found pasteKey
+	hits := 0
+	for k, n := range after {
+		if n > before[k] {
+			found = k
+			hits++
+		}
+	}
+	return found, hits == 1
+}
+
+// composerHoldsCollapsedPaste reports whether the composer line shows the
+// runtime's summary of a pasted block rather than the pasted text itself.
+//
+// Kept for the readers that legitimately want "is there any pasted block here"
+// — the §2.4 refusal cares about that, because residue is still text a send
+// would concatenate with. Confirmation of a DELIVERY must not use it; that is
+// what markerCounts and gained are for.
+func composerHoldsCollapsedPaste(painted string) bool {
+	return len(markerCounts(painted)) > 0
 }
 
 // noteQuotaBlock remembers that this machine's account is refusing work, and
@@ -2305,26 +2432,49 @@ func (d *Driver) awaitReceptive(ctx context.Context, paneID string) (ready, bloc
 	}
 }
 
-// confirmSubmitted reports whether the submit registered, by observing that
-// the composer EMPTIED.
+// confirmSubmitted reports whether the submit registered, attributed to the
+// delivery confirmLanded identified — `key` is its marker, `atCount` the
+// count `confirmLanded` observed for that marker at the moment it confirmed
+// landing.
 //
 // This is the fail-closed half. Everything before it is inference about
 // whether the runtime would accept a keystroke; this is evidence about whether
-// it did. A composer that still holds the delivered text after the submit is a
-// stranding, and saying so — rather than returning the receipt that says
-// "queued" — is the difference between a caller that can recover and a caller
-// that never finds out.
+// it did.
 //
-// A wholly dim composer counts as empty: that is the runtime's own placeholder
-// hint drawn into an EMPTY box, and reading it as leftover text is the mistake
-// that produced a round of false evidence on this repo's tracker.
-func (d *Driver) confirmSubmitted(ctx context.Context, paneID string) bool {
+// Two independent kinds of evidence, because residue changes what "the
+// composer emptied" can mean:
+//
+//   - the composer is fully empty. Unambiguous, and it works whether or not
+//     this delivery ever produced a marker of its own — a wholly dim
+//     composer counts as empty too, because that is the runtime's own
+//     placeholder hint drawn into an EMPTY box, and reading it as leftover
+//     text is the mistake that produced a round of false evidence on this
+//     repo's tracker.
+//   - the attributed key's count has fallen below `atCount`. Evidence that
+//     THIS block left, even while some other block — somebody else's
+//     residue, present before this delivery ever started — still occupies
+//     the composer line and keeps it from ever reading empty. This is the
+//     branch that did not exist before: the composer was watched for
+//     emptying as the ONLY signal, so a submit that plainly registered still
+//     reported unknown whenever residue happened to share the line. Measured
+//     on a live session, twice consecutively, while the agent had already
+//     received and was acting on the text.
+//
+// `atCount == 0` means confirmLanded attributed no marker at all — the
+// literal single-line case — and the second branch can never fire for it:
+// counts do not go negative. That degrades to exactly the old "composer
+// emptied" check, which was always right for that case: a literal delivery
+// leaves nothing else on the composer line to be confused with.
+func (d *Driver) confirmSubmitted(ctx context.Context, paneID string, key pasteKey, atCount int) bool {
 	deadline := d.now().Add(submitConfirmWindow)
 	for {
 		if sc, ok := d.captureForClassify(ctx, paneID); ok {
 			if text, found := composerText(sc); found && text == "" {
 				return true
 			}
+		}
+		if atCount > 0 && d.paintedMarkers(ctx, paneID)[key] < atCount {
+			return true
 		}
 		if d.now().After(deadline) || ctx.Err() != nil {
 			return false
@@ -2335,6 +2485,25 @@ func (d *Driver) confirmSubmitted(ctx context.Context, paneID string) bool {
 		case <-time.After(submitConfirmInterval):
 		}
 	}
+}
+
+// paintedMarkers captures a pane in the shape confirmLanded's own capture
+// uses — `-J`, so a marker that wraps at the runtime's column width still
+// joins onto one line — and returns its collapsed-paste marker counts.
+//
+// Not captureForClassify's shape: that one deliberately leaves continuation
+// lines unjoined, because the classifier parses wrapping itself. Marker
+// attribution needs the opposite — a bracket split across two physical lines
+// by a mid-word wrap is a bracket markerCounts cannot close, and it would
+// silently drop that block from the count rather than fail loudly. Sharing
+// this shape with confirmLanded is what keeps a "before" and an "after"
+// reading comparable at all.
+func (d *Driver) paintedMarkers(ctx context.Context, paneID string) map[pasteKey]int {
+	out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID, "-S", "-6")
+	if err != nil {
+		return map[pasteKey]int{}
+	}
+	return markerCounts(stripEscapes(string(out)))
 }
 
 // captureForClassify reads a pane in THE shape the classifier requires.
