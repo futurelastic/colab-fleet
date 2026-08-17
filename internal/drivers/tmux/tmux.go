@@ -140,6 +140,18 @@ const (
 	// defaultIdempotencyRetention is how long a create key is honoured
 	// (§10: "retention must outlive the caller's retry window").
 	defaultIdempotencyRetention = 30 * time.Minute
+
+	// strandedRetention is how long a stranded-delivery record (#11) is
+	// honoured after the delivery that produced it. Same value as
+	// defaultIdempotencyRetention, named separately because it answers a
+	// different question — how long a stuck delivery is still worth
+	// finishing on a caller's behalf, not how long a retry window is
+	// honoured — and reusing the number is a deliberate consistency with
+	// §10's already-argued "must outlive a service restart," not a
+	// placeholder. Without an expiry, a durable record eventually matches
+	// text a human typed that happens to be identical — precisely what
+	// strandedMatches's exact-match rule exists to exclude.
+	strandedRetention = 30 * time.Minute
 )
 
 // ErrAmbiguousTarget is returned by a destructive operation whose target
@@ -208,10 +220,18 @@ type Driver struct {
 	quota *fleet.QuotaBlock
 
 	// stranded remembers, per session, text this driver delivered and could
-	// not confirm — the record a resume is checked against. In memory only:
-	// it describes what is sitting in a composer right now, and a composer
-	// does not survive the multiplexer, let alone a service restart.
-	stranded map[string]string
+	// not confirm — the record a resume is checked against.
+	//
+	// Durable when a state store is configured (#11): a composer holding
+	// unsent text survives a multiplexer restart on its own, but until now
+	// the driver's own memory of having put it there did not survive a
+	// SERVICE restart — so resumeIfStranded, the one door out of §2.4's
+	// busy-composer refusal, stopped working on exactly the deploys it
+	// exists to survive. See noteStranded/strandedMatches for the
+	// corroboration (§5.4: id + cwd, not id alone) and strandedRetention
+	// for the lifetime a durable record needs that an in-memory one never
+	// did.
+	stranded map[string]strandedRecord
 
 	// environments remembers what each created session's process received
 	// (see environment.go). In memory only, for the reason stated on
@@ -353,6 +373,7 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 	}
 	d.idem = idem
 	d.loadQuota()
+	d.loadStranded()
 	return d
 }
 
@@ -923,7 +944,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// a multi-line paste renders as a collapsed summary, so the bytes are
 		// not there to compare (F49), and the messages most likely to strand
 		// are exactly the long ones.
-		if opts.ResumeIfStranded && d.strandedMatches(ref.ID, text) {
+		if opts.ResumeIfStranded && d.strandedMatches(ref.ID, target.cwd, text) {
 			// Wake key before the newline, the same shape as the other two
 			// submit sites (#21). This pane is idle BY DEFINITION — the branch
 			// only runs when a composer has been sitting on an unsubmitted
@@ -1022,7 +1043,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// the same as before.
 		// Record what we left behind, so the caller has a way to finish this
 		// rather than being told where the text is and left there.
-		d.noteStranded(ref.ID, text)
+		d.noteStranded(ref.ID, target.cwd, text)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: "text was delivered to the composer but did not render in time " +
@@ -1075,7 +1096,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// nowhere left nothing behind, the resume was refused for lack of a
 	// record, and every later send was refused for a busy composer.
 	if !d.confirmSubmitted(ctx, target.paneID, key, atCount) {
-		d.noteStranded(ref.ID, text)
+		d.noteStranded(ref.ID, target.cwd, text)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: "the text landed and was attributed to this delivery, and a submit was " +
@@ -1413,6 +1434,13 @@ func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fl
 	d.mu.Lock()
 	delete(d.observed, ref.ID)
 	d.mu.Unlock()
+	// #11: a destroyed session's composer is gone with it, so any stranded
+	// record for this id has nothing left to resume into. Forgetting it here
+	// is the proactive half — strandedMatches's cwd check and
+	// strandedRetention are the backstop for every path that isn't an
+	// explicit Close, but there is no reason to leave this one waiting out
+	// its window when Close already knows it is dead.
+	d.forgetStranded(ref.ID)
 	return fleet.Ack{Accepted: true}, nil
 }
 
@@ -2366,38 +2394,112 @@ func (d *Driver) loadQuota() {
 	}
 }
 
+// strandedRecord is what noteStranded persists: the text this driver
+// delivered and could not confirm, and enough beside it (§5.4) to tell a
+// live session from one that merely recycled the same id.
+type strandedRecord struct {
+	Text string    `json:"text"`
+	Cwd  string    `json:"cwd"`
+	At   time.Time `json:"at"`
+}
+
+// strandedFile is the durable document, one entry per session with a
+// delivery still unfinished. Its own file (state.go: one JSON document per
+// concern), never folded into idempotency.json — a create key and a
+// delivery-in-progress are different concerns with different shapes.
+type strandedFile struct {
+	Records map[string]strandedRecord `json:"records"`
+}
+
+const strandedFileName = "stranded"
+
 // noteStranded records text this driver delivered and could not confirm.
 //
 // The record is what a resume corroborates against. It is deliberately OUR
 // account of what we did, not a reading of the screen: the screen cannot show
 // a long message back (F49), and composer contents are not evidence anyone
 // meant to send them.
-func (d *Driver) noteStranded(id, text string) {
+//
+// cwd travels with it (#11): once this record survives a restart, an id
+// match alone is the exact thing §5.4 forbids trusting for a
+// resuming-or-destructive operation, and this is both.
+func (d *Driver) noteStranded(id, cwd, text string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stranded == nil {
-		d.stranded = map[string]string{}
+		d.stranded = map[string]strandedRecord{}
 	}
-	d.stranded[id] = text
+	d.stranded[id] = strandedRecord{Text: text, Cwd: cwd, At: d.now()}
+	d.saveStrandedLocked()
 }
 
 // strandedMatches reports whether text is exactly what this driver left in
-// that session's composer.
+// that session's composer, in the session the record was made for.
 //
-// Exact, not prefix: "resume the delivery I made" is a different request from
-// "submit something that starts the same way", and only the first is the one
-// the caller is owed.
-func (d *Driver) strandedMatches(id, text string) bool {
+// Exact text, not prefix: "resume the delivery I made" is a different
+// request from "submit something that starts the same way", and only the
+// first is the one the caller is owed. cwd is required too (§5.4) — a
+// durable record can outlive the session it describes, and an id is
+// recyclable; matching on id and text alone would resume into whatever
+// unrelated session later reused that name. A record older than
+// strandedRetention is treated as absent, the same reasoning
+// idemStore.sweepLocked applies to an expired idempotency key: kept
+// forever, it stops being evidence about anything in particular.
+func (d *Driver) strandedMatches(id, cwd, text string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.sweepStrandedLocked()
 	prior, ok := d.stranded[id]
-	return ok && prior == text
+	return ok && prior.Text == text && prior.Cwd == cwd
 }
 
 func (d *Driver) forgetStranded(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.stranded, id)
+	d.saveStrandedLocked()
+}
+
+// sweepStrandedLocked drops records older than strandedRetention. Caller
+// holds d.mu. Cheap and unconditional: the map is at most one entry per
+// session with a delivery genuinely in flight, never a growing log.
+func (d *Driver) sweepStrandedLocked() {
+	if len(d.stranded) == 0 {
+		return
+	}
+	now := d.now()
+	for id, rec := range d.stranded {
+		if now.Sub(rec.At) > strandedRetention {
+			delete(d.stranded, id)
+		}
+	}
+}
+
+func (d *Driver) saveStrandedLocked() {
+	if d.store == nil {
+		return
+	}
+	_ = d.store.Save(strandedFileName, strandedFile{Records: d.stranded})
+}
+
+// loadStranded restores stranded-delivery records at startup, sweeping
+// anything already past strandedRetention — the same "sweep on load" shape
+// idemStore uses, so a record that expired while the service was down does
+// not get a fresh window just for having survived to be read.
+func (d *Driver) loadStranded() {
+	if d.store == nil {
+		return
+	}
+	var f strandedFile
+	found, err := d.store.Load(strandedFileName, &f)
+	if err != nil || !found || len(f.Records) == 0 {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stranded = f.Records
+	d.sweepStrandedLocked()
+	d.saveStrandedLocked()
 }
 
 // stampSinceLocked fills §2.3's Since: when this status was FIRST observed to

@@ -1804,7 +1804,7 @@ func TestSendReportsUnknownWhenTheSubmitDoesNotRegister(t *testing.T) {
 	// refused for lack of a record. That was the real shape of this gap: the
 	// stranded record was written only when the text failed to RENDER, so a
 	// dropped submit left nothing behind and resumeIfStranded could not help.
-	if !d.strandedMatches(ref.ID, text) {
+	if !d.strandedMatches(ref.ID, "/work/alpha", text) {
 		t.Fatal("no stranded record was kept, so the resume this receipt recommends " +
 			"would be refused and the text is unreachable")
 	}
@@ -2026,7 +2026,7 @@ func TestSettleNewSessionRecoversFromASwallowedInitialPromptSubmit(t *testing.T)
 		t.Fatal("settleNewSession never returned")
 	}
 
-	if d.strandedMatches(ref.ID, text) {
+	if d.strandedMatches(ref.ID, "/work/alpha", text) {
 		t.Error("the initial prompt is still stranded after settle finished; the one " +
 			"retry #44 asks for did not run")
 	}
@@ -2118,7 +2118,7 @@ func TestDeliverInitialPromptCountsAStrandTheRetryCannotClear(t *testing.T) {
 	// And the original record is untouched — a caller who does eventually
 	// look still finds the same resumeIfStranded path #44 measured working
 	// by hand, 6 times out of 6, once the session is receptive again.
-	if !d.strandedMatches(ref.ID, text) {
+	if !d.strandedMatches(ref.ID, "/work/alpha", text) {
 		t.Error("the stranded record was lost; the manual recovery path #44 measured " +
 			"working would now find nothing to resume")
 	}
