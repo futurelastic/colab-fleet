@@ -261,3 +261,22 @@ type Driver interface {
 type EnvironmentReporter interface {
 	Environment(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionEnvironment, error)
 }
+
+// CounterReporter is another OPTIONAL capability, same shape as
+// EnvironmentReporter: a driver that keeps its own named counters (see
+// internal/drivers/tmux/counters.go) and can hand back a snapshot of them.
+//
+// Optional for the same reason: not every substrate accumulates a count
+// worth exposing, and forcing every driver to implement a method that
+// returns an empty map would be a stub written for no reader.
+//
+// Counters is a plain synchronous read of in-memory state, unlike
+// Environment — there is no substrate round trip to bound, so it takes
+// neither a context nor a caller. The registry it reads already states its
+// own constraint: an integer per name, never anything drawn from a
+// session's screen. #9 is the first caller of this snapshot; it is read
+// through GET /v1/health, next to startedAt, so a reader has the divisor
+// that turns a count into a rate without a second call.
+type CounterReporter interface {
+	Counters() map[string]int64
+}

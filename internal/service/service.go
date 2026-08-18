@@ -450,6 +450,32 @@ func (s *Service) driverSummaries() []driverSummary {
 	return out
 }
 
+// counterSnapshot answers #9: a driver's own counters, read through
+// driver.CounterReporter, keyed by runtime rather than merged into one flat
+// map. Two local drivers are already possible (RegisterLocalDriver has no
+// limit of one), and a name collision between them silently merging two
+// different facts into one count would be a worse bug than the one this
+// registry exists to prevent — see counters.go's own reasoning for why a
+// count that cannot be told apart from another is not a count.
+//
+// A driver that does not implement the interface is left out entirely,
+// never given a zeroed entry: an empty map would claim "nothing happened"
+// about a driver that was never asked, which is not the same statement as
+// #9's own distinction between "not measured" and "cannot be measured".
+func (s *Service) counterSnapshot() map[fleet.RuntimeId]map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[fleet.RuntimeId]map[string]int64, len(s.local))
+	for rt, d := range s.local {
+		reporter, ok := d.(driver.CounterReporter)
+		if !ok {
+			continue
+		}
+		out[rt] = reporter.Counters()
+	}
+	return out
+}
+
 // ErrAmbiguousSession documents the finding recorded in the root package's
 // doc comment: the single-session URL shape (api-http.md §3.3) carries no
 // runtime segment, but SessionRef.ID is scoped to (machine, runtime), not

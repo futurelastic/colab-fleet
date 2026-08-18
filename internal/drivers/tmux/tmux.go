@@ -474,6 +474,14 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 	}
 }
 
+// Counters implements driver.CounterReporter. See counters.go's doc comment
+// for what accumulates here and why it stops at two names today — this
+// method does not add a third; it only opens the read path #9 asked for
+// onto whatever counters.go currently owns.
+func (d *Driver) Counters() map[string]int64 {
+	return d.counters.Snapshot()
+}
+
 // bounded applies this driver's declared deadline, or the caller's if the
 // caller's is shorter (§4.4: "a req may supply a shorter deadline; never
 // a longer one").

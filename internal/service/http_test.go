@@ -12,6 +12,7 @@ import (
 	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
+	"github.com/godx-jp/colab-fleet/internal/driver"
 	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
 )
 
@@ -72,6 +73,86 @@ func TestHealth_OK(t *testing.T) {
 	}
 	if _, ok := body["epoch"]; !ok {
 		t.Error("health response missing epoch")
+	}
+}
+
+// countingStubDriver is stub.Driver plus a fixed set of counters — the
+// smallest fake that exercises handleHealth's optional-capability branch
+// (#9) without standing up a real tmux session to increment a real one.
+type countingStubDriver struct {
+	stub.Driver
+	counts map[string]int64
+}
+
+func (d *countingStubDriver) Counters() map[string]int64 { return d.counts }
+
+var _ driver.CounterReporter = (*countingStubDriver)(nil)
+
+// TestHealth_ExposesRegisteredCounters is the fails-first case #9 asks for:
+// a driver that reports counts must have them readable from /v1/health,
+// broken down by runtime, alongside the startedAt this repo already carries
+// — that pairing is what turns a raw count into a rate.
+func TestHealth_ExposesRegisteredCounters(t *testing.T) {
+	svc := New("test-machine")
+	fake := &countingStubDriver{
+		Driver: stub.Driver{DeadlineMs: 200},
+		counts: map[string]int64{"initial_prompt.delivery_retried": 3},
+	}
+	if err := svc.RegisterLocalDriver("tmux", fake); err != nil {
+		t.Fatalf("RegisterLocalDriver: %v", err)
+	}
+	mux := NewMux(svc, Config{Token: testToken, AllowLocalMutations: true})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	req := authedRequest(t, http.MethodGet, srv.URL+"/v1/health", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		StartedAt string                      `json:"startedAt"`
+		Counters  map[string]map[string]int64 `json:"counters"`
+		Drivers   []map[string]any            `json:"drivers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.StartedAt == "" {
+		t.Error("health response missing startedAt — a count without it cannot become a rate")
+	}
+	got, ok := body.Counters["tmux"]
+	if !ok {
+		t.Fatalf("health response counters missing runtime %q; got %v", "tmux", body.Counters)
+	}
+	if got["initial_prompt.delivery_retried"] != 3 {
+		t.Errorf("counters[tmux][initial_prompt.delivery_retried] = %d, want 3", got["initial_prompt.delivery_retried"])
+	}
+}
+
+// TestHealth_OmitsRuntimesWithNoCounters is the negative half: a driver that
+// does not implement CounterReporter (the stub) must not fabricate a zeroed
+// entry — that would claim an observation nobody made.
+func TestHealth_OmitsRuntimesWithNoCounters(t *testing.T) {
+	_, srv := newTestServer(t) // registers plain stub.Driver under "stub"
+
+	req := authedRequest(t, http.MethodGet, srv.URL+"/v1/health", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		Counters map[string]map[string]int64 `json:"counters"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := body.Counters["stub"]; ok {
+		t.Errorf("counters reported an entry for a driver that never implemented CounterReporter: %v", body.Counters)
 	}
 }
 

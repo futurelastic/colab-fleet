@@ -339,6 +339,24 @@ func handleHealth(svc *Service) http.HandlerFunc {
 			// vintages, and nothing could previously tell them apart.
 			"build":   svc.build,
 			"drivers": svc.driverSummaries(),
+			// counters is the read path #9 asked for onto the registry #44
+			// built (internal/drivers/tmux/counters.go): an integer per
+			// named fact, keyed by runtime. It is deliberately read here
+			// rather than logged periodically — the F57 flap this issue
+			// opens with was found by curling a read surface five times and
+			// comparing counts, and a pull endpoint composes with the
+			// poller that already exists on this response (the dashboard
+			// already hits /v1/health); a log line only pays off with
+			// someone tailing it at the moment it happens.
+			//
+			// startedAt above is the divisor this needs and already had:
+			// every count here resets to zero on every restart, so read
+			// alone it cannot distinguish a quiet machine from a young one.
+			// A reader who divides by time-since-startedAt gets a rate;
+			// one who does not is the reader #9's regression scenario
+			// describes — looking at a healthy-looking number that is
+			// actually just recent.
+			"counters": svc.counterSnapshot(),
 		})
 	}
 }
