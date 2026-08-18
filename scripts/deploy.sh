@@ -72,6 +72,14 @@ cd "$(dirname "$0")/.."
 # What differs is only how a command reaches its target and how a file gets
 # there — ssh/scp for a peer, direct execution for this machine.
 if [ "$HOST" = "local" ]; then
+	# A leading ~ is expanded by the REMOTE shell over ssh, and by nothing at
+	# all here: `cp` takes it literally and fails on a directory named "~".
+	# The default path carries one, so local mode broke on its own default —
+	# found by using it, which is the only way this class of bug is found.
+	case "$REMOTE_PATH" in
+	'~/'*) REMOTE_PATH="$HOME/${REMOTE_PATH#\~/}" ;;
+	'~') REMOTE_PATH="$HOME" ;;
+	esac
 	run() { sh -c "$1"; }
 	put() { cp "$1" "$2"; }
 else
