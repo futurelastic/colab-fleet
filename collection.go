@@ -57,6 +57,23 @@ type SourceStatus struct {
 	Count      *int        `json:"count,omitempty"`
 	Error      string      `json:"error,omitempty"`
 	ObservedAt Timestamp   `json:"observedAt"`
+
+	// Quota is this machine's account-level refusal, if any (#10). Non-nil
+	// means the account behind this machine is currently refusing work — the
+	// same fact StatusQuotaBlocked already reports per session, surfaced
+	// here per machine, and readable without enumerating a single session on
+	// it.
+	//
+	// Deliberately a field of its own, not folded into Status. A machine can
+	// be reachable and answering (Status: SourceOK) while every session on
+	// its account is refused — reachable-and-answering and
+	// willing-to-work are different facts. This envelope exists precisely so
+	// a caller never has to infer one from the other; collapsing them here
+	// would reintroduce, at the source level, exactly the confusion this
+	// type already forbids at the session level. A caller that cannot tell
+	// "this machine is gone" from "this machine is fine but its account is
+	// blocked" retries the wrong one forever.
+	Quota *QuotaBlock `json:"quota,omitempty"`
 }
 
 // ErrCollectionNeedsSources is returned by NewCollection when constructed

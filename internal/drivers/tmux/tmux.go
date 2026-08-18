@@ -625,6 +625,13 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			Status:     fleet.SourceUnreachable,
 			Error:      err.Error(),
 			ObservedAt: d.now(),
+			// The multiplexer not answering says nothing about whether the
+			// ACCOUNT is refusing work — that memory is this driver's own
+			// (quotaBlock, below) and does not depend on reaching tmux at
+			// all (#10). Reachability and willingness are different
+			// questions; answer both, independently, even when one of them
+			// just failed.
+			Quota: d.quotaBlock(),
 		}
 		return fleet.NewCollection([]fleet.Session{}, []fleet.SourceStatus{src})
 	}
@@ -744,25 +751,13 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		}
 	}
 
-	if q := d.quotaBlock(); q != nil {
+	// q is read once and reused below for the source's own Quota field
+	// (#10) — the same remembered fact, at both grains, from a single
+	// lock acquisition rather than two.
+	q := d.quotaBlock()
+	if q != nil {
 		for i := range sessions {
-			var seen string
-			switch sessions[i].State.Status {
-			case fleet.StatusIdle:
-				seen = "the session itself looks idle"
-			case fleet.StatusUnknown:
-				seen = "the session's own screen was inconclusive"
-			default:
-				continue
-			}
-			st := sessions[i].State
-			st.Status = fleet.StatusQuotaBlocked
-			st.Quota = q
-			st.Evidence = "this machine's account is refusing work; " + seen
-			if q.ResetHint != "" {
-				st.Evidence += " (reported reset: " + q.ResetHint + ")"
-			}
-			sessions[i].State = st
+			sessions[i].State = quotaBlockedState(sessions[i].State, q)
 		}
 	}
 
@@ -788,6 +783,10 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		Status:     fleet.SourceOK,
 		Count:      &count,
 		ObservedAt: now,
+		// A scheduler asking "where can work run right now" reads this
+		// field, not Items() — the account fact must be visible here even
+		// against a filter that empties the item list entirely (#10).
+		Quota: q,
 	}
 	if missed > 0 {
 		// This machine answered — every session in count is real, including
@@ -852,7 +851,14 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 			sinceRestored: carried,
 		}
 		d.mu.Unlock()
-		return st, nil
+		// Same rewrite List applies, generalised to a one-session read (#10)
+		// — see quotaBlockedState's own comment for why a session's own
+		// state must not be reported as an unqualified "starting"/"idle"/
+		// "unknown" while this machine's account is known to be refusing
+		// work. This is the read Create's own HTTP handler makes to build
+		// the state it hands back in a 201 — without this, a create
+		// reported nothing and the fact was swallowed until a later poll.
+		return quotaBlockedState(st, d.quotaBlock()), nil
 	}
 	// §5.7 applied to a singular read, and then applied a second time to its
 	// own answer.
@@ -1587,6 +1593,26 @@ func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fl
 // processes by name can match — and terminate — a session whose argv merely
 // contains the string it was hunting for. The prompt is written to a file
 // and delivered through the paste buffer once the session is up.
+//
+// # This never refuses because the account is refusing work (#10)
+//
+// Deliberately absent: a check against quotaBlock before starting the
+// multiplexer session. A create must not be silently refused because the
+// account behind the machine is refusing work — the caller is told and
+// decides, joining `discard`-without-digest or `respond`-without-prompt
+// would report as a well-formed create that "cannot succeed", when in fact
+// the session it names is perfectly real and will exist to try again the
+// moment the account does not refuse.
+//
+// The report itself does not happen here, and does not need to: the caller
+// learns it from the state this call's own SessionRef reads back as, which
+// is quotaBlockedState applied to whatever State (or a subsequent List)
+// returns for it. That is deliberate, not an oversight — a session created
+// while blocked starts out `starting`, which quotaBlockedState treats as
+// silence about the account rather than evidence against it, the same as
+// `idle` and `unknown` already were. See quotaBlockedState for the shared
+// rule and Driver.State for where it is applied to the read Create's own
+// HTTP handler makes to build a 201 response.
 func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
@@ -2509,6 +2535,50 @@ func (d *Driver) quotaBlock() *fleet.QuotaBlock {
 	}
 	q := *d.quota
 	return &q
+}
+
+// quotaBlockedState rewrites st to quota_blocked when q is non-nil and st's
+// own status is silence about the account rather than evidence about it —
+// generalising List's per-session rewrite so State (a single-session read)
+// applies the identical rule (#10).
+//
+// Three statuses qualify, and the third is the one List never needed to
+// consider on its own. idle and unknown are exactly List's original two —
+// see its own comment for why. starting is idle's condition at the earliest
+// possible moment: a session this driver just spawned, for an account
+// already known to be refusing work, paints nothing yet — and "starting" is
+// what a caller reads for it. That caller is very often the one who just
+// called Create, reading the state embedded in its 201 response (built from
+// this exact function, by way of Driver.State) — the response #10 exists to
+// keep honest. Swallowing the account fact behind "starting" until the next
+// poll notices "idle" would report an unqualified success, which is exactly
+// what #10 says a create must not do.
+//
+// Nothing else is rewritten, unchanged from List: working, waiting_input and
+// unsent text each carry something OBSERVED just now, and a remembered fact
+// must not overwrite an observation.
+func quotaBlockedState(st fleet.SessionState, q *fleet.QuotaBlock) fleet.SessionState {
+	if q == nil {
+		return st
+	}
+	var seen string
+	switch st.Status {
+	case fleet.StatusIdle:
+		seen = "the session itself looks idle"
+	case fleet.StatusUnknown:
+		seen = "the session's own screen was inconclusive"
+	case fleet.StatusStarting:
+		seen = "the session had not yet painted anything of its own"
+	default:
+		return st
+	}
+	st.Status = fleet.StatusQuotaBlocked
+	st.Quota = q
+	st.Evidence = "this machine's account is refusing work; " + seen
+	if q.ResetHint != "" {
+		st.Evidence += " (reported reset: " + q.ResetHint + ")"
+	}
+	return st
 }
 
 func (d *Driver) saveQuotaLocked() {

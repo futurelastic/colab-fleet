@@ -2056,6 +2056,102 @@ func TestAccountBlockCoversSessionsItCouldNotClassify(t *testing.T) {
 	}
 }
 
+// #10.a: a create must not be silently refused because the account behind
+// the machine is refusing work — the caller is told and decides. This is
+// the "told" half: the state read back for a session just created while the
+// account is blocked must say so, not "starting", which is exactly what a
+// caller reading the state embedded in Create's own 201 response sees
+// first.
+func TestCreateOnARefusingAccountReportsTheBlockRatherThanSwallowingIt(t *testing.T) {
+	ctx := context.Background()
+	const rule = "────────────────────"
+	f := twoSessions()
+	// Establish the block the way the driver actually learns of one: a
+	// session shows the notice.
+	f.captures["%2"] = "transcript\nYou've hit your weekly limit · resets Aug 10 at 12am\n" + rule + "\n❯ \n" + rule + "\n"
+	d := newTestDriver(f)
+	if _, err := d.List(ctx, testCaller, driver.ListFilter{}); err != nil {
+		t.Fatal(err)
+	}
+	// The notice scrolls away — same setup as
+	// TestQuotaBlockOutlivesTheNoticeThatAnnouncedIt — so nothing on any
+	// screen says the account is blocked any more. The only surviving
+	// evidence is the driver's own remembered block.
+	f.setCapture("%2", idleFixtureFor("beta"))
+
+	ref, err := d.Create(ctx, testCaller, "create-key", fleet.SessionSpec{
+		Machine: "testbox", Cwd: "/work/new", Name: "gamma",
+	})
+	if err != nil {
+		t.Fatalf("create must not refuse on a refusing account (#10): %v", err)
+	}
+
+	// The fake's "new-session" is a no-op against its own session table (see
+	// its own comment on that case); model what a subsequent list-panes
+	// would show for the pane that was actually just spawned: young, and
+	// with nothing painted yet — exactly the pane classify sees the instant
+	// Create's own HTTP handler reads it back to build a 201 body.
+	f.mu.Lock()
+	f.sessions = append(f.sessions, fakeSession{
+		name: ref.ID, paneID: "%3", cwd: "/work/new", pid: 999, created: 1785760000,
+	})
+	f.captures["%3"] = "  loading...\n"
+	f.mu.Unlock()
+
+	st, err := d.State(ctx, testCaller, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != fleet.StatusQuotaBlocked {
+		t.Errorf("a session created while the account is refusing work read %q, "+
+			"not quota_blocked — the fact was swallowed rather than reported", st.Status)
+	}
+}
+
+// #10.b: a fleet-scope caller must be able to tell this machine's account is
+// refusing work by reading Sources() alone — never by reading Items() and
+// inferring it from what individual sessions say, which is unusable the
+// moment a filter empties Items() and impossible for a caller that never
+// asked for sessions in the first place.
+func TestListSourceReportsAccountRefusalWithoutReadingSessions(t *testing.T) {
+	ctx := context.Background()
+	const rule = "────────────────────"
+	f := twoSessions()
+	f.captures["%2"] = "transcript\nYou've hit your weekly limit · resets Aug 10 at 12am\n" + rule + "\n❯ \n" + rule + "\n"
+	d := newTestDriver(f)
+
+	col, err := d.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(col.Sources()) != 1 {
+		t.Fatalf("want exactly one source, got %d", len(col.Sources()))
+	}
+	src := col.Sources()[0]
+	if src.Status != fleet.SourceOK {
+		t.Errorf("the machine is reachable and answering; that must stay SourceOK "+
+			"even though the account is refusing work — conflating the two is exactly "+
+			"what this envelope exists to prevent, got status %q", src.Status)
+	}
+	if src.Quota == nil {
+		t.Fatal("Sources()[0].Quota is nil — a scheduler reading only the source list " +
+			"cannot tell this machine's account is refusing work without reading sessions")
+	}
+
+	// And it survives a filter that empties Items() entirely — the case
+	// where nothing about the fact could be inferred from what came back.
+	filtered, err := d.List(ctx, testCaller, driver.ListFilter{CwdPrefix: "/nowhere"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered.Items()) != 0 {
+		t.Fatalf("filter should have matched nothing, got %d items", len(filtered.Items()))
+	}
+	if filtered.Sources()[0].Quota == nil {
+		t.Error("the account fact must not depend on Items() being non-empty")
+	}
+}
+
 // The THIRD submit site (#22), reached only through the recovery path: a
 // delivery this driver could not confirm, resumed by the caller.
 //

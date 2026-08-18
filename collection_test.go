@@ -3,6 +3,7 @@ package fleet
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,6 +108,60 @@ func TestCollection_UnmarshalRecomputesCompleteFromSources(t *testing.T) {
 	}
 	if c.Complete() {
 		t.Fatal("Complete() = true, want false — recomputed from Sources, not trusted from the wire")
+	}
+}
+
+// #10.b: Quota is a fact about willingness, independent of Status, which is
+// a fact about reachability — and it must stay that way through both
+// construction and the wire.
+func TestSourceStatus_QuotaIsIndependentOfStatusAndRoundTrips(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	blocked, err := NewCollection([]int{1}, []SourceStatus{
+		{Machine: "a", Status: SourceOK, ObservedAt: now,
+			Quota: &QuotaBlock{Since: now, ResetHint: "Aug 10"}},
+	})
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	// A source reporting SourceOK with an account block set is exactly the
+	// case §9's envelope exists to make expressible: reachable AND
+	// answering, but not willing. Complete() reads Status alone — Quota
+	// must not move it, or the two axes have been folded back into one.
+	if !blocked.Complete() {
+		t.Fatal("Complete() = false, want true — an ok source stays ok regardless of Quota")
+	}
+	if blocked.Sources()[0].Quota == nil || blocked.Sources()[0].Quota.ResetHint != "Aug 10" {
+		t.Fatalf("Quota not carried on construction: %+v", blocked.Sources()[0])
+	}
+
+	b, err := json.Marshal(blocked)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded Collection[int]
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	got := decoded.Sources()[0]
+	if got.Quota == nil || got.Quota.ResetHint != "Aug 10" {
+		t.Fatalf("Quota did not survive the wire: %+v", got)
+	}
+	if got.Status != SourceOK {
+		t.Errorf("Status = %q, want ok — unaffected by Quota", got.Status)
+	}
+
+	// The common case — no block — must not put an empty object on the
+	// wire (json:",omitempty" bears the whole weight of this).
+	clean, err := NewCollection([]int{1}, []SourceStatus{{Machine: "a", Status: SourceOK, ObservedAt: now}})
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	cb, err := json.Marshal(clean)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(cb), `"quota"`) {
+		t.Errorf("an absent block must not appear on the wire at all: %s", cb)
 	}
 }
 
