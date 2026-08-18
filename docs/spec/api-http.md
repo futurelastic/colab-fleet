@@ -249,6 +249,8 @@ GET /v1/machines/{machine}/sessions/{id}?runtime=
         "attach": { "kind": "multiplexer", "target": "...",
                     "command": ["...", "..."], "readOnly": ["...", "..."],
                     "shared": true },
+        "conversation": { "known": true, "id": "...",
+                          "source": "derived", "evidence": "..." },
         "state": { "status": "working", "confidence": "inferred",
                    "evidence": "...", "since": "..." } }
 ```
@@ -260,6 +262,15 @@ it. Prefer `readOnly` whenever the user asked to watch rather than to take
 over — the two are different attachments, and offering the wrong one shares a
 live keyboard with a running agent. Absent means the driver has no answer,
 which is a real answer (§5.7).
+
+`conversation` (§2.9) names the record the **runtime** keeps of this session's
+conversation — the one source here that is not the process describing itself.
+It has three states and they are not interchangeable: the field **absent** means
+nobody looked, `known: false` means somebody looked and could not tell (an
+ordinary 200, with the evidence saying why), and `known: true` carries the
+identifier plus a `source` saying whether it was matched or dictated. A caller
+that reads the absent field as "this session has no record" has turned a driver
+without a record store into a finding about somebody's session.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/input

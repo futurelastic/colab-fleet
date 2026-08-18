@@ -298,5 +298,20 @@ type Session struct {
 	// attachable by entirely different means.
 	Attach *AttachHint `json:"attach,omitempty"`
 
+	// Conversation points at the runtime's own record of this session's
+	// conversation — the first source in this service that is not the process
+	// describing itself (see ConversationRef).
+	//
+	// Nil means NOBODY LOOKED: a substrate with no such record, or a driver
+	// with lookup unconfigured. It is not a claim that no record exists — that
+	// claim is Known false with the evidence for it, and the two must not be
+	// collapsed (§5.7). A caller reading nil as "no record" would conclude that
+	// a driver which cannot look has proved an absence.
+	//
+	// Non-nil is always a fact this machine established about this session, so
+	// it is on Session rather than on SessionRef for the same reason as Attach:
+	// a ref is an address, this is something learned.
+	Conversation *ConversationRef `json:"conversation,omitempty"`
+
 	State SessionState `json:"state"`
 }

@@ -243,6 +243,12 @@ type Driver struct {
 	// otherwise related to session state, and sharing a lock would only
 	// make counting something contend with it for no reason.
 	counters counterSet
+
+	// conversations locates the runtime's own record of each session — see
+	// conversation.go. Nil until a record root is configured, and nil is
+	// what makes a listing report nothing at all rather than reporting that
+	// no record was found.
+	conversations *conversationStore
 }
 
 type observation struct {
@@ -335,6 +341,31 @@ func WithLoginShell(path string) Option {
 // need — but a caller reaching for it is opting out of parity, and should know
 // that is what it is.
 func WithBareExec() Option { return func(d *Driver) { d.bareExec = true } }
+
+// WithRecordRoot points this driver at the runtime's own conversation record
+// store, enabling the lookup that fills Session.Conversation.
+//
+// # Why this is off by default
+//
+// A driver constructed without it reports NOTHING about conversations — the
+// field stays absent, meaning nobody looked — and that is the honest default
+// for a constructor a test, a sandbox or another program can call. A default
+// that read a real user's record store merely because a Driver was constructed
+// would make an unconfigured process go looking through somebody's
+// conversations, and would make every test's answer depend on the machine it
+// ran on.
+//
+// The composition root supplies it, the same way it supplies the state store.
+// An empty path disables the lookup again, explicitly.
+func WithRecordRoot(path string) Option {
+	return func(d *Driver) {
+		if path == "" {
+			d.conversations = nil
+			return
+		}
+		d.conversations = newConversationStore(path)
+	}
+}
 
 // withExec injects a fake multiplexer. Unexported: tests only.
 func withExec(f execFunc) Option { return func(d *Driver) { d.run = f } }
@@ -653,6 +684,21 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	d.noteSessionSet(rows)
 
 	sessions := make([]fleet.Session, 0, len(rows))
+
+	// Which sessions still need their conversation record located. Collected
+	// here and resolved below, after the lock is dropped: that lookup reads a
+	// filesystem, and holding the lock that guards every session's observed
+	// state across a directory read would make one slow disk stall the whole
+	// listing.
+	type pendingConversation struct {
+		index   int
+		key     conversationKey
+		cwd     string
+		name    string
+		started time.Time
+	}
+	var pending []pendingConversation
+
 	now := d.now()
 	d.mu.Lock()
 	for _, r := range rows {
@@ -677,6 +723,18 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		if !matchesFilter(s, filter) {
 			continue
 		}
+		if d.conversations != nil {
+			// Keyed on the pane rather than the session name, because a
+			// rename changes the name and the title already written into the
+			// record does not — see conversationKey.
+			pending = append(pending, pendingConversation{
+				index:   len(sessions),
+				key:     conversationKey{pane: r.paneID, created: r.created},
+				cwd:     r.cwd,
+				name:    r.session,
+				started: r.created,
+			})
+		}
 		sessions = append(sessions, s)
 	}
 	obs := make(map[string]observation, len(d.observed))
@@ -685,6 +743,15 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	}
 	d.mu.Unlock()
 	d.noteStatuses(obs)
+
+	// Locate each session's record in the runtime's own store. This is the
+	// only source on this path that is not the runtime describing itself
+	// (conversation.go says why that matters), and it is also the only one
+	// that can answer "I looked and could not tell" — which is a different
+	// answer from the absent field a driver with no store leaves behind.
+	for _, p := range pending {
+		sessions[p.index].Conversation = d.conversations.lookup(p.key, p.cwd, p.name, p.started)
+	}
 
 	// A usage limit belongs to the ACCOUNT, not to whichever pane happened to
 	// print the notice, and it outlives that notice by days. Observe it once

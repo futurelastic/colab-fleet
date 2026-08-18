@@ -368,6 +368,58 @@ and the quoting bug that follows.
 as the same button will corrupt somebody's session by leaning on a keyboard.
 A client that cannot tell the two apart offers the dangerous one.
 
+### 2.9 ConversationRef
+
+```
+ConversationRef {
+  known    : boolean     // a lookup happened and produced an answer
+  id?      : string      // the RUNTIME's identifier for the conversation
+  source?  : string      // "derived" | "captured"; required when known
+  evidence : string      // prose for humans, present either way; never parse it
+}
+```
+
+Optional on `Session`. Three states, and the difference between the first two
+is the whole point:
+
+| shape | means |
+|---|---|
+| field absent | **nobody looked** — no such record on this substrate, or the lookup is not configured |
+| `known: false` + `evidence` | we looked and could not tell, and the evidence says why |
+| `known: true` + `id` + `source` | we can name the record, and `source` says how that was learned |
+
+**Why the model carries this at all.** Everything else a driver reports about a
+session ultimately comes from the process describing itself — the screen it
+chose to paint, read once for status and again for a receipt. When the runtime
+is the thing that is wrong, all of those readings agree and all of them are
+wrong: 51 of 52 sessions on one machine read healthy while the account beneath
+every one of them was refusing work. A record the runtime writes for its own
+purposes, unasked, is an **independent witness**, and it is the first source in
+this model that is not an echo. Knowing *which* record belongs to a session is
+worth having before anything ever opens one: two sessions claiming one record,
+or a live session with none, are facts about identity no screen read produces.
+
+**Why `source` is mandatory when known.** A caller that cannot tell a value
+*read* from a value *matched* will corroborate against a guess and believe it
+is evidence — which is this field's own motivating failure, one level up. §2.3
+already separates a structured read from a screen guess, and §4.3 separates a
+peer's declaration from an unconfirmed floor; this is the third instance of the
+same problem and deliberately takes the same shape rather than inventing a
+fourth. `derived` means the service matched the record to the session;
+`captured` means a driver observed the identifier as the session was created.
+
+**Why `evidence` is present on success too**, unlike the `known`-plus-`reason`
+pairs elsewhere: a reason only exists for a "no", but two derivations are not
+equally strong. "The only record carrying this session's name" and "the only
+one left after two were ruled out" are different answers, and a caller deciding
+whether to act on the identifier is entitled to know which it got.
+
+**A driver must refuse rather than choose.** Where several records could be the
+session's, `known` is false and the evidence says how many were not chosen
+between. Picking the most recently written one is the failure this section
+exists to prevent: a guess shaped like a reading, right often enough that
+nobody checks it.
+
 ---
 
 ## 3. Operations

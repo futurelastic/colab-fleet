@@ -161,6 +161,12 @@ Optional filters: `machine`, `status`, `agent`, `cwdPrefix`.
         "readOnly": ["/opt/homebrew/bin/tmux", "attach-session", "-r", "-t", "alpha💬"],
         "shared": true
       },
+      "conversation": {
+        "known": true,
+        "id": "0f5c2e18-…",
+        "source": "derived",
+        "evidence": "the only record in this session's working directory carrying the name this service gave the session"
+      },
       "state": {
         "status": "idle",
         "confidence": "inferred",
@@ -176,6 +182,17 @@ Optional filters: `machine`, `status`, `agent`, `cwdPrefix`.
   "complete": true
 }
 ```
+
+**`conversation` has three states and you must not merge two of them.** The
+field **absent** means nobody looked — the driver has no record store, or the
+lookup is switched off. `"known": false` means somebody looked and could not
+tell, and its `evidence` says why (several records could be this conversation;
+every candidate predates the session; nothing has been recorded here yet).
+`"known": true` names the record the runtime itself keeps, and `source` tells
+you whether the identifier was *matched* (`derived`) or observed at creation
+(`captured`). Corroborating against a matched value while believing it was read
+is the one mistake this field was added to make impossible — so branch on
+`source`, and treat an absent field as "I don't know", never as "there is none".
 
 **This costs one round trip and, on the multiplexer driver, a constant number
 of subprocess spawns regardless of session count.** You are not being charged

@@ -55,6 +55,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -143,6 +144,19 @@ func main() {
 		opts := []tmux.Option{tmux.WithState(store)}
 		if bin := os.Getenv("FLEET_TMUX_BIN"); bin != "" {
 			opts = append(opts, tmux.WithBinary(bin))
+		}
+		// Where the runtime keeps its own record of each conversation. The
+		// driver defaults this to OFF so that constructing one never reads a
+		// real store; enabling it is a deployment decision, taken here.
+		//
+		// FLEET_RECORD_ROOT overrides the location, and setting it empty
+		// turns the lookup off — at which point every session reports the
+		// absent field, meaning nobody looked, rather than claiming no record
+		// exists.
+		if root, ok := os.LookupEnv("FLEET_RECORD_ROOT"); ok {
+			opts = append(opts, tmux.WithRecordRoot(root))
+		} else if home, err := os.UserHomeDir(); err == nil {
+			opts = append(opts, tmux.WithRecordRoot(filepath.Join(home, ".claude", "projects")))
 		}
 		d := tmux.New(self, opts...)
 		// An unreadable key table is surfaced, never absorbed: continuing
