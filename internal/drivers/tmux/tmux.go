@@ -532,10 +532,25 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 		capArgs = append(capArgs, "display-message", "-p", mark+strconv.Itoa(i), ";")
 		capArgs = append(capArgs, classifyCaptureArgs(r.paneID, d.captureLines)...)
 	}
-	capOut, err := d.run(ctx, d.bin, capArgs...)
-	if err != nil {
-		return nil, nil, fmt.Errorf("enumerate: capturing panes: %w", err)
-	}
+	// A pane can vanish in the gap between the listing above and this
+	// capture — a session that ends while unobserved is ordinary churn
+	// (reconcile.go treats it as exactly that), not a machine failure. The
+	// multiplexer exits nonzero when ANY chained capture-pane target in this
+	// one invocation is gone, and an earlier version of this call treated
+	// that as fatal for the whole batch — discarding the screens of every
+	// OTHER session in the same call, on a machine with any churn at all
+	// (see #29).
+	//
+	// The err here is deliberately not returned. Go's Cmd.Output still hands
+	// back whatever the process wrote to stdout before the failing
+	// sub-command, and the association loop three lines down already
+	// tolerates one pane's capture going missing — an absent entry in
+	// byIndex classifies that session "unknown" rather than aborting (see
+	// the marker-corruption comment above). So a nonzero exit here is
+	// folded into the same tolerance: keep whatever this invocation
+	// produced, and let the caller count what is missing rather than
+	// throwing all of it away.
+	capOut, _ := d.run(ctx, d.bin, capArgs...)
 	byIndex := splitCaptures(string(capOut), mark)
 	captures := make(map[string]string, len(rows))
 	for i, r := range rows {
@@ -599,6 +614,12 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	if err != nil {
 		// §5.7: a failed read is never an empty result. Report the source
 		// as unreachable and let the envelope carry the failure.
+		//
+		// This is now genuinely "no response": enumerate only returns an
+		// error when the LISTING call itself failed (see enumerate's own
+		// comment — a capture-side failure is folded into the per-session
+		// "unknown" path below instead). Unreachable is the right word
+		// exactly because nothing about this machine answered at all.
 		src := fleet.SourceStatus{
 			Machine:    d.machine,
 			Status:     fleet.SourceUnreachable,
@@ -606,6 +627,20 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			ObservedAt: d.now(),
 		}
 		return fleet.NewCollection([]fleet.Session{}, []fleet.SourceStatus{src})
+	}
+
+	// A pane can have vanished between the listing and the capture (see
+	// enumerate's own comment and #29): that row survives — it is still a
+	// real session this machine reported — but its screen was not read, and
+	// captures simply has no entry for it. Count that here, once, rather
+	// than at each of the sites below that read captures: this is the one
+	// place that gets to decide what a miss says about the SOURCE, as
+	// opposed to what it says about the one session that missed.
+	missed := 0
+	for _, r := range rows {
+		if _, ok := captures[r.paneID]; !ok {
+			missed++
+		}
 	}
 
 	d.noteSessionSet(rows)
@@ -753,6 +788,24 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		Status:     fleet.SourceOK,
 		Count:      &count,
 		ObservedAt: now,
+	}
+	if missed > 0 {
+		// This machine answered — every session in count is real, including
+		// the ones that missed a capture — so unreachable would be a lie.
+		// But it did not answer IN FULL, and §5.7's rule that absence and
+		// failure are different answers applies to the source's own status
+		// exactly as it does to a session's: reporting SourceOK here would
+		// have this read call itself complete while N of its sessions are
+		// carrying "unknown" for a reason the caller cannot see without
+		// this Error string. NewCollection reads this Status and turns
+		// Complete() false on its own — nothing below has to remember to.
+		src.Status = fleet.SourceDegraded
+		src.Error = fmt.Sprintf(
+			"%d of %d sessions' screens were not captured this read "+
+				"(a pane vanished between listing and capture, or the capture "+
+				"invocation otherwise failed for it); each reports its own "+
+				"state as unknown rather than a guess",
+			missed, len(rows))
 	}
 	return fleet.NewCollection(sessions, []fleet.SourceStatus{src})
 }

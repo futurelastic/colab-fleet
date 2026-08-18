@@ -105,6 +105,20 @@ func (f *fakeMux) addSession(s fakeSession, capture string) {
 	f.captures[s.paneID] = capture
 }
 
+// paneExists reports whether paneID is still a live session's pane. Callers
+// must already hold f.mu — this has no lock of its own because its only
+// caller, exec's "display-message" case, is already inside one, and
+// sync.Mutex is not reentrant (see the rename-session case's own note on
+// the same constraint).
+func (f *fakeMux) paneExists(paneID string) bool {
+	for _, s := range f.sessions {
+		if s.paneID == paneID {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeMux) dropLastSession() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -321,13 +335,85 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		}
 		return nil, nil
 	case "display-message":
-		// The batched capture call: emit marker + capture for each pane.
-		mark := testNonce + "P"
+		// The batched capture call: one chained invocation of
+		// "display-message -p <mark> ; capture-pane ... -t <pane> ; ..." per
+		// row, exactly as enumerate builds it (tmux.go's capArgs).
+		//
+		// This used to answer by walking f.sessions directly — one marker
+		// per CURRENT session, in CURRENT order — which quietly assumed
+		// nothing changes between the listing call that built this command
+		// line and this one running it. #29 is exactly that assumption
+		// failing: a pane can vanish in the gap. So this parses the actual
+		// argv instead, the way the real multiplexer would receive it, and
+		// answers per chained sub-command: a capture-pane whose target no
+		// longer exists in f.sessions fails — no marker or body for that
+		// pane, and the overall exit is nonzero — while every other pane in
+		// the same invocation still gets read, matching capture-pane's
+		// real per-target failure and the multiplexer's documented "run
+		// every chained command, report failure if any of them failed"
+		// behaviour.
+		var groups [][]string
+		var cur []string
+		for _, a := range args {
+			if a == ";" {
+				groups = append(groups, cur)
+				cur = nil
+				continue
+			}
+			cur = append(cur, a)
+		}
+		groups = append(groups, cur)
+
 		var b strings.Builder
-		for i, s := range f.sessions {
-			b.WriteString(mark + intToStr(i) + "\n")
-			b.WriteString(f.captures[s.paneID])
-			b.WriteString("\n")
+		anyVanished := false
+		pendingMark := ""
+		for _, g := range groups {
+			if len(g) == 0 {
+				continue
+			}
+			switch g[0] {
+			case "display-message":
+				for i, a := range g {
+					if a == "-p" && i+1 < len(g) {
+						pendingMark = g[i+1]
+					}
+				}
+			case "capture-pane":
+				var pane string
+				withEscapes := false
+				for i, a := range g {
+					if a == "-t" && i+1 < len(g) {
+						pane = g[i+1]
+					}
+					if a == "-e" {
+						withEscapes = true
+					}
+				}
+				if !f.paneExists(pane) {
+					// The pane this sub-command targets is gone: real
+					// capture-pane exits 1 for it and prints nothing, so
+					// this block contributes neither marker nor body — and
+					// the mark buffered above is discarded with it, the
+					// same way the real marker is never printed if the
+					// capture-pane after it never ran.
+					anyVanished = true
+					pendingMark = ""
+					continue
+				}
+				if pendingMark != "" {
+					b.WriteString(pendingMark + "\n")
+				}
+				body := f.captures[pane] + "\n" + f.pasted[pane]
+				if !withEscapes {
+					body = stripEscapes(body)
+				}
+				b.WriteString(body)
+				b.WriteString("\n")
+				pendingMark = ""
+			}
+		}
+		if anyVanished {
+			return []byte(b.String()), errors.New("exit status 1")
 		}
 		return []byte(b.String()), nil
 	default:
@@ -432,6 +518,74 @@ func TestListCarriesExactlyOneSourceAndRealStatuses(t *testing.T) {
 	}
 	if byID["alpha💬"].Cwd != "/work/alpha" {
 		t.Errorf("emoji session name broke field parsing: cwd = %q", byID["alpha💬"].Cwd)
+	}
+}
+
+// #29: a pane vanishing in the gap between listing and capturing must not
+// cost every OTHER session on the machine its read — and the source that
+// answered must say it read only PART of the machine, not claim a clean ok
+// (nor, since it plainly answered, unreachable).
+func TestListToleratesPaneVanishingMidCapture(t *testing.T) {
+	f := twoSessions()
+	// Reproduces the exact race #29 describes: "beta" is still there when
+	// list-panes runs — its row is in the listing — but is gone by the time
+	// the batched capture-pane invocation reaches it, the same way a
+	// short-lived session ends in the gap on a live fleet. dropLastSession
+	// after the listing call removes it from f.sessions before
+	// display-message answers, so its capture-pane sub-command has no
+	// target left and the fake reports exactly what real capture-pane does
+	// for a gone pane: that one sub-command fails, the invocation's overall
+	// exit is nonzero, and everything captured for OTHER panes is still in
+	// the output.
+	wrapped := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, err := f.exec(ctx, name, args...)
+		if len(args) > 0 && args[0] == "list-panes" {
+			f.dropLastSession()
+		}
+		return out, err
+	}
+	d := New("testbox",
+		withExec(wrapped),
+		withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return time.Unix(1785760000, 0) }),
+	)
+
+	got, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatalf("a vanished pane must not fail the whole read: %v", err)
+	}
+
+	if len(got.Items()) != 2 {
+		t.Fatalf("want both sessions reported — the vanished one as unknown, "+
+			"not dropped — got %d: %+v", len(got.Items()), got.Items())
+	}
+	byID := map[string]fleet.Session{}
+	for _, s := range got.Items() {
+		byID[s.ID] = s
+	}
+	if byID["alpha💬"].State.Status != fleet.StatusIdle {
+		t.Errorf("alpha's read must survive beta vanishing, got %q", byID["alpha💬"].State.Status)
+	}
+	if byID["beta"].State.Status != fleet.StatusUnknown {
+		t.Errorf("the vanished pane's own session should read unknown, not silently drop, got %q",
+			byID["beta"].State.Status)
+	}
+
+	if len(got.Sources()) != 1 {
+		t.Fatalf("a local answer carries exactly one SourceStatus (§9), got %d", len(got.Sources()))
+	}
+	src := got.Sources()[0]
+	if src.Status == fleet.SourceUnreachable {
+		t.Error("this machine answered — 1 of 2 panes read — unreachable is the wrong word")
+	}
+	if src.Status != fleet.SourceDegraded {
+		t.Errorf("a partial read must report degraded, got %q", src.Status)
+	}
+	if src.Error == "" {
+		t.Error("a degraded source must carry why (§9)")
+	}
+	if got.Complete() {
+		t.Error("a source that answered partially must not report itself complete")
 	}
 }
 
