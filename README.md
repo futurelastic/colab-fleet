@@ -397,4 +397,6 @@ Stated plainly so nobody rediscovers them the expensive way.
 
 ## License
 
-TBD.
+[MIT](LICENSE). Copy it, run it, change it — the adoption path in
+[`docs/adoption.md`](docs/adoption.md) exists for people who are not us, and a
+documented adoption path with no licence grants them nothing.
