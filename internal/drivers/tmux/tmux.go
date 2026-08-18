@@ -249,6 +249,20 @@ type Driver struct {
 	// what makes a listing report nothing at all rather than reporting that
 	// no record was found.
 	conversations *conversationStore
+
+	// credentialPath is the runtime's own local credential store, stat'ed to
+	// answer #12 (SessionState.CredentialGeneration, EventMachineAccount).
+	// Empty means unconfigured — the honest default for a constructor a
+	// test, a sandbox or another program can call — and every session then
+	// reports the field absent rather than a guessed value. See
+	// WithCredentialPath.
+	//
+	// Unlike quota this needs no field alongside it to remember a value
+	// across reads: a file's modification time does not evaporate the way a
+	// scrolled-away screen notice does, so the filesystem already holds the
+	// fact and a cached copy in this struct would only be a second,
+	// potentially stale one.
+	credentialPath string
 }
 
 type observation struct {
@@ -365,6 +379,20 @@ func WithRecordRoot(path string) Option {
 		}
 		d.conversations = newConversationStore(path)
 	}
+}
+
+// WithCredentialPath points this driver at the runtime's own local
+// credential store, enabling #12: a session's CredentialGeneration and the
+// machine.account event both come from stat'ing this one path.
+//
+// Off by default for the same reason as WithRecordRoot — a driver
+// constructed for a test or a sandbox must not go stat'ing a real file
+// merely because it was built. The composition root supplies a real path;
+// an empty one disables the feature again, explicitly, and every session
+// then reports CredentialGeneration absent rather than a guessed value
+// (§5.7).
+func WithCredentialPath(path string) Option {
+	return func(d *Driver) { d.credentialPath = path }
 }
 
 // withExec injects a fake multiplexer. Unexported: tests only.
@@ -708,12 +736,19 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	var pending []pendingConversation
 
 	now := d.now()
+	// Read once, outside the loop, and stamp every session in this response
+	// with the same value: they are all being answered as of this one
+	// instant, and a machine-wide fact read once per session risks reading
+	// two different generations into one snapshot if the file changes
+	// mid-loop (#12).
+	gen := d.credentialGeneration()
 	d.mu.Lock()
 	for _, r := range rows {
 		text, captured := captures[r.paneID]
 		young := now.Sub(r.created) < startingWindow
 		raw, digest := classifyPaneRemembering(text, captured, !r.dead, young, d.memoryLocked(r.session), now)
 		st, carried := d.stampSinceLocked(r.session, raw, now)
+		st.CredentialGeneration = gen
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since, digest: digest,
@@ -920,6 +955,7 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		raw, digest := classifyPaneRemembering(text, captured, !r.dead,
 			now.Sub(r.created) < startingWindow, d.memoryLocked(r.session), now)
 		st, carried := d.stampSinceLocked(r.session, raw, now)
+		st.CredentialGeneration = d.credentialGeneration() // #12, same as List's per-session stamp
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since, digest: digest,
@@ -2610,6 +2646,33 @@ func (d *Driver) quotaBlock() *fleet.QuotaBlock {
 	}
 	q := *d.quota
 	return &q
+}
+
+// credentialGeneration reads the local credential store's own modification
+// time — the "generation" identifier #12 needs — or nil when unconfigured
+// or the stat fails.
+//
+// One stat call, every read. No lock and no field on Driver remembers a
+// value across calls, unlike quotaBlock: a file's mtime does not evaporate
+// the way a scrolled-away screen notice does, so this driver's own memory
+// would only be a second, potentially stale copy of what one syscall
+// already answers fresh. The finding this exists to surface was itself made
+// this way, from outside the process entirely — this is that same cheap
+// signal, already within reach, not a new detector.
+//
+// It answers "which generation is in force right now", never "is a session
+// still bound to it" — see SessionState.CredentialGeneration for the
+// distinction this return value must not blur.
+func (d *Driver) credentialGeneration() *fleet.Timestamp {
+	if d.credentialPath == "" {
+		return nil
+	}
+	info, err := os.Stat(d.credentialPath)
+	if err != nil {
+		return nil
+	}
+	t := info.ModTime()
+	return &t
 }
 
 // quotaBlockedState rewrites st to quota_blocked when q is non-nil and st's

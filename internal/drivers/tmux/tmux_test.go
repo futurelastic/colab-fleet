@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -2149,6 +2150,117 @@ func TestListSourceReportsAccountRefusalWithoutReadingSessions(t *testing.T) {
 	}
 	if filtered.Sources()[0].Quota == nil {
 		t.Error("the account fact must not depend on Items() being non-empty")
+	}
+}
+
+// #12.b: a session started before the local credential material changed
+// must be distinguishable, by field alone, from one started after — the
+// predicate a supervisor evaluates itself (startedAt < generation), with no
+// account identity involved.
+func TestSessionsDistinguishWhichCredentialGenerationTheyStartedUnder(t *testing.T) {
+	f := twoSessions() // alpha created 1785600000, well before the rotation below
+	// A third session, spawned AFTER the credential rotation modelled below —
+	// the "after" half of the pair this field exists to tell apart.
+	f.sessions = append(f.sessions, fakeSession{
+		name: "gamma", paneID: "%3", cwd: "/work/gamma", pid: 300, created: 1785750000, title: "2_1_220",
+	})
+	f.captures["%3"] = idleFixtureFor("gamma")
+
+	credPath := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The rotation: the store's mtime lands strictly between alpha's start
+	// and gamma's.
+	rotated := time.Unix(1785700000, 0)
+	if err := os.Chtimes(credPath, rotated, rotated); err != nil {
+		t.Fatal(err)
+	}
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return time.Unix(1785760000, 0) }),
+		WithCredentialPath(credPath))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]fleet.Session{}
+	for _, s := range col.Items() {
+		byName[s.ID] = s
+	}
+	alpha, ok := byName["alpha💬"]
+	if !ok {
+		t.Fatal("alpha missing from the listing")
+	}
+	gamma, ok := byName["gamma"]
+	if !ok {
+		t.Fatal("gamma missing from the listing")
+	}
+
+	if alpha.State.CredentialGeneration == nil || gamma.State.CredentialGeneration == nil {
+		t.Fatalf("CredentialGeneration absent: alpha=%v gamma=%v",
+			alpha.State.CredentialGeneration, gamma.State.CredentialGeneration)
+	}
+	// Both sessions read the SAME generation — one machine, one credential
+	// store, one instant of read (List reads it once, not per session) —
+	// only StartedAt differs between them.
+	if !alpha.State.CredentialGeneration.Equal(*gamma.State.CredentialGeneration) {
+		t.Errorf("alpha and gamma read different generations in the same List call: %v vs %v",
+			alpha.State.CredentialGeneration, gamma.State.CredentialGeneration)
+	}
+
+	if alpha.StartedAt == nil || gamma.StartedAt == nil {
+		t.Fatal("StartedAt absent")
+	}
+	if !alpha.StartedAt.Before(*alpha.State.CredentialGeneration) {
+		t.Errorf("alpha started at %v, before the rotation at %v, but the predicate does not show it",
+			*alpha.StartedAt, *alpha.State.CredentialGeneration)
+	}
+	if gamma.StartedAt.Before(*gamma.State.CredentialGeneration) {
+		t.Errorf("gamma started at %v, after the rotation at %v, but the predicate claims otherwise",
+			*gamma.StartedAt, *gamma.State.CredentialGeneration)
+	}
+}
+
+// #12, §5.7 applied to this field: a driver with no credential store
+// configured reports the fact absent, not a guessed "current" value.
+func TestCredentialGenerationAbsentWhenUnconfigured(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f) // no WithCredentialPath
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range col.Items() {
+		if s.State.CredentialGeneration != nil {
+			t.Errorf("session %s: CredentialGeneration = %v, want nil with no store configured",
+				s.ID, s.State.CredentialGeneration)
+		}
+	}
+}
+
+// #12: State() — the single-session read Create's own HTTP handler uses to
+// build a 201 body (see quotaBlockedState's own comment on that path) —
+// must carry CredentialGeneration too, or a caller reading a freshly
+// created session's state has no way to tell which generation it answered
+// under until a later List call happens to notice.
+func TestStateCarriesCredentialGeneration(t *testing.T) {
+	f := twoSessions()
+	credPath := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return time.Unix(1785760000, 0) }),
+		WithCredentialPath(credPath))
+
+	st, err := d.State(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.CredentialGeneration == nil {
+		t.Fatal("State() did not carry CredentialGeneration")
 	}
 }
 

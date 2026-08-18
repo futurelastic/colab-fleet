@@ -2,7 +2,9 @@ package fleet
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestStatus_JSONRoundTrip(t *testing.T) {
@@ -93,6 +95,44 @@ func TestConfidence_RejectsUnknownValue(t *testing.T) {
 	var c Confidence
 	if err := json.Unmarshal([]byte(`"guessing"`), &c); err == nil {
 		t.Fatal("expected an error unmarshaling an unrecognised Confidence, got nil")
+	}
+}
+
+// #12: CredentialGeneration is an identity marker independent of Status —
+// it must round-trip on the wire, must not appear when absent (the ordinary
+// case, for a driver with no credential store configured), and must never
+// move Status the way Quota's rewrite does.
+func TestSessionState_CredentialGenerationIsIndependentOfStatusAndRoundTrips(t *testing.T) {
+	clean := SessionState{Status: StatusIdle, Confidence: ConfidenceInferred, Evidence: "idle"}
+	cb, err := json.Marshal(clean)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(cb), `"credentialGeneration"`) {
+		t.Errorf("an absent generation must not appear on the wire at all: %s", cb)
+	}
+
+	gen := time.Now().UTC().Truncate(time.Second)
+	withGen := SessionState{
+		Status: StatusIdle, Confidence: ConfidenceInferred, Evidence: "idle",
+		CredentialGeneration: &gen,
+	}
+	b, err := json.Marshal(withGen)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded SessionState
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if decoded.CredentialGeneration == nil || !decoded.CredentialGeneration.Equal(gen) {
+		t.Fatalf("CredentialGeneration did not survive the wire: %+v", decoded)
+	}
+	// The point of #12.d: this field must never be folded into Status. A
+	// session showing idle with a generation attached is still, simply,
+	// idle — not a new status, not a rewrite of an existing one.
+	if decoded.Status != StatusIdle {
+		t.Errorf("Status = %q, want idle — unaffected by CredentialGeneration", decoded.Status)
 	}
 }
 

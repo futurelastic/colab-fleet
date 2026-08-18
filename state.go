@@ -270,6 +270,46 @@ type SessionState struct {
 	// anything about it. Nil is the ordinary case and means nothing was said —
 	// NOT that the turn succeeded (§5.7: absence is not a finding).
 	LastTurn *TurnEnd `json:"lastTurn,omitempty"`
+
+	// CredentialGeneration is the local credential store's own modification
+	// time, as read at the moment this state was produced (#12).
+	//
+	// # What it answers, and what it does not
+	//
+	// It answers "which identity was locally in force when this state was
+	// read" — nothing more. Paired with the session's own StartedAt (on
+	// Session, one level up), a caller can evaluate the predicate a rebind
+	// supervisor actually needs without this driver ever asserting an
+	// account identity: startedAt before this value means the session began
+	// under a credential that is no longer the one in force.
+	//
+	// It is NOT a claim that the session's runtime is still bound to
+	// whatever it authenticated as, and must never be read as one. Every
+	// local source this project measured — the runtime's own on-screen
+	// status, this driver's classification, a supervisor's dispatch record —
+	// reported a healthy binding for a session whose binding had gone stale,
+	// because all of them ultimately quote the same process's announcement
+	// about itself. Nothing added here changes that; it only makes the one
+	// fact this driver CAN answer — which generation — askable, instead of
+	// silently absent.
+	//
+	// # Why unconditional, not folded into Status
+	//
+	// Deliberately independent of Status and never rewrites it, unlike
+	// Quota's effect on `idle`/`unknown`/`starting`. A credential transition
+	// says nothing about what a session's own screen shows right now, and
+	// smearing an account-level fact into session state is the exact
+	// precedence mistake #10's own findings already named — repeating it
+	// here for a second account-level fact would be the same defect twice.
+	// The session genuinely remains locally dispatchable; only the
+	// generation it started under may no longer be current.
+	//
+	// # Nil is a real answer
+	//
+	// Nil means no credential store is configured, or the stat failed —
+	// §5.7's rule applied here: this driver looked and could not tell, which
+	// is a different fact from "the generation is unknown to have changed".
+	CredentialGeneration *Timestamp `json:"credentialGeneration,omitempty"`
 }
 
 // ObservedState constructs a SessionState a driver reports from a

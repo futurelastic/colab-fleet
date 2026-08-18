@@ -245,6 +245,13 @@ type eventStream struct {
 	quotaKnown bool
 	quotaBlock *fleet.QuotaBlock
 
+	// credential generation tracking (#12), owned by run() alone — no lock.
+	// See run()'s own comment for why, unlike quota, the FIRST read never
+	// emits: there is no unremarkable baseline generation to stay silent
+	// about, so a first read only seeds the comparison.
+	credentialKnown bool
+	credentialGen   *fleet.Timestamp
+
 	mu      sync.Mutex
 	conns   map[string]ctlConn // session id -> content client
 	closed  bool
@@ -561,6 +568,36 @@ func (s *eventStream) run(ctx context.Context, trigger <-chan struct{}, known ma
 			}
 			s.quotaKnown = true
 			s.quotaBlock = q
+		}
+
+		// The credential store's own generation (#12), compared against what
+		// this stream last saw — the second machine-level fact on this loop
+		// and, unlike quota, one with no unremarkable baseline to stay quiet
+		// about: every machine has SOME generation the instant a store
+		// exists, so re-announcing "the current one" on the seed read would
+		// make a machine.account event fire on every new subscription rather
+		// than only at an actual transition. The first read therefore only
+		// seeds the comparison and never emits; only an observed CHANGE
+		// after that is a transition worth telling a subscriber about.
+		//
+		// This is a report, not a repair (#12.c, ruled report-only,
+		// consistent with #10.c's identical question): nothing here touches
+		// session status or attempts to rebind anything.
+		if g := s.d.credentialGeneration(); s.credentialKnown {
+			if g != nil && (s.credentialGen == nil || !g.Equal(*s.credentialGen)) {
+				s.emit(ctx, fleet.Event{
+					Machine: s.d.machine,
+					Kind:    fleet.EventMachineAccount,
+					Payload: fleet.MachineAccountPayload{
+						Machine:    s.d.machine,
+						Generation: *g,
+					},
+				})
+			}
+			s.credentialGen = g
+		} else {
+			s.credentialGen = g
+			s.credentialKnown = true
 		}
 
 		seen := map[string]bool{}

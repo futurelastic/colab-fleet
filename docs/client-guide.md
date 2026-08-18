@@ -657,6 +657,7 @@ This is the part to get right before you build a UI on it.
 | the agent prints output, the spinner ticks, the screen scrolls | **no** |
 | a machine becomes unreachable | `source.status` |
 | this machine's **account** starts or stops refusing work | `machine.quota` |
+| this machine's local **credential material** changes | `machine.account` |
 
 Events fire on **transitions**, not on content. A session that stays `working`
 for twenty minutes produces one event at the start, not a stream — which is
@@ -685,6 +686,35 @@ budget, not in this event.  And
 so show it to a human rather than parsing it into a timer — the service itself
 never uses it to expire a block. What clears a block is a session on that
 machine being observed working.
+
+### `machine.account` tells you which identity, never whether it still works
+
+When the local credential material changes, every session started before
+that moment is bound to the old one. `machine.account` fires once at the
+transition and carries `generation` — the credential store's new
+modification time, an identity marker only. It says which generation is now
+in force; it never says a session's binding to it still answers, and you
+must not read it that way. The same measurement that justifies
+`machine.quota`'s existence found three independent local sources agreeing a
+fleet was healthy through exactly this kind of transition, and all three were
+wrong, because all three ultimately quote the process's own announcement
+about itself.
+
+Join it against a session's own `credentialGeneration` (on `SessionState`,
+present on every read) or `startedAt` (on `Session`) to answer "did this
+session start under the credential now in force" — the only predicate this
+event exists to make askable. **This layer reports the transition and stops
+there.** It does not rebind anything, and it does not change a session's
+`status`: the session genuinely remains locally dispatchable, and the fact is
+account-level, not a property of any one session's screen. Repair is a
+supervisor's job, layered on top of this report — not something to expect
+from the report itself.
+
+Unlike `machine.quota`, a subscriber that joins **after** a transition is not
+retroactively told about it: every machine has some generation the moment a
+credential store exists at all, so there is no quiet baseline to depart from
+the way "not blocked" is for quota. Read `credentialGeneration` directly off
+whatever you already listed instead.
 
 ### What subscribing costs
 

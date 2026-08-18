@@ -474,6 +474,7 @@ resumption needs no client code. The server honours that header when no
 | `session.closed` | ref + final state |
 | `source.status` | a machine's reachability changed |
 | `machine.quota` | `{ "machine", "blocked": bool, "quota"? }` — this machine's **account** started or stopped refusing work |
+| `machine.account` | `{ "machine", "generation" }` — this machine's local **credential material** changed |
 | `control.resync` | `{ "reason": "epoch_changed" \| "cursor_expired" }` |
 
 `source.status` exists so a client learns a peer went away as an **event**,
@@ -491,6 +492,22 @@ sessions each discovered it separately, by being dispatched work and stalling.
 Every discovery cost a session that had already been sent. There is no earlier
 signal available — the runtime prints no warning before it refuses, so the
 first refusal is the notice.
+
+`machine.account` is the sibling of `machine.quota` for a different
+account-level fact (#12): the local credential material itself changed, so
+every session started before that moment is bound to an identity that is no
+longer the one in force. It fires once at the transition. Unlike
+`machine.quota` it is **not** re-announced to a subscriber that joins after
+the fact — every machine has some generation the moment a credential store
+exists, so there is no "already in force and worth repeating" case the way a
+block has; a joining subscriber instead reads `generation` directly off each
+session (`SessionState.CredentialGeneration`).
+
+`generation` is an identity marker, not a health claim: it says which
+credential this machine now has, never that any particular session's binding
+to it still answers. This layer **reports the transition only** — a rebind is
+a supervisor's operation, layered on top, not something this event triggers or
+performs.
 
 On `control.resync` the client refetches state and resubscribes. The service
 never resumes silently from an arbitrary point (§7.3) — an announced gap is

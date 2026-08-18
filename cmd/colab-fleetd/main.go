@@ -158,6 +158,20 @@ func main() {
 		} else if home, err := os.UserHomeDir(); err == nil {
 			opts = append(opts, tmux.WithRecordRoot(filepath.Join(home, ".claude", "projects")))
 		}
+		// Where the runtime keeps its own local credential material —
+		// stat'ed, never read, to answer #12 (SessionState.CredentialGeneration,
+		// EventMachineAccount). Same off-by-default reasoning as
+		// FLEET_RECORD_ROOT above: a driver built for a test must not go
+		// stat'ing a real file merely because it was constructed.
+		//
+		// FLEET_CREDENTIAL_PATH overrides the location, and setting it empty
+		// turns the feature off — every session then reports the field
+		// absent rather than a guessed value.
+		if path, ok := os.LookupEnv("FLEET_CREDENTIAL_PATH"); ok {
+			opts = append(opts, tmux.WithCredentialPath(path))
+		} else if home, err := os.UserHomeDir(); err == nil {
+			opts = append(opts, tmux.WithCredentialPath(filepath.Join(home, ".claude.json")))
+		}
 		d := tmux.New(self, opts...)
 		// An unreadable key table is surfaced, never absorbed: continuing
 		// with an empty one is exactly the behaviour §10 calls a disaster.

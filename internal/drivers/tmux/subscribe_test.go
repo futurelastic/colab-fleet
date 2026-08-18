@@ -3,6 +3,8 @@ package tmux
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -652,4 +654,91 @@ func awaitQuota(t *testing.T, s driver.EventStream) (fleet.MachineQuotaPayload, 
 		}
 	}
 	return fleet.MachineQuotaPayload{}, false
+}
+
+// #12: the machine-level event fires once at an actual credential
+// transition — not on the seed read that merely establishes a baseline,
+// not a second time for a later trigger that changed nothing further, and
+// not once per session (this fixture carries two).
+func TestSubscribeAnnouncesACredentialTransitionOnlyOnce(t *testing.T) {
+	f := twoSessions()
+	r := &ctlRegistry{}
+
+	credPath := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baseline := time.Unix(1785600500, 0)
+	if err := os.Chtimes(credPath, baseline, baseline); err != nil {
+		t.Fatal(err)
+	}
+
+	d := New("testbox",
+		withExec(f.exec),
+		withCtlDialer(r.dial),
+		withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return time.Unix(1785760000, 0) }),
+		WithCredentialPath(credPath),
+	)
+
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// A trigger with nothing changed about the credential store: the seed
+	// read already saw this generation, so this must not read as a
+	// transition.
+	f.setCapture("%2", fixtureWorking)
+	fire(r.contentFor("alpha💬"), "output")
+	if _, ok := awaitAccount(t, s, 500*time.Millisecond); ok {
+		t.Fatal("machine.account fired with no credential change — the seed read must not count as a transition")
+	}
+
+	// The actual transition.
+	rotated := time.Unix(1785700000, 0)
+	if err := os.Chtimes(credPath, rotated, rotated); err != nil {
+		t.Fatal(err)
+	}
+	f.setCapture("%1", fixtureWorking)
+	fire(r.contentFor("alpha💬"), "output")
+
+	p, ok := awaitAccount(t, s, 4*time.Second)
+	if !ok {
+		t.Fatal("the credential material changed and the stream never said so")
+	}
+	if p.Machine != "testbox" {
+		t.Errorf("machine = %q, want testbox", p.Machine)
+	}
+	if !p.Generation.Equal(rotated) {
+		t.Errorf("Generation = %v, want %v", p.Generation, rotated)
+	}
+
+	// A second trigger with nothing further changed must not re-announce —
+	// once per transition, not once per read that happens to notice it.
+	f.setCapture("%2", fixtureUnsent)
+	fire(r.contentFor("beta"), "output")
+	if _, ok := awaitAccount(t, s, 500*time.Millisecond); ok {
+		t.Fatal("machine.account fired a second time with no further change — a transition is reported once")
+	}
+}
+
+func awaitAccount(t *testing.T, s driver.EventStream, d time.Duration) (fleet.MachineAccountPayload, bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		ev, ok := nextWithin(t, s, time.Until(deadline))
+		if !ok {
+			return fleet.MachineAccountPayload{}, false
+		}
+		if ev.Kind == fleet.EventMachineAccount {
+			p, ok := ev.Payload.(fleet.MachineAccountPayload)
+			if !ok {
+				t.Fatalf("payload type %T, want MachineAccountPayload", ev.Payload)
+			}
+			return p, true
+		}
+	}
+	return fleet.MachineAccountPayload{}, false
 }
