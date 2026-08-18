@@ -67,3 +67,12 @@ id_rsa*
 # anything, so it is committed instead: any future *.local.md is ignored on
 # every checkout before anyone has to hand-repair it machine by machine.
 *.local.md
+
+# ─── Raw pane captures (by suffix — never a directory, never committed) ───
+# testdata/corpus/README.md's curation path saves a raw capture to a scratch
+# file before redact.go's RedactCapture ever sees it. That file must never
+# reach git even briefly: this pattern is the second line of defence behind
+# "keep it outside the working tree in the first place" — a suffix, not a
+# path, so it catches a scratch file dropped anywhere by mistake rather than
+# only the one location someone remembered to avoid.
+*.rawcapture

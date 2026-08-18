@@ -1,0 +1,11 @@
+{
+  "name": "fleet-recovery-simultaneous-ambiguity",
+  "for": "The sharpest sentence #13 left behind: a fleet-wide recovery moves EVERY session into ambNoSpinnerEmpty at the same moment (a restart discards paneMemory — #7, 'since resets on restart' — so nothing has a prior digest to compare against), which means the classifier is least informative exactly when someone is checking whether the recovery worked. This case pins the per-session MECHANISM that produces that symptom: a single pane, first sighting, no spinner, empty composer, classifies unknown rather than a guessed idle or working. See setProperty below and testdata/corpus/README.md, 'What this corpus cannot express', for why the fleet-wide symptom itself — many such panes read at once — is not something this case, or any single-screen case, can assert.",
+  "source": "#13 (closed as a notebook entry; carried forward to #8 as the second required case)",
+  "redactedFrom": "reconstructed from commit 5bee844's own measurement (91 sessions read, 10 unknown, every one with this exact evidence) — the same shape, not the same fleet",
+  "alive": true,
+  "setProperty": "A property of a SET of panes read in the same cycle, not of one screen: every session in the cohort shares this pane's shape at once, because a restart clears paneMemory for all of them together rather than one at a time. classify() and classifyPaneRemembering() take one pane; there is no fleet-level entry point in this package for a caller to hand them a cohort and get one verdict back. This case can assert only that ONE such pane classifies unknown on first sight — which is true, and is the mechanism — not that N of them doing so at once is the moment a supervisor is most blind. Expressing THAT would need a test at the layer that reads many panes in one cycle (tmux.go's enumeration, or a supervisor above this package), replaying N near-identical corpus entries against one shared clock. Not built here; noted so the gap is a stated limitation rather than a silent one.",
+  "observations": [
+    { "afterSeconds": 0, "young": false, "want": "unknown" }
+  ]
+}

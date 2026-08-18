@@ -1,0 +1,11 @@
+{
+  "name": "command-output-above-empty-composer",
+  "for": "A slash command displaces the spinner: it prints its own output, then the TUI settles with no spinner line and an empty composer. #13 found that this pane never returns to the directly-classifiable branch — it falls into ambNoSpinnerEmpty like a fresh prompt would, and only resolves after the screen sits still for spinnerPaintGrace. #13 closed WITHOUT landing a fix (its own text: 'nothing here reads wrong today'), so this case records CURRENT behaviour, not the ideal one. The two observations below are the cost #13 measured: unknown on first sight, idle only after a second look. A future fix (per #13's own note, 'a displaced spinner has a path back to the direct branch') should make the FIRST observation idle directly — at which point this case's first `want` changes to `idle` and stays a regression case, rather than being deleted.",
+  "source": "#13 (closed as a notebook entry; two required cases carried forward to #8)",
+  "redactedFrom": "reconstructed from #13's own description — this driver has never persisted a raw screen to reconstruct byte-for-byte (screenDigest, not text; see resolveAmbiguity's comment), so a historical finding can only be as faithful as what was written down at the time",
+  "alive": true,
+  "observations": [
+    { "afterSeconds": 0, "young": false, "want": "unknown" },
+    { "afterSeconds": 5, "young": false, "want": "idle" }
+  ]
+}
