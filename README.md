@@ -140,6 +140,9 @@ of them, not the other way round.
    a client of this, staged so each step is reversible. Read it if you are
    evaluating whether this is worth adopting; §2 is the precondition that
    surprised us.
+6. [`docs/deploy.md`](docs/deploy.md) — how a merged commit reaches a running
+   service. This is the procedure `exposure: self` in `.github/project.yml`
+   depends on; read it before you next put a commit in front of anything.
 
 If you are picking this up cold and want the short version: read the session
 spec's **§14** (the defects, seven of nine now resolved — the open ones are
@@ -191,6 +194,10 @@ go run ./cmd/colab-fleetd
 The binary binds loopback and requires a bearer token; there is no
 unauthenticated mode, including in development. Configure via `FLEET_ADDR` and
 `FLEET_TOKEN`.
+
+This is the developer loop — running from source, on demand. Putting a merged
+commit in front of a service that stays up is a different, documented
+procedure: see [`docs/deploy.md`](docs/deploy.md).
 
 ## Which agent-CLI versions this is tested against
 

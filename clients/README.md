@@ -7,7 +7,7 @@ before anything ran.
 
 | | |
 |---|---|
-| [`fleetctl.zsh`](fleetctl.zsh) | **A standalone client — no launcher required.** `ls`, `up`, `watch`, `new`, `kill`, `attach`, across every machine in the fleet. Plain zsh; needs only `curl` and `python3`. In daily use on two machines. |
+| [`fleetctl.zsh`](fleetctl.zsh) | **A standalone client — no launcher required.** `ls`, `up`, `watch`, `new`, `kill`, `attach`, across every machine in the fleet. Plain zsh; needs only `curl` and `python3`. Not sourced by default on either machine — the line below enables it in an interactive shell. It is for a human at a terminal, and for attach; an automated caller talks to the HTTP API directly. |
 
 ```sh
 export FLEET_URL=http://127.0.0.1:<port>

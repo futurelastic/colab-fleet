@@ -23,8 +23,14 @@
 # USAGE
 #
 #   scripts/deploy.sh HOST [REMOTE_PATH]
+#   scripts/deploy.sh local [REMOTE_PATH]
 #
-#   HOST          ssh destination, as your ssh config understands it.
+#   HOST          ssh destination, as your ssh config understands it, or the
+#                 literal word "local" to deploy to the machine you are
+#                 standing on — no ssh, no scp, otherwise every step below is
+#                 identical, including the read-back at the end. This is the
+#                 ordinary case: the machine most likely to need a deploy is
+#                 the one this session is already running on.
 #   REMOTE_PATH   where the binary lands. Default: ~/bin/colab-fleetd
 #
 # Environment:
@@ -54,10 +60,24 @@ REMOTE_PATH=${2:-'~/bin/colab-fleetd'}
 
 if [ -z "$HOST" ]; then
 	echo "usage: scripts/deploy.sh HOST [REMOTE_PATH]" >&2
+	echo "       scripts/deploy.sh local [REMOTE_PATH]" >&2
 	exit 2
 fi
 
 cd "$(dirname "$0")/.."
+
+# --- local vs. remote, behind one seam --------------------------------------
+#
+# Every step past this point is written once and runs identically either way.
+# What differs is only how a command reaches its target and how a file gets
+# there — ssh/scp for a peer, direct execution for this machine.
+if [ "$HOST" = "local" ]; then
+	run() { sh -c "$1"; }
+	put() { cp "$1" "$2"; }
+else
+	run() { ssh "$HOST" "$1"; }
+	put() { scp -q "$1" "${HOST}:$2"; }
+fi
 
 # --- refuse to ship something that cannot be identified ---------------------
 if [ "${ALLOW_DIRTY:-0}" != "1" ]; then
@@ -76,7 +96,7 @@ echo "deploy: revision ${REV}"
 # --- target platform, asked rather than assumed -----------------------------
 if [ -z "${GOOS:-}" ] || [ -z "${GOARCH:-}" ]; then
 	echo "deploy: asking ${HOST} what it is"
-	REMOTE_UNAME=$(ssh "$HOST" 'uname -s; uname -m')
+	REMOTE_UNAME=$(run 'uname -s; uname -m')
 	REMOTE_OS=$(echo "$REMOTE_UNAME" | sed -n 1p)
 	REMOTE_ARCH=$(echo "$REMOTE_UNAME" | sed -n 2p)
 	case "$REMOTE_OS" in
@@ -111,14 +131,14 @@ GOOS="$GOOS" GOARCH="$GOARCH" go build -buildvcs=true -o "$TMPBIN" ./cmd/colab-f
 # writing over a running binary is how you get a half-written executable and a
 # service that will not start.
 echo "deploy: installing to ${HOST}:${REMOTE_PATH}"
-ssh "$HOST" "mkdir -p \"\$(dirname ${REMOTE_PATH})\""
-scp -q "$TMPBIN" "${HOST}:${REMOTE_PATH}.incoming"
-ssh "$HOST" "chmod 0755 ${REMOTE_PATH}.incoming && mv ${REMOTE_PATH}.incoming ${REMOTE_PATH}"
+run "mkdir -p \"\$(dirname ${REMOTE_PATH})\""
+put "$TMPBIN" "${REMOTE_PATH}.incoming"
+run "chmod 0755 ${REMOTE_PATH}.incoming && mv ${REMOTE_PATH}.incoming ${REMOTE_PATH}"
 
 # --- restart ----------------------------------------------------------------
 if [ -n "${FLEET_RESTART:-}" ]; then
 	echo "deploy: restarting"
-	ssh "$HOST" "$FLEET_RESTART"
+	run "$FLEET_RESTART"
 else
 	echo "deploy: no FLEET_RESTART set — binary installed, service NOT restarted."
 	echo "        The old build is still serving until you restart it."
@@ -136,7 +156,7 @@ fi
 echo "deploy: verifying"
 i=0
 while [ "$i" -lt 10 ]; do
-	RUNNING=$(ssh "$HOST" "curl -fsS -H \"Authorization: Bearer \$(cat ~/.config/colab-fleet/token)\" ${FLEET_HEALTH_URL}" 2>/dev/null |
+	RUNNING=$(run "curl -fsS -H \"Authorization: Bearer \$(cat ~/.config/colab-fleet/token)\" ${FLEET_HEALTH_URL}" 2>/dev/null |
 		tr ',' '\n' | sed -n 's/.*"revision":"\([^"]*\)".*/\1/p' | head -1) || true
 	if [ -n "$RUNNING" ]; then
 		break

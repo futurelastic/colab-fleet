@@ -14,7 +14,8 @@ is only how an agent working here finds the rules.
 This repo follows the [colab-handbook](https://github.com/godx-jp/colab-handbook/blob/main/CONVENTIONS.md) conventions.
 
 - **Tier:** `B` — no production target; a human runs the documented
-  build-install-restart procedure to put a commit in front of anything.
+  build-install-restart procedure to put a commit in front of anything. See
+  [`docs/deploy.md`](docs/deploy.md).
 - **Trunk:** `main` (feature branches `feat|fix|docs|chore|refactor|test|perf/<slug>`)
 - **Descriptor:** see `.github/project.yml`. CI workflows are copy-and-own from
   the handbook's `templates/` — this repo owns its copies, they are not called

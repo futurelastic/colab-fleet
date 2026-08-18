@@ -201,7 +201,9 @@ changes in this repository, and the fourth by a decision outside it.
    the running build back *after* restart to prove the deploy happened. That
    read-back is the part that matters: the skew in (3) was not caused by a
    failed copy but by a service that kept serving the old binary afterwards
-   (F40).
+   (F40). This is also the procedure `exposure: self` depends on; see
+   [`docs/deploy.md`](deploy.md) for the write-up and the traps found running
+   it.
 
 ## 5. What adoption does not fix
 
