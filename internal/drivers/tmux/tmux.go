@@ -1295,7 +1295,9 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	if expectDigest == "" {
 		return fleet.Ack{}, fmt.Errorf(
 			"%w: refusing to discard %d characters the caller has not seen; "+
-				"supply the composerDigest from a read",
+				"supply the composerDigest from a read as ?expect=<composerDigest> "+
+				"(a query parameter, the same place startedAt goes — not a body field, "+
+				"even though composerDigest is the name of a field IN the read response)",
 			ErrAmbiguousTarget, len(pending))
 	}
 	if got := screenDigest(pending); got != expectDigest {
@@ -1305,25 +1307,42 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 			ErrAmbiguousTarget, expectDigest, got)
 	}
 
-	// C-u clears the line. Measured on a live session rather than assumed:
-	// C-a C-k and Escape were tried too, and C-u alone is enough.
-	if _, err := d.run(ctx, d.bin, "send-keys", "-t", live.paneID, "C-u"); err != nil {
-		return fleet.Ack{}, fmt.Errorf("discard: %w", err)
-	}
-
-	// Verify, because a keypress that did not register looks exactly like one
-	// that did — the same reason send confirms before submitting.
+	// C-u clears the line the cursor sits on. Measured on a live session
+	// rather than assumed: C-a C-k and Escape were tried too, and C-u alone
+	// is enough — for a single line.
+	//
+	// It is readline's unix-line-discard, which kills from the cursor back
+	// to the start of the CURRENT line, not the whole buffer. A composer
+	// holding one short line empties in one press, which is what the
+	// original measurement above confirmed and all this code's tests
+	// against it were exercising. A composer spanning several lines does
+	// not: one press clears the line the cursor is on and leaves every
+	// line above it standing, so a single un-repeated press against a
+	// multi-line paste (issue #32: ~6.6 KB, roughly four visual lines) can
+	// only ever get partway there.
+	//
+	// So this presses the same key again on every iteration the composer
+	// is still non-empty — the same thing an operator clearing a stuck
+	// multi-line prompt by hand would do — walking it backward one line at
+	// a time until nothing is left or the window runs out. Verification
+	// stays in the loop for the reason it was already there: a keypress
+	// that did not register looks exactly like one that did, the same
+	// reason send confirms before submitting.
 	deadline := d.now().Add(promptClearWindow)
+	left := pending
 	for {
-		sc, ok := d.captureForClassify(ctx, live.paneID)
-		if ok {
-			if left, _ := composerText(sc); left == "" {
+		if _, err := d.run(ctx, d.bin, "send-keys", "-t", live.paneID, "C-u"); err != nil {
+			return fleet.Ack{}, fmt.Errorf("discard: %w", err)
+		}
+		if sc, ok := d.captureForClassify(ctx, live.paneID); ok {
+			got, _ := composerText(sc)
+			if got == "" {
 				return fleet.Ack{Accepted: true}, nil
 			}
+			left = got
 		}
 		if d.now().After(deadline) || ctx.Err() != nil {
-			return fleet.Ack{}, errors.New(
-				"discard: the clear keystroke did not empty the composer; text is still there")
+			return fleet.Ack{}, discardIncomplete(pending, left)
 		}
 		select {
 		case <-ctx.Done():
@@ -1331,6 +1350,68 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		case <-time.After(promptClearInterval):
 		}
 	}
+}
+
+// discardIncomplete reports a clear that ran out of time without ever
+// emptying the composer, and says which of two situations that is — because
+// "still not empty" covers two outcomes a caller must treat oppositely, and
+// nothing distinguished them before this existed.
+//
+// # The two outcomes, and why they cannot share a message
+//
+// Unchanged means the keystroke never registered at all: the composer reads
+// exactly what the caller already corroborated (before, the digest-verified
+// pending text). Nothing was destroyed, so retrying Discard with the same
+// digest is exactly as safe as the first attempt was.
+//
+// Changed-but-nonempty means it registered PARTIALLY: some of the text is
+// gone, none of it cleanly, and the composer now holds neither what the
+// caller saw nor nothing — the worst of the three possible outcomes,
+// because a caller told only "not cleared" cannot tell it apart from either
+// of the other two. Retrying blind is actively dangerous here: the digest
+// this failure leaves behind no longer matches what the caller read, so a
+// retry against the old digest will be refused as stale (§5.4) anyway, and
+// a caller that worked around that by re-reading and retrying without
+// looking at what it now read could clear further into a corrupted message
+// instead of stopping to ask a human.
+//
+// # Why both still map to conflict, not invalid
+//
+// Both are wrapped in ErrAmbiguousTarget, which the service maps to 409
+// (conflict), not 400 (invalid) — see writeDriverError. The request was
+// well formed; what failed is that the driver could not carry it out, which
+// is not a caller mistake to fix by resending the same bytes. §5.4's kind
+// already exists for "well-formed request, state the driver cannot
+// corroborate" for the PRE-condition (the digest disagreeing before
+// acting); this is the identical shape of problem at the POST-condition
+// (the result disagreeing after acting), so it reuses the same kind rather
+// than inventing a new one the wire's closed error-kind set does not have
+// a slot for.
+//
+// # Why this is a message, not a field
+//
+// WaitingReason exists as a structured field because waiting_input started
+// meaning two things that demand OPPOSITE automated handling — a prompt
+// wants an answer, unsent input must not be sent to. This does not: in
+// both cases here the correct caller action is identical — do not retry
+// blind, re-read the composer before deciding anything — so a discriminator
+// nothing would ever branch on would be dead weight. It is also not this
+// file's convention: every other ErrAmbiguousTarget case in this driver
+// (Close, Rename, and the two above) differentiates by message text alone,
+// and a caller of this API already gets the general instruction for
+// conflict — re-read and decide — from api-http.md §2.
+func discardIncomplete(before, after string) error {
+	if after == before {
+		return fmt.Errorf(
+			"%w: discard: the clear keystroke did not register; the composer is "+
+				"unchanged from what was read, so retrying with the same digest is safe",
+			ErrAmbiguousTarget)
+	}
+	return fmt.Errorf(
+		"%w: discard: the clear keystroke ran but did not finish; the composer now "+
+			"holds neither the original text nor nothing — it is damaged, not merely "+
+			"unclear, so re-read it before doing anything else rather than retrying blind",
+		ErrAmbiguousTarget)
 }
 
 // Rename changes a session's id (§3).

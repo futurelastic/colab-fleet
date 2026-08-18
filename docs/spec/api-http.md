@@ -276,13 +276,27 @@ starting another.
 POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&startedAt=
 → 202 { "accepted": true }
 → 409 if the digest does not match what is there now, or none was supplied
+→ 409 also if the clear could not be confirmed to have finished — the message
+  says whether the composer is unchanged (safe to retry with the same digest)
+  or now damaged (re-read before doing anything else; do not retry blind)
 ```
 
 Removes unsent composer text without submitting it. `expect` is
-`state.composerDigest` from a read, and it is **required when there is text**:
-this deletes somebody's typing, and a caller that has not seen the current text
-has no business removing it. An already-empty composer returns 202, so a retry
-after a timeout is safe.
+`state.composerDigest` from a read, sent as the **query parameter** shown above
+— not a JSON body field, even though `composerDigest` is also the name of a
+field in the read response that produced it. It is **required when there is
+text**: this deletes somebody's typing, and a caller that has not seen the
+current text has no business removing it. An already-empty composer returns
+202, so a retry after a timeout is safe.
+
+A driver that cannot confirm its own clear keystroke finished reports that as
+409 too, never 400: the request was well formed, and a keystroke failing to
+land is not the caller's mistake to fix by resending the same bytes. The two
+ways that can happen need opposite next steps, so the message says which:
+the composer may be exactly what the caller already read (nothing destroyed,
+retry away), or it may hold neither that text nor nothing — partially cleared,
+which is worse than either extreme and must not be retried without a fresh
+read.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/rename?startedAt=&runtime=

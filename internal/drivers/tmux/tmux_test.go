@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -42,6 +43,18 @@ type fakeMux struct {
 	// delivered and rendered, the submit keystroke goes nowhere, and the
 	// composer is left holding the line.
 	swallowSubmit bool
+	// composerLines models a composer holding several LOGICAL lines, so
+	// send-keys can model what C-u (unix-line-discard) actually does against
+	// one: clear the line the cursor sits on and leave the rest standing,
+	// rather than the whole buffer at once. Only set for a pane a test put
+	// there via setMultilineComposer; every other pane keeps the older
+	// all-at-once behaviour below, so this changes nothing for a test that
+	// never asked for it.
+	composerLines map[string][]string
+	// frozen models a pane where the clear keystroke never registers at
+	// all — the untouched half of #32's missing branch, as distinct from
+	// composerLines' partial-clear model of the damaged half.
+	frozen map[string]bool
 }
 
 // composerHolding renders a frame whose composer holds text — the shape of a
@@ -55,6 +68,34 @@ func (f *fakeMux) setCapture(paneID, text string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.captures[paneID] = text
+}
+
+// setMultilineComposer puts a composer on the pane holding several logical
+// lines, and arms the line-by-line C-u model for it (see composerLines).
+// lines[0] is what would sit after the ❯ marker; the rest are continuation
+// lines a long unsent message wraps onto below it.
+func (f *fakeMux) setMultilineComposer(paneID string, lines []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.composerLines == nil {
+		f.composerLines = map[string][]string{}
+	}
+	cp := append([]string(nil), lines...)
+	f.composerLines[paneID] = cp
+	f.captures[paneID] = composerHolding(strings.Join(cp, "\n"))
+}
+
+// freezeComposer makes C-u a complete no-op against paneID — modelling a
+// clear keystroke that never reaches the terminal at all, as opposed to
+// setMultilineComposer's partial-clear model of one that reaches it and
+// only gets partway.
+func (f *fakeMux) freezeComposer(paneID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.frozen == nil {
+		f.frozen = map[string]bool{}
+	}
+	f.frozen[paneID] = true
 }
 
 func (f *fakeMux) addSession(s fakeSession, capture string) {
@@ -241,8 +282,28 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			}
 		}
 		if clear && pane != "" {
-			delete(f.pasted, pane)
-			f.captures[pane] = idleFixtureFor("cleared")
+			if f.frozen[pane] {
+				// Models a keystroke that goes nowhere: composer untouched.
+			} else if lines, armed := f.composerLines[pane]; armed && len(lines) > 0 {
+				// unix-line-discard kills the line the cursor sits on, not the
+				// whole buffer: one press drops the LAST logical line, leaving
+				// every line above it exactly as it was. A composer with one
+				// line therefore still clears in a single press — same as the
+				// plain branch below — and only a composer with several needs
+				// this pressed more than once to go empty.
+				lines = lines[:len(lines)-1]
+				f.composerLines[pane] = lines
+				if len(lines) == 0 {
+					delete(f.composerLines, pane)
+					delete(f.pasted, pane)
+					f.captures[pane] = idleFixtureFor("cleared")
+				} else {
+					f.captures[pane] = composerHolding(strings.Join(lines, "\n"))
+				}
+			} else {
+				delete(f.pasted, pane)
+				f.captures[pane] = idleFixtureFor("cleared")
+			}
 		}
 		// Model what a SUBMIT does, which the fake previously left implicit.
 		// It mattered once the driver started confirming that the submit
@@ -1423,6 +1484,195 @@ func TestDiscardClearsWhatTheCallerSaw(t *testing.T) {
 	}
 	if !sawClear {
 		t.Error("no clear keystroke was sent")
+	}
+}
+
+func countClears(calls [][]string) int {
+	n := 0
+	for _, call := range calls {
+		if len(call) >= 4 && call[0] == "send-keys" && call[len(call)-1] == "C-u" {
+			n++
+		}
+	}
+	return n
+}
+
+// Issue #32, surviving half: the clear is a single un-repeated keystroke,
+// and C-u (unix-line-discard) only ever kills the line the cursor sits on —
+// never the whole buffer. Against a composer holding several logical lines
+// (the shape of the 6.6 KB paste in the issue), one press cannot reach
+// empty no matter how long the caller waits for confirmation.
+//
+// This fails against the un-repeated version of Discard: it sends exactly
+// one C-u, the fake's line-by-line model drops only the last of three
+// lines, and the poll loop then just watches a composer that will never go
+// empty until the bound below gives up — countClears would read 1, not 3,
+// and the call would return an error instead of Accepted.
+func TestDiscardRepeatsTheClearForAMultiLineComposer(t *testing.T) {
+	f := twoSessions()
+	lines := []string{"just a moment,", "this is the second visual line,", "and this is the third."}
+	f.setMultilineComposer("%2", lines)
+
+	// Not newTestDriver's usual frozen clock: this test needs the poll
+	// loop's OWN promptClearWindow deadline (and bounded()'s deadline,
+	// derived from the same d.now()) to sit safely in the future relative
+	// to the real ctx.WithTimeout below, which a frozen constant cannot
+	// guarantee once real time moves past it — see the untouched test's
+	// comment for the failure that produces.
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a multi-line composer published no composerDigest")
+	}
+
+	// A hang-guard only: an un-repeated clear that never reaches empty
+	// would otherwise spin this loop for the full 3s promptClearWindow
+	// rather than fail it quickly. Generous next to the ~600ms three
+	// presses need.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a %d-line composer: %v", len(lines), err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countClears(f.callsSnapshot()); got < len(lines) {
+		t.Errorf("sent %d clear keystrokes for a %d-line composer; a single un-repeated "+
+			"C-u only ever kills the line the cursor is on, so this must press it again "+
+			"for every line still standing", got, len(lines))
+	}
+}
+
+// Issue #32, the branch that did not exist at all: a clear that runs out of
+// time without emptying the composer covers two situations that demand
+// opposite handling, and nothing told them apart. This is the untouched
+// half — the keystroke never registered, so the composer is byte-for-byte
+// what the caller already corroborated, and retrying with the same digest
+// is safe.
+//
+// Against the pre-fix Discard this fails twice over: the returned error is
+// a bare errors.New, not wrapped in ErrAmbiguousTarget, so it is reported
+// as invalid (400, the caller's fault) rather than conflict (409); and its
+// message never says the text is intact, so a caller has no way to know a
+// retry is safe.
+func TestDiscardReportsAnUntouchedComposerDistinctlyAndSafely(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent
+	f.freezeComposer("%2") // the clear keystroke never reaches this pane at all
+
+	// The real clock, deliberately not the file's usual frozen test
+	// constant: this test needs Discard's own promptClearWindow deadline to
+	// actually elapse (a frozen d.now() never advances, so that branch
+	// would never fire), and bounded() also computes its outer deadline
+	// from d.now() — mixing a frozen driver clock with a real-time context
+	// there produces an already-expired context the moment the frozen
+	// constant is older than the wall clock, which silently corrupts any
+	// test exercising more than one poll iteration.
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("setup: no composerDigest published")
+	}
+
+	_, err = d.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err == nil {
+		t.Fatal("a frozen pane must not report success")
+	}
+	if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+		t.Errorf("kind: got %v, want an ErrAmbiguousTarget (conflict, not the caller's "+
+			"fault) — a driver-side execution failure must not be reported as invalid", err)
+	}
+	if !strings.Contains(err.Error(), "unchanged") || !strings.Contains(err.Error(), "safe") {
+		t.Errorf("message = %q; an untouched composer must say the text is intact and a "+
+			"same-digest retry is safe, not just that it %q", err.Error(), "did not clear")
+	}
+}
+
+// Issue #32, the branch's other half, and the worse of the two: the
+// keystroke ran and did SOMETHING, but the composer that is left is neither
+// what the caller saw nor empty. A caller told only "not cleared" cannot
+// tell this apart from the untouched case above, and the two demand
+// opposite next steps — one is safe to retry as-is, this one is not.
+//
+// Against the pre-fix Discard this fails the same two ways as the untouched
+// test: unwrapped error (mapped to invalid, not conflict) and a message
+// that never says the composer is now damaged.
+func TestDiscardReportsADamagedComposerDistinctlyAndUnsafely(t *testing.T) {
+	f := twoSessions()
+	// More lines than promptClearWindow's real time can walk through at one
+	// press per promptClearInterval (3s / 200ms ≈ 15): enough must still be
+	// standing when the window closes to prove "damaged", not "succeeded a
+	// little slowly".
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d of an unsent message that never got resent", i)
+	}
+	f.setMultilineComposer("%2", lines)
+
+	// See the sibling untouched test for why this is the real clock and not
+	// the file's usual frozen one.
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("setup: no composerDigest published")
+	}
+
+	_, err = d.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err == nil {
+		t.Fatal("a composer that never reaches empty must not report success")
+	}
+	if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+		t.Errorf("kind: got %v, want an ErrAmbiguousTarget (conflict, not the caller's "+
+			"fault) — a driver-side execution failure must not be reported as invalid", err)
+	}
+	if !strings.Contains(err.Error(), "damaged") {
+		t.Errorf("message = %q; a partially cleared composer must say so — this is the "+
+			"outcome a caller cannot tell apart from success or untouched without it", err.Error())
+	}
+	if strings.Contains(err.Error(), "safe") {
+		t.Errorf("message = %q; a damaged composer must NOT read as safe to retry — the "+
+			"digest guarding it has already moved", err.Error())
+	}
+	// At least one line must have actually gone, distinguishing this from
+	// the untouched case: the keystroke partially ran.
+	if got := countClears(f.callsSnapshot()); got == 0 {
+		t.Error("no clear keystroke was even attempted")
 	}
 }
 
