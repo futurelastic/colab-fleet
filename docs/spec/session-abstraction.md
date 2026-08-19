@@ -311,6 +311,28 @@ operation.
 **Parsing is bounded.** The screen is written by an agent that can print
 anything, so an index parsed from it is untrusted input. See Appendix A, F35.
 
+**A directory-trust question can also be pre-answered, standing outside a
+create request entirely.** `Consents`/`TrustCwd` scope a caller's answer to
+the one session it is creating — the caller named that directory in the same
+request, so agreeing to the runtime's question about it is still the
+caller's decision, this layer only carries it out. Most sessions on a real
+fleet are not created through this service at all, so no request exists for
+that consent to travel on. The tmux driver's trust-seed maintainer
+(`internal/trustseed`, colab-fleet issue #47) closes that gap by writing the
+runtime's own record of the answer — a per-directory key in its own state
+file — ahead of time, under a fixed, operator-configured set of roots, so
+the question is never raised for any session under one, whoever started it.
+
+This is still the SAME decision the consent table already commits to on
+create, only standing rather than per-request: an operator, not this
+service, says once which directories are trusted, and the maintainer only
+carries that out — it never decides, at runtime, that some other directory
+should count as trusted because of anything it observed. See prompt.go's
+`PromptFolderTrust` doc comment for where exactly that line is drawn, and
+`internal/trustseed`'s package doc for the add-only, race-tolerant mechanism
+that lets it write into a file the runtime itself rewrites wholesale while
+sessions hold it open.
+
 ### 2.7a Response
 
 ```

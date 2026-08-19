@@ -79,6 +79,7 @@ import (
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
 	"github.com/godx-jp/colab-fleet/internal/state"
+	"github.com/godx-jp/colab-fleet/internal/trustseed"
 )
 
 const (
@@ -263,6 +264,13 @@ type Driver struct {
 	// fact and a cached copy in this struct would only be a second,
 	// potentially stale one.
 	credentialPath string
+
+	// trustSeed pre-answers the runtime's folder-trust question for every
+	// directory under a configured root — see internal/trustseed and #47.
+	// Nil means unconfigured, the same off-by-default contract as
+	// credentialPath: a driver built for a test never touches a real state
+	// file merely because it was constructed. See WithTrustSeed.
+	trustSeed *trustseed.Seeder
 }
 
 type observation struct {
@@ -395,6 +403,37 @@ func WithCredentialPath(path string) Option {
 	return func(d *Driver) { d.credentialPath = path }
 }
 
+// WithTrustSeed enables #47's directory-trust seeding: statePath is the
+// runtime's own state file (in practice, the same path WithCredentialPath
+// points at — two options rather than one reused field, so credential
+// generation stays a bare stat with no read of the file's contents, exactly
+// as its own doc comment promises, regardless of whether this feature is
+// on), home is the operator's home directory, and roots are the configured
+// roots seeding is scoped to — machine-local configuration, like
+// FLEET_PEERS' addresses, never committed to this repository.
+//
+// Off by default for the same reason as WithRecordRoot and
+// WithCredentialPath: an empty statePath or a nil/empty roots list leaves
+// trustSeed nil, and every method on internal/trustseed.Seeder is a no-op on
+// a nil receiver, so Create never has to branch on whether this was
+// configured.
+func WithTrustSeed(statePath, home string, roots []string) Option {
+	return func(d *Driver) { d.trustSeed = trustseed.New(statePath, home, roots) }
+}
+
+// TrustSeedResult passes through internal/trustseed.Result so a caller
+// outside this package (cmd/colab-fleetd's startup-and-interval maintainer)
+// never has to import internal/trustseed itself.
+type TrustSeedResult = trustseed.Result
+
+// SeedTrustRoots runs one pass of #47's trust seeding — see
+// internal/trustseed.Seeder.SeedAll. Meant to be called once at startup and
+// again on an interval; a Driver with WithTrustSeed unconfigured returns a
+// zero Result and a nil error, doing nothing.
+func (d *Driver) SeedTrustRoots() (TrustSeedResult, error) {
+	return d.trustSeed.SeedAll()
+}
+
 // withExec injects a fake multiplexer. Unexported: tests only.
 func withExec(f execFunc) Option { return func(d *Driver) { d.run = f } }
 
@@ -503,11 +542,17 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 }
 
 // Counters implements driver.CounterReporter. See counters.go's doc comment
-// for what accumulates here and why it stops at two names today — this
-// method does not add a third; it only opens the read path #9 asked for
-// onto whatever counters.go currently owns.
+// for this driver's own registry; #47's trust-seed counts (see
+// internal/trustseed) are merged in under their own names when that feature
+// is configured, rather than exposed through a second driver — one map, one
+// reader, and the two registries' names do not collide because trustseed's
+// are all prefixed "trust_seed.".
 func (d *Driver) Counters() map[string]int64 {
-	return d.counters.Snapshot()
+	out := d.counters.Snapshot()
+	for k, v := range d.trustSeed.Counters() {
+		out[k] = v
+	}
+	return out
 }
 
 // bounded applies this driver's declared deadline, or the caller's if the
@@ -1828,6 +1873,18 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if !d.bareExec {
 		recordPath = d.envRecordPath()
 		argv = loginWrap(d.loginShell(), recordPath, envPath, argv)
+	}
+
+	// #47, point 5: seed this session's own working directory before the
+	// process that would ask about it is even started, closing the same
+	// race a periodic-only pass leaves open for a worktree younger than the
+	// interval. Best-effort by design — a refusal, a lost race, or the
+	// feature being unconfigured must never fail a create it is only trying
+	// to help; d.trustSeed is nil-safe (see WithTrustSeed) and the error, if
+	// any, is already counted inside it. This session simply meets its
+	// Consents path below, exactly as it would have without this.
+	if err := d.trustSeed.SeedPath(string(spec.Cwd)); err != nil {
+		log.Printf("tmux: trust-seed: %v", err)
 	}
 
 	args := append([]string{

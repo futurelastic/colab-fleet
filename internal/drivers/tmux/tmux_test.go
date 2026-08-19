@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/godx-jp/colab-fleet/internal/trustseed"
 )
 
 // fakeMux is a stand-in for the multiplexer binary. It records every
@@ -732,6 +734,76 @@ func TestCreateIsIdempotentPerKey(t *testing.T) {
 	}
 	if countCalls(f, "new-session") != before {
 		t.Error("a repeat key must not start a second session (§10)")
+	}
+}
+
+// #47, point 5: Create seeds spec.Cwd's owning root before starting the
+// session, so a directory under a configured root never meets the runtime's
+// folder-trust question in the first place — closing the race a
+// periodic-only pass leaves open for a worktree younger than the interval.
+func TestCreateSeedsCwdBeforeStartingWhenTrustSeedConfigured(t *testing.T) {
+	f := twoSessions()
+
+	home := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = resolved
+	}
+	statePath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(statePath, []byte(`{"projects":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(home, "workspace")
+	cwd := filepath.Join(root, "widgets")
+	if err := os.MkdirAll(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	d := New("testbox",
+		withExec(f.exec),
+		withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return time.Unix(1785760000, 0) }),
+		WithTrustSeed(statePath, home, []string{root}),
+	)
+
+	if _, err := d.Create(context.Background(), testCaller, "k", fleet.SessionSpec{
+		Machine: "testbox", Cwd: fleet.AbsolutePath(cwd), Name: "gamma",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top struct {
+		Projects map[string]struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(raw, &top); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := top.Projects[cwd]
+	if !ok || !entry.HasTrustDialogAccepted {
+		t.Errorf("Create did not seed cwd's trust key before starting the session; projects=%+v", top.Projects)
+	}
+
+	if got := d.Counters()[trustseed.CounterGranted]; got == 0 {
+		t.Error("trust-seed counters were not merged into Driver.Counters()")
+	}
+}
+
+// A Driver with trust-seed unconfigured must behave exactly as it always
+// has — nil is the off switch, not a code path a caller has to avoid.
+func TestCreateWithoutTrustSeedConfiguredIsUnaffected(t *testing.T) {
+	d := newTestDriver(twoSessions())
+	if _, err := d.Create(context.Background(), testCaller, "k", fleet.SessionSpec{
+		Machine: "testbox", Cwd: "/work/new", Name: "gamma",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if counters := d.Counters(); counters[trustseed.CounterGranted] != 0 {
+		t.Errorf("unconfigured trust-seed reported a count: %v", counters)
 	}
 }
 

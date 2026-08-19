@@ -54,6 +54,35 @@ const (
 	// answered the agent does nothing at all.
 	PromptResumeChooser PromptKind = "resume-chooser"
 	// PromptFolderTrust: "do you trust the files in this folder".
+	//
+	// # Seeding is not this layer answering on a supervisor's behalf
+	//
+	// SessionSpec.Consents (and its predecessor TrustCwd) let a CALLER
+	// answer this in advance, scoped to the one session it is creating —
+	// the caller named the directory in its own request, so the decision is
+	// still the caller's, this layer only executes it. Most sessions on a
+	// real fleet are not created through this service at all, so no create
+	// request exists for that consent to travel on, and internal/trustseed
+	// exists for that gap: it writes the runtime's own answer to this
+	// question — projects["<dir>"].hasTrustDialogAccepted, in the runtime's
+	// own state file — ahead of time, for every directory under a fixed set
+	// of operator-configured roots, so the question is never asked in the
+	// first place.
+	//
+	// That is still not this layer deciding what to answer. The decision —
+	// which directories are trusted — is made exactly once, by the
+	// operator, in the machine's own configuration; trustseed only carries
+	// that decision out, the same relationship Create already has to a
+	// caller's per-request consent, extended from "one request" to
+	// "standing policy". What would cross the line this type's own package
+	// doc draws is this SERVICE choosing, at runtime, that some directory
+	// should count as trusted because of something it observed — a prompt
+	// it read, a session it is asked to start. trustseed never does that:
+	// every root it seeds was named by an operator before any session
+	// existed to ask about it, and it refuses (rather than guesses) a
+	// directory that resolves outside every configured root. See
+	// internal/trustseed's package doc for the mechanism and colab-fleet
+	// issue #47 for where this line was drawn.
 	PromptFolderTrust PromptKind = "folder-trust"
 	// PromptSettingsTrust: an ADMINISTRATOR's managed-policy payload asking to
 	// be approved. Not a working directory's own settings at all — read out of

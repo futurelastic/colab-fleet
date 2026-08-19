@@ -45,6 +45,22 @@
 //	                       PEER. Defaults OFF. Separate from the above on
 //	                       purpose: a hardened host can still be a
 //	                       full-featured client (§6, defect D6).
+//	FLEET_TRUST_ROOTS      comma-separated list of absolute directories.
+//	                       #47: every repository and worktree root under
+//	                       one of these has the runtime's own folder-trust
+//	                       question pre-answered, so no session under it —
+//	                       whoever started it — ever meets that screen.
+//	                       Absent means the feature does nothing; FLEET_
+//	                       CONFIG's own trustRoots is read when this is
+//	                       unset, same precedence as FLEET_PEERS below.
+//	FLEET_TRUST_STATE_PATH overrides where the above is written — the
+//	                       runtime's own state file. Defaults to
+//	                       ~/.claude.json, the same file FLEET_CREDENTIAL_
+//	                       PATH already points at by default.
+//	FLEET_TRUST_SEED_INTERVAL
+//	                       how often the above re-scans for a worktree
+//	                       created since the last pass. Defaults to 2m;
+//	                       Go duration syntax.
 package main
 
 import (
@@ -172,11 +188,61 @@ func main() {
 		} else if home, err := os.UserHomeDir(); err == nil {
 			opts = append(opts, tmux.WithCredentialPath(filepath.Join(home, ".claude.json")))
 		}
+		// #47: pre-answer the runtime's folder-trust question for every
+		// session under a configured root, whoever started it — see
+		// internal/trustseed and tmux.WithTrustSeed. Off by default, the
+		// same way every feature above it is: no roots configured means no
+		// state file is ever opened.
+		//
+		// FLEET_TRUST_ROOTS is a comma list, same shape as FLEET_PEERS
+		// below; FLEET_CONFIG's own trustRoots is read when the env var is
+		// unset, same precedence as peers. Neither ever names a real path
+		// in this repository — both are machine-local configuration an
+		// operator supplies, exactly like FLEET_PEERS' addresses.
+		trustRoots := splitList(os.Getenv("FLEET_TRUST_ROOTS"))
+		if cfgFile != nil && len(trustRoots) == 0 {
+			trustRoots = cfgFile.TrustRoots
+		}
+		for _, r := range trustRoots {
+			if !filepath.IsAbs(r) {
+				log.Fatalf("colab-fleetd: trust root %q must be an absolute path", r)
+			}
+		}
+		if len(trustRoots) > 0 {
+			trustStatePath := os.Getenv("FLEET_TRUST_STATE_PATH")
+			home, homeErr := os.UserHomeDir()
+			if trustStatePath == "" {
+				if homeErr != nil {
+					log.Fatalf("colab-fleetd: trust roots are configured but the home directory "+
+						"could not be determined (needed for the state file path and the "+
+						"never-seed-home guard): %v", homeErr)
+				}
+				trustStatePath = filepath.Join(home, ".claude.json")
+			}
+			if homeErr != nil {
+				log.Fatalf("colab-fleetd: trust roots are configured but the home directory "+
+					"could not be determined (needed for the never-seed-home guard): %v", homeErr)
+			}
+			opts = append(opts, tmux.WithTrustSeed(trustStatePath, home, trustRoots))
+			log.Printf("colab-fleetd: trust-seed configured for %d root(s)", len(trustRoots))
+		}
 		d := tmux.New(self, opts...)
 		// An unreadable key table is surfaced, never absorbed: continuing
 		// with an empty one is exactly the behaviour §10 calls a disaster.
 		if err := d.StateError(); err != nil {
 			log.Fatalf("colab-fleetd: %v", err)
+		}
+		// Startup is reconciliation for trust seeding too: a worktree that
+		// existed before this process started should not have to wait for
+		// the first interval tick, any more than the reconciliation block
+		// below waits to report what it found.
+		if got, err := d.SeedTrustRoots(); err != nil {
+			log.Printf("colab-fleetd: trust-seed: %v", err)
+		} else if got.Islands > 0 {
+			log.Printf("colab-fleetd: trust-seed: startup pass — %s", got)
+		}
+		if len(trustRoots) > 0 {
+			go runTrustSeedLoop(d, trustSeedInterval())
 		}
 		localDriver, runtimeID = d, tmux.DefaultRuntime
 	case "stub":
@@ -420,4 +486,44 @@ func splitList(raw string) []string {
 		}
 	}
 	return out
+}
+
+// trustSeedInterval reads FLEET_TRUST_SEED_INTERVAL, defaulting to two
+// minutes — frequent enough that a worktree created between passes is still
+// well within the window the per-create seed (Driver.Create, #47 point 5)
+// closes on its own, rare enough that the periodic pass is genuinely the
+// secondary mechanism its doc comment says it is.
+func trustSeedInterval() time.Duration {
+	const def = 2 * time.Minute
+	raw := os.Getenv("FLEET_TRUST_SEED_INTERVAL")
+	if raw == "" {
+		return def
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.Printf("colab-fleetd: FLEET_TRUST_SEED_INTERVAL %q invalid, using %s", raw, def)
+		return def
+	}
+	return d
+}
+
+// runTrustSeedLoop is #47's "on an interval" half of the trust-seed
+// maintainer (point 4 of the issue's proposed shape); the startup pass
+// above is the other half. Runs for the life of the process — there is
+// nothing held here that process exit does not already release, unlike the
+// HTTP listeners below, which is why this has no shutdown signal wired to
+// it the way srv.Shutdown does.
+func runTrustSeedLoop(d *tmux.Driver, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for range t.C {
+		got, err := d.SeedTrustRoots()
+		if err != nil {
+			log.Printf("colab-fleetd: trust-seed: %v", err)
+			continue
+		}
+		if got.Granted > 0 || len(got.RootsMissing) > 0 || got.LostRace {
+			log.Printf("colab-fleetd: trust-seed: %s", got)
+		}
+	}
 }

@@ -39,6 +39,16 @@ type fileConfig struct {
 		URL     string `json:"url"`
 		Token   string `json:"token"`
 	} `json:"peers"`
+
+	// TrustRoots are the directories under which #47's trust seeding runs:
+	// a session under one of these never meets the runtime's folder-trust
+	// question, whoever started it. A list alongside Principals for the
+	// same reason Peers is one — an operator edits and diffs a file, not a
+	// delimiter-separated string — and, like the rest of this file, it
+	// names real paths and so lives only in a config an operator points
+	// FLEET_CONFIG at, never in this repository. See
+	// internal/trustseed.Seeder for the mechanism and its scope guards.
+	TrustRoots []string `json:"trustRoots,omitempty"`
 }
 
 func loadConfig(path string) (*fileConfig, error) {
