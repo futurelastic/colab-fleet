@@ -81,9 +81,10 @@ other machines. Supervisors become clients.
 > calling everything orphaned. Verified: `adopted=24` across a restart.
 >
 > **The specification is still the primary artifact.** Building against it
-> resolved seven of its nine recorded defects, added the types and operations it
-> turned out to need, and produced a findings log of 53 measurements — every one of them a
-> place the document or the code was wrong before something ran.
+> resolved most of its recorded defects (§14 tracks which), added the types
+> and operations it turned out to need, and produced a growing findings log —
+> every entry in it a place the document or the code was wrong before
+> something ran.
 
 ## What it owns
 
@@ -145,13 +146,13 @@ of them, not the other way round.
    depends on; read it before you next put a commit in front of anything.
 7. [`docs/spec/checks.md`](docs/spec/checks.md) — a mechanical check that
    fails the build when a wire type grows a field the specs above don't name,
-   what it does and doesn't catch, and the one field currently excepted from
-   it on purpose.
+   what it does and doesn't catch, and how a field earns an exception from it
+   — always with a cited reason.
 
 If you are picking this up cold and want the short version: read the session
-spec's **§14** (the defects, seven of nine now resolved — the open ones are
-marked) and **Appendix A's closing section** (the one pattern that has now
-recurred at five different altitudes).
+spec's **§14** (the defects — each one carries its own resolution status, and
+the open ones are marked as such) and **Appendix A's closing section** (one
+pattern, found recurring at multiple altitudes).
 
 The session spec is organised so you can tell current truth from history:
 **§1–§13 are normative**, **§14 lists what the document requires but cannot

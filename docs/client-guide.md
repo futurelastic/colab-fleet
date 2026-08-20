@@ -574,7 +574,7 @@ and answer that one by index.
 
 ### Giving the session what it needs to be itself
 
-Three fields exist because a session created through this API used to be a
+These fields exist because a session created through this API used to be a
 lesser session than one a supervisor started directly — and the difference did
 not show up at creation, only later, somewhere else.
 
