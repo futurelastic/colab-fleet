@@ -143,6 +143,10 @@ of them, not the other way round.
 6. [`docs/deploy.md`](docs/deploy.md) — how a merged commit reaches a running
    service. This is the procedure `exposure: self` in `.github/project.yml`
    depends on; read it before you next put a commit in front of anything.
+7. [`docs/spec/checks.md`](docs/spec/checks.md) — a mechanical check that
+   fails the build when a wire type grows a field the specs above don't name,
+   what it does and doesn't catch, and the one field currently excepted from
+   it on purpose.
 
 If you are picking this up cold and want the short version: read the session
 spec's **§14** (the defects, seven of nine now resolved — the open ones are

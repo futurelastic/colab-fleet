@@ -82,8 +82,25 @@ SessionSpec {
   remoteControl?: boolean         // reachable by remote clients; absent ≠ false
   prompt?    : string             // initial input
   contextRef?: AbsolutePath       // see §5.3 — never inline, never argv
+  env?       : map<string,string> // out of band only, never argv (§5.3)
+  resume?    : string             // a prior conversation this session continues
+  permissionMode?: string         // a non-default permission posture; "bypass" is the only value
+  mcpConfig? : AbsolutePath[]     // tool-server configuration, by path, never inline (§5.3)
+  consents?  : PromptKind[]       // boot questions the caller pre-answers (§2.7)
+  trustCwd?  : boolean            // superseded by consents; means exactly ["folder-trust"]
 }
 ```
+
+Six of these were undocumented here until colab-fleet issue #57's audit — found alongside §2.3's
+drift, and by the same mechanism: each is already fully specified in this repository, just not in
+this block. `env`, `resume`, `permissionMode` and `mcpConfig` are **hints**, the same family as
+`agent`/`model`/`effort` above: a driver that cannot honour one must say so at creation rather than
+silently substitute a default (§4.3). `consents` and `trustCwd` are not hints — they are a caller's
+standing answer to a boot question the driver would otherwise leave the session parked in front of;
+see §2.7's `Consents`/`TrustCwd` paragraph for why that is still the caller's decision and not this
+service's. Full field-level rationale — including why each value is staged out of band rather than
+placed on a command line, and the exact validation each one gets — lives in `session.go`'s
+`SessionSpec` doc comment, which this block summarizes rather than duplicates.
 
 `agent`, `model` and `effort` are **hints**, not guarantees. A driver that
 cannot honour one must say so at creation rather than silently substituting a
@@ -140,6 +157,12 @@ SessionState {
   confidence : "observed" | "inferred"
   evidence   : string             // human-readable provenance
   since?     : Timestamp | null
+  prompt?         : SessionPrompt // the question this session is blocked on (§2.7)
+  waitingOn?      : WaitingReason // WHY status is waiting_input
+  composerDigest? : string        // fingerprint of unsent composer text
+  quota?          : QuotaBlock    // set when status is quota_blocked
+  lastTurn?       : TurnEnd       // how the most recent turn ended, if the driver knows
+  credentialGeneration?: Timestamp // this machine's local credential generation at read time (#12)
 }
 
 Status =
@@ -150,7 +173,43 @@ Status =
   | "quota_blocked"   // alive but refused by its provider
   | "dead"            // process gone
   | "unknown"         // driver cannot determine — a real answer, not an error
+
+WaitingReason =
+  | "prompt"          // a question is on screen; `prompt` carries it
+  | "unsent-input"    // the composer holds text nobody submitted
+
+QuotaBlock {
+  since     : Timestamp   // when a limit notice was first seen ON THIS MACHINE
+  resetHint?: string      // the runtime's own words on when it lifts; display, never parse
+}
+
+TurnEnd {
+  outcome   : string      // "failed" is the only value produced today; no TurnEnd at all is the ordinary case
+  reason?   : string      // the runtime's own words; for humans, never branched on
+  retryable?: boolean     // the runtime's own claim that sending anything resumes the session
+}
 ```
+
+> **`screenDigest` is deliberately NOT in this block.** The Go type carries it
+> (`state.go`), and it is real, load-bearing and documented — in
+> api-http.md §3.3, as the corroboration token for `POST …/keys`. It is left
+> out of the model here because whether it belongs in a runtime-neutral type
+> at all is an open question, not a documentation gap: see colab-fleet issue
+> #59, which lays out the two candidate resolutions. Until that lands, treat
+> api-http.md as this field's only normative home.
+
+Six fields above (`prompt` through `credentialGeneration`) were undocumented
+in this block until colab-fleet issue #57, which found the drift: the Go
+`SessionState` (`state.go`) carried ten fields — eleven once
+`credentialGeneration` is counted — against the four this block used to
+show. Each of the six is exercised elsewhere in this specification already —
+`waitingOn` discriminates `waiting_input` at api-http.md §3.3's `respond`;
+`quota` and `lastTurn` are both named, with worked JSON examples, at the same
+section; all six are on the `session.state` materiality list at api-http.md
+§4 — so the type block, not the design, was what was behind. `waitingOn`'s
+own design story (why `waiting_input` needed a reason once a second cause of
+blocking existed) is Appendix A's own account of reaching it; `lastTurn`'s is
+F51.
 
 Three rules govern this type, and they are the point of the whole
 specification:
@@ -275,7 +334,16 @@ SessionPrompt {
   options  : string[]      // in order, 1-based when referenced
   selected?: number        // the highlighted option
   nonce    : string        // changes when the prompt changes
+  kind?    : PromptKind    // what the driver thinks is being asked; advisory, fails to absent
 }
+
+PromptKind =
+  | "resume-chooser"      // how to resume a prior session
+  | "folder-trust"        // "do you trust the files in this folder"
+  | "settings-trust"      // an administrator's managed-policy payload asking to be approved
+  | "tool-permission"     // a tool asking to run something
+  | "bypass-permissions"  // the permission-mode acceptance screen; never produced by option
+                          // matching alone — see prompt.go's PromptBypassAcceptance
 ```
 
 The question a session is blocked on, carried **on `SessionState`** so every
@@ -311,6 +379,19 @@ operation.
 **Parsing is bounded.** The screen is written by an agent that can print
 anything, so an index parsed from it is untrusted input. See Appendix A, F35.
 
+**`kind` names what is being asked, when the driver can recognise it, and is
+advisory only.** Nothing in the service behaves differently because of it —
+`options` and `selected` remain the answer a caller acts on; `kind` exists so
+every caller does not independently re-derive the same classification by
+matching option text, which is the fragility Appendix A records paying for
+twice already. It fails to empty rather than to a guess (§5.7 again): an
+unrecognised prompt carries no `kind`, and empty must never be read as safe to
+auto-answer — the default option on a real prompt in this fleet is `No, exit`.
+Deciding what to answer stays a caller's judgement; see `prompt.go`'s
+`PromptKind` doc comment for the full reasoning and why `bypass-permissions`
+is deliberately unreachable by option matching. (Was undocumented in this
+block until colab-fleet issue #57; see api-http.md §3.3 for its wire history.)
+
 **A directory-trust question can also be pre-answered, standing outside a
 create request entirely.** `Consents`/`TrustCwd` scope a caller's answer to
 the one session it is creating — the caller named that directory in the same
@@ -339,6 +420,7 @@ sessions hold it open.
 Response {
   choice? : number     // 1-based option; absent means the highlighted default
   cancel? : boolean    // dismiss rather than answer
+  nonce?  : string     // the SessionPrompt.nonce being answered
 }
 ```
 
@@ -346,6 +428,18 @@ What `respond` (§3) delivers. Absent `choice` means "accept whatever is
 highlighted", which is what a human pressing Enter gets and what a caller
 usually means. `cancel` exists because a caller that likes none of the options
 needs a way to say so other than picking one anyway.
+
+**`nonce` is §2.7's corroboration, arriving at the call that answers it.** A
+caller reads a prompt, shows it to a human, and answers seconds or minutes
+later; by then the session may be showing a *different* question in the same
+place, and an answer submitted by index alone would be applied to it
+silently. Quoting the nonce back turns that into a refusal. It is optional
+only for a human answering something they are looking at right now; an
+automated caller that omits it is choosing to answer whatever happens to be
+on screen, and a driver that answers unchecked must say so in the receipt.
+(Undocumented in this block until colab-fleet issue #57 — it was already on
+the wire, api-http.md §3.3's `respond`, and on `response.go`'s `Response`
+since before this block was last touched.)
 
 ### 2.8 AttachHint
 
@@ -458,6 +552,14 @@ discard(req, ref, digest)      -> Ack
 list(req, filter?)             -> Collection<Session>
 subscribe(req, filter?)        -> EventStream
 ```
+
+> **A tenth operation, `keys`, exists on the wire (api-http.md §3.3,
+> `POST …/keys`) and is deliberately not in this table.** It delivers one raw
+> key event (`Up`/`Down`/`Left`/`Right`/`Enter`/`Escape`) for the full-screen
+> dialogs `respond` cannot answer, corroborated by `SessionState.screenDigest`
+> — itself absent from §2.3 for the same reason. Whether it belongs here, as
+> a capability-gated operation every driver may decline, or stays wire-only
+> by design, is open: colab-fleet issue #59.
 
 `respond` answers a prompt a session is blocked on, and is a separate
 operation rather than a flag on `send` for a reason that is not stylistic:
@@ -980,6 +1082,7 @@ SourceStatus {
   count?    : number
   error?    : string
   observedAt: Timestamp
+  quota?    : QuotaBlock   // this machine's ACCOUNT-level refusal, if any (§2.3, #10)
 }
 ```
 
@@ -990,6 +1093,17 @@ rather than an oversight.
 
 **Never** return `items: []` for a source that failed. An unreachable machine
 contributes a `SourceStatus`, not an absence.
+
+**`quota` is a per-machine sibling of `SessionState.quota`, not the same
+field relocated.** A machine can be reachable and answering — `status: "ok"` —
+while every session on its account is refused: reachable-and-answering and
+willing-to-work are different facts, and folding this into `status` would
+force a caller to enumerate every session on a machine just to learn whether
+dispatching to it is pointless. This is the field a scheduler reads to answer
+"where can work run right now" without listing a single session. (Undocumented
+in this block until colab-fleet issue #57's audit; present on `collection.go`'s
+`SourceStatus` since #10, and populated by the tmux driver's own remembered
+`quotaBlock`.)
 
 **`complete` is derived, never supplied.** It is true iff every
 `SourceStatus.status` is `ok`. A caller-supplied boolean is exactly the kind of

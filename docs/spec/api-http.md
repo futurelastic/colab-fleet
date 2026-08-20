@@ -608,6 +608,7 @@ resumption needs no client code. The server honours that header when no
 | `session.created` | full session |
 | `session.state` | ref + `SessionState` — fired on any **material** change, not only a change of `status` |
 | `session.closed` | ref + final state |
+| `session.renamed` | `{ "machine", "from", "to", "startedAt"? }` — a session's **id** changed (session-abstraction.md §3's `rename`); a subscriber filtering by id must re-key on `to` or it silently stops matching a session that is still alive |
 | `source.status` | a machine's reachability changed |
 | `machine.quota` | `{ "machine", "blocked": bool, "quota"? }` — this machine's **account** started or stopped refusing work |
 | `machine.account` | `{ "machine", "generation" }` — this machine's local **credential material** changed |
