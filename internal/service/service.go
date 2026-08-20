@@ -744,10 +744,35 @@ func (s *Service) resolveSessionDriver(ctx context.Context, req fleet.Request, m
 //
 // Returns two disjoint sets. holders affirmatively HAVE the id — their
 // State() succeeded. inconclusive could not be asked at all: State() failed
-// for a reason OTHER than "never had it" (unsupported, unreachable, past
-// its deadline). resolveSessionDriver treats those very differently — see
-// its own doc comment — because an inconclusive driver is not evidence of
-// absence, only evidence that this probe could not reach a verdict.
+// for a reason OTHER than "never had it" AND other than "can never have it"
+// (unreachable, past its deadline, or any other transient failure).
+// resolveSessionDriver treats those very differently — see its own doc
+// comment — because an inconclusive driver is not evidence of absence,
+// only evidence that this probe could not reach a verdict.
+//
+// A driver answering driver.ErrUnsupported is neither: it is not affirming
+// the id (it has no notion of "having" anything), and it is not merely
+// unreachable right now — ErrUnsupported's own doc comment (internal/driver)
+// says this is a statement about the SUBSTRATE, permanent, true again on
+// retry. colab-fleet issue #63 measured what conflating the two costs: one
+// runtime being temporarily unreachable poisoned resolution for every
+// runtime on the machine, including ones that structurally never held
+// anything and never will. Such a driver is folded into the same "not this
+// one" outcome as ErrNoSuchSession, leaving inconclusive to mean only what
+// #60 built it to mean.
+//
+// This is read from the returned sentinel rather than from
+// fleet.DriverCapabilities, and that is a real gap rather than a
+// preference: DriverCapabilities has no field for "this driver can never
+// hold a session". ObservesState looks like a candidate but is not one — it
+// is false for the tmux driver too, where it describes fidelity (inferred
+// vs. observed) on a driver whose State() answers plenty of ids, never
+// "this operation always fails here". Nothing on DriverCapabilities
+// currently distinguishes a driver that answers from one that cannot
+// participate in this operation at all, so there is no honest way to know
+// this before the call. Adding such a field is future work, out of #63's
+// scope, and would let this branch be removed at that call site instead of
+// only at this comment.
 func (s *Service) probeHolders(ctx context.Context, req fleet.Request, local map[fleet.RuntimeId]driver.Driver, id string, callerDeadline time.Duration) (holders, inconclusive map[fleet.RuntimeId]driver.Driver) {
 	holders = make(map[fleet.RuntimeId]driver.Driver)
 	inconclusive = make(map[fleet.RuntimeId]driver.Driver)
@@ -764,6 +789,12 @@ func (s *Service) probeHolders(ctx context.Context, req fleet.Request, local map
 			// Affirmatively absent from this driver — belongs to neither
 			// set; §5.7's "absence and failure are different answers"
 			// applied to a routing decision instead of a read.
+		case errors.Is(err, driver.ErrUnsupported):
+			// Structurally incapable of ever holding a session (see the
+			// doc comment above) — the firm "not mine" ErrNoSuchSession
+			// would have meant, had this driver a notion of sessions to
+			// have never had one of. Belongs to neither set, same as the
+			// case above and for the same reason.
 		default:
 			inconclusive[rt] = d
 		}
