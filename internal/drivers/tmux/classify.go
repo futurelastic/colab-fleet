@@ -646,18 +646,55 @@ func usageLimit(s screen) (resetHint string, blocked bool) {
 		if hint != "" {
 			continue
 		}
-		for _, marker := range []string{"resets ", "try again ", "available again "} {
-			if k := strings.Index(line, marker); k >= 0 {
-				rest := strings.TrimSpace(line[k+len(marker):])
-				if len(rest) > 40 {
-					rest = rest[:40]
-				}
-				hint = rest
-				break
-			}
+		if h, ok := resetHintIn(line); ok {
+			hint = h
 		}
 	}
 	return hint, found
+}
+
+// resetHintIn looks for the runtime's own words about when a limit lifts, in
+// one already-lowercased line of prose.
+//
+// Factored out so the same rule applies whether the prose comes from a live
+// screen line (usageLimit) or from the runtime's own durable record
+// (latestAPIError, #56) — both are the runtime's words, and a caller must not
+// be able to tell which source produced a given hint from the rule that
+// extracted it.
+func resetHintIn(line string) (hint string, ok bool) {
+	for _, marker := range []string{"resets ", "try again ", "available again "} {
+		if k := strings.Index(line, marker); k >= 0 {
+			rest := strings.TrimSpace(line[k+len(marker):])
+			if len(rest) > 40 {
+				rest = rest[:40]
+			}
+			return rest, true
+		}
+	}
+	return "", false
+}
+
+// retryableWords reports whether already-lowercased prose says a failure is
+// temporary, the same test lastTurnFailed and latestAPIError (#56) both make
+// — from the runtime's own words, never from a status code decided here (see
+// lastTurnFailed's own comment for why that distinction matters).
+func retryableWords(lower string) bool {
+	return strings.Contains(lower, "temporary") || strings.Contains(lower, "try again")
+}
+
+// trimToSentence keeps prose to roughly one sentence: the rest is usually a
+// support URL or advice a human does not need repeated in every listing.
+// Shared by lastTurnFailed (screen) and latestAPIError (record, #56) so a
+// caller sees the same shape of Reason regardless of source.
+func trimToSentence(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if cut := strings.IndexAny(s, ".\n"); cut > 0 {
+		s = s[:cut]
+	}
+	if len(s) > max {
+		s = s[:max]
+	}
+	return s
 }
 
 // lastTurnFailed reports whether the live region shows the most recent turn
@@ -710,19 +747,11 @@ func lastTurnFailed(s screen) (*fleet.TurnEnd, bool) {
 	if k < 0 {
 		return nil, false
 	}
-	reason := strings.TrimSpace(joined[k:])
-	// Keep it to one sentence: the rest is a support URL and advice a human
-	// does not need repeated in every listing.
-	if cut := strings.IndexAny(reason, ".\n"); cut > 0 {
-		reason = reason[:cut]
-	}
-	if len(reason) > 120 {
-		reason = reason[:120]
-	}
+	reason := trimToSentence(joined[k:], 120)
 	return &fleet.TurnEnd{
 		Outcome:   "failed",
 		Reason:    reason,
-		Retryable: strings.Contains(lower, "temporary") || strings.Contains(lower, "try again"),
+		Retryable: retryableWords(lower),
 	}, true
 }
 

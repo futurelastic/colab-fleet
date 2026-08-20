@@ -256,6 +256,15 @@ func (s *conversationStore) derive(cwd, name string, started time.Time) *fleet.C
 	}
 }
 
+// recordPath reconstructs the path a resolved conversation identifier lives
+// at, without re-walking the directory: every record file this store has
+// ever opened was already named for its own `sessionId` (readRecordEntry's
+// `entry.id`), so a caller holding a resolved fleet.ConversationRef can ask
+// for the same file directly instead of re-deriving it (#56).
+func (s *conversationStore) recordPath(cwd, id string) string {
+	return filepath.Join(s.root, recordDirFor(cwd), id+".jsonl")
+}
+
 func (s *conversationStore) entryFor(path string) (recordEntry, bool) {
 	s.mu.Lock()
 	if hit, ok := s.entries[path]; ok {

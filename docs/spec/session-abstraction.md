@@ -180,7 +180,7 @@ WaitingReason =
   | "unsent-input"    // the composer holds text nobody submitted
 
 QuotaBlock {
-  since     : Timestamp   // when a limit notice was first seen ON THIS MACHINE
+  since     : Timestamp   // when the refusal happened, per a driver able to say so; otherwise when this driver first saw the notice — evidence states which (#56)
   resetHint?: string      // the runtime's own words on when it lifts; display, never parse
 }
 
@@ -204,6 +204,20 @@ TurnEnd {
 > capability-gated first-class field and a permanently wire-only one; see
 > §3's `keys` entry for what the decision costs and why it does not close the
 > question it looks like it closes.
+
+> **`QuotaBlock.since` and `TurnEnd.retryable`/`reason` are, where a driver
+> can manage it, sourced from the runtime's own durable record rather than
+> from the screen (colab-fleet issue #56).** The tmux driver's screen path
+> stays legitimate and stays **upgrade-only**: a limit notice or a failure
+> banner on screen may promote a session INTO `quota_blocked` or attach a
+> `TurnEnd`, but never takes one back OUT — the record wins in that
+> direction, because the screen's evidence for "no longer true" is the
+> absence of evidence for "still true", which §5.6's degrade-not-emulate
+> rule and this section's own unrecognised-evidence rule both forbid as a
+> route to a positive answer. When no such record can be resolved, `since`
+> falls back to the time this driver first observed the notice — a real
+> fact, just not the one the field name promises — and `evidence` says so
+> explicitly rather than presenting one as the other.
 
 Six fields above (`prompt` through `credentialGeneration`) were undocumented
 in this block until colab-fleet issue #57, which found the drift: the Go

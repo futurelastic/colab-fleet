@@ -560,7 +560,7 @@ func (s *eventStream) run(ctx context.Context, trigger <-chan struct{}, known ma
 		// transition that already happened — but says nothing when there is
 		// none, because "not blocked" is the unremarkable case and an event
 		// for it on every new subscription is noise.
-		if q := s.d.quotaBlock(); (q != nil) != (s.quotaBlock != nil) || !s.quotaKnown {
+		if q, _ := s.d.quotaBlock(); (q != nil) != (s.quotaBlock != nil) || !s.quotaKnown {
 			if q != nil || s.quotaKnown {
 				s.emit(ctx, fleet.Event{
 					Machine: s.d.machine,

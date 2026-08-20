@@ -219,6 +219,15 @@ type Driver struct {
 	// restart — a weekly limit measured on this fleet had four days to run,
 	// and the service is deployed by restarting it.
 	quota *fleet.QuotaBlock
+	// quotaSinceObserved is true when quota.Since came from the runtime's
+	// own record of the refusal (#56) rather than from this driver's first
+	// sighting of the notice on screen. Not part of fleet.QuotaBlock's wire
+	// shape — §2.3 documents Since as a timestamp for humans and callers to
+	// read, not a provenance channel, and the honest label belongs in
+	// SessionState.Evidence (quotaBlockedState) the same way every other
+	// "how do we know this" note in this driver already lives in prose
+	// rather than in a new structured field.
+	quotaSinceObserved bool
 
 	// stranded remembers, per session, text this driver delivered and could
 	// not confirm — the record a resume is checked against.
@@ -751,7 +760,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			// all (#10). Reachability and willingness are different
 			// questions; answer both, independently, even when one of them
 			// just failed.
-			Quota: d.quotaBlock(),
+			Quota: quotaOnly(d.quotaBlock()),
 		}
 		return fleet.NewCollection([]fleet.Session{}, []fleet.SourceStatus{src})
 	}
@@ -854,6 +863,45 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		sessions[p.index].Conversation = d.conversations.lookup(p.key, p.cwd, p.name, p.started)
 	}
 
+	// Ask the runtime's own record about whatever the screen already
+	// flagged this cycle (#56) — a usage-limit notice, or a last turn the
+	// screen read as failed. Only sessions the screen already flagged pay
+	// for this: a quiet session's record is never opened, so a healthy
+	// fleet costs nothing extra here. recordUnavailable (the zero value of
+	// quotaVerdict when nothing resolves) means every downstream consumer
+	// keeps its existing screen-derived fallback unchanged.
+	var quotaRecord apiErrorFact
+	var quotaVerdict recordVerdict
+	for i := range sessions {
+		switch {
+		case sessions[i].State.Status == fleet.StatusQuotaBlocked:
+			if quotaVerdict == recordUnavailable {
+				if fact, verdict := d.recordFactFor(sessions[i]); verdict != recordUnavailable {
+					quotaRecord, quotaVerdict = fact, verdict
+				}
+			}
+		case sessions[i].State.LastTurn != nil:
+			switch fact, verdict := d.recordFactFor(sessions[i]); verdict {
+			case recordAPIError:
+				sessions[i].State.LastTurn = &fleet.TurnEnd{
+					Outcome:   "failed",
+					Reason:    fact.reasonSentence(),
+					Retryable: fact.retryable(),
+				}
+			case recordCleanTurn:
+				// The durable record says the last turn actually
+				// succeeded — the screen's "api error" match was history
+				// a window scan cannot tell from the present. #56's
+				// argument for Quota, arriving at LastTurn instead.
+				sessions[i].State.LastTurn = nil
+			}
+			// recordUnavailable: keep classify.go's screen-derived
+			// TurnEnd exactly as built — still the legitimate fallback
+			// when no record store is configured or this session's
+			// record cannot be matched.
+		}
+	}
+
 	// A usage limit belongs to the ACCOUNT, not to whichever pane happened to
 	// print the notice, and it outlives that notice by days. Observe it once
 	// per read: any session showing it sets the block, any session actually
@@ -871,7 +919,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			sawWorking = true
 		}
 	}
-	d.noteQuotaBlock(sawLimit, hint, sawWorking, now)
+	d.noteQuotaBlock(sawLimit, hint, sawWorking, quotaRecord, quotaVerdict, now)
 
 	// Apply it. A session that reads idle on a machine whose account is
 	// refusing work is not available, and idle is the status that means send
@@ -906,7 +954,12 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	// otherwise is: settled, with nothing running and no question pending.
 	// This is F53's divider again, with the evidence in another pane instead
 	// of a lower line.
-	if sawWorking {
+	//
+	// recordCleanTurn joins sawWorking as an equally sufficient reason (#56):
+	// a blocked session's OWN durable record showing its most recent turn
+	// succeeded is the same kind of positive proof, from a source that
+	// outlives the notice scrolling off the one pane that showed it.
+	if sawWorking || quotaVerdict == recordCleanTurn {
 		for i := range sessions {
 			if sessions[i].State.Status != fleet.StatusQuotaBlocked {
 				continue
@@ -914,7 +967,12 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			st := sessions[i].State
 			st.Status = fleet.StatusIdle
 			st.Quota = nil
-			st.Evidence = "a limit notice is on screen, but another session on this account is working now, so the notice is history"
+			if quotaVerdict == recordCleanTurn {
+				st.Evidence = "a limit notice is on screen, but the runtime's own record shows " +
+					"a later turn on this account already succeeded, so the notice is history"
+			} else {
+				st.Evidence = "a limit notice is on screen, but another session on this account is working now, so the notice is history"
+			}
 			sessions[i].State = st
 		}
 	}
@@ -922,26 +980,53 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	// q is read once and reused below for the source's own Quota field
 	// (#10) — the same remembered fact, at both grains, from a single
 	// lock acquisition rather than two.
-	q := d.quotaBlock()
+	q, sinceObserved := d.quotaBlock()
 	if q != nil {
 		for i := range sessions {
-			sessions[i].State = quotaBlockedState(sessions[i].State, q)
+			sessions[i].State = quotaBlockedState(sessions[i].State, q, sinceObserved)
 		}
 	}
 
 	// Every block carries a real since. The per-session path builds its
 	// QuotaBlock in classify, which has no clock, so it left the zero time —
 	// which serialises as year 1 and is worse than absent: a caller computing
-	// "blocked for how long" gets two millennia. The status's own since is the
-	// right answer, and it already survives restarts.
+	// "blocked for how long" gets two millennia.
+	//
+	// This is exactly the session whose OWN screen showed the notice
+	// directly (quotaBlockedState's rewrite only touches idle/unknown/
+	// starting, by design — a session already reporting quota_blocked keeps
+	// classify.go's own evidence phrase). q's own Since/sinceObserved — the
+	// account-level fact noteQuotaBlock just finished maintaining, whether
+	// from THIS cycle's record or restored from a restart — is the
+	// authoritative answer (#56) and applies here first; the status's own
+	// since (this driver's first observed TRANSITION into the status, still
+	// a sighting rather than the refusal) and the read time are fallbacks
+	// for when there is no account-level block to consult at all.
 	for i := range sessions {
-		if q := sessions[i].State.Quota; q != nil && q.Since.IsZero() {
-			blocked := *q
-			blocked.Since = now
-			if since := sessions[i].State.Since; since != nil && !since.IsZero() {
-				blocked.Since = *since
+		st := sessions[i].State.Quota
+		if st == nil || !st.Since.IsZero() {
+			continue
+		}
+		blocked := *st
+		recordConfirmed := false
+		switch {
+		case q != nil && !q.Since.IsZero():
+			blocked.Since = q.Since
+			recordConfirmed = sinceObserved
+			if q.ResetHint != "" && blocked.ResetHint == "" {
+				blocked.ResetHint = q.ResetHint
 			}
-			sessions[i].State.Quota = &blocked
+		case sessions[i].State.Since != nil && !sessions[i].State.Since.IsZero():
+			blocked.Since = *sessions[i].State.Since
+		default:
+			blocked.Since = now
+		}
+		sessions[i].State.Quota = &blocked
+		if recordConfirmed {
+			sessions[i].State.Evidence += "; since is the runtime's own record of the refusal"
+		} else {
+			sessions[i].State.Evidence += "; since is when this driver first observed the notice, " +
+				"not when the refusal happened — the runtime's own record could not confirm it"
 		}
 	}
 
@@ -1021,6 +1106,12 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 			sinceRestored: carried,
 		}
 		d.mu.Unlock()
+		// Same record upgrade List applies to LastTurn (#56) — State has no
+		// pre-resolved Conversation to reuse (it returns a bare
+		// SessionState, not a Session), so this does its own lookup; that
+		// lookup memoises successes in conversationStore, so a session List
+		// already resolved this cycle costs a map read here, not a rescan.
+		st = d.upgradeLastTurnFromRecord(st, r.cwd, r.session, r.created, r.paneID)
 		// Same rewrite List applies, generalised to a one-session read (#10)
 		// — see quotaBlockedState's own comment for why a session's own
 		// state must not be reported as an unqualified "starting"/"idle"/
@@ -1028,7 +1119,8 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		// work. This is the read Create's own HTTP handler makes to build
 		// the state it hands back in a 201 — without this, a create
 		// reported nothing and the fact was swallowed until a later poll.
-		return quotaBlockedState(st, d.quotaBlock()), nil
+		q, sinceObserved := d.quotaBlock()
+		return quotaBlockedState(st, q, sinceObserved), nil
 	}
 	// §5.7 applied to a singular read, and then applied a second time to its
 	// own answer.
@@ -2745,21 +2837,60 @@ func composerHoldsCollapsedPaste(painted string) bool {
 // noteQuotaBlock remembers that this machine's account is refusing work, and
 // forgets it the moment something proves otherwise.
 //
-// Called with what the current read saw: whether any session showed a limit
-// notice, and whether any session was observed working. One working session is
-// proof the account works, and is the only thing that clears the block — a
-// reset time is scraped prose and must not be trusted to expire it.
-func (d *Driver) noteQuotaBlock(sawLimit bool, hint string, sawWorking bool, now time.Time) {
+// Called with what the current read saw: whether any session's SCREEN showed
+// a limit notice (sawLimit/hint — upgrade-only per #54: this is what may
+// promote the account INTO a block, never what clears one) and whether any
+// session was observed working (sawWorking).
+//
+// record and verdict are #56's structured source: the runtime's own record
+// for whichever session the current read found already reporting
+// quota_blocked, when one could be resolved. Three things follow from it —
+//
+//   - recordAPIError with category "rate_limit" corrects Since to the
+//     refusal's own timestamp, and ResetHint to the record's own words,
+//     rather than trusting the screen's window-scraped copy of the same
+//     sentence.
+//   - recordCleanTurn is durable, positive proof the account is not
+//     refusing work — the same authority sawWorking already has, from a
+//     source that survives the notice scrolling off the one pane that
+//     showed it. It clears the block alongside sawWorking, never in place
+//     of it: a driver with no record store configured must keep exactly
+//     today's behaviour.
+//   - recordUnavailable changes nothing here; the caller falls back to
+//     first-sighting semantics and says so in SessionState.Evidence
+//     (quotaBlockedState), never presenting one as the other.
+func (d *Driver) noteQuotaBlock(sawLimit bool, hint string, sawWorking bool, record apiErrorFact, verdict recordVerdict, now time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	switch {
-	case sawWorking:
+	case sawWorking, verdict == recordCleanTurn:
 		if d.quota != nil {
 			d.quota = nil
+			d.quotaSinceObserved = false
 			d.saveQuotaLocked()
 		}
 	case sawLimit && d.quota == nil:
-		d.quota = &fleet.QuotaBlock{Since: now, ResetHint: hint}
+		since, sinceObserved, resetHint := now, false, hint
+		if verdict == recordAPIError && record.category == "rate_limit" {
+			since, sinceObserved = record.at, true
+			if h := record.resetHintText(); h != "" {
+				resetHint = h
+			}
+		}
+		d.quota = &fleet.QuotaBlock{Since: since, ResetHint: resetHint}
+		d.quotaSinceObserved = sinceObserved
+		d.saveQuotaLocked()
+	case sawLimit && verdict == recordAPIError && record.category == "rate_limit" && !d.quotaSinceObserved:
+		// A block already exists from an earlier cycle's first sighting,
+		// and the record has only now resolved (a conversation lookup can
+		// legitimately lag a cycle, or the block was carried in from a
+		// restart before a record was ever consulted). Upgrade Since in
+		// place rather than waiting for the block to clear and re-enter.
+		d.quota.Since = record.at
+		d.quotaSinceObserved = true
+		if h := record.resetHintText(); h != "" && d.quota.ResetHint == "" {
+			d.quota.ResetHint = h
+		}
 		d.saveQuotaLocked()
 	case sawLimit && hint != "" && d.quota.ResetHint == "":
 		// A later notice may carry a reset time the first one did not.
@@ -2768,16 +2899,25 @@ func (d *Driver) noteQuotaBlock(sawLimit bool, hint string, sawWorking bool, now
 	}
 }
 
-// quotaBlock reports the remembered account block, if any.
-func (d *Driver) quotaBlock() *fleet.QuotaBlock {
+// quotaBlock reports the remembered account block, if any, and whether its
+// Since is the runtime's own record of the refusal rather than this
+// driver's first sighting of the notice (#56) — see quotaBlockedState for
+// where that distinction becomes something a caller can read.
+func (d *Driver) quotaBlock() (*fleet.QuotaBlock, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.quota == nil {
-		return nil
+		return nil, false
 	}
 	q := *d.quota
-	return &q
+	return &q, d.quotaSinceObserved
 }
+
+// quotaOnly discards quotaBlock's sinceObserved half for call sites that
+// only need the wire fact — fleet.SourceStatus.Quota carries no evidence
+// string of its own to put the distinction in (unlike a session's own
+// SessionState, which quotaBlockedState annotates).
+func quotaOnly(q *fleet.QuotaBlock, _ bool) *fleet.QuotaBlock { return q }
 
 // credentialGeneration reads the local credential store's own modification
 // time — the "generation" identifier #12 needs — or nil when unconfigured
@@ -2826,7 +2966,12 @@ func (d *Driver) credentialGeneration() *fleet.Timestamp {
 // Nothing else is rewritten, unchanged from List: working, waiting_input and
 // unsent text each carry something OBSERVED just now, and a remembered fact
 // must not overwrite an observation.
-func quotaBlockedState(st fleet.SessionState, q *fleet.QuotaBlock) fleet.SessionState {
+//
+// sinceObserved says which source q.Since came from (#56's quotaBlock
+// accessor) and is spelled out in Evidence rather than added as a new field
+// on the wire QuotaBlock — the same "say so in evidence, do not add a
+// silent field" rule this issue was written to enforce.
+func quotaBlockedState(st fleet.SessionState, q *fleet.QuotaBlock, sinceObserved bool) fleet.SessionState {
 	if q == nil {
 		return st
 	}
@@ -2844,26 +2989,59 @@ func quotaBlockedState(st fleet.SessionState, q *fleet.QuotaBlock) fleet.Session
 	st.Status = fleet.StatusQuotaBlocked
 	st.Quota = q
 	st.Evidence = "this machine's account is refusing work; " + seen
+	if sinceObserved {
+		st.Evidence += "; since is the runtime's own record of the refusal"
+	} else {
+		st.Evidence += "; since is when this driver first observed the notice, " +
+			"not when the refusal happened — the runtime's own record could not confirm it"
+	}
 	if q.ResetHint != "" {
 		st.Evidence += " (reported reset: " + q.ResetHint + ")"
 	}
 	return st
 }
 
+// quotaPersisted is what this driver actually writes to the state store —
+// fleet.QuotaBlock, embedded rather than nested, plus the one bit #56 needs
+// that has no home on that wire type (see quotaBlockedState's comment on
+// why it stays out of the wire shape).
+//
+// Embedded, specifically, rather than a nested `block` field: this key
+// already holds a bare QuotaBlock on any instance that persisted one before
+// #56, and encoding/json has no notion of a schema migration — a nested
+// field would decode an old file's top-level `since`/`resetHint` into
+// nothing, silently dropping an in-force block on the first restart after
+// this upgrade (found and rejected in review, not deployed and then
+// noticed). Embedded, `since` and `resetHint` stay exactly where an old
+// file already has them; `sinceObserved` is simply absent on a file no
+// version before #56 ever wrote, and decodes to its correct, honest
+// default: false, "not record-confirmed" — true of every block this driver
+// had ever persisted before this field existed.
+type quotaPersisted struct {
+	fleet.QuotaBlock
+	SinceObserved bool `json:"sinceObserved,omitempty"`
+}
+
 func (d *Driver) saveQuotaLocked() {
 	if d.store == nil {
 		return
 	}
-	_ = d.store.Save("quota", d.quota)
+	if d.quota == nil {
+		_ = d.store.Save("quota", quotaPersisted{})
+		return
+	}
+	_ = d.store.Save("quota", quotaPersisted{QuotaBlock: *d.quota, SinceObserved: d.quotaSinceObserved})
 }
 
 func (d *Driver) loadQuota() {
 	if d.store == nil {
 		return
 	}
-	var q fleet.QuotaBlock
-	if found, err := d.store.Load("quota", &q); err == nil && found && !q.Since.IsZero() {
-		d.quota = &q
+	var p quotaPersisted
+	if found, err := d.store.Load("quota", &p); err == nil && found && !p.Since.IsZero() {
+		block := p.QuotaBlock
+		d.quota = &block
+		d.quotaSinceObserved = p.SinceObserved
 	}
 }
 
