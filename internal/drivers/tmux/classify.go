@@ -469,13 +469,23 @@ func parsePrompt(s screen) *fleet.SessionPrompt {
 	//
 	// Structure (two or more options with one highlighted) catches dialogs
 	// whose footer nobody has seen before, which is the case that kept
-	// costing a new matcher per release.
+	// costing a new matcher per release. It ALSO requires the run to have no
+	// gap (see optionsAreContiguous) — a measured incident (#58) found the
+	// gap-fill padding this loop uses for honesty (see the comment above)
+	// doubling as a false-positive tell when nothing legitimate produced the
+	// gap: ordinary transcript text happened to contain a highlighted-looking
+	// line at index 2 with nothing at index 1, and the empty pad at index 1
+	// was reported as a real option. No real menu ships an option with no
+	// label, so a gap here means the "menu" is not one.
 	//
 	// Footer catches the case structure misses: a long menu whose highlighted
 	// option has scrolled above the captured window. That happens on real
 	// panes, and requiring the marker would classify a genuinely blocked
-	// session as merely unreadable.
-	structural := len(p.Options) >= 2 && p.Selected > 0
+	// session as merely unreadable. It gaps in exactly the same shape and is
+	// deliberately NOT held to the contiguity rule above — see
+	// TestMenuWithScrolledOffMarkerStillCounts — because the footer is
+	// itself the corroboration this branch has instead.
+	structural := len(p.Options) >= 2 && p.Selected > 0 && optionsAreContiguous(p.Options)
 	if !structural && !(footer && len(p.Options) >= 1) {
 		return nil
 	}
@@ -508,6 +518,45 @@ func numberedOption(line string) (int, string, bool) {
 		return 0, "", false
 	}
 	return n, strings.TrimSpace(line[i+1:]), true
+}
+
+// optionsAreContiguous reports whether a structural match's option run has
+// no gap — see parsePrompt's own comment on why a gap is a stronger tell
+// than any wording could be: the padding that keeps indices honest for a
+// genuinely scrolled-off menu (the footer branch) is the same padding a
+// coincidental structural false-positive produces, and a real menu never
+// prints an option with no label.
+func optionsAreContiguous(opts []string) bool {
+	for _, o := range opts {
+		if o == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// promptFooterPresent reports whether one of the runtime's own menu footers
+// is visible in the same window parsePrompt scans.
+//
+// A second, minimal scan rather than a second return value threaded through
+// parsePrompt's dozen call sites: this is used in exactly one place — see
+// classifyAgedDetail's companion-clause check below — to decide how much
+// corroboration an accepted structural prompt already has, and that call
+// site is the only one that needs the footer fact on its own, separate from
+// whatever kind of prompt it turned out to be.
+func promptFooterPresent(s screen) bool {
+	from := 0
+	if len(s.lines) > promptScanDepth {
+		from = len(s.lines) - promptScanDepth
+	}
+	for _, raw := range s.lines[from:] {
+		line := strings.TrimSpace(raw)
+		if strings.Contains(line, selectFooter) || strings.Contains(line, confirmFooter) ||
+			strings.Contains(line, amendFooter) {
+			return true
+		}
+	}
+	return false
 }
 
 // promptNonce is a digest of what is being asked. It changes whenever the
@@ -1022,6 +1071,47 @@ func classify(raw string, alive bool) fleet.SessionState {
 // The alternative was string-matching the evidence text at the call site,
 // which makes a prose field load-bearing. Naming the ambiguity keeps the
 // question in the type.
+//
+// # This driver's fold, named (#54)
+//
+// Every case below is this classifier folding together the same two named
+// facts, and it is worth saying so once rather than leaving it to be
+// noticed. `classifyPaneRemembering`'s five positional inputs are, in fold
+// terms, two SOURCES:
+//
+//   - the screen — this read's own capture, timestamped `now`. Everything
+//     `classifyAgedDetail` computes (spinner, composer, prompt, usage limit,
+//     turn outcome) comes from here, and it comes from here ALONE: this
+//     driver never observes anything else (classify.go's package comment).
+//   - the screen's own history — `prior` (`paneMemory`: a digest and the
+//     time it was taken), this same pane's previous read. Not a second
+//     signal in the sense #52 means it (a second driver, a runtime's own
+//     record) — it is TIME applied to the one signal this driver has. That
+//     is why every resolution below can only narrow toward less activity,
+//     never invent a new fact the screen itself never carried.
+//
+// `ambNoSpinnerEmpty` and `ambNoSpinnerPending` are the screen reporting
+// itself unable to decide, resolved by asking the history source whether
+// the screen has held still long enough that "a turn just began" stops being
+// plausible. `ambUnrecognisedPrompt`, added for #58, is the same two sources
+// used for a different question: not "can the screen decide", but "has the
+// screen's own candidate answer earned the confidence it was built with" —
+// see resolveUnrecognisedPrompt.
+//
+// # The screen is upgrade-only — stated once, made explicit
+//
+// #54's rule, and every branch of resolveAmbiguity obeys it: a resolution
+// may only ever move a classification toward a MORE SPECIFIC state working
+// FROM less activity, never invent activity from silence — `ambNoSpinnerPending`
+// promotes toward `waiting_input`, never toward `working`; a screen that
+// CHANGED between observations is left unresolved rather than called
+// `working`, because content moves for reasons other than a turn (§5.6,
+// "degrade, never emulate"). `ambUnrecognisedPrompt` does not violate this:
+// upgrade-only says nothing about withholding a promotion the screen
+// reports it cannot itself corroborate, which is a second and independent
+// rule (#58's companion clause) — see resolveUnrecognisedPrompt's own
+// comment for why "upgrade-only" alone would not have prevented that
+// incident.
 type ambiguity int
 
 const (
@@ -1030,6 +1120,10 @@ const (
 	ambNoSpinnerEmpty
 	// ambNoSpinnerPending: no spinner, composer holds unsent text.
 	ambNoSpinnerPending
+	// ambUnrecognisedPrompt: a structural prompt match with no footer to
+	// corroborate it, and a kind classifyPromptKind does not recognise —
+	// exactly the shape that produced #58. See resolveUnrecognisedPrompt.
+	ambUnrecognisedPrompt
 )
 
 // spinnerPaintGrace is how long a turn is allowed to have started without
@@ -1060,6 +1154,17 @@ func screenDigest(raw string) string {
 // emulate. One direction here has evidence behind it; the other would be a
 // guess wearing a status.
 func resolveAmbiguity(st fleet.SessionState, amb ambiguity, prior paneMemory, digest string, now time.Time) fleet.SessionState {
+	// ambUnrecognisedPrompt inverts the shape every other case here uses: st
+	// already IS the confident candidate — see classifyAgedDetail — and what
+	// this decides is whether it has EARNED that confidence yet, not what it
+	// should become. Handled first and separately because the early return
+	// just below assumes the opposite default (an unresolved st, returned
+	// as-is when there is nothing to promote it with), which is exactly
+	// backwards for a candidate that must be held DOWN, not left AS IS,
+	// absent corroboration.
+	if amb == ambUnrecognisedPrompt {
+		return resolveUnrecognisedPrompt(st, prior, digest, now)
+	}
 	if amb == ambNone || !prior.known || prior.digest != digest {
 		return st
 	}
@@ -1092,8 +1197,53 @@ func resolveAmbiguity(st fleet.SessionState, amb ambiguity, prior paneMemory, di
 	return st
 }
 
-// paneMemory is what the driver remembers about one pane from its previous
-// observation. Empty (known == false) is the first sighting.
+// resolveUnrecognisedPrompt implements #58's companion clause to #54's rule:
+// a promotion made on evidence the source itself reports as unrecognised is
+// not a promotion, it is unknown — until something corroborates it.
+//
+// # Why "the screen is upgrade-only" did not already prevent the incident
+//
+// The promotion #58 measured was working (or idle) -> waiting_input, which
+// is precisely the direction resolveAmbiguity's upgrade-only rule permits.
+// What was missing was not a direction check but a SECOND, independent
+// question: did the source that produced this candidate recognise what it
+// saw. `classifyPromptKind` returning empty is that source's own admission
+// that it did not — see its package-level doc: "fails to empty, never to a
+// guess" — and classifyAgedDetail was discarding that admission before the
+// verdict formed, exactly as #58 named it.
+//
+// # The corroboration is the fold's EXISTING second source, reused
+//
+// st already carries the full candidate — Prompt, WaitingOn, evidence — built
+// as if trusted. This does not rebuild it: it is either released unchanged
+// (corroborated) or replaced with an honest `unknown` (not yet). The
+// corroboration reuses screen-history, the same source ambNoSpinnerEmpty and
+// ambNoSpinnerPending already fold in: the same screen, held past
+// spinnerPaintGrace. A false read built from ordinary transcript text moving
+// past does not sit still that long — the text was never the same "menu"
+// twice, because it was never a menu. A real dialog this classifier has not
+// been taught a kind for yet does sit still, because it is genuinely
+// blocking on a human. That asymmetry is what makes the wait a real test and
+// not merely a delay.
+//
+// First sighting (prior.known == false) takes the same honest floor every
+// other ambiguity here takes: one capture cannot corroborate itself.
+func resolveUnrecognisedPrompt(st fleet.SessionState, prior paneMemory, digest string, now time.Time) fleet.SessionState {
+	if prior.known && prior.digest == digest && now.Sub(prior.at) >= spinnerPaintGrace {
+		return st
+	}
+	return fleet.UnknownState(fleet.ConfidenceInferred,
+		"screen shows what looks like a selection prompt, but its kind was not "+
+			"recognised and no runtime footer corroborates it; treated as "+
+			"unrecognised evidence (#58) rather than a confident prompt until it "+
+			"is seen unchanged")
+}
+
+// paneMemory is the screen-history fold source (#54): what the driver
+// remembers about one pane from its previous observation — a digest and
+// when it was taken, never the text itself (see screenDigest). Empty
+// (known == false) is the first sighting, and every resolution above treats
+// that the same way: nothing to corroborate against yet.
 type paneMemory struct {
 	known  bool
 	digest string
@@ -1133,6 +1283,22 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 		st.Prompt = parsePrompt(s)
 		if st.Prompt != nil {
 			st.Prompt.Kind = classifyPromptKind(st.Prompt)
+		}
+
+		// Companion clause, #58: a structural-only match (no footer) whose
+		// kind classifyPromptKind also would not name is exactly the shape
+		// that wedged a healthy session — the classifier's own admission
+		// that it could not classify what it saw, reported as a confident
+		// answer anyway. That admission must survive into the verdict
+		// rather than being discarded here, so this is not reported at full
+		// confidence on a single read; see resolveUnrecognisedPrompt.
+		//
+		// A footer-corroborated match, or one classifyPromptKind DID name,
+		// is unaffected — the footer, or the recognised kind, is already
+		// independent corroboration and this driver has trusted either one
+		// immediately since before #58.
+		if st.Prompt != nil && st.Prompt.Kind == "" && !promptFooterPresent(s) {
+			return st, ambUnrecognisedPrompt
 		}
 		return st, ambNone
 	}

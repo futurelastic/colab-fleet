@@ -329,6 +329,14 @@ POST /v1/machines/{machine}/sessions/{id}/respond
   automate answers, so you only ever answer questions you know. **An absent
   kind is not permission**: it means the service did not recognise the prompt,
   and answering it blind is how an automation kills a session.
+- An unrecognised prompt with nothing else corroborating it (no `kind`, and no
+  runtime footer on screen) is not reported the instant it appears. The tmux
+  driver holds it at `unknown` until the same screen has been seen unchanged
+  for a short grace window, because a single such read is exactly the shape
+  that misclassified ordinary transcript text as a menu and refused input to a
+  healthy session. A `waiting_input` with no `kind` may therefore lag its first
+  appearance by a couple of seconds — poll again rather than treating the
+  interim `unknown` as a dead end.
 - **Never blindly accept the default.** A real prompt in the wild highlights
   `No, exit` — a client that reflexively confirms would kill the session it was
   trying to start. That is why `options` and `selected` are both on the wire.

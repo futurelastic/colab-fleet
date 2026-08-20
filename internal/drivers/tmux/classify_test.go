@@ -549,6 +549,92 @@ func TestTranscriptListIsNotAPrompt(t *testing.T) {
 	}
 }
 
+// The measured incident, #58: ordinary pane text coincidentally matched the
+// structural shape parsePrompt looks for — a numbered line marked as if
+// selected — with no earlier index ever seen. The loop that enumerates
+// options pads a gap like that with "" to keep indices honest (see its own
+// comment), and before this fix the pad was itself read back as a real,
+// empty option: no real menu offers an option with no label, and that is
+// exactly the tell #58 recorded (options[0] == "").
+//
+// The consequence measured live: `Send` refused every message to a healthy
+// session because it believed — confidently, `kind` unset and no footer in
+// sight — that it was looking at a menu.
+func TestGappedHighlightIsNotAPrompt(t *testing.T) {
+	f := "  some assistant output\n❯ 2. a line that only looks like an option\n" +
+		rule + "\n❯\n" + rule
+	if p := parsePrompt(newScreen(f)); p != nil {
+		t.Errorf("gapped structural match read as a prompt: %+v", p.Options)
+	}
+	if _, blocked := selectionPrompt(newScreen(f)); blocked {
+		t.Error("Send would have refused delivery to a session that is not " +
+			"actually showing a menu (#58)")
+	}
+}
+
+// #58's companion clause, demonstrated on a match that is NOT malformed —
+// contrast TestGappedHighlightIsNotAPrompt, which is the one specific gap
+// shape that wedged a session. This is the general rule #58 forced onto
+// #54: a structural prompt match with no footer to corroborate it, whose
+// kind classifyPromptKind does not recognise, is the classifier's own
+// admission that it does not know what it is looking at — and that
+// admission must survive into the verdict rather than being discarded
+// before it forms, however well-formed the parse otherwise is.
+//
+// This is also #54's own "measurement first" ask, made concrete: a case
+// where a second source — here, the screen held stable, the same
+// screen-history source the other two ambiguities already fold in —
+// corrects what a single read would have reported with unearned confidence.
+func TestUnrecognisedStructuralPromptRequiresCorroboration(t *testing.T) {
+	const screen = "  A question nobody has written a matcher for\n" +
+		"❯ 1. Do the risky thing\n" +
+		"  2. Do the safe thing"
+
+	t0 := time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)
+
+	// First sighting: nothing to corroborate against yet, so this is held to
+	// unknown even though nothing about the parse is malformed.
+	first, digest := classifyPaneRemembering(screen, true, true, false, paneMemory{}, t0)
+	if first.Status != fleet.StatusUnknown {
+		t.Fatalf("first sighting = %s, want unknown — unrecognised evidence "+
+			"cannot corroborate itself (evidence: %s)", first.Status, first.Evidence)
+	}
+	if first.Prompt != nil {
+		t.Error("an uncorroborated candidate must not carry the prompt it has not yet earned")
+	}
+
+	// Same screen, later: nothing has moved, which coincidentally-matching
+	// transcript text would not manage.
+	prior := paneMemory{known: true, digest: digest, at: t0}
+	second, _ := classifyPaneRemembering(screen, true, true, false, prior, t0.Add(30*time.Second))
+	if second.Status != fleet.StatusWaitingInput {
+		t.Errorf("unchanged unrecognised prompt after 30s = %s, want waiting_input (%s)",
+			second.Status, second.Evidence)
+	}
+	if second.WaitingOn != fleet.WaitingPrompt {
+		t.Errorf("waitingOn = %q, want %q", second.WaitingOn, fleet.WaitingPrompt)
+	}
+	if second.Prompt == nil || len(second.Prompt.Options) != 2 {
+		t.Errorf("corroborated prompt = %+v, want the full candidate carried through", second.Prompt)
+	}
+
+	// Too soon: within the paint grace, still unrecognised evidence.
+	tooSoon, _ := classifyPaneRemembering(screen, true, true, false, prior, t0.Add(time.Second))
+	if tooSoon.Status != fleet.StatusUnknown {
+		t.Errorf("within the paint grace = %s, want unknown", tooSoon.Status)
+	}
+
+	// Changed screen: never promoted. A read that never repeats is exactly
+	// the shape ordinary, moving transcript text produces — the same "only
+	// ever narrows toward less activity" discipline resolveAmbiguity already
+	// applies to the other two ambiguities.
+	changed, _ := classifyPaneRemembering(screen+"\nmore output", true, true, false, prior, t0.Add(30*time.Second))
+	if changed.Status != fleet.StatusUnknown {
+		t.Errorf("changed screen = %s, want unknown — an unrecognised prompt is "+
+			"never promoted from a screen that has since moved on", changed.Status)
+	}
+}
+
 // The largest source of `unknown` in a real fleet was one screen shape: no
 // spinner, composer painted and empty. It is genuinely ambiguous from a single
 // capture — a fresh prompt and a turn that has not painted yet look identical

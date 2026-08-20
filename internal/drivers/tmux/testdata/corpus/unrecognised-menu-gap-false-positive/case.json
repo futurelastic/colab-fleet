@@ -1,0 +1,11 @@
+{
+  "name": "unrecognised-menu-gap-false-positive",
+  "for": "The measured incident behind #58: ordinary pane text coincidentally matched the structural shape parsePrompt looks for — a numbered line marked as if selected, with no earlier index ever seen. The gap-fill padding that keeps option indices honest (parsePrompt's own comment on why a missed line becomes \"\" rather than a silent renumbering) was, before this fix, read back as a real option with no label — the exact tell #58 recorded: options[0] == \"\". Live consequence: `Send` refused every message to a healthy session because the driver believed, confidently and with kind unset and no footer in sight, that it was looking at a menu. This case pins that the fix holds at BOTH observations: the screen is never read as waiting_input at t+0, and by t+5s (well past spinnerPaintGrace) it resolves the ordinary way any other quiet, composer-empty screen does — through the pre-existing ambNoSpinnerEmpty ambiguity, not through anything new. See TestGappedHighlightIsNotAPrompt for the same shape pinned directly against parsePrompt and selectionPrompt.",
+  "source": "#58, with #54's companion clause (kind=None as a first-class low-confidence fold input) as the reason the fix lives in parsePrompt's structural branch rather than as a special case bolted on afterwards",
+  "redactedFrom": "reconstructed from #58's own description — this driver has never persisted a raw screen to reconstruct byte-for-byte (screenDigest, not text; see resolveAmbiguity's comment), so this is scoped to the SHAPE #58 recorded (a gap producing an empty option at index 0, a highlighted line at index 2, no footer) rather than claimed as a byte-for-byte capture",
+  "alive": true,
+  "observations": [
+    { "afterSeconds": 0, "young": false, "want": "unknown" },
+    { "afterSeconds": 5, "young": false, "want": "idle" }
+  ]
+}
