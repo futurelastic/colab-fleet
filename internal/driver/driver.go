@@ -281,6 +281,44 @@ type EnvironmentReporter interface {
 	Environment(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionEnvironment, error)
 }
 
+// KeySender is an OPTIONAL capability: a driver that can deliver a raw key
+// event to a session's screen.
+//
+// Optional rather than part of Driver, the same trade EnvironmentReporter
+// makes. Pressing a key is substrate-specific in a way list and send are not —
+// a runtime driven by an API may have no notion of one — and putting it on the
+// interface would force every driver to write a stub whose only content is
+// that it cannot. A service type-asserts for it and reports the absence as
+// `unsupported`, honestly, which is what §5.6 asks for instead of an emulation.
+//
+// # What a driver implementing this owes the caller
+//
+// A raw key goes to a screen nobody classified, so there is no prompt and no
+// SessionPrompt.Nonce to check an answer against. Three obligations replace it,
+// and a driver that skips any of them has built a way to press Enter on a
+// session at random:
+//
+//  1. REFUSE on a stale expectDigest. It is SessionState.ScreenDigest as the
+//     caller last saw it. Empty means the caller is pressing keys on a screen
+//     it has not read, and must be refused outright — the same ruling `discard`
+//     already makes about deleting text nobody looked at.
+//  2. REFUSE when the composer holds unsent text. `Enter` there submits
+//     somebody's half-typed message, which is the precise harm `send` refuses
+//     to cause by appending to a busy composer; this must not become the way
+//     around that.
+//  3. CONFIRM, or say it could not. A key that landed on a dialog changes the
+//     screen; a key the dialog swallowed does not. An unchanged screen is
+//     reported as OutcomeUnknown with the reason saying so — never as
+//     submitted, because a supervisor told a keypress landed stops trying.
+//
+// One key per call, and that is the interface, not a convenience. After the
+// first key the screen is different, so every key after it in a batch would be
+// delivered against a digest describing something that no longer exists — which
+// is exactly what the digest was added to prevent.
+type KeySender interface {
+	Keys(ctx context.Context, req fleet.Request, ref fleet.SessionRef, key fleet.KeyName, expectDigest string) (fleet.DeliveryReceipt, error)
+}
+
 // CounterReporter is another OPTIONAL capability, same shape as
 // EnvironmentReporter: a driver that keeps its own named counters (see
 // internal/drivers/tmux/counters.go) and can hand back a snapshot of them.

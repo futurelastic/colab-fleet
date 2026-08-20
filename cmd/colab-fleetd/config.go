@@ -80,7 +80,7 @@ func (c *fileConfig) principals() ([]service.Principal, error) {
 		var grants []service.Grant
 		for _, g := range p.Grants {
 			gr := service.Grant(g)
-			if !validGrant(gr) {
+			if !service.ValidGrant(gr) {
 				return nil, fmt.Errorf("principal %q: unknown grant %q", p.Name, g)
 			}
 			grants = append(grants, gr)
@@ -88,26 +88,6 @@ func (c *fileConfig) principals() ([]service.Principal, error) {
 		out = append(out, service.Principal{Name: p.Name, Token: p.Token, Grants: grants})
 	}
 	return out, nil
-}
-
-// validGrant is a SECOND list of the grants, and that is the problem with it.
-//
-// Adding GrantRename to the authorization layer left this behind, and the
-// service then refused to start — correctly, fail-closed, but for a config an
-// operator had every reason to think was valid. A grant that exists and cannot
-// be granted is worse than one that does not exist.
-//
-// Kept as an explicit switch rather than a map so the compiler shows this
-// function to anyone adding a member; the real fix would be for the grant set
-// to have one definition, which is worth doing the next time a grant is added.
-func validGrant(g service.Grant) bool {
-	switch g {
-	case service.GrantRead, service.GrantCreate, service.GrantSend,
-		service.GrantInterrupt, service.GrantClose, service.GrantRename,
-		service.GrantDiscard, service.GrantRelay:
-		return true
-	}
-	return false
 }
 
 func (c *fileConfig) peerFor(machine fleet.MachineId) (url, token string, ok bool) {

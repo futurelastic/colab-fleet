@@ -794,6 +794,11 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		raw, digest := classifyPaneRemembering(text, captured, !r.dead, young, d.memoryLocked(r.session), now)
 		st, carried := d.stampSinceLocked(r.session, raw, now)
 		st.CredentialGeneration = gen
+		// Published so a caller can quote it back on a raw key (keys.go). It
+		// is already computed for the classifier's own use; empty when the
+		// capture failed, which correctly leaves that session unkeyable rather
+		// than keyable against a screen nobody read.
+		st.ScreenDigest = digest
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since, digest: digest,
@@ -1001,6 +1006,7 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 			now.Sub(r.created) < startingWindow, d.memoryLocked(r.session), now)
 		st, carried := d.stampSinceLocked(r.session, raw, now)
 		st.CredentialGeneration = d.credentialGeneration() // #12, same as List's per-session stamp
+		st.ScreenDigest = digest                           // see List's stamp of the same field
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since, digest: digest,

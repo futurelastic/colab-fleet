@@ -338,6 +338,37 @@ The receipt tells you what happened: `submitted` means the prompt cleared;
 session is swallowed by whatever it is doing); `unknown` means the answer went
 in but the prompt did not clear — re-read rather than retry blindly.
 
+### When the dialog is one nobody recognised
+
+Some full-screen dialogs are navigated with arrow keys and have no `prompt` for
+you to answer — `respond` will refuse them, correctly, because it has nothing to
+answer by index. For those:
+
+```
+POST /v1/machines/{machine}/sessions/{id}/keys?expect=<screenDigest>
+{ "key": "Down" }
+```
+
+- **`expect` is required**, and it is `state.screenDigest` from the read you
+  just did. It does the nonce's job: if the screen moved since you looked, you
+  get a `409` rather than a key applied to a screen you never saw.
+- **Six keys**: `Up` `Down` `Left` `Right` `Enter` `Escape`. Nothing else — no
+  characters (that is `input`), no control keys (`C-c` is `interrupt`, `C-u` is
+  `discard`).
+- **One key per request.** `Down Down Enter` is three calls with a read between
+  each, because after the first key your digest describes a screen that no
+  longer exists.
+- **`submitted` means the screen changed under the key.** `unknown` means it did
+  not — either the dialog swallowed it, or it had nothing to do. Do not read
+  `unknown` as failure and hammer it; re-read and decide.
+- It needs the **`keys` grant**, which is separate from `send` and denied by
+  default. If you are cutting over to this API for everything, ask for it in the
+  same breath as the rest — otherwise your first modal is where you find out.
+
+Prefer `respond` whenever a `prompt` is present. It verifies a nonce, picks by
+index, and tells you which option it took; arrow keys can do none of that, and
+the endpoint refuses rather than let you trade it away by accident.
+
 ## 7. Driving a session
 
 ```

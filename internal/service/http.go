@@ -81,6 +81,7 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/interrupt", withAuth(cfg, mutating(svc, cfg, handleInterrupt(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/discard", withAuth(cfg, mutating(svc, cfg, handleDiscard(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/rename", withAuth(cfg, mutating(svc, cfg, handleRename(svc))))
+	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/keys", withAuth(cfg, mutating(svc, cfg, handleKeys(svc))))
 	mux.HandleFunc("DELETE /v1/machines/{machine}/sessions/{id}", withAuth(cfg, mutating(svc, cfg, handleClose(svc))))
 	mux.HandleFunc("GET /v1/events", withAuth(cfg, handleEvents(svc)))
 
@@ -1049,6 +1050,93 @@ func handleRename(svc *Service) http.HandlerFunc {
 		})
 		writeJSON(w, http.StatusAccepted, ack)
 	}
+}
+
+// handleKeys delivers one raw key event to a session's screen (api-http.md
+// §3.3).
+//
+// # Why this is not a flag on respond
+//
+// `respond` refuses whenever the driver sees no prompt, and that refusal is the
+// whole of its safety: a keypress delivered to a session that is not asking
+// anything is consumed invisibly by whatever it is doing. The screens this
+// endpoint exists for are exactly the ones the classifier does not recognise,
+// so folding it into `respond` would mean relaxing that check for precisely the
+// case it was written to exclude. A separate route pays for its own safety —
+// `expect`, and the driver's refusals — instead of spending `respond`'s.
+//
+// A refusal is a 200 carrying an outcome, as for input and respond. A stale or
+// missing `expect` is a 409: the request is well formed and the caller's belief
+// is out of date (§5.4), which is the same answer `discard` gives for the same
+// reason.
+func handleKeys(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		machine := fleet.MachineId(r.PathValue("machine"))
+		id := r.PathValue("id")
+
+		var body struct {
+			Key fleet.KeyName `json:"key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			// The decoder rejects an unknown key name itself (fleet.KeyName's
+			// UnmarshalJSON), which is why this message names the vocabulary:
+			// a caller told only "malformed body" would go looking at its JSON.
+			writeError(w, &fleet.Error{
+				Kind: fleet.ErrorInvalid,
+				Message: "malformed body: " + err.Error() + " (keys this API delivers: " +
+					keyVocabulary() + ")",
+				Machine: machine,
+			})
+			return
+		}
+		if !body.Key.Valid() {
+			writeError(w, &fleet.Error{
+				Kind:    fleet.ErrorInvalid,
+				Message: "key is required; one of " + keyVocabulary(),
+				Machine: machine,
+			})
+			return
+		}
+
+		d, resErr := svc.resolveSessionDriver(machine, fleet.RuntimeId(r.URL.Query().Get("runtime")))
+		if resErr != nil {
+			writeError(w, resErr)
+			return
+		}
+		sender, ok := d.(driver.KeySender)
+		if !ok {
+			// §5.6: a driver that cannot press a key says so, and nothing here
+			// approximates one out of `input` — which would break input's own
+			// guarantee that a message never becomes a keystroke.
+			writeError(w, &fleet.Error{
+				Kind:    fleet.ErrorUnsupported,
+				Message: "this runtime cannot deliver a raw key event",
+				Machine: machine,
+			})
+			return
+		}
+
+		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
+		ctx, cancel := context.WithTimeout(r.Context(), deadline)
+		defer cancel()
+
+		receipt, err := sender.Keys(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id},
+			body.Key, r.URL.Query().Get("expect"))
+		if err != nil {
+			writeDriverError(w, machine, deadline, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, receipt)
+	}
+}
+
+func keyVocabulary() string {
+	names := fleet.KeyNames()
+	out := make([]string, 0, len(names))
+	for _, k := range names {
+		out = append(out, string(k))
+	}
+	return strings.Join(out, ", ")
 }
 
 // handleEvents streams events as Server-Sent Events (api-http.md §4).

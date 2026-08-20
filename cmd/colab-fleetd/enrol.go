@@ -63,11 +63,7 @@ func usageEnrol() string {
 }
 
 func grantNames() []string {
-	all := []service.Grant{
-		service.GrantRead, service.GrantCreate, service.GrantSend,
-		service.GrantInterrupt, service.GrantClose, service.GrantRename,
-		service.GrantDiscard, service.GrantRelay,
-	}
+	all := service.Grants()
 	out := make([]string, 0, len(all))
 	for _, g := range all {
 		out = append(out, string(g))
@@ -154,7 +150,7 @@ func addPrincipal(cfgPath, name, grantList, tokenFile string) error {
 		// Validated HERE, against the same list the service loads with. The
 		// alternative is what happened once already: an unknown grant written
 		// to disk, discovered only when the service refused to start.
-		if !validGrant(service.Grant(g)) {
+		if !service.ValidGrant(service.Grant(g)) {
 			return fmt.Errorf("unknown grant %q; available: %s", g, strings.Join(grantNames(), ", "))
 		}
 		grants = append(grants, g)

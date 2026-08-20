@@ -60,8 +60,50 @@ const (
 	// may well want a janitor that can CLEAR stranded text without being able
 	// to drive sessions at all.
 	GrantDiscard Grant = "discard"
-	GrantRelay   Grant = "relay" // have mutations proxied to peers
+	// GrantKeys delivers a RAW KEY EVENT to a session's screen (POST …/keys).
+	//
+	// Not folded into send, though respond is. Respond shares send on a "same
+	// blast radius" argument that does not survive here: respond is gated by a
+	// prompt the driver RECOGNISED and answers it by index against a nonce,
+	// while this one exists precisely for the screens nothing recognises. An
+	// operator may quite reasonably permit a supervisor to answer known
+	// questions and withhold the ability to press Enter on an unknown screen,
+	// and §6 makes grants per verb so that a distinct power can be withheld on
+	// its own.
+	//
+	// Absent means denied, like every other grant, so no existing principal
+	// gains this by upgrading.
+	GrantKeys  Grant = "keys"
+	GrantRelay Grant = "relay" // have mutations proxied to peers
 )
+
+// Grants is every grant this service defines, in the order an operator would
+// read them: reads, then the mutating verbs, then relay.
+//
+// It exists because there used to be a SECOND list — the config loader's
+// validator — and adding a grant to one and not the other made the service
+// refuse to start on a config an operator had every reason to think was valid.
+// A grant that exists and cannot be granted is worse than one that does not
+// exist. The comment left behind at the time said the real fix was for the
+// grant set to have one definition, "worth doing the next time a grant is
+// added"; GrantKeys is that time.
+func Grants() []Grant {
+	return []Grant{
+		GrantRead, GrantCreate, GrantSend, GrantInterrupt,
+		GrantClose, GrantRename, GrantDiscard, GrantKeys, GrantRelay,
+	}
+}
+
+// ValidGrant reports whether a string names a grant. The one definition
+// anything parsing configuration must go through.
+func ValidGrant(g Grant) bool {
+	for _, known := range Grants() {
+		if g == known {
+			return true
+		}
+	}
+	return false
+}
 
 // Principal is one identity this service accepts (§6).
 type Principal struct {
@@ -131,6 +173,8 @@ func grantForVerb(r *http.Request) Grant {
 		return GrantRename
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/discard"):
 		return GrantDiscard
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/keys"):
+		return GrantKeys
 	case r.Method == http.MethodDelete:
 		return GrantClose
 	}

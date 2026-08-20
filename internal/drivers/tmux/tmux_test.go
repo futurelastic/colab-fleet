@@ -58,6 +58,11 @@ type fakeMux struct {
 	// all — the untouched half of #32's missing branch, as distinct from
 	// composerLines' partial-clear model of the damaged half.
 	frozen map[string]bool
+	// keyRepaint models a DIALOG: a pane that redraws when a raw key lands on
+	// it. That redraw is the only evidence Keys has that its key registered,
+	// so a pane without this models the opposite case — a screen that
+	// swallowed the key — and both need to be reachable from a test.
+	keyRepaint map[string]bool
 }
 
 // composerHolding renders a frame whose composer holds text — the shape of a
@@ -320,6 +325,16 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			} else {
 				delete(f.pasted, pane)
 				f.captures[pane] = idleFixtureFor("cleared")
+			}
+		}
+		// A dialog redrawing under a raw key. Only for panes a test armed, so
+		// every existing test keeps the old no-op behaviour.
+		if pane != "" && f.keyRepaint[pane] {
+			for _, a := range args {
+				switch a {
+				case "Up", "Down", "Left", "Right", "Escape", "C-m":
+					f.captures[pane] += "\n  selection moved by " + a
+				}
 			}
 		}
 		// Model what a SUBMIT does, which the fake previously left implicit.

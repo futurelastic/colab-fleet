@@ -260,6 +260,33 @@ type SessionState struct {
 	// unclassified — see WaitingReason.
 	WaitingOn WaitingReason `json:"waitingOn,omitempty"`
 
+	// ScreenDigest fingerprints the whole screen this state was read from.
+	//
+	// It is the corroboration token for a RAW KEY (api-http.md §3.3, POST
+	// …/keys): a caller quotes back the digest of the screen it looked at, and
+	// the driver refuses if the screen has moved on. A key event has no
+	// SessionPrompt.Nonce to check itself against — the screens that need arrow
+	// keys are precisely the ones the classifier did not recognise — so this
+	// takes the nonce's place, and it is the same discipline `close` uses with
+	// `startedAt` and `discard` with ComposerDigest: the caller states what it
+	// believes, and the driver refuses if the world has moved.
+	//
+	// A digest and never the text. The pane holds a conversation; a read that
+	// published it would turn every listing into a transcript leak, and the
+	// caller does not need the words — it needs to prove it is acting on the
+	// thing it saw. Same trade ComposerDigest already makes.
+	//
+	// Not comparable ACROSS drivers or across restarts of one: it is whatever
+	// fingerprint the driver that produced this state uses. Quote it back;
+	// never compute one yourself and expect a match.
+	//
+	// Deliberately NOT a material change (see MateriallyDiffers). A screen
+	// repaints on every character an agent prints, so a feed that fired on this
+	// would emit an event per keystroke — the same reason Evidence is excluded,
+	// and a much more expensive mistake because this field changes even when
+	// the prose does not.
+	ScreenDigest string `json:"screenDigest,omitempty"`
+
 	// Quota carries the account-level block when Status is quota_blocked —
 	// including a reset hint in the runtime's own words, so a caller need not
 	// scrape it out of the evidence prose the way every consumer of this

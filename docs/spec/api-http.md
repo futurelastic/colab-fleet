@@ -444,6 +444,76 @@ a keystroke: a message containing `C-c` must not interrupt the session
 receiving it (§3 of the abstraction).
 
 ```
+POST /v1/machines/{machine}/sessions/{id}/keys?expect=<screenDigest>&startedAt=&runtime=
+{ "key": "Down" }
+
+→ 200 { "outcome": "submitted" | "refused" | "unknown", "reason": "..." }
+→ 400 if `key` is outside the vocabulary below
+→ 409 if `expect` does not match the screen now, or none was supplied
+→ 501 if the driver cannot deliver a key event
+```
+
+Delivers ONE raw key event to a session's screen. It exists for the full-screen
+dialogs a driver does not recognise — navigated with arrow keys, confirmed with
+a bare Enter — which `respond` cannot answer and `input` must never learn to.
+
+**It is not a flag on `respond`.** `respond` refuses whenever the driver sees no
+prompt, and that refusal is the whole of its safety: a keypress delivered to a
+session that is not asking anything is consumed invisibly by whatever it is
+doing. The screens this route exists for are exactly the unrecognised ones, so
+folding it in would mean relaxing that check for the case it was written to
+exclude. This route pays for its own safety instead.
+
+**`expect` is `state.screenDigest`, and it replaces the nonce.** There is no
+`prompt` on an unrecognised screen and therefore no `SessionPrompt.nonce`, so
+the caller quotes back a fingerprint of the screen it read — the same discipline
+`discard` uses with `composerDigest` and `DELETE` with `startedAt`. A screen
+that has moved on is `409`: well-formed request, stale belief. It is
+**required**; a caller that has not read the screen has no business pressing
+Enter on it.
+
+`state.screenDigest` is new and is published by any driver that can produce one.
+It is a fingerprint and never the text: the pane holds a conversation, and a
+read that returned it would make every listing a transcript leak. It is not
+comparable across drivers or across restarts — quote it back, never compute one.
+
+**Vocabulary, closed:** `Up` `Down` `Left` `Right` `Enter` `Escape` — move,
+accept, dismiss. Anything else is `invalid`, rejected before any driver is
+consulted. Absent by design: every character key, which is `input`'s job and
+whose guarantee is that a message never becomes a keystroke; and every control
+key — `C-c` is `interrupt`, `C-u` is `discard` — each of which has corroboration
+and confirmation a blind keypress cannot offer. An endpoint accepting arbitrary
+key names would quietly become a second, unreviewed way to do everything else
+here.
+
+**One key per request**, and no sequence field. After the first key the screen
+is different, so every later key in a batch would be delivered against a digest
+describing something that no longer exists — reintroducing exactly what `expect`
+prevents. `Down Down Enter` is three requests with a read between each. That is
+the honest price of three corroborated keypresses.
+
+**Two refusals hold regardless of the digest**, as ordinary 200 outcomes:
+
+- the composer holds unsent text — `Enter` would submit somebody's half-typed
+  message, which is the harm `send` already refuses to cause;
+- the session is at a prompt the driver DID recognise — answer it through
+  `respond`, which verifies a nonce and can say which option it chose. Falling
+  back to a blind arrow key is a downgrade dressed as a capability.
+
+**`submitted` means the screen changed under the key.** A key a dialog swallows
+leaves the session exactly as stuck as before, so an unchanged screen is
+reported `unknown` with the reason saying so — never `submitted`. A legitimate
+no-op (`Down` at the bottom of a list) reports the same way, because from
+outside the dialog the two are the same observation and inventing a distinction
+would mean claiming to know what the dialog is.
+
+It requires its own **`keys` grant** (§6), not `send`. `respond` shares `send`
+on a same-blast-radius argument that does not survive here: `respond` is gated
+by a recognised prompt and this deliberately is not, so an operator may permit
+one and withhold the other. Absent means denied, so no existing principal gains
+it by upgrading.
+
+```
 POST   /v1/machines/{machine}/sessions/{id}/interrupt?runtime=   → 202
 DELETE /v1/machines/{machine}/sessions/{id}?runtime=              → 202
 ```
@@ -647,8 +717,8 @@ ordering is wrong rather than handing you a cursor that would skip.
   configuration in which authentication is off — not for loopback, not for
   development.
 - Permissions are **per verb, per machine**. `list` and `state` may be granted
-  broadly; `create`, `input`, `interrupt` and `close` are granted per peer and
-  default to denied.
+  broadly; `create`, `input`, `interrupt`, `close`, `rename`, `discard` and
+  `keys` are granted per peer and default to denied.
 - Each caller presents its own credential and holds per-verb grants (§6).
 - When proxying (§13), the relaying service authenticates as **itself** with the
   credential it holds on that peer, and asserts the original principal in

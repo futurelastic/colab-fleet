@@ -817,6 +817,37 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	return ack, nil
 }
 
+// Keys delivers one raw key event to a session belonging to the peer
+// (driver.KeySender).
+//
+// Corroboration is forwarded, never re-derived. `expect` is the digest of the
+// screen the ORIGINAL caller read, and it is checked where the session actually
+// is — this driver has no screen of its own to compare against, and a proxy
+// that substituted its own reading would corroborate a caller's belief against
+// something the caller never saw. Same rule Close and Discard already follow.
+func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionRef, key fleet.KeyName, expectDigest string) (fleet.DeliveryReceipt, error) {
+	ctx, cancel := d.bounded(ctx)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/keys",
+		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
+	q := url.Values{}
+	if expectDigest != "" {
+		q.Set("expect", expectDigest)
+	}
+	if want := req.Expect.StartedAt; want != nil {
+		q.Set("startedAt", want.UTC().Format(time.RFC3339Nano))
+	}
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var receipt fleet.DeliveryReceipt
+	if err := d.do(ctx, req, http.MethodPost, path, map[string]any{"key": key}, &receipt); err != nil {
+		return fleet.DeliveryReceipt{}, err
+	}
+	return receipt, nil
+}
+
 // Rename changes the id of a session belonging to the peer (§3).
 //
 // The caller's expectation is forwarded for the same reason Close forwards it:
