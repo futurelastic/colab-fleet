@@ -49,6 +49,26 @@ type fileConfig struct {
 	// FLEET_CONFIG at, never in this repository. See
 	// internal/trustseed.Seeder for the mechanism and its scope guards.
 	TrustRoots []string `json:"trustRoots,omitempty"`
+
+	// DefaultRuntime is which local runtime resolves a bare session id when
+	// more than one is registered on this machine (colab-fleet issue #60, ⚖
+	// ruling). It must name a runtime this instance actually registers —
+	// checked at startup (main.go, service.Service.SetDefaultRuntime), not
+	// on the first request that needs it, so a typo here is a message an
+	// operator reads once rather than a fleet-wide `not_found` that reads
+	// exactly like every session having disappeared.
+	//
+	// Absent means this file's own rule applied to itself: bare-id
+	// addressing among more than one local runtime stays refused
+	// (ErrAmbiguousSession), the older behaviour, unless a caller
+	// disambiguates with `?runtime=`.
+	//
+	// Machine-local by nature, the same reasoning TrustRoots follows: which
+	// runtimes exist on THIS machine is a fact about this machine, not
+	// about the fleet, so it belongs in the file an operator already edits
+	// per machine rather than in an environment variable that would read as
+	// though it meant something fleet-wide.
+	DefaultRuntime string `json:"defaultRuntime,omitempty"`
 }
 
 func loadConfig(path string) (*fileConfig, error) {

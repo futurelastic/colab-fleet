@@ -984,6 +984,63 @@ by convention, never an identifier, never used for routing.
 single point of failure for the one operation that must keep working when a
 peer is unreachable. `(machine, id)` needs no coordination at all.
 
+### 7.1a A configured default runtime resolves a bare id, existence first
+
+`(machine, id)` is complete only while a machine runs one runtime. The moment
+it runs two, a bare id is ambiguous between them and needs a third
+coordinate — `runtime` (api-http.md §3.3) — that no caller anywhere sends,
+because until a second local driver exists nothing has ever required it
+(colab-fleet issue #60).
+
+**⚖ Ruling:** a machine may configure a **default runtime**, an
+operator-edited, machine-local setting (`cmd/colab-fleetd/config.go`'s
+`defaultRuntime`, beside `peers` and `trustRoots`) that keeps bare-id
+addressing working for every caller that has never had to name one. Absent
+means the older behaviour: bare-id addressing among more than one local
+runtime is refused rather than guessed.
+
+A default is a quiet way to reach the wrong runtime, not merely a way to
+fail, so three guardrails govern it:
+
+1. **A default naming an unregistered runtime fails at startup**, never on
+   the first request that needs it. Otherwise a typo becomes a fleet-wide
+   `not_found` indistinguishable from every session having vanished.
+2. **Resolving via the default is visible in the response**, not only in a
+   log. A caller that named its own runtime and a caller that received the
+   default are in different epistemic positions, and §5.7 already forbids
+   rendering those alike.
+3. **Existence first, default as tiebreak.** A bare id is resolved by asking
+   every registered local driver whether it has ever had that id — before
+   the default is ever consulted:
+   - exactly one driver affirms it → that driver, regardless of what the
+     default names. A default must never steer an id that plainly belongs
+     to another runtime into a false `not_found` — the sharpest form of the
+     absence/failure confusion §5.7 forbids, applied to routing instead of a
+     single read.
+   - more than one driver affirms it → refused, naming every runtime that
+     claims the id. §5.4 already requires consensus before acting on a
+     recycled id; two runtimes claiming the same one is exactly that case,
+     and it is surfaced rather than silently resolved by the default.
+   - the check cannot be completed for every driver (one errors for a
+     reason other than "never had this id") and nothing else affirms the id
+     → refused rather than guessed, for the same reason as the case above:
+     an unreachable driver might be the one that actually holds it.
+   - every driver affirmatively confirms absence → a genuine miss, the same
+     shape `create`'s own ambiguous case has (there is equally nothing to
+     route TO) — only here does the configured default apply.
+
+   `create` has no existing id to check and reaches the genuine-miss
+   handling directly: an ambiguous `create` with no `runtime` hint resolves
+   to the configured default, or is refused absent one.
+
+**Federation is unaffected.** A proxied request to a peer machine never
+reaches this resolution at all — the peer resolves its own runtimes locally
+and this service does not recurse into asking it to disambiguate (§13.1).
+The default is machine-local in the sharpest sense: applying THIS machine's
+default to an id addressed at a peer would make one bare id mean different
+sessions depending on which machine answered it, exactly the fork this
+section's `(machine, id)` addressing exists to prevent.
+
 ### 7.2 Peers are statically configured
 
 No announcement, no discovery protocol, no broadcast.

@@ -50,6 +50,41 @@ func TestLoadConfigWithoutTrustRootsLeavesItEmpty(t *testing.T) {
 	}
 }
 
+// colab-fleet issue #60: defaultRuntime is a plain, optional field on the
+// same file trustRoots lives on, and round-trips the same way.
+func TestLoadConfigReadsDefaultRuntime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{
+		"principals": [{"name": "op", "token": "tok", "grants": ["read"]}],
+		"defaultRuntime": "tmux"
+	}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultRuntime != "tmux" {
+		t.Errorf("DefaultRuntime = %q, want %q", cfg.DefaultRuntime, "tmux")
+	}
+}
+
+func TestLoadConfigWithoutDefaultRuntimeLeavesItEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{"principals": [{"name": "op", "token": "tok"}]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultRuntime != "" {
+		t.Errorf("DefaultRuntime = %q, want empty — absent means the older behaviour", cfg.DefaultRuntime)
+	}
+}
+
 func TestTrustSeedIntervalDefaultsAndValidates(t *testing.T) {
 	t.Setenv("FLEET_TRUST_SEED_INTERVAL", "")
 	if got := trustSeedInterval(); got != 2*time.Minute {

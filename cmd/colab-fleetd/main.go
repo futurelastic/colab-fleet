@@ -35,10 +35,15 @@
 //	                       in-memory only, which is honest for a throwaway
 //	                       instance and is the defect D5 described for a real
 //	                       one. Created if missing, mode 0700.
-//	FLEET_CONFIG           path to a JSON file carrying the principal table
-//	                       and per-peer credentials (§6). When present it is
-//	                       authoritative and FLEET_TOKEN / FLEET_ALLOW_* are
-//	                       ignored. Absent means single-token mode.
+//	FLEET_CONFIG           path to a JSON file carrying the principal table,
+//	                       per-peer credentials (§6), and this machine's
+//	                       defaultRuntime (§60: the bare-id tiebreak once a
+//	                       second local driver is registered — absent means
+//	                       bare-id addressing among more than one stays
+//	                       refused, the older behaviour). When present the
+//	                       principal table is authoritative and FLEET_TOKEN /
+//	                       FLEET_ALLOW_* are ignored. Absent means
+//	                       single-token mode.
 //	FLEET_ALLOW_MUTATIONS  set to 1 to permit create/input/interrupt/close
 //	                       against sessions ON THIS MACHINE. Defaults OFF.
 //	FLEET_ALLOW_RELAY      set to 1 to permit forwarding a mutation to a
@@ -252,6 +257,22 @@ func main() {
 	}
 	if err := svc.RegisterLocalDriver(runtimeID, localDriver); err != nil {
 		log.Fatalf("colab-fleetd: registering local runtime: %v", err)
+	}
+
+	// The bare-id tiebreak once a second local driver is registered
+	// (colab-fleet issue #60, ⚖ ruling). Config-file-only, like TrustRoots
+	// and Peers: which runtimes exist is a fact about this machine, not the
+	// fleet, and belongs in the file an operator already edits per machine.
+	//
+	// Validated HERE, against every local driver this instance will ever
+	// register, so a typo fails startup once (guardrail 1) instead of
+	// turning every ambiguous bare-id call into a `not_found` that reads
+	// exactly like sessions having disappeared.
+	if cfgFile != nil && cfgFile.DefaultRuntime != "" {
+		if err := svc.SetDefaultRuntime(fleet.RuntimeId(cfgFile.DefaultRuntime)); err != nil {
+			log.Fatalf("colab-fleetd: %v", err)
+		}
+		log.Printf("colab-fleetd: default runtime %q configured for bare-id resolution (§60)", cfgFile.DefaultRuntime)
 	}
 
 	// --- peers ---------------------------------------------------------

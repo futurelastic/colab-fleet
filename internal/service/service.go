@@ -15,6 +15,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -98,6 +100,21 @@ type Service struct {
 	mu    sync.RWMutex
 	local map[fleet.RuntimeId]driver.Driver
 	peers map[fleet.MachineId]driver.Driver
+
+	// defaultRuntime is the machine-local tiebreak resolveSessionDriver
+	// falls back to once existence-first resolution has genuinely nothing
+	// to route a bare id to (colab-fleet issue #60, ⚖ ruling). Empty means
+	// exactly what cmd/colab-fleetd/config.go's own doc comment says an
+	// absent setting always means in that file: "the older behaviour" —
+	// bare-id addressing among more than one local runtime is refused
+	// (ErrAmbiguousSession) rather than guessed.
+	//
+	// Set only through SetDefaultRuntime, which refuses a value naming a
+	// runtime not already registered — guardrail 1 of #60: a typo here
+	// must fail once, at startup, rather than turn into a fleet-wide
+	// not_found on every bare-id call that looks exactly like sessions
+	// having disappeared.
+	defaultRuntime fleet.RuntimeId
 }
 
 // New constructs a Service without durable state. See NewWithState.
@@ -241,6 +258,51 @@ func (s *Service) RegisterPeerDriver(machine fleet.MachineId, d driver.Driver) e
 	defer s.mu.Unlock()
 	s.peers[machine] = d
 	return nil
+}
+
+// SetDefaultRuntime configures this machine's tiebreak for bare-id session
+// resolution once more than one local driver is registered (colab-fleet
+// issue #60, ⚖ ruling). runtime must already be a REGISTERED local driver —
+// refused otherwise, so an operator's typo in the config file is a startup
+// failure read once, never a fleet-wide not_found that reads exactly like
+// every session having disappeared (guardrail 1).
+//
+// Call it only after every RegisterLocalDriver this instance will ever make.
+// There is no mechanism here to revalidate against a driver registered
+// afterwards, the same way cmd/colab-fleetd/main.go's trust-root and peer
+// wiring are one-shot startup steps rather than something reconciled later.
+//
+// An empty runtime is accepted and clears any default previously set — the
+// zero value already means "no default configured," so this is a no-op
+// against a Service that has never had one, and a caller need not special-
+// case that.
+func (s *Service) SetDefaultRuntime(runtime fleet.RuntimeId) error {
+	if runtime == "" {
+		s.mu.Lock()
+		s.defaultRuntime = ""
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.local[runtime]; !ok {
+		known := make([]string, 0, len(s.local))
+		for rt := range s.local {
+			known = append(known, string(rt))
+		}
+		sort.Strings(known)
+		return fmt.Errorf("service: default runtime %q is not a registered local driver (have: %s)",
+			runtime, strings.Join(known, ", "))
+	}
+	s.defaultRuntime = runtime
+	return nil
+}
+
+// DefaultRuntime reports the configured default, or "" when none is set.
+func (s *Service) DefaultRuntime() fleet.RuntimeId {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.defaultRuntime
 }
 
 func (s *Service) localDrivers() []driver.Driver {
@@ -495,49 +557,227 @@ func (s *Service) counterSnapshot() map[fleet.RuntimeId]map[string]int64 {
 // runtime segment, but SessionRef.ID is scoped to (machine, runtime), not
 // machine alone (session-abstraction.md §2.2). Two runtimes on one machine
 // can legally reuse the same id.
+//
+// It is also the OLDER behaviour a configured default runtime exists to
+// relieve callers of (colab-fleet issue #60): absent a default, this is
+// still exactly what a caller gets whenever resolution genuinely cannot
+// name one driver — the config file's own "nothing here has a default; an
+// absent value means the older behaviour" carried one level down.
 var ErrAmbiguousSession = errors.New("service: more than one local runtime is registered; pass ?runtime= to disambiguate (api-http.md §3.3)")
 
+// runtimeResolution records HOW resolveSessionDriver picked a driver, so a
+// caller that named its own runtime and a caller that got the machine's
+// configured default are not rendered alike (§5.7; colab-fleet issue #60
+// guardrail 2). Only resolvedDefault is a genuine guess wearing a
+// configuration's authority — the other three are exactly as trustworthy as
+// a caller naming its own runtime, because each is either the caller's own
+// word or a fact this machine just confirmed.
+type runtimeResolution string
+
+const (
+	resolvedExplicit  runtimeResolution = "explicit"  // caller passed ?runtime=
+	resolvedSole      runtimeResolution = "sole"      // exactly one local driver is registered at all
+	resolvedExistence runtimeResolution = "existence" // exactly one registered driver affirmed it holds this id
+	resolvedDefault   runtimeResolution = "default"   // configured default, used only as a genuine-miss tiebreak
+	resolvedPeer      runtimeResolution = "peer"      // routed to a peer machine — the default never applies (§13.1)
+)
+
 // resolveSessionDriver finds the Driver responsible for an existing or
-// about-to-be-created session addressed by (machine, runtimeHint).
+// about-to-be-created session addressed by (machine, id, runtimeHint).
+//
+// id is the session's id when one is already being addressed — every
+// endpoint but create. It is empty for create, where nothing exists yet to
+// search local drivers FOR. Threading it through is what makes
+// existence-first resolution possible at all: a version of this function
+// that never saw the id (the shape this had before colab-fleet issue #60)
+// had nothing to check registered drivers against, and could only guess or
+// refuse.
 //
 //   - machine == a configured peer: that peer's single remote driver
 //     handles it — the peer resolves its own runtimes locally, and this
 //     service never recurses into asking the peer to disambiguate (§13.1).
+//     The machine-local default configured here NEVER reaches this branch:
+//     applying it to a peer would make one bare id mean different sessions
+//     depending on which machine answered, exactly the fork §7.1's
+//     (machine, id) addressing exists to prevent.
+//
 //   - machine == self, runtimeHint given: routes directly to that local
-//     driver.
-//   - machine == self, runtimeHint empty: resolves iff exactly one local
-//     driver is registered; otherwise ErrAmbiguousSession, since the
-//     spec's URL shape as written cannot otherwise say which runtime a
-//     bare id belongs to.
-func (s *Service) resolveSessionDriver(machine fleet.MachineId, runtimeHint fleet.RuntimeId) (driver.Driver, *fleet.Error) {
+//     driver. The caller named its runtime; nothing here second-guesses it.
+//
+//   - machine == self, runtimeHint empty, exactly one local driver
+//     registered: that driver, unambiguously — the case that held for this
+//     whole repository's life before a second local driver existed to
+//     register.
+//
+//   - machine == self, runtimeHint empty, more than one local driver
+//     registered: EXISTENCE FIRST, DEFAULT AS TIEBREAK (colab-fleet #60).
+//     A nonempty id is probed against every registered local driver's own
+//     State() — ErrNoSuchSession is a driver's affirmative "I have never
+//     had this id" (errors.go) — and:
+//
+//     exactly one driver affirms it     -> that driver, full stop,
+//     REGARDLESS of the configured
+//     default (guardrail 3: a default
+//     naming runtime A must never
+//     steer a bare id that plainly
+//     belongs to runtime B into a
+//     false not_found).
+//     more than one driver affirms it   -> refused, naming every runtime
+//     that claims the id. §5.4
+//     already requires consensus
+//     before acting on a recycled id;
+//     two runtimes claiming the same
+//     one is exactly that case, and it
+//     is surfaced rather than
+//     silently resolved.
+//     any driver's probe is inconclusive
+//     (fails for a reason other than
+//     "never had this id") and nothing
+//     else affirms it                   -> refused rather than guessed. An
+//     inconclusive driver might be the
+//     one actually holding the id, and
+//     defaulting past it is the same
+//     false-absence guardrail 3
+//     forbids.
+//     every driver affirmatively
+//     confirms absence                  -> a genuine miss, the same shape
+//     create's own ambiguous case has
+//     (there is equally nothing here
+//     to route TO) — falls to the
+//     configured default, or
+//     ErrAmbiguousSession absent one.
+//
+//     id == "" (create) skips the probe outright and goes straight to that
+//     same genuine-miss handling: the configured default when ambiguous, or
+//     ErrAmbiguousSession absent one.
+func (s *Service) resolveSessionDriver(ctx context.Context, req fleet.Request, machine fleet.MachineId, id string, runtimeHint fleet.RuntimeId, callerDeadline time.Duration) (driver.Driver, fleet.RuntimeId, runtimeResolution, *fleet.Error) {
 	if machine != s.self && machine != "" {
 		s.mu.RLock()
 		d, ok := s.peers[machine]
 		s.mu.RUnlock()
 		if !ok {
-			return nil, &fleet.Error{Kind: fleet.ErrorNotFound, Message: "unknown machine", Machine: machine}
+			return nil, "", "", &fleet.Error{Kind: fleet.ErrorNotFound, Message: "unknown machine", Machine: machine}
 		}
-		return d, nil
+		return d, "", resolvedPeer, nil
 	}
 
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	if runtimeHint != "" {
 		d, ok := s.local[runtimeHint]
+		s.mu.RUnlock()
 		if !ok {
-			return nil, &fleet.Error{Kind: fleet.ErrorNotFound, Message: "unknown runtime", Machine: machine}
+			return nil, "", "", &fleet.Error{Kind: fleet.ErrorNotFound, Message: "unknown runtime", Machine: machine}
 		}
-		return d, nil
+		return d, runtimeHint, resolvedExplicit, nil
 	}
 
-	switch len(s.local) {
+	// Snapshot under the lock, then release it before any driver call — a
+	// probe below may reach a real substrate, and holding this mutex across
+	// that would block every other registration and lookup for as long as
+	// the slowest candidate driver takes to answer.
+	local := make(map[fleet.RuntimeId]driver.Driver, len(s.local))
+	for rt, d := range s.local {
+		local[rt] = d
+	}
+	defaultRuntime := s.defaultRuntime
+	s.mu.RUnlock()
+
+	switch len(local) {
 	case 0:
-		return nil, &fleet.Error{Kind: fleet.ErrorNotFound, Message: "no local drivers registered", Machine: machine}
+		return nil, "", "", &fleet.Error{Kind: fleet.ErrorNotFound, Message: "no local drivers registered", Machine: machine}
 	case 1:
-		for _, d := range s.local {
-			return d, nil
+		for rt, d := range local {
+			return d, rt, resolvedSole, nil
 		}
 	}
-	return nil, &fleet.Error{Kind: fleet.ErrorInvalid, Message: ErrAmbiguousSession.Error(), Machine: machine}
+
+	// More than one local driver, and the caller named none. A nonempty id
+	// means an existing session is being addressed, so it is resolved
+	// existence-first before the default is ever consulted.
+	if id != "" {
+		holders, inconclusive := s.probeHolders(ctx, req, local, id, callerDeadline)
+		switch {
+		case len(holders) == 1:
+			for rt, d := range holders {
+				return d, rt, resolvedExistence, nil
+			}
+		case len(holders) > 1:
+			return nil, "", "", &fleet.Error{
+				Kind: fleet.ErrorInvalid,
+				Message: "session id is present under more than one local runtime (" +
+					strings.Join(runtimeNames(holders), ", ") +
+					"); pass ?runtime= to disambiguate (§5.4)",
+				Machine: machine,
+			}
+		case len(inconclusive) > 0:
+			return nil, "", "", &fleet.Error{
+				Kind: fleet.ErrorInvalid,
+				Message: "more than one local runtime is registered and existence could not be " +
+					"confirmed against all of them (" + strings.Join(runtimeNames(inconclusive), ", ") +
+					"); pass ?runtime= to disambiguate (api-http.md §3.3)",
+				Machine: machine,
+			}
+			// else: confirmed absent from every local driver — a genuine
+			// miss, falls through to the same handling create's own
+			// ambiguous case gets, below.
+		}
+	}
+
+	if defaultRuntime != "" {
+		if d, ok := local[defaultRuntime]; ok {
+			return d, defaultRuntime, resolvedDefault, nil
+		}
+		// SetDefaultRuntime refuses a value that does not name a
+		// registered driver, so this is defensive rather than reachable in
+		// practice.
+		return nil, "", "", &fleet.Error{Kind: fleet.ErrorNotFound, Message: "configured default runtime is not registered", Machine: machine}
+	}
+
+	return nil, "", "", &fleet.Error{Kind: fleet.ErrorInvalid, Message: ErrAmbiguousSession.Error(), Machine: machine}
+}
+
+// probeHolders asks every candidate local driver, individually, whether it
+// has ever had id — the affirmative signal ErrNoSuchSession's own doc
+// comment names ("a read whose id the machine has never had"). Run with the
+// service lock already released by the caller; a probe may reach a real
+// substrate.
+//
+// Returns two disjoint sets. holders affirmatively HAVE the id — their
+// State() succeeded. inconclusive could not be asked at all: State() failed
+// for a reason OTHER than "never had it" (unsupported, unreachable, past
+// its deadline). resolveSessionDriver treats those very differently — see
+// its own doc comment — because an inconclusive driver is not evidence of
+// absence, only evidence that this probe could not reach a verdict.
+func (s *Service) probeHolders(ctx context.Context, req fleet.Request, local map[fleet.RuntimeId]driver.Driver, id string, callerDeadline time.Duration) (holders, inconclusive map[fleet.RuntimeId]driver.Driver) {
+	holders = make(map[fleet.RuntimeId]driver.Driver)
+	inconclusive = make(map[fleet.RuntimeId]driver.Driver)
+	ref := fleet.SessionRef{Machine: s.self, ID: id}
+	for rt, d := range local {
+		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, callerDeadline)
+		callCtx, cancel := context.WithTimeout(ctx, deadline)
+		_, err := d.State(callCtx, req, ref)
+		cancel()
+		switch {
+		case err == nil:
+			holders[rt] = d
+		case errors.Is(err, fleet.ErrNoSuchSession):
+			// Affirmatively absent from this driver — belongs to neither
+			// set; §5.7's "absence and failure are different answers"
+			// applied to a routing decision instead of a read.
+		default:
+			inconclusive[rt] = d
+		}
+	}
+	return holders, inconclusive
+}
+
+// runtimeNames returns the sorted runtime ids of m, for an error message a
+// caller can act on without depending on Go map iteration order.
+func runtimeNames(m map[fleet.RuntimeId]driver.Driver) []string {
+	out := make([]string, 0, len(m))
+	for rt := range m {
+		out = append(out, string(rt))
+	}
+	sort.Strings(out)
+	return out
 }

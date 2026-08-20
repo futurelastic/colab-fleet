@@ -21,6 +21,10 @@ served, and the federated ones have been exercised peer to peer.
   rather than by a composite identifier in one path segment. There is no
   fleet-wide id to encode (§7.1), and the hierarchy makes the machine scope
   visible at every call site.
+- A call that resolves a local session driver carries `Fleet-Runtime:
+  <runtime-id>`, and `Fleet-Runtime-Resolution: default` when a configured
+  default runtime was the tiebreak (session-abstraction.md §7.1a). See §3.3's
+  `rename` entry for the full rule.
 
 ## 2. Error model
 
@@ -172,7 +176,8 @@ Idempotency-Key: <caller-supplied, required>
   "permissionMode": "bypass", "consents": ["folder-trust"],
   "mcpConfig": ["/abs/servers.json"] }
 
-→ 201 { "machine": "...", "id": "...", "name": "...", "state": {...} }
+→ 201 { "machine": "...", "id": "...", "name": "...", "runtime": "...",
+        "state": {...} }
 → 200 (same body) if the key was already seen — the existing session
 → 409 if the key was seen with a different body
 ```
@@ -181,6 +186,13 @@ Idempotency-Key: <caller-supplied, required>
 rejected with `invalid`. The rationale is §10: a timed-out federated create
 that gets retried produces two agents writing to the same working directory,
 and the caller cannot detect it afterwards.
+
+**`runtime` on the response is the runtime that actually served this
+create** — not an echo of the request body's own `runtime`, which is
+commonly absent (session-abstraction.md §7.1a: a caller with one local
+runtime, or one relying on the configured default, sends no hint at all).
+See `Fleet-Runtime` above for the same fact carried on every other
+session-addressed call, not only `create`.
 
 `contextRef` is a path. Inline context is not accepted, and context never
 reaches a command line (§5.3).
@@ -387,19 +399,60 @@ filtering by id **must** re-key on it, or it stops matching a session that is
 still alive — and cannot tell that from the session having died.
 
 `runtime` is an **optional** query parameter on every single-session endpoint
-(`GET`, `input`, `interrupt`, `DELETE`). A session `id` is scoped to
-`(machine, runtime)` — not to `machine` alone (session-abstraction.md §2.2) —
-so two runtimes on one machine may legally reuse an id, which this URL cannot
-otherwise disambiguate.
+(`GET`, `input`, `respond`, `discard`, `rename`, `keys`, `interrupt`,
+`DELETE`) and on `POST …/sessions` (`create`, in the JSON body as
+`"runtime"`). A session `id` is scoped to `(machine, runtime)` — not to
+`machine` alone (session-abstraction.md §2.2) — so two runtimes on one
+machine may legally reuse an id, which this URL cannot otherwise
+disambiguate.
 
-It is required only when the addressed machine runs more than one runtime and
-the bare id is ambiguous between them. A service that can resolve the id
-unambiguously must not require it; that is the common case, one runtime per
-machine. An ambiguous request with `runtime` omitted is `invalid` (400) naming
-the ambiguity — never `not_found`, which would assert something untrue about
-the fleet.
+**When `runtime` is supplied, it is used outright** — the caller named its
+own runtime and nothing here second-guesses it. Omitted, and the machine
+runs exactly one local runtime, resolution is unambiguous and `runtime` is
+never required; that was every machine's whole history until a second
+runtime existed to register.
 
-> Origin: session-abstraction.md Appendix A, F1.
+**Omitted with more than one local runtime registered** resolves
+existence-first, THEN a configured default as tiebreak
+(session-abstraction.md §7.1a, colab-fleet issue #60):
+
+- a nonempty `id` (every endpoint but `create`) is checked against every
+  registered runtime's own record of what it has ever had. Exactly one
+  affirms it → that runtime, full stop, even against a machine configured
+  with a different default — a default must never steer an id that plainly
+  belongs elsewhere into a false `not_found`. More than one affirms it, or
+  the check cannot be completed for all of them → `invalid` (400) naming the
+  runtimes involved; never `not_found`, which would assert something untrue
+  about the fleet.
+- a genuine miss — `create`'s own case, and what a nonempty `id` reaches once
+  every runtime has affirmatively confirmed absence — resolves to the
+  machine's configured **default runtime**, when one is configured.
+  Unconfigured, this is the ambiguity's older shape: `invalid` (400) naming
+  it, exactly as before a default runtime could be configured at all.
+
+**Every 2xx and every error response from a call that reached this
+resolution carries `Fleet-Runtime: <runtime-id>`**, naming the runtime that
+actually served the request — the one piece of information a bare-id call
+against more than one runtime previously had no way to surface. **It also
+carries `Fleet-Runtime-Resolution: default` when, and only when, the
+configured default runtime was the tiebreak.** Its absence is itself
+informative: every other resolution — an explicit `runtime`, the sole
+registered driver, or an existence match — is exactly as trustworthy as a
+caller naming its own runtime, because each is either the caller's own word
+or a fact this machine just confirmed by asking. Only the default is a
+genuine guess wearing a configuration's authority, and a caller in a
+position to care (retrying a destructive call, auditing a surprising
+`not_found`) can tell the two apart without reading a log
+(session-abstraction.md §5.7, §7.1a guardrail 2).
+
+**A proxied call to a peer machine carries neither header.** Resolution
+never reaches this machine's local runtimes at all for a peer-addressed
+call — see session-abstraction.md §13.1 and §7.1a's federation note — so
+there is no local runtime id to report and the configured default plays no
+part in it.
+
+> Origin: session-abstraction.md Appendix A, F1; the default-runtime
+> tiebreak and its headers: colab-fleet issue #60.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/input?runtime=

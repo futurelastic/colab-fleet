@@ -262,6 +262,36 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// setResolutionHeaders makes resolveSessionDriver's choice visible on the
+// wire (colab-fleet issue #60 guardrail 2) — set once, right after a
+// resolution succeeds, so it is present whether the operation that follows
+// eventually succeeds or fails. §5.7 forbids a caller who named its runtime
+// and a caller who got the machine's configured default rendering alike;
+// a log line is not "the answer", so this is a header rather than an entry
+// only an operator can read afterwards.
+//
+// Fleet-Runtime names the runtime that actually served the call — useful on
+// its own for the bare-id single-driver and existence-matched cases, which
+// otherwise have no way to tell a caller which runtime answered short of
+// the runtime field already carried by a session read. Fleet-Runtime-
+// Resolution is set to "default" ONLY when the configured default runtime
+// was the tiebreak; its absence is itself informative — every other
+// resolution is as trustworthy as a caller naming its own runtime, because
+// each is either the caller's own word or a fact this machine just
+// confirmed by asking.
+//
+// rt == "" (the peer and error paths) sets nothing: a peer resolution
+// carries no local runtime id to report, and an unresolved call has no
+// driver to attribute a header to at all.
+func setResolutionHeaders(w http.ResponseWriter, rt fleet.RuntimeId, via runtimeResolution) {
+	if rt != "" {
+		w.Header().Set("Fleet-Runtime", string(rt))
+	}
+	if via == resolvedDefault {
+		w.Header().Set("Fleet-Runtime-Resolution", "default")
+	}
+}
+
 // writeDriverError maps a Go-level driver error to the wire error kind
 // api-http.md §2 defines. Only reached for a driver-level failure — a
 // refusal (DeliveryReceipt.Outcome == "refused") is not an error at all
@@ -730,11 +760,15 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			}
 		}
 
-		d, resErr := svc.resolveSessionDriver(machine, body.Runtime)
+		// create has no id yet to resolve existence-first against — that is
+		// exactly the "genuine miss" shape resolveSessionDriver falls to the
+		// configured default for when body.Runtime names none (§60).
+		d, resolvedRuntime, via, resErr := svc.resolveSessionDriver(r.Context(), requestFrom(r), machine, "", body.Runtime, parseDeadline(r))
 		if resErr != nil {
 			writeError(w, resErr)
 			return
 		}
+		setResolutionHeaders(w, resolvedRuntime, via)
 
 		spec := fleet.SessionSpec{
 			// Machine is filled from the URL path, not the request body
@@ -760,9 +794,25 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			return
 		}
 
+		// Runtime on the response names the driver that ACTUALLY served
+		// this on THIS machine — resolvedRuntime, not spec.Runtime/
+		// body.Runtime, which is empty on precisely the request this
+		// resolution exists for: a caller that supplied no hint and got
+		// the default. Echoing the (possibly empty) caller hint back here
+		// would silently discard the one piece of information guardrail 2
+		// asks this response to carry.
+		//
+		// resolvedRuntime is itself empty only for a relayed create
+		// (resolvedPeer) — this machine never learns which runtime the
+		// PEER used, so the caller's own hint is the best available answer
+		// there, same as before this resolution existed.
+		runtimeForResponse := resolvedRuntime
+		if runtimeForResponse == "" {
+			runtimeForResponse = spec.Runtime
+		}
 		state, _ := d.State(ctx, requestFrom(r), ref)
 		writeJSON(w, http.StatusCreated, fleet.Session{
-			SessionRef: ref, Runtime: spec.Runtime, Cwd: spec.Cwd,
+			SessionRef: ref, Runtime: runtimeForResponse, Cwd: spec.Cwd,
 			Agent: spec.Agent, Model: spec.Model, State: state,
 		})
 	}
@@ -784,12 +834,14 @@ func handleSessionEnvironment(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		machine := fleet.MachineId(r.PathValue("machine"))
 		id := r.PathValue("id")
+		req := requestFrom(r)
 
-		d, resErr := svc.resolveSessionDriver(machine, fleet.RuntimeId(r.URL.Query().Get("runtime")))
+		d, resolvedRuntime, via, resErr := svc.resolveSessionDriver(r.Context(), req, machine, id, fleet.RuntimeId(r.URL.Query().Get("runtime")), parseDeadline(r))
 		if resErr != nil {
 			writeError(w, resErr)
 			return
 		}
+		setResolutionHeaders(w, resolvedRuntime, via)
 		reporter, ok := d.(driver.EnvironmentReporter)
 		if !ok {
 			writeError(w, &fleet.Error{
@@ -804,7 +856,7 @@ func handleSessionEnvironment(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		env, err := reporter.Environment(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id})
+		env, err := reporter.Environment(ctx, req, fleet.SessionRef{Machine: machine, ID: id})
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return
@@ -818,12 +870,14 @@ func handleGetSession(svc *Service) http.HandlerFunc {
 		machine := fleet.MachineId(r.PathValue("machine"))
 		id := r.PathValue("id")
 		runtimeHint := fleet.RuntimeId(r.URL.Query().Get("runtime"))
+		req := requestFrom(r)
 
-		d, resErr := svc.resolveSessionDriver(machine, runtimeHint)
+		d, resolvedRuntime, via, resErr := svc.resolveSessionDriver(r.Context(), req, machine, id, runtimeHint, parseDeadline(r))
 		if resErr != nil {
 			writeError(w, resErr)
 			return
 		}
+		setResolutionHeaders(w, resolvedRuntime, via)
 
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
@@ -844,7 +898,6 @@ func handleGetSession(svc *Service) http.HandlerFunc {
 		// The cost is one enumeration, which is a constant number of
 		// subprocess spawns on the driver that motivated that design; a
 		// per-session query would not be cheaper.
-		req := requestFrom(r)
 		if col, err := d.List(ctx, req, driver.ListFilter{}); err == nil {
 			for _, s := range col.Items() {
 				if s.ID == id {
@@ -861,7 +914,7 @@ func handleGetSession(svc *Service) http.HandlerFunc {
 			writeDriverError(w, machine, deadline, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, fleet.Session{SessionRef: ref, State: state})
+		writeJSON(w, http.StatusOK, fleet.Session{SessionRef: ref, Runtime: resolvedRuntime, State: state})
 	}
 }
 
@@ -884,17 +937,19 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			return
 		}
 
-		d, resErr := svc.resolveSessionDriver(machine, runtimeHint)
+		req := requestFrom(r)
+		d, resolvedRuntime, via, resErr := svc.resolveSessionDriver(r.Context(), req, machine, id, runtimeHint, parseDeadline(r))
 		if resErr != nil {
 			writeError(w, resErr)
 			return
 		}
+		setResolutionHeaders(w, resolvedRuntime, via)
 
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Send(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded})
+		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded})
 		if err != nil {
 			// A refusal from the driver is not this branch — Send returns
 			// it as a DeliveryReceipt value, not an error. Only a
@@ -919,11 +974,13 @@ func handleRespond(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		machine := fleet.MachineId(r.PathValue("machine"))
 		id := r.PathValue("id")
-		d, ferr := svc.resolveSessionDriver(machine, fleet.RuntimeId(r.URL.Query().Get("runtime")))
+		req := requestFrom(r)
+		d, resolvedRuntime, via, ferr := svc.resolveSessionDriver(r.Context(), req, machine, id, fleet.RuntimeId(r.URL.Query().Get("runtime")), parseDeadline(r))
 		if ferr != nil {
 			writeError(w, ferr)
 			return
 		}
+		setResolutionHeaders(w, resolvedRuntime, via)
 		var body fleet.Response
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "malformed body: " + err.Error()})
@@ -933,7 +990,7 @@ func handleRespond(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Respond(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id}, body)
+		receipt, err := d.Respond(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body)
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return
@@ -947,18 +1004,20 @@ func handleInterrupt(svc *Service) http.HandlerFunc {
 		machine := fleet.MachineId(r.PathValue("machine"))
 		id := r.PathValue("id")
 		runtimeHint := fleet.RuntimeId(r.URL.Query().Get("runtime"))
+		req := requestFrom(r)
 
-		d, resErr := svc.resolveSessionDriver(machine, runtimeHint)
+		d, resolvedRuntime, via, resErr := svc.resolveSessionDriver(r.Context(), req, machine, id, runtimeHint, parseDeadline(r))
 		if resErr != nil {
 			writeError(w, resErr)
 			return
 		}
+		setResolutionHeaders(w, resolvedRuntime, via)
 
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		ack, err := d.Interrupt(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id})
+		ack, err := d.Interrupt(ctx, req, fleet.SessionRef{Machine: machine, ID: id})
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return
@@ -972,18 +1031,20 @@ func handleClose(svc *Service) http.HandlerFunc {
 		machine := fleet.MachineId(r.PathValue("machine"))
 		id := r.PathValue("id")
 		runtimeHint := fleet.RuntimeId(r.URL.Query().Get("runtime"))
+		req := requestFrom(r)
 
-		d, resErr := svc.resolveSessionDriver(machine, runtimeHint)
+		d, resolvedRuntime, via, resErr := svc.resolveSessionDriver(r.Context(), req, machine, id, runtimeHint, parseDeadline(r))
 		if resErr != nil {
 			writeError(w, resErr)
 			return
 		}
+		setResolutionHeaders(w, resolvedRuntime, via)
 
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		ack, err := d.Close(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id})
+		ack, err := d.Close(ctx, req, fleet.SessionRef{Machine: machine, ID: id})
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return
@@ -996,16 +1057,18 @@ func handleDiscard(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		machine := fleet.MachineId(r.PathValue("machine"))
 		id := r.PathValue("id")
-		d, resErr := svc.resolveSessionDriver(machine, fleet.RuntimeId(r.URL.Query().Get("runtime")))
+		req := requestFrom(r)
+		d, resolvedRuntime, via, resErr := svc.resolveSessionDriver(r.Context(), req, machine, id, fleet.RuntimeId(r.URL.Query().Get("runtime")), parseDeadline(r))
 		if resErr != nil {
 			writeError(w, resErr)
 			return
 		}
+		setResolutionHeaders(w, resolvedRuntime, via)
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		ack, err := d.Discard(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id},
+		ack, err := d.Discard(ctx, req, fleet.SessionRef{Machine: machine, ID: id},
 			r.URL.Query().Get("expect"))
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
@@ -1033,17 +1096,18 @@ func handleRename(svc *Service) http.HandlerFunc {
 			return
 		}
 
-		d, resErr := svc.resolveSessionDriver(machine, runtimeHint)
+		req := requestFrom(r)
+		d, resolvedRuntime, via, resErr := svc.resolveSessionDriver(r.Context(), req, machine, id, runtimeHint, parseDeadline(r))
 		if resErr != nil {
 			writeError(w, resErr)
 			return
 		}
+		setResolutionHeaders(w, resolvedRuntime, via)
 
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		req := requestFrom(r)
 		ack, err := d.Rename(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Name)
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
@@ -1110,11 +1174,13 @@ func handleKeys(svc *Service) http.HandlerFunc {
 			return
 		}
 
-		d, resErr := svc.resolveSessionDriver(machine, fleet.RuntimeId(r.URL.Query().Get("runtime")))
+		req := requestFrom(r)
+		d, resolvedRuntime, via, resErr := svc.resolveSessionDriver(r.Context(), req, machine, id, fleet.RuntimeId(r.URL.Query().Get("runtime")), parseDeadline(r))
 		if resErr != nil {
 			writeError(w, resErr)
 			return
 		}
+		setResolutionHeaders(w, resolvedRuntime, via)
 		sender, ok := d.(driver.KeySender)
 		if !ok {
 			// §5.6: a driver that cannot press a key says so, and nothing here
@@ -1132,7 +1198,7 @@ func handleKeys(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := sender.Keys(ctx, requestFrom(r), fleet.SessionRef{Machine: machine, ID: id},
+		receipt, err := sender.Keys(ctx, req, fleet.SessionRef{Machine: machine, ID: id},
 			body.Key, r.URL.Query().Get("expect"))
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
