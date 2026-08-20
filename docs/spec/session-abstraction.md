@@ -471,6 +471,22 @@ is not at a prompt is consumed by whatever it was doing.
 expresses questions rather than mechanisms, and "press Enter" would bind every
 future driver to this substrate's idea of confirmation.
 
+**`send`'s no-keystroke guarantee covers the substrate a driver uses to
+deliver text; it says nothing about what the runtime on the far end does with
+the bytes once they arrive intact.** Some runtimes read certain caller text as
+their own local syntax rather than as a message — a command to run directly,
+for instance — and a driver whose runtime does this must refuse that text
+outright: never escaped, never mangled, never delivered and hoped about. A
+driver declares the patterns its own runtime treats this way; a pattern
+enforced by the service rather than by the driver that knows the runtime is
+not a pattern, it is a convention that holds until a second driver forgets it
+— §2.1 makes the identical argument for naming. This refusal describes the
+TEXT, not a session's state, so it precedes every session-state check a
+driver makes, whether or not the addressed session exists, and
+`resumeIfStranded` cannot complete it: refused text never reaches a composer
+to strand. See colab-fleet issue #53, and the driver that adds a second
+runtime brings its own patterns rather than inheriting this one's.
+
 Every operation carries a `Request` (§2.6), reads included. A driver cannot
 compile without deciding what to do with it, which is the point: the rule it
 serves — §13's "a proxy presents the original caller's authority, never its

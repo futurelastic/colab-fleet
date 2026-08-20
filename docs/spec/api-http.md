@@ -415,6 +415,13 @@ behaviour the refusal exists to prevent. HTTP errors here mean the driver could
 not be reached or the caller is not permitted; they never describe what the
 driver decided.
 
+A refusal here may also describe the **text**, not the session: a driver may
+refuse caller text its own runtime would read as something other than a
+message, before looking at session state at all — session-abstraction.md §3,
+colab-fleet issue #53. That refusal happens whether or not the addressed
+session exists, and it is never a candidate for `resumeIfStranded`: the text
+never reached a composer to strand.
+
 ```
 POST /v1/machines/{machine}/sessions/{id}/respond?runtime=
 { "choice": 1, "nonce": "<SessionPrompt.nonce>" }

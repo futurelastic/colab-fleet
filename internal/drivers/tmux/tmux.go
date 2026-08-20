@@ -1069,6 +1069,17 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 // message containing something like "C-c" is a live hazard; the paste
 // buffer takes bytes and interprets none of them.
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
+	// #53: fail closed on text this runtime reads as its own syntax rather
+	// than a message, BEFORE anything else. This is a decision about the
+	// BYTES, not about the moment — it must not depend on which session
+	// exists, what its screen shows, or whether the substrate is reachable
+	// at all, so it runs ahead of every one of those and the substrate is
+	// never touched for text that was always going to be refused. See
+	// inputguard.go for the pattern list and why it belongs to this driver.
+	if reason, refused := refuseAsRuntimeSyntax(text); refused {
+		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
+	}
+
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
