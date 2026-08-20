@@ -694,3 +694,43 @@ func TestCapabilitiesWithoutProvenanceDoNotMarshal(t *testing.T) {
 		t.Error("capabilities with no source should not encode")
 	}
 }
+
+// Tool-server configuration names PATHS, and the paths belong to the peer's
+// filesystem, not this machine's. A proxy that resolved or checked them locally
+// would refuse creates that are perfectly valid where the session will run — so
+// they travel verbatim and the owning daemon decides.
+//
+// A field silently dropped here does not fail: it produces a session that
+// starts, looks healthy, and is missing its tools — one machine away, which is
+// the hardest place to notice it.
+func TestCreateForwardsMcpConfigPathsVerbatim(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 201, fleet.Session{
+		SessionRef: fleet.SessionRef{Machine: "peerbox", ID: "new-1"},
+		Runtime:    "claude-code-tmux",
+		State:      fleet.InferredState(fleet.StatusStarting, "just created", nil),
+	}, &rec)
+	d := New("peerbox", srv.URL)
+
+	want := []fleet.AbsolutePath{"/peer/only/base.json", "/peer/only/session.json"}
+	if _, err := d.Create(context.Background(), caller, "caller-key-43", fleet.SessionSpec{
+		Cwd: "/w", McpConfig: want,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var body struct {
+		McpConfig []fleet.AbsolutePath `json:"mcpConfig"`
+	}
+	if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+		t.Fatalf("body = %q: %v", rec.body, err)
+	}
+	if len(body.McpConfig) != len(want) {
+		t.Fatalf("mcpConfig = %v, want %v", body.McpConfig, want)
+	}
+	for i := range want {
+		if body.McpConfig[i] != want[i] {
+			t.Errorf("mcpConfig[%d] = %q, want %q", i, body.McpConfig[i], want[i])
+		}
+	}
+}

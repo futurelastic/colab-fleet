@@ -150,6 +150,42 @@ type SessionSpec struct {
 	// start sessions must not be able to start THAT one.
 	PermissionMode string `json:"permissionMode,omitempty"`
 
+	// McpConfig names tool-server configuration files the session should be
+	// started with. Each entry is an absolute PATH.
+	//
+	// # Paths, never inline configuration
+	//
+	// The same rule ContextRef follows, and for a sharper reason: such a
+	// configuration commonly carries the credentials its servers authenticate
+	// with, and §5.3 keeps context off command lines precisely so the payload
+	// likeliest to be a secret is not the one exception. Inline content here
+	// would land in an argv that every process table on the machine can read. A
+	// caller holding a configuration in memory writes it to a 0600 file and
+	// names the file — the same move Env already forces for the same reason.
+	//
+	// # A list, because the runtime flag repeats
+	//
+	// One entry is the ordinary case. The plural shape exists so a caller
+	// composing a base configuration with a per-session addition does not have
+	// to merge them itself and write a third file.
+	//
+	// # What this service does NOT do with them
+	//
+	// Nothing. It does not read, merge, validate or interpret the contents. A
+	// service that parsed these would have begun to hold opinions about what a
+	// session may talk to, which is a supervisor's judgement and §1's non-goal.
+	// A driver checks that each path is absolute and that it can read it —
+	// refusing a create rather than starting a session that will come up
+	// healthy-looking and missing the tools it was created for, which is the
+	// same refusal Env already makes in the same words.
+	//
+	// It requires the `send` grant on top of `create`, like PermissionMode and
+	// for the same shape of reason: these configurations name servers the
+	// session will LAUNCH, and between "may start a session" and "may start a
+	// session that also starts these", the second is plainly the larger
+	// authority.
+	McpConfig []AbsolutePath `json:"mcpConfig,omitempty"`
+
 	// Consents lists the boot questions the caller answers in advance, so the
 	// driver may clear them instead of leaving a new session parked in front of
 	// one.

@@ -334,3 +334,95 @@ func TestTrustCwdStillMeansTheFolderTrustConsent(t *testing.T) {
 		t.Error("saying the same thing twice was treated as a conflict")
 	}
 }
+
+// --- tool-server configuration ----------------------------------------------
+
+// The last create path a consumer could not route through this API: a session
+// that needs tool servers. There was no field, so the only way to ask was to
+// smuggle the flag through a pin — where the leading-dash guard catches it,
+// correctly, and the caller falls back to driving the substrate directly.
+func TestMcpConfigPathsReachTheAgentArgvOncePerEntry(t *testing.T) {
+	dir := t.TempDir()
+	one := filepath.Join(dir, "base.json")
+	two := filepath.Join(dir, "session.json")
+	for _, p := range []string{one, two} {
+		if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	f := twoSessions()
+	_, argv := createWith(t, f, fleet.SessionSpec{
+		Name: "tooled", Cwd: "/work/x",
+		McpConfig: []fleet.AbsolutePath{fleet.AbsolutePath(one), fleet.AbsolutePath(two)},
+	})
+
+	agent := agentArgv(argv)
+	var got []string
+	for i, a := range agent {
+		if a == "--mcp-config" && i+1 < len(agent) {
+			got = append(got, agent[i+1])
+		}
+	}
+	if len(got) != 2 || got[0] != one || got[1] != two {
+		t.Errorf("--mcp-config values = %v; the flag repeats once per entry, and a "+
+			"joined list would reach the runtime as one filename containing a separator", got)
+	}
+}
+
+// Paths, never content — the same rule contextRef follows, and for a sharper
+// reason: these files commonly hold the credentials their servers authenticate
+// with, so inline content would put a secret in an argv every process table can
+// read.
+func TestMcpConfigContentNeverReachesACommandLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "servers.json")
+	const secret = "mcp-token-not-for-ps"
+	if err := os.WriteFile(path, []byte(`{"token":"`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := twoSessions()
+	createWith(t, f, fleet.SessionSpec{
+		Name: "tooled", Cwd: "/work/x",
+		McpConfig: []fleet.AbsolutePath{fleet.AbsolutePath(path)},
+	})
+	for _, c := range f.callsSnapshot() {
+		for _, a := range c {
+			if strings.Contains(a, secret) {
+				t.Fatalf("configuration CONTENT reached a command line: %v", c)
+			}
+		}
+	}
+}
+
+// Refuse the create rather than start a session that comes up healthy-looking
+// and missing the tools it was created for — the same refusal env already makes,
+// for the same reason.
+func TestUnreadableMcpConfigIsRefusedRatherThanStarted(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	_, err := d.Create(context.Background(), testCaller, "k-m", fleet.SessionSpec{
+		Name: "tooled", Cwd: "/work/x",
+		McpConfig: []fleet.AbsolutePath{"/no/such/servers.json"},
+	})
+	if err == nil {
+		t.Fatal("a configuration this machine cannot read was accepted")
+	}
+	if newSessionArgv(f) != nil {
+		t.Error("the session was started anyway; the refusal must happen before the spawn")
+	}
+}
+
+func TestRelativeAndFlagShapedMcpConfigAreRefused(t *testing.T) {
+	for _, path := range []fleet.AbsolutePath{"relative/servers.json", "--dangerously-skip-permissions", ""} {
+		f := twoSessions()
+		d := newTestDriver(f)
+		_, err := d.Create(context.Background(), testCaller, "k-m", fleet.SessionSpec{
+			Name: "tooled", Cwd: "/work/x", McpConfig: []fleet.AbsolutePath{path},
+		})
+		if err == nil {
+			t.Errorf("mcpConfig %q was accepted", path)
+		}
+	}
+}

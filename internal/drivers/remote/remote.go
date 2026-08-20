@@ -606,6 +606,12 @@ type createBody struct {
 	Resume         string             `json:"resume,omitempty"`
 	PermissionMode string             `json:"permissionMode,omitempty"`
 	Consents       []fleet.PromptKind `json:"consents,omitempty"`
+	// McpConfig names PATHS, and the paths are the peer's. Forwarded rather
+	// than resolved here for the same reason ContextRef is: this machine's
+	// filesystem is not the one the session will read from, and a proxy that
+	// checked its own would either refuse a create that is perfectly valid on
+	// the peer or approve one that is not.
+	McpConfig []fleet.AbsolutePath `json:"mcpConfig,omitempty"`
 
 	// Marker is the session-type stamp (fleet.SessionSpec.Marker) — dropping
 	// it does not fail the create, it just leaves the peer's copy invisible
@@ -661,7 +667,8 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		Prompt: spec.Prompt, ContextRef: spec.ContextRef,
 		TrustCwd: spec.TrustCwd, Env: spec.Env, Resume: spec.Resume,
 		PermissionMode: spec.PermissionMode, Consents: spec.Consents,
-		Marker: spec.Marker, RemoteControl: spec.RemoteControl,
+		McpConfig: spec.McpConfig,
+		Marker:    spec.Marker, RemoteControl: spec.RemoteControl,
 	}
 	var out fleet.Session
 	path := "/v1/machines/" + url.PathEscape(string(d.machine)) + "/sessions"

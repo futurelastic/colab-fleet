@@ -591,9 +591,25 @@ consent does: a session in that mode acts without asking, which is a larger
 authority than starting one. An unrecognised value is refused, not passed
 through to the runtime.
 
+**`mcpConfig`** is a list of absolute PATHS to tool-server configuration files,
+one flag per entry. Paths and not content, for the same reason `env` stages
+values out of band: these files usually hold the credentials their servers
+authenticate with, and content on a command line is readable from every process
+table on the machine. Write it to a 0600 file and name the file.
+
+A path the daemon cannot read is a refused create, not a started session — the
+runtime would come up looking perfectly healthy and unable to do the work you
+created it for. On a create aimed at a peer, the paths are the PEER's; they
+travel verbatim and the peer checks them. Nothing here reads or validates the
+contents.
+
+It needs the `send` grant on top of `create`, like `permissionMode`: these
+configurations name servers the session will launch, and starting a session that
+also starts those is a larger authority than starting a session.
+
 One rule shared by everything that reaches the agent's own argv — `agent`,
-`model`, `effort`, `resume`: **a value may not begin with `-`**, or the CLI reads
-it as a flag rather than as your value.
+`model`, `effort`, `resume`, `mcpConfig`: **a value may not begin with `-`**, or
+the CLI reads it as a flag rather than as your value.
 
 Pass context by path (`contextRef`), never inline. Prompts and context never
 reach a command line.

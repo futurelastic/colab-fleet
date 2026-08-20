@@ -168,7 +168,8 @@ Idempotency-Key: <caller-supplied, required>
   "effort": "...", "name": "...", "marker": "...", "remoteControl": true,
   "prompt": "...", "contextRef": "/abs/path", "trustCwd": false,
   "env": {"NAME": "value"}, "resume": "<conversation id>",
-  "permissionMode": "bypass", "consents": ["folder-trust"] }
+  "permissionMode": "bypass", "consents": ["folder-trust"],
+  "mcpConfig": ["/abs/servers.json"] }
 
 → 201 { "machine": "...", "id": "...", "name": "...", "state": {...} }
 → 200 (same body) if the key was already seen — the existing session
@@ -239,9 +240,41 @@ without asking, and between "may start a session" and "may start a session that
 needs no permission for anything", the second is plainly the larger authority.
 An unrecognised value is refused rather than passed through.
 
+**`mcpConfig` names tool-server configuration files, by PATH.** Each entry is
+absolute, and the flag is emitted once per entry rather than joined — a joined
+list reaches the runtime as a single filename containing a separator, which
+surfaces as a session missing its tools rather than as an error anybody can
+read.
+
+Paths, never inline configuration, and for a sharper reason than `contextRef`'s:
+these files commonly hold the credentials their servers authenticate with, so
+inline content would put a secret in an argv every process table on the machine
+can read. A caller holding one in memory writes it to a 0600 file and names the
+file — the same move `env` already forces.
+
+A path the driver cannot read is a **refusal, not a start**. The runtime would
+come up, fail to load it, and present a session that lists, reads and accepts
+input while being unable to do the work it was created for — the same failure
+`env` is already refused for, in the same words. A 201 for a session that is
+quietly not what was asked for is worse than an error at the call site. On a
+relayed create the paths belong to the PEER's filesystem and travel verbatim;
+the machine serving the create is the one that checks them.
+
+Nothing here reads, merges, validates or interprets the contents. A service that
+parsed these would have begun to hold opinions about what a session may talk to,
+which is a supervisor's judgement and §6's non-goal.
+
+It requires the **`send` grant in addition to `create`**, like `permissionMode`
+and for the same shape of reason: these configurations name servers the session
+will LAUNCH, and between "may start a session" and "may start a session that
+also starts these", the second is plainly the larger authority. The refusal names
+the field, so a caller fixes one line rather than re-reading its whole request.
+
 Caller-supplied values that land in the agent's argv (`agent`, `model`, `effort`,
-`resume`) may not begin with `-`: the CLI would read them as flags, which would
-turn a create grant into "run the agent with arguments of my choosing".
+`resume`, `mcpConfig`) may not begin with `-`: the CLI would read them as flags,
+which would turn a create grant into "run the agent with arguments of my
+choosing". That guard is what a caller with no field for its tool servers used to
+hit while smuggling the flag through a pin.
 
 ```
 GET /v1/machines/{machine}/sessions/{id}/environment?runtime=

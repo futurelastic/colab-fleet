@@ -1841,6 +1841,9 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 			"create: unknown permissionMode %q (this runtime has one: %q)",
 			spec.PermissionMode, fleet.PermissionModeBypass)
 	}
+	if err := validateMcpConfig(spec.McpConfig); err != nil {
+		return fleet.SessionRef{}, fmt.Errorf("create: %w", err)
+	}
 	if spec.Resume != "" && !safeArgvValue(spec.Resume) {
 		return fleet.SessionRef{}, fmt.Errorf(
 			"create: resume %q would be read as a flag by the agent, not as a conversation id",
@@ -1976,10 +1979,56 @@ func claudeCodeCommand(spec fleet.SessionSpec, contextFile string) []string {
 	if spec.PermissionMode == fleet.PermissionModeBypass {
 		argv = append(argv, "--dangerously-skip-permissions")
 	}
+	for _, path := range spec.McpConfig {
+		// Repeated rather than joined: the flag takes one path per occurrence,
+		// and a joined list would be handed to the runtime as a single
+		// filename containing a separator — a failure that surfaces as a
+		// session missing its tools rather than as an error anyone can read.
+		if safeArgvValue(string(path)) {
+			argv = append(argv, "--mcp-config", string(path))
+		}
+	}
 	if contextFile != "" {
 		argv = append(argv, "--append-system-prompt-file", contextFile)
 	}
 	return argv
+}
+
+// validateMcpConfig refuses a create rather than starting a session that will
+// come up without the tools it was asked for.
+//
+// # Why an unreadable path is a refusal and not a warning
+//
+// The runtime starts, fails to load the file, and presents a session that looks
+// perfectly healthy: it lists, it reads, it accepts input. What it cannot do is
+// the work it was created for, and nothing about it says so — the same shape as
+// a session started without the environment holding its credentials, which is
+// already refused here in the same words. A 201 for a session that is quietly
+// not what was asked for is worse than an error at the call site.
+//
+// Contents are deliberately not read. A driver that parsed these would be
+// deciding what a session may talk to, which is a supervisor's judgement (§1).
+func validateMcpConfig(paths []fleet.AbsolutePath) error {
+	for _, p := range paths {
+		path := string(p)
+		if path == "" {
+			return errors.New("mcpConfig contains an empty path")
+		}
+		if !safeArgvValue(path) {
+			return fmt.Errorf("mcpConfig %q would be read as a flag by the agent, not as a path", path)
+		}
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("mcpConfig %q must be absolute; this service does not "+
+				"resolve a path against a working directory it does not share", path)
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("mcpConfig %q cannot be read here (%v); refusing rather than "+
+				"starting a session that will come up without the tools it was created for", path, err)
+		}
+		_ = f.Close()
+	}
+	return nil
 }
 
 // safeArgvValue reports whether a caller-supplied value may be passed as an

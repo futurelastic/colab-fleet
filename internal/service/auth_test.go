@@ -167,6 +167,7 @@ func TestTrustCwdNeedsSendOnTopOfCreate(t *testing.T) {
 		{Name: "spawner", Token: "tok-new", Grants: []Grant{GrantRead, GrantCreate}},
 		{Name: "spawner", Token: "tok-new-consents", Grants: []Grant{GrantRead, GrantCreate}},
 		{Name: "spawner", Token: "tok-new-permissionMode", Grants: []Grant{GrantRead, GrantCreate}},
+		{Name: "spawner", Token: "tok-new-mcpConfig", Grants: []Grant{GrantRead, GrantCreate}},
 		{Name: "driver", Token: "tok-drive", Grants: []Grant{GrantRead, GrantCreate, GrantSend}},
 	})
 	create := func(token, body string) int {
@@ -202,9 +203,14 @@ func TestTrustCwdNeedsSendOnTopOfCreate(t *testing.T) {
 	// Same bar for the other two things a create body can ask for beyond
 	// starting a session, and for the same reason: one produces a keypress, the
 	// other produces a session that acts without asking.
+	//
+	// mcpConfig joins them one step out: it names tool servers the session will
+	// LAUNCH, so "may start a session" and "may start a session that also
+	// starts these" are different authorities and only the second needs saying.
 	for _, tc := range []struct{ name, body string }{
 		{"consents", `{"runtime":"stub","cwd":"/w","consents":["folder-trust"]}`},
 		{"permissionMode", `{"runtime":"stub","cwd":"/w","permissionMode":"bypass"}`},
+		{"mcpConfig", `{"runtime":"stub","cwd":"/w","mcpConfig":["/abs/servers.json"]}`},
 	} {
 		if !denied(create("tok-new-"+tc.name, tc.body)) {
 			t.Errorf("%s: a principal without send got it through the create route", tc.name)

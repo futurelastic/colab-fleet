@@ -645,6 +645,11 @@ type createSessionBody struct {
 	Resume         string             `json:"resume"`
 	PermissionMode string             `json:"permissionMode"`
 	Consents       []fleet.PromptKind `json:"consents"`
+
+	// McpConfig names tool-server configuration files by path. See
+	// fleet.SessionSpec for why paths and not content, and createNeedsSend for
+	// why it is one of the fields that asks for more than a create.
+	McpConfig []fleet.AbsolutePath `json:"mcpConfig"`
 }
 
 // createNeedsSend names the part of a create body that requires the send grant,
@@ -661,6 +666,12 @@ func createNeedsSend(body createSessionBody) string {
 		return "consents"
 	case body.PermissionMode != "":
 		return "permissionMode"
+	case len(body.McpConfig) > 0:
+		// A tool-server configuration names processes the session will LAUNCH.
+		// Same gap as permissionMode's, one step out: "may start a session" and
+		// "may start a session that also starts these" are different
+		// authorities, and only the second needs saying out loud.
+		return "mcpConfig"
 	}
 	return ""
 }
@@ -736,6 +747,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			Marker: body.Marker, RemoteControl: body.RemoteControl,
 			TrustCwd: body.TrustCwd, Env: body.Env, Resume: body.Resume,
 			PermissionMode: body.PermissionMode, Consents: body.Consents,
+			McpConfig: body.McpConfig,
 		}
 
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
