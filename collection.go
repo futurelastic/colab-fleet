@@ -100,6 +100,41 @@ type Collection[T any] struct {
 	items    []T
 	sources  []SourceStatus
 	complete bool
+	feed     *FeedPosition
+}
+
+// FeedPosition marks where a snapshot sits in a service's event sequence
+// (§7.3), so a client can list once and then watch deltas rather than poll.
+//
+// # Why it is on the envelope and not a second call
+//
+// A mirror is a snapshot plus every event after it. The cursor was readable
+// before this existed — from the health endpoint — but only as a SEPARATE
+// request, and neither ordering is safe: read it after the listing and
+// anything that happened in between is lost with nothing to notice, read it
+// before and you are relying on an accident nobody wrote down. One response
+// carrying both closes the question.
+//
+// # The cursor is stamped BEFORE the enumeration, deliberately
+//
+// So a snapshot may already contain changes newer than the cursor it carries,
+// and replaying from that cursor re-applies them. That overlap is the point.
+// Applying an event twice to a mirror keyed by session id changes nothing;
+// missing one leaves a mirror that is wrong forever and cannot tell. The
+// design is arranged to produce the recoverable failure — the same asymmetry
+// §7.3 uses to insist a gap be announced rather than silently skipped.
+//
+// # Absent means "not a resume point", which is not the same as zero
+//
+// A service only advances its sequence while it is actually observing a
+// driver; with nothing subscribed, the cursor is frozen while the world moves.
+// A number handed out then would look resumable and would silently skip
+// everything that happened before the first subscription. So it is omitted
+// instead, and §5.7 applies as it always does: absence is a real answer, and a
+// client that finds none must subscribe first and list second.
+type FeedPosition struct {
+	Cursor int64  `json:"cursor"`
+	Epoch  string `json:"epoch"`
 }
 
 // NewCollection builds a Collection. It computes Complete itself rather
@@ -151,6 +186,7 @@ type collectionWire[T any] struct {
 	Items    []T            `json:"items"`
 	Sources  []SourceStatus `json:"sources"`
 	Complete bool           `json:"complete"`
+	Feed     *FeedPosition  `json:"feed,omitempty"`
 }
 
 func (c Collection[T]) MarshalJSON() ([]byte, error) {
@@ -158,7 +194,7 @@ func (c Collection[T]) MarshalJSON() ([]byte, error) {
 	if items == nil {
 		items = []T{}
 	}
-	return json.Marshal(collectionWire[T]{Items: items, Sources: c.sources, Complete: c.complete})
+	return json.Marshal(collectionWire[T]{Items: items, Sources: c.sources, Complete: c.complete, Feed: c.feed})
 }
 
 // UnmarshalJSON decodes a wire envelope through NewCollection, so a decoded
@@ -177,6 +213,19 @@ func (c *Collection[T]) UnmarshalJSON(b []byte) error {
 	if err != nil {
 		return err
 	}
+	built.feed = w.Feed
 	*c = built
 	return nil
 }
+
+// WithFeed returns a copy of this Collection carrying the sequence position
+// the snapshot was taken at. See FeedPosition for why it is stamped before the
+// enumeration and why omitting it is a meaningful answer.
+func (c Collection[T]) WithFeed(cursor int64, epoch string) Collection[T] {
+	c.feed = &FeedPosition{Cursor: cursor, Epoch: epoch}
+	return c
+}
+
+// Feed reports where this snapshot sits in the sequence, or nil when the
+// answer is not a usable resume point.
+func (c Collection[T]) Feed() *FeedPosition { return c.feed }

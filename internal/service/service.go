@@ -198,6 +198,20 @@ func (s *Service) peerRequest() fleet.Request {
 // Epoch reports this instance's epoch (§7.3).
 func (s *Service) Epoch() string { return s.epoch }
 
+// FeedPosition reports where the event sequence stands, and whether that
+// number is a usable resume point.
+//
+// The third return is not a formality. This service's cursor advances only
+// while it is actually observing a driver, so with nothing subscribed the
+// sequence is frozen while the fleet keeps moving. A snapshot stamped with a
+// frozen cursor looks resumable and is not: a client watching from it would
+// silently skip everything that happened before the first subscription. So the
+// caller is told whether the number means anything, and the wire omits it
+// entirely when it does not (fleet.FeedPosition, §5.7).
+func (s *Service) FeedPosition() (cursor int64, epoch string, resumable bool) {
+	return s.events.currentCursor(), s.epoch, s.events.streamLive()
+}
+
 // Self reports this machine's own id. The HTTP layer needs it to tell a
 // request about this machine from one destined for a peer — two different
 // permissions (§6, §14 D6).

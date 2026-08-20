@@ -149,3 +149,90 @@ func TestUnknownState_TakesConfidenceAsGiven(t *testing.T) {
 		t.Fatalf("Confidence = %q, want %q", inferred.Confidence, ConfidenceInferred)
 	}
 }
+
+// The feed used to fire only when Status changed, which left every other
+// structured field to move underneath a silent stream. The nonce is the one
+// that turns a stale mirror into a wrong action: an answer submitted by index
+// against a question that has been replaced is exactly what SessionPrompt.Nonce
+// exists to make impossible, and a subscriber holding the old one would do it.
+func TestMateriallyDiffers_CatchesEveryFieldACallerBranchesOn(t *testing.T) {
+	gen := Timestamp(time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC))
+	later := Timestamp(gen.Add(time.Minute))
+	base := SessionState{
+		Status:               StatusWaitingInput,
+		Confidence:           ConfidenceInferred,
+		Evidence:             "a prompt is on screen",
+		WaitingOn:            WaitingPrompt,
+		ComposerDigest:       "abc",
+		Prompt:               &SessionPrompt{Options: []string{"Yes", "No, exit"}, Selected: 2, Nonce: "n1"},
+		Quota:                &QuotaBlock{Since: gen},
+		LastTurn:             &TurnEnd{Outcome: "failed", Reason: "overloaded", Retryable: true},
+		CredentialGeneration: &gen,
+	}
+
+	changed := map[string]func(*SessionState){
+		"status":         func(s *SessionState) { s.Status = StatusIdle },
+		"confidence":     func(s *SessionState) { s.Confidence = ConfidenceObserved },
+		"waitingOn":      func(s *SessionState) { s.WaitingOn = WaitingUnsentInput },
+		"composerDigest": func(s *SessionState) { s.ComposerDigest = "def" },
+		"prompt nonce": func(s *SessionState) {
+			s.Prompt = &SessionPrompt{Options: []string{"Yes", "No, exit"}, Selected: 2, Nonce: "n2"}
+		},
+		"prompt options": func(s *SessionState) { s.Prompt = &SessionPrompt{Options: []string{"Yes"}, Selected: 2, Nonce: "n1"} },
+		"prompt highlight": func(s *SessionState) {
+			s.Prompt = &SessionPrompt{Options: []string{"Yes", "No, exit"}, Selected: 1, Nonce: "n1"}
+		},
+		"prompt gone":    func(s *SessionState) { s.Prompt = nil },
+		"quota lifted":   func(s *SessionState) { s.Quota = nil },
+		"quota re-dated": func(s *SessionState) { s.Quota = &QuotaBlock{Since: later} },
+		"last turn": func(s *SessionState) {
+			s.LastTurn = &TurnEnd{Outcome: "failed", Reason: "rate limited", Retryable: true}
+		},
+		"last turn cleared":     func(s *SessionState) { s.LastTurn = nil },
+		"credential generation": func(s *SessionState) { s.CredentialGeneration = &later },
+	}
+	for name, mutate := range changed {
+		got := base
+		mutate(&got)
+		if !got.MateriallyDiffers(base) {
+			t.Errorf("%s changed and the feed would say nothing", name)
+		}
+	}
+}
+
+// Evidence is prose for humans that §2.3 forbids parsing, and the runtime
+// repaints it constantly. Treating it as material would emit an event per
+// keystroke while telling a subscriber nothing it may act on.
+func TestMateriallyDiffers_IgnoresProseAndRestamping(t *testing.T) {
+	since := Timestamp(time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC))
+	restamped := Timestamp(since.Add(time.Second))
+	a := SessionState{Status: StatusWorking, Confidence: ConfidenceInferred, Evidence: "spinner: Thinking", Since: &since}
+	b := a
+	b.Evidence = "spinner: Pondering"
+	b.Since = &restamped
+
+	if b.MateriallyDiffers(a) {
+		t.Error("reworded evidence and a re-stamped since are not a change in what the session is doing")
+	}
+}
+
+// A quota block's reset hint is scraped prose the runtime is free to reword —
+// and has been observed rewording, with a neighbouring widget glued on. The
+// block starting or ending is the fact; its wording is not.
+func TestMateriallyDiffers_IgnoresAQuotaResetHintReword(t *testing.T) {
+	since := Timestamp(time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC))
+	a := SessionState{Status: StatusQuotaBlocked, Confidence: ConfidenceInferred, Quota: &QuotaBlock{Since: since, ResetHint: "Aug 21 at 12am"}}
+	b := a
+	b.Quota = &QuotaBlock{Since: since, ResetHint: "Aug 21 at 12am (JST)  /usage-"}
+
+	if b.MateriallyDiffers(a) {
+		t.Error("a reworded reset hint is not a new block")
+	}
+}
+
+func TestMateriallyDiffers_IdenticalStatesAreNotAnEvent(t *testing.T) {
+	s := SessionState{Status: StatusIdle, Confidence: ConfidenceInferred, Evidence: "settled"}
+	if s.MateriallyDiffers(s) {
+		t.Error("a state that did not change must not produce an event")
+	}
+}

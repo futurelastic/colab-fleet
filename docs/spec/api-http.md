@@ -116,6 +116,32 @@ service **adopts** that record rather than synthesizing a fresh one (§13.2) —
 peer that answers promptly while reporting itself `degraded` must not be
 relayed as `ok`.
 
+**The envelope may also carry `feed`, and that is how a snapshot becomes a
+mirror:**
+
+```json
+{ "items": [...], "sources": [...], "complete": true,
+  "feed": { "cursor": 12904, "epoch": "..." } }
+```
+
+`feed` is where this snapshot sits in the event sequence (§4). A client lists
+once, then watches from that cursor, and never polls again.
+
+The cursor is read **before** the enumeration begins, deliberately. A snapshot
+may therefore already contain changes newer than the cursor it carries, and
+replaying from that cursor re-applies them. That overlap is the point: applying
+an event twice to a mirror keyed by session id changes nothing, while missing
+one leaves a mirror that is wrong permanently and cannot tell. The design
+produces the recoverable failure, the same way §7.3 insists a gap be announced
+rather than skipped.
+
+**`feed` is ABSENT when the cursor is not a resume point**, and absent is a real
+answer (§5.7), not zero. A service advances its sequence only while it is
+actually observing a driver; with nothing subscribed the cursor is frozen while
+the fleet keeps moving, so a number handed out then would look resumable and
+would silently skip everything before the first subscription. A client that
+finds no `feed` has its ordering backwards: **watch first, list second.**
+
 ### 3.3 Deadlines
 
 Every request carries an effective deadline:
@@ -470,7 +496,7 @@ resumption needs no client code. The server honours that header when no
 | Event | Payload |
 |---|---|
 | `session.created` | full session |
-| `session.state` | ref + `SessionState` |
+| `session.state` | ref + `SessionState` — fired on any **material** change, not only a change of `status` |
 | `session.closed` | ref + final state |
 | `source.status` | a machine's reachability changed |
 | `machine.quota` | `{ "machine", "blocked": bool, "quota"? }` — this machine's **account** started or stopped refusing work |
@@ -480,6 +506,23 @@ resumption needs no client code. The server honours that header when no
 `source.status` exists so a client learns a peer went away as an **event**,
 rather than inferring it from data that stopped arriving. Inferring absence
 from silence is the failure mode this whole specification is organised against.
+
+**`session.state` fires on any material change**, which is every structured
+field a caller branches on: `status`, `confidence`, `waitingOn`,
+`composerDigest`, the prompt (its options, highlight and **nonce**), `quota`,
+`lastTurn`, `credentialGeneration`. It began firing on `status` alone, and
+everything else then moved underneath a silent feed — including the nonce,
+whose entire job is to make an answer submitted against a replaced question
+refusable. A feed that under-reports does not merely go stale; it manufactures
+the failure `respond` was built to refuse.
+
+Two things are deliberately **not** material, and a client should know it.
+`evidence` is prose for humans that §2.3 forbids parsing, and the runtime
+repaints it continuously — treating it as a change would emit an event per
+keystroke while saying nothing anyone may act on. `since` on its own is a
+driver re-stamping when it first observed a status, not the session doing
+something different. So a mirror's `evidence` is as fresh as the last material
+change; re-read the session when you want the current prose.
 
 `machine.quota` is the only event whose subject is not a session, and the only
 one a scheduler should act on by **not** doing something. It fires once at the
@@ -512,6 +555,89 @@ performs.
 On `control.resync` the client refetches state and resubscribes. The service
 never resumes silently from an arbitrary point (§7.3) — an announced gap is
 recoverable, a silent one is not.
+
+`control.resync` carries one of three reasons, and they are three different
+statements about whose view is stale:
+
+| `reason` | what happened |
+|---|---|
+| `epoch_changed` | you hold another instance's cursors |
+| `cursor_expired` | your cursor is older than what is retained — or newer than anything this service has stamped, which it equally cannot supply |
+| `feed_gap` | **the sequence is intact and this service stopped watching.** Its subscription to a driver dropped and was re-established, so changes in between were never stamped at all |
+
+`feed_gap` is not a politer `cursor_expired`. One says the caller fell behind;
+the other is this service admitting the hole is its own, and telling a caller
+its cursor is too old when the cursor is perfectly current sends it hunting a
+slowness problem it does not have. The action is the same for all three —
+refetch and resubscribe — which is why a client that already handles
+`control.resync` needs no new code, only a better log line.
+
+**`source.status` also reports the feed itself.** A driver subscription that
+fails or ends is announced `degraded` and retried; when it comes back, `ok`
+arrives with a `feed_gap` resync beside it. Both edges, on the transition only.
+The alternative was measured and is the worst shape available: the pump gave up
+after a single failure, and every subscriber then held a stream that was open,
+healthy-looking, and permanently empty. A machine that is momentarily empty
+reaches that state on an ordinary path — the first driver's control mode has no
+unattached form, so with no sessions there is nothing to attach to — which
+means a client subscribing to an idle machine was never told about the first
+session it started. A subscriber told it is deaf can re-list; one told nothing
+cannot tell deaf from quiet.
+
+### 4.1 The same feed as ordinary request/response
+
+```
+GET /v1/sessions/watch?since=<cursor>&epoch=<epoch>&wait=<ms>
+                      &scope=fleet|local&session=&cwdPrefix=
+
+→ 200 { "cursor": 12931, "epoch": "...", "events": [ {...}, {...} ] }
+```
+
+A long poll over the same hub, the same sequence, and the same envelope: each
+entry of `events` is exactly what an SSE frame's `data:` line carries. This is a
+**transport, not a second event model** — nothing is expressible in one and not
+the other, because the moment they diverge there are two answers to one
+question. Use it when you want a request you can retry, log and reason about,
+and when your client must survive its own restart without a stream-reconnect
+state machine.
+
+- Returns as soon as at least one selected event exists, or at `wait` with
+  `events: []`. Default `wait` is 25s, capped at 60s, and a shorter
+  `Fleet-Deadline-Ms` wins — §3.3's rule that a caller may shorten and never
+  extend.
+- **`cursor` in the response is what to send as the next `since`**: the last
+  event in the batch, or — for an empty batch — exactly what you sent. It is
+  deliberately NOT the service's current cursor, which advances for every
+  subscriber while your filter selects for you; handing it back would advance
+  you past events you never saw.
+- `since` omitted means **from now**. Never "from the beginning": the oldest
+  entry in the retained window is an arbitrary point, and resuming from an
+  arbitrary point is §7.3's silent gap.
+- `epoch` omitted alongside a `since` means "the instance I was already talking
+  to", the same reading the stream gives a browser's `Last-Event-ID`. If that
+  assertion is wrong you get `epoch_changed` rather than a bad resume.
+- **A stale cursor is a `200`, with `control.resync` in the batch** — the same
+  rule as a refused `input` (§3.3). The request was well formed; what the
+  service has to say is domain information to act on, not a fault to retry.
+  After a resync the response's `cursor` is the one you sent, unchanged: a
+  resync is not a position to resume from, so re-list and take the next cursor
+  from the listing's `feed`.
+- Requires the `read` grant (§6) and grants nothing further.
+
+**Building a mirror**, in full:
+
+```
+1. GET /v1/sessions/watch?wait=0            → cursor C, epoch E   (arms the feed)
+2. GET /v1/sessions                         → items, and a feed position ≥ C
+3. loop: GET /v1/sessions/watch?since=C&epoch=E
+         apply events in order; C := response cursor
+4. on control.resync (any reason)           → back to 2
+```
+
+Step 1 before step 2 is not decoration. The service watches only while somebody
+is subscribed, and the first watch is what makes the sequence live; a listing
+taken before it carries no `feed` at all, which is the service telling you the
+ordering is wrong rather than handing you a cursor that would skip.
 
 ## 5. Authorization
 

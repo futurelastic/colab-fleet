@@ -340,3 +340,108 @@ func InferredState(status Status, evidence string, since *Timestamp) SessionStat
 func UnknownState(confidence Confidence, evidence string) SessionState {
 	return SessionState{Status: StatusUnknown, Confidence: confidence, Evidence: evidence}
 }
+
+// MateriallyDiffers reports whether two readings of the same session differ in
+// a way a subscriber must be told about (§7.3, api-http.md §4).
+//
+// # Why a status comparison was not enough
+//
+// The event plane began by emitting `session.state` whenever Status changed,
+// and only then. Everything else on this struct changes underneath a silent
+// feed: WaitingOn, Prompt — including its Nonce — ComposerDigest, Quota,
+// LastTurn, CredentialGeneration. All of them move without Status moving.
+//
+// A client maintaining a mirror off that feed therefore holds a nonce for a
+// question that is no longer on screen, and SessionPrompt.Nonce exists
+// precisely to stop an answer being applied to a question the caller never
+// read. A feed that under-reports does not merely go stale: it manufactures
+// the failure the read path was built to refuse.
+//
+// # What is deliberately NOT material
+//
+// Evidence. §2.3 says it is prose for humans and must not be parsed, the
+// runtime rewords it freely, and it changes on nearly every screen repaint —
+// so including it would emit an event per keystroke while telling a subscriber
+// nothing it may act on. A mirror's Evidence is therefore as fresh as the last
+// material change, which is a real limitation and is stated rather than left
+// to be discovered.
+//
+// Since on its own, for the same reason in a milder form: a driver re-stamping
+// when a status was first observed is not a change in what the session is
+// doing. It travels with every event that does fire.
+//
+// The rule for adding a field to this comparison: if a caller may branch on
+// it, it is material; if the documentation says not to parse it, it is not.
+func (s SessionState) MateriallyDiffers(other SessionState) bool {
+	switch {
+	case s.Status != other.Status,
+		s.Confidence != other.Confidence,
+		s.WaitingOn != other.WaitingOn,
+		s.ComposerDigest != other.ComposerDigest:
+		return true
+	}
+	if !samePrompt(s.Prompt, other.Prompt) {
+		return true
+	}
+	if !sameQuota(s.Quota, other.Quota) {
+		return true
+	}
+	if !sameTurnEnd(s.LastTurn, other.LastTurn) {
+		return true
+	}
+	return !sameStamp(s.CredentialGeneration, other.CredentialGeneration)
+}
+
+// samePrompt compares the parts of a prompt a caller answers by.
+//
+// Nonce alone would very nearly do — it changes whenever the prompt changes —
+// but "very nearly" is the wrong standard for the field whose whole job is to
+// make a stale answer detectable, and a driver that recycles a nonce would
+// silently disable the comparison. Question is left out: it is best-effort
+// prose above the options, and the options are the load-bearing part.
+func samePrompt(a, b *SessionPrompt) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Nonce != b.Nonce || a.Kind != b.Kind || a.Selected != b.Selected {
+		return false
+	}
+	if len(a.Options) != len(b.Options) {
+		return false
+	}
+	for i := range a.Options {
+		if a.Options[i] != b.Options[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// sameQuota compares an account-level block. ResetHint is scraped prose the
+// runtime is free to reword (see QuotaBlock) and is not compared; the block
+// beginning or ending, and the moment it began, are what a caller acts on.
+func sameQuota(a, b *QuotaBlock) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Since.Equal(b.Since)
+}
+
+// sameTurnEnd compares how the last turn finished. Reason is the runtime's own
+// words and is explicitly not to be branched on, but it is compared here
+// anyway: unlike Evidence it is written once when a turn ends rather than
+// repainted continuously, so it cannot produce a storm, and a second failure
+// with a different message is a second event worth having.
+func sameTurnEnd(a, b *TurnEnd) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Outcome == b.Outcome && a.Reason == b.Reason && a.Retryable == b.Retryable
+}
+
+func sameStamp(a, b *Timestamp) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}

@@ -654,7 +654,10 @@ This is the part to get right before you build a UI on it.
 | a session appears | `session.created` |
 | a session ends | `session.closed` |
 | a session's **status** changes (idle → working, → waiting_input) | `session.state` |
+| a session's prompt, nonce, `waitingOn`, composer digest, quota or `lastTurn` changes | `session.state` |
 | the agent prints output, the spinner ticks, the screen scrolls | **no** |
+| the `evidence` prose is reworded | **no** |
+| this service's own view of a machine goes deaf, and comes back | `source.status`, then `control.resync` with `feed_gap` |
 | a machine becomes unreachable | `source.status` |
 | this machine's **account** starts or stops refusing work | `machine.quota` |
 | this machine's local **credential material** changes | `machine.account` |
@@ -664,6 +667,71 @@ for twenty minutes produces one event at the start, not a stream — which is
 what you want, and also means **a quiet stream is normal**. Do not treat
 silence as a broken connection; on a fleet of ~100 sessions, minutes can pass
 with nothing to say.
+
+"Transition" means any field you branch on, not `status` alone. The prompt on
+screen, its **nonce**, whether the composer holds unsent text, whether the last
+turn failed — all of them fire `session.state`. What does not fire is
+`evidence`: it is prose for humans, the runtime repaints it constantly, and
+§2.3 tells you not to parse it anyway. So the `evidence` in your mirror is as
+fresh as the last real change; read the session directly if you want the
+current words.
+
+### Long-polling instead, if a stream is the wrong shape
+
+```
+GET /v1/sessions/watch?since=<cursor>&epoch=<epoch>&wait=25000
+→ 200 { "cursor": 12931, "epoch": "…", "events": [ … ] }
+```
+
+Same hub, same cursors, same envelope — each entry of `events` is exactly what
+an SSE `data:` line carries. Reach for it when you want a request you can retry
+and log, or when your process must survive its own restart without a
+reconnect state machine.
+
+Two rules to get right:
+
+- **Send back the response's `cursor`, not the service's.** An empty batch hands
+  your own cursor straight back, because the sequence advances for everybody
+  while your filter selects for you.
+- **A stale cursor is a `200`**, carrying `control.resync` in the batch. Do not
+  look for a 4xx; do not retry the same `since`. Re-list, and take the next
+  cursor from the listing.
+
+### Building a mirror instead of polling
+
+If you keep a materialized copy of session state, this is the shape — and the
+order matters:
+
+```
+1. GET /v1/sessions/watch?wait=0     → cursor C, epoch E    (this arms the feed)
+2. GET /v1/sessions                  → items + "feed": {cursor, epoch}
+3. loop: GET /v1/sessions/watch?since=C&epoch=E
+         apply in order; C := response cursor
+4. on control.resync (any reason)    → back to 2
+```
+
+Watch **before** you list. The service observes the fleet only while somebody
+is subscribed, so the first watch is what makes the sequence live. A listing
+taken before that carries no `feed` field at all — which is the service telling
+you your ordering is wrong, rather than handing you a number that looks
+resumable and would silently skip everything up to your first subscription.
+
+The listing's cursor is read before its enumeration, so replaying from it
+re-applies a few changes the snapshot already has. That is deliberate: applied
+twice, an event changes nothing; missed once, your mirror is wrong forever and
+cannot tell.
+
+### When the feed itself goes deaf
+
+`source.status: degraded` on a machine means this service is no longer watching
+it — the driver subscription failed or ended. It retries; when it succeeds you
+get `source.status: ok` and a `control.resync` with reason `feed_gap`, because
+whatever happened during the outage was never stamped into the sequence and
+cannot be replayed. Re-list on it.
+
+`feed_gap` is worth distinguishing in your logs from the other two resync
+reasons. `epoch_changed` and `cursor_expired` are about your view; `feed_gap`
+is the service saying the hole is its own.
 
 ### Act on `machine.quota` before you dispatch
 

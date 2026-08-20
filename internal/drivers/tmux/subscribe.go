@@ -279,8 +279,14 @@ func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver
 		return nil, fmt.Errorf("subscribe: enumerating: %w", err)
 	}
 	if len(rows) == 0 {
+		// ErrNotReady, not ErrUnsupported. This substrate streams perfectly
+		// well; it has nothing to attach to at this instant, and the two
+		// answers ask opposite things of the caller. Reported as the latter,
+		// the service's pump gave up permanently and every subscriber held an
+		// open, empty stream while the machine went on to start sessions
+		// nobody was told about — see driver.ErrNotReady.
 		return nil, fmt.Errorf("subscribe: no sessions to attach a control client to; "+
-			"control mode has no unattached form (%w)", driver.ErrUnsupported)
+			"control mode has no unattached form (%w)", driver.ErrNotReady)
 	}
 
 	streamCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -619,7 +625,15 @@ func (s *eventStream) run(ctx context.Context, trigger <-chan struct{}, known ma
 					Payload: sess,
 				})
 				s.attachContent(ctx, sess)
-			case prev.State.Status != sess.State.Status:
+			case sess.State.MateriallyDiffers(prev.State):
+				// Any material change, not only a change of Status. A
+				// subscriber maintaining a mirror off this feed renders the
+				// prompt, its nonce, the composer digest and how the last turn
+				// ended — every one of which moves without Status moving. See
+				// fleet.SessionState.MateriallyDiffers for what counts and,
+				// more importantly, for what deliberately does not: the
+				// evidence prose repaints constantly and may not be parsed, so
+				// including it would emit an event per keystroke.
 				s.emit(ctx, fleet.Event{
 					Machine: s.d.machine,
 					Kind:    fleet.EventSessionState,

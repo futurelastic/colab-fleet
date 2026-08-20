@@ -330,6 +330,11 @@ func TestCloseReapsEveryControlClient(t *testing.T) {
 // The documented edge: control mode has no unattached form, so with zero
 // sessions there is nothing to attach a lifecycle client to. That must be an
 // honest refusal, not a silent stream that never delivers.
+//
+// And it must be the TRANSIENT refusal. Reported as ErrUnsupported it read as
+// "this substrate cannot stream", which is false and is acted on permanently:
+// the service's pump gave up for good, so a machine that was merely empty when
+// somebody subscribed reported the sessions it went on to start to nobody.
 func TestSubscribeRefusesWhenThereIsNothingToAttachTo(t *testing.T) {
 	f := &fakeMux{captures: map[string]string{}}
 	r := &ctlRegistry{}
@@ -339,8 +344,12 @@ func TestSubscribeRefusesWhenThereIsNothingToAttachTo(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error when there is no session to attach to")
 	}
-	if !errors.Is(err, driver.ErrUnsupported) {
-		t.Errorf("want ErrUnsupported wrapped, got %v", err)
+	if !errors.Is(err, driver.ErrNotReady) {
+		t.Errorf("want ErrNotReady wrapped, got %v", err)
+	}
+	if errors.Is(err, driver.ErrUnsupported) {
+		t.Error("an empty machine must not claim the substrate cannot stream; " +
+			"a caller told that stops asking forever")
 	}
 }
 

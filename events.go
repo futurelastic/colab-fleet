@@ -61,6 +61,22 @@ type ResyncReason string
 const (
 	ResyncEpochChanged  ResyncReason = "epoch_changed"
 	ResyncCursorExpired ResyncReason = "cursor_expired"
+	// ResyncFeedGap means the sequence is intact and continuous, and the
+	// OBSERVER of it was not: this service's subscription to a driver stopped
+	// and was re-established, so changes during the interval were never
+	// stamped into the sequence at all.
+	//
+	// It is a third reason rather than a reuse of ResyncCursorExpired because
+	// the two are opposite statements about where the fault lies. A cursor
+	// expires when the caller has fallen behind what is retained; a feed gap
+	// is this service admitting it stopped watching. Telling a caller its
+	// cursor is too old, when the cursor is perfectly current and the hole is
+	// ours, sends it looking for a slowness problem it does not have.
+	//
+	// The action is the same as for the other two — refetch and resubscribe —
+	// which is why it can be added without changing what a client DOES on
+	// control.resync, only what it can say about why.
+	ResyncFeedGap ResyncReason = "feed_gap"
 )
 
 // SessionStatePayload is session.state's and session.closed's payload shape

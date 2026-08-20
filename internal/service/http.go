@@ -72,6 +72,7 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux.HandleFunc("GET /v1/machines", withAuth(cfg, handleMachines(svc)))
 	mux.HandleFunc("GET /v1/runtimes", withAuth(cfg, handleRuntimes(svc)))
 	mux.HandleFunc("GET /v1/sessions", withAuth(cfg, handleListSessions(svc)))
+	mux.HandleFunc("GET /v1/sessions/watch", withAuth(cfg, handleWatchSessions(svc)))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions", withAuth(cfg, mutating(svc, cfg, handleCreateSession(svc))))
 	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}", withAuth(cfg, handleGetSession(svc)))
 	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}/environment", withAuth(cfg, handleSessionEnvironment(svc)))
@@ -402,12 +403,213 @@ func handleListSessions(svc *Service) http.HandlerFunc {
 			CwdPrefix: q.Get("cwdPrefix"),
 		}
 
+		// Read the sequence position BEFORE enumerating, so a client that
+		// watches from it re-applies a few changes rather than missing any.
+		// See fleet.FeedPosition for why the overlap is the safe direction and
+		// why an unwatched service withholds the number entirely.
+		cursor, epoch, resumable := svc.FeedPosition()
+
 		col, err := svc.ListSessions(r.Context(), requestFrom(r), scope, filter, parseDeadline(r))
 		if err != nil {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error()})
 			return
 		}
+		if resumable {
+			col = col.WithFeed(cursor, epoch)
+		}
 		writeJSON(w, http.StatusOK, col)
+	}
+}
+
+// Long-poll bounds. The default is long enough that an idle fleet costs one
+// request every half minute, short enough to sit inside the timeouts every
+// proxy and HTTP client has whether or not their operator remembers them.
+const (
+	watchDefaultWait = 25 * time.Second
+	watchMaxWait     = 60 * time.Second
+)
+
+// watchResponse is the long poll's body.
+//
+// Cursor is what to send as the next `since` — not "the service's current
+// cursor", which would silently skip anything stamped between the last event
+// in this batch and the read of that field.
+type watchResponse struct {
+	Cursor int64           `json:"cursor"`
+	Epoch  string          `json:"epoch"`
+	Events []eventEnvelope `json:"events"`
+}
+
+// handleWatchSessions is the change-feed as ordinary request/response
+// (api-http.md §4.1).
+//
+// # Why a second transport rather than a second feed
+//
+// Everything here is the same hub, the same cursor sequence, the same event
+// vocabulary and the same envelope as GET /v1/events. What differs is only how
+// the bytes reach the caller: a consumer maintaining a materialized mirror
+// wants a request it can retry, log and reason about, and one that survives
+// its own restart without a stream-reconnect state machine. Nothing is
+// expressible in one transport and not the other, deliberately — the moment
+// they diverge, two answers to the same question exist.
+//
+// # A stale cursor is an answer, not a fault
+//
+// control.resync arrives IN BAND, as the first (and only) event of the batch,
+// with an ordinary 200. Same rule as a refused input: the request was well
+// formed, and what the service has to say about it is domain information a
+// caller must act on, not an exception to retry. A 4xx here would train a
+// client to retry the one thing it must instead re-list after.
+func handleWatchSessions(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+
+		scope := ScopeFleet
+		switch q.Get("scope") {
+		case "", string(ScopeFleet):
+		case string(ScopeLocal):
+			// §13.1 in the event plane: a peer asking us for scope=local must
+			// not make us open streams back to our own peers.
+			scope = ScopeLocal
+		default:
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "scope must be 'local' or 'fleet'"})
+			return
+		}
+
+		filter := driver.SubscribeFilter{Sessions: q["session"], CwdPrefix: q.Get("cwdPrefix")}
+
+		var since int64
+		if raw := q.Get("since"); raw != "" {
+			n, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || n < 0 {
+				writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
+					Message: "since must be a non-negative cursor from a previous response"})
+				return
+			}
+			since = n
+		}
+		// An omitted epoch means "the instance I was already talking to",
+		// matching how the SSE handler reads a browser's Last-Event-ID. A
+		// caller that has one should send it; one that has a cursor and no
+		// epoch is asserting continuity, and if that assertion is wrong the
+		// epoch check below turns it into a resync rather than a bad resume.
+		fromEpoch := q.Get("epoch")
+		if since > 0 && fromEpoch == "" {
+			fromEpoch = svc.Epoch()
+		}
+
+		wait := watchWait(r)
+
+		ch, backlog, needResync, cancel := svc.Events(r.Context(), scope, filter, since, fromEpoch)
+		defer cancel()
+
+		epoch := svc.Epoch()
+
+		if needResync {
+			reason := fleet.ResyncCursorExpired
+			if fromEpoch != epoch {
+				reason = fleet.ResyncEpochChanged
+			}
+			// Cursor stays at what the caller sent. The resync is not a
+			// position to resume from — the caller re-lists, and the listing
+			// carries the position it should watch from next.
+			writeJSON(w, http.StatusOK, watchResponse{
+				Cursor: since, Epoch: epoch,
+				Events: []eventEnvelope{{
+					Epoch: epoch, Machine: svc.Self(), Kind: fleet.EventControlResync,
+					Payload: fleet.ControlResyncPayload{Reason: reason},
+				}},
+			})
+			return
+		}
+
+		events := make([]eventEnvelope, 0, len(backlog))
+		for _, ev := range backlog {
+			events = append(events, envelopeOf(ev))
+		}
+
+		if len(events) == 0 {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-timer.C:
+			case ev, open := <-ch:
+				if open {
+					events = append(events, envelopeOf(ev))
+					// Take whatever else is already waiting, so a busy fleet
+					// answers one poll with a batch instead of one poll per
+					// event. Nothing BLOCKS here: this drains what has already
+					// arrived and stops.
+					events = drainReady(ch, events)
+				}
+			}
+		}
+
+		writeJSON(w, http.StatusOK, watchResponse{
+			Cursor: resumeCursor(since, events),
+			Epoch:  epoch,
+			Events: events,
+		})
+	}
+}
+
+// watchWait resolves how long this poll may block: the caller's `wait`, capped,
+// and shortened further by Fleet-Deadline-Ms if that is smaller — §3.3's rule
+// that a caller may always shorten and never extend.
+func watchWait(r *http.Request) time.Duration {
+	wait := watchDefaultWait
+	if raw := r.URL.Query().Get("wait"); raw != "" {
+		if ms, err := strconv.ParseInt(raw, 10, 64); err == nil && ms >= 0 {
+			wait = time.Duration(ms) * time.Millisecond
+		}
+	}
+	if wait > watchMaxWait {
+		wait = watchMaxWait
+	}
+	if d := parseDeadline(r); d > 0 && d < wait {
+		wait = d
+	}
+	return wait
+}
+
+// drainReady appends everything already queued for this subscriber without
+// waiting for more.
+func drainReady(ch <-chan fleet.Event, into []eventEnvelope) []eventEnvelope {
+	for {
+		select {
+		case ev, open := <-ch:
+			if !open {
+				return into
+			}
+			into = append(into, envelopeOf(ev))
+		default:
+			return into
+		}
+	}
+}
+
+// resumeCursor is what the caller sends as its next `since`.
+//
+// The last event in the batch, or — for an empty batch — exactly what the
+// caller already had. Not the service's current cursor: an empty batch means
+// nothing SELECTED by this filter arrived, while the sequence may well have
+// advanced for somebody else, and advancing this caller's cursor past events
+// it never saw is the silent gap the whole design refuses.
+func resumeCursor(since int64, events []eventEnvelope) int64 {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Cursor > 0 {
+			return events[i].Cursor
+		}
+	}
+	return since
+}
+
+func envelopeOf(ev fleet.Event) eventEnvelope {
+	return eventEnvelope{
+		Cursor: ev.Cursor, Epoch: ev.Epoch, Machine: ev.Machine,
+		Kind: ev.Kind, Payload: ev.Payload, Origin: ev.Origin,
 	}
 }
 
@@ -945,10 +1147,7 @@ func handleEvents(svc *Service) http.HandlerFunc {
 // emitting a partial frame: a truncated event is worse than a closed
 // connection, because the client cannot tell it happened.
 func writeSSE(w http.ResponseWriter, f http.Flusher, ev fleet.Event) {
-	body, err := json.Marshal(sseEnvelope{
-		Cursor: ev.Cursor, Epoch: ev.Epoch, Machine: ev.Machine,
-		Kind: ev.Kind, Payload: ev.Payload, Origin: ev.Origin,
-	})
+	body, err := json.Marshal(envelopeOf(ev))
 	if err != nil {
 		return
 	}
@@ -959,10 +1158,16 @@ func writeSSE(w http.ResponseWriter, f http.Flusher, ev fleet.Event) {
 	f.Flush()
 }
 
-// sseEnvelope is fleet.Event's wire form. It exists rather than marshalling
-// fleet.Event directly so the JSON shape of the stream is stated in one place
-// and cannot drift with the in-memory type.
-type sseEnvelope struct {
+// eventEnvelope is fleet.Event's wire form, shared by BOTH transports: it is
+// what an SSE frame's "data:" line carries and what an entry of the long
+// poll's "events" array is.
+//
+// One shape, deliberately. The long poll is a transport for the event
+// vocabulary, not a second event model, and the moment it grew an envelope of
+// its own the two would begin answering the same question differently. It
+// exists rather than marshalling fleet.Event directly so the JSON shape is
+// stated in one place and cannot drift with the in-memory type.
+type eventEnvelope struct {
 	Cursor  int64           `json:"cursor"`
 	Epoch   string          `json:"epoch"`
 	Machine fleet.MachineId `json:"machine"`

@@ -181,3 +181,54 @@ func TestCollection_EmptyItemsWithOKSourceIsNotAFailure(t *testing.T) {
 		t.Fatal("Complete() = false, want true — an ok source that legitimately found nothing is still complete")
 	}
 }
+
+// A snapshot that carries where it sits in the sequence is what lets a client
+// list once and watch deltas. It must survive the wire, and its absence must
+// survive too: omitted means "not a resume point", which a decoder that
+// defaulted it to zero would turn into "resume from the beginning".
+func TestCollection_FeedPositionRoundTripsAndAbsenceSurvives(t *testing.T) {
+	col, err := NewCollection([]string{"a"}, []SourceStatus{{Machine: "one", Status: SourceOK, ObservedAt: time.Now()}})
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+
+	if col.Feed() != nil {
+		t.Error("a collection nobody stamped must not claim a position")
+	}
+	raw, err := json.Marshal(col)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "feed") {
+		t.Errorf("an unstamped collection must omit feed entirely, got %s", raw)
+	}
+
+	stamped := col.WithFeed(41, "epoch-1")
+	raw, err = json.Marshal(stamped)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var back Collection[string]
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if back.Feed() == nil {
+		t.Fatal("a stamped position was lost in transit")
+	}
+	if back.Feed().Cursor != 41 || back.Feed().Epoch != "epoch-1" {
+		t.Errorf("feed = %+v; want cursor 41 in epoch-1", *back.Feed())
+	}
+}
+
+// WithFeed returns a copy. Stamping one view of a collection must not reach
+// back into the value somebody else is already holding.
+func TestCollection_WithFeedDoesNotMutateTheOriginal(t *testing.T) {
+	col, err := NewCollection([]string{"a"}, []SourceStatus{{Machine: "one", Status: SourceOK, ObservedAt: time.Now()}})
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	_ = col.WithFeed(7, "e")
+	if col.Feed() != nil {
+		t.Error("WithFeed mutated its receiver")
+	}
+}

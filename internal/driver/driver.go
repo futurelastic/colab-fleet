@@ -22,6 +22,25 @@ import (
 // (§5.6).
 var ErrUnsupported = errors.New("driver: capability not supported")
 
+// ErrNotReady is returned by a Driver method the substrate CAN support but
+// cannot serve at this moment. It is the transient sibling of ErrUnsupported,
+// and the distinction is load-bearing rather than decorative.
+//
+// ErrUnsupported is a statement about the substrate: nothing will change by
+// asking again, so a caller may give up permanently. ErrNotReady is a
+// statement about right now, and a caller that treats it as the former stops
+// asking forever on the strength of a condition that cleared seconds later.
+//
+// The measured case is Subscribe on the first driver: its control mode has no
+// unattached form, so with no sessions on the machine there is nothing to
+// attach a lifecycle client to. That was reported as ErrUnsupported, the
+// service's stream pump read it as "this substrate cannot stream" and returned
+// for good, and every subscriber then held an open, healthy-looking,
+// permanently empty stream — a machine that started its first session five
+// minutes later reported it to nobody. The substrate was never incapable; it
+// was empty, which is a different fact and now has a different error.
+var ErrNotReady = errors.New("driver: capability not available yet")
+
 // SendOptions carries the optional fields of a Send call (the wire body's
 // "submit", api-http.md §3.3).
 type SendOptions struct {
