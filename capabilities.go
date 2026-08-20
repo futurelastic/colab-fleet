@@ -74,6 +74,19 @@ type DriverCapabilities struct {
 	// ObservesState reports whether the driver can report status without
 	// inference.
 	ObservesState bool `json:"observesState"`
+	// DeliversRawKeys reports whether the driver can deliver a raw key event
+	// to a session's screen (§3 `keys`) and populate
+	// SessionState.ScreenDigest (§2.3) to corroborate it.
+	//
+	// Mirrors ObservesState in shape, not in kind. `keys` is the one
+	// operation §5.1 asks every operation not to be — it delivers a literal
+	// keystroke, not a question — and colab-fleet issue #59 ruled that the
+	// honest fix is not to hide the mechanism but to make every driver
+	// declare it. A driver over a runtime with no screen to capture reports
+	// false and answers driver.ErrUnsupported (§5.6) rather than emulate a
+	// screen that does not exist. See docs/spec/session-abstraction.md §3 for
+	// why this is a declared, bounded asymmetry and not a resolved one.
+	DeliversRawKeys bool `json:"deliversRawKeys"`
 	// ConfirmsDelivery reports whether the driver can distinguish
 	// "submitted" from "queued".
 	ConfirmsDelivery bool `json:"confirmsDelivery"`

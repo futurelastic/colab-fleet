@@ -79,17 +79,19 @@ a scoping choice, not a gap this test found and ignored.
 `specFieldExceptions` lets a Go field be genuinely absent from every
 normative block without failing the build — for a field that is
 deliberately, not accidentally, left out of the runtime-neutral model. As of
-this writing it holds exactly one entry:
-`SessionState.screenDigest`, citing colab-fleet issue #59 — the open
-question of whether `screenDigest` (and the `keys` operation it
-corroborates) belongs in the model at all, or is intentionally tmux-driver
-detail that should stay wire-only.
+this writing it holds no entries: its one occupant,
+`SessionState.screenDigest`, was removed when colab-fleet issue #59 ruled on
+the open question it cited — whether `screenDigest` (and the `keys`
+operation it corroborates) belongs in the model at all. #59 chose
+capability-gated promotion over permanent wire-only status, so the field now
+has a normative block of its own (§2.3, gated by `DriverCapabilities`'s new
+`deliversRawKeys`, §4.3) rather than an exception explaining its absence.
 
 An exception entry is a citation, not a excuse: the rule this file's own
 test comment states is that a field simply forgotten must not be silenced by
 adding it here — it must be documented, or genuinely justified with
-something a reviewer can check. Closing #59 should remove or keep that
-entry deliberately, not leave it as a permanent bypass nobody revisits.
+something a reviewer can check. The map is left in place, empty, rather than
+deleted, for the next field that earns one on the same terms.
 
 ## Why field-name-only is the check, not a rewrite of these docs into a schema
 

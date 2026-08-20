@@ -69,6 +69,7 @@ GET /v1/machines
 GET /v1/runtimes
 → 200 { "items": [ { "machine": "...", "runtime": "...",
                      "capabilities": { "observesState": true,
+                                       "deliversRawKeys": true,
                                        "confirmsDelivery": true,
                                        "supportsResume": false,
                                        "supportsPin": { "model": true,
@@ -490,7 +491,7 @@ POST /v1/machines/{machine}/sessions/{id}/keys?expect=<screenDigest>&startedAt=&
 → 200 { "outcome": "submitted" | "refused" | "unknown", "reason": "..." }
 → 400 if `key` is outside the vocabulary below
 → 409 if `expect` does not match the screen now, or none was supplied
-→ 501 if the driver cannot deliver a key event
+→ 501 if the driver cannot deliver a key event (§4.3 `deliversRawKeys: false`)
 ```
 
 Delivers ONE raw key event to a session's screen. It exists for the full-screen

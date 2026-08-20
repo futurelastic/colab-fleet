@@ -125,8 +125,8 @@ never as equal.
 rather than assume when one is missing:
 
 ```json
-"capabilities": { "observesState": true, "confirmsDelivery": true,
-                  "supportsResume": true,
+"capabilities": { "observesState": true, "deliversRawKeys": true,
+                  "confirmsDelivery": true, "supportsResume": true,
                   "supportsPin": { "model": true, "effort": true, "agent": true },
                   "source": "observed", "deadlineMs": 5000 }
 ```
@@ -343,6 +343,11 @@ in but the prompt did not clear — re-read rather than retry blindly.
 Some full-screen dialogs are navigated with arrow keys and have no `prompt` for
 you to answer — `respond` will refuse them, correctly, because it has nothing to
 answer by index. For those:
+
+**Check `deliversRawKeys` in `/v1/runtimes` first.** A driver over a runtime
+with no screen to capture declares it `false` and this endpoint answers `501
+unsupported` rather than approximate a keypress — degrade the same way you
+would for any other missing capability, not by retrying.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/keys?expect=<screenDigest>

@@ -90,17 +90,13 @@ var specFieldTypes = map[string]any{
 // that justifies it (an issue number, or the resolving prose in the spec)
 // so a reviewer can tell "decided" from "forgotten" without re-deriving the
 // argument.
-var specFieldExceptions = map[string]map[string]string{
-	"SessionState": {
-		// Not forgotten — an open design question, not yet a documentation
-		// gap. See the note left in session-abstraction.md §2.3 itself and
-		// colab-fleet issue #59, which lays out the two candidate
-		// resolutions (capability-gated first-class field vs. deliberately
-		// wire-only escape hatch) and is what should remove this entry,
-		// one way or the other.
-		"screenDigest": "colab-fleet issue #59 — undecided whether this belongs in the runtime-neutral model at all",
-	},
-}
+//
+// Empty as of colab-fleet issue #59: the last outstanding entry
+// (SessionState.screenDigest) was removed when #59's ruling promoted the
+// field into session-abstraction.md §2.3 rather than leaving it excepted.
+// Left as a map, not deleted, because a future genuinely-driver-internal
+// field needs somewhere to register the same argument.
+var specFieldExceptions = map[string]map[string]string{}
 
 // TestSpecTypeBlocksMatchGoFields is colab-fleet issue #57's mechanical
 // check: it fails when a registered Go type carries a JSON field absent

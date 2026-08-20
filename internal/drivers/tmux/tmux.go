@@ -496,6 +496,13 @@ func runReal(ctx context.Context, name string, args ...string) ([]byte, error) {
 // reports is inferred from a terminal screen (see classify.go). Setting it
 // true would be the §5.6 violation the field exists to make visible.
 //
+// DeliversRawKeys is true. This driver owns a real pane (keys.go implements
+// driver.KeySender against it) and produces the SessionState.ScreenDigest
+// that corroborates each key. This is the one capability whose truth this
+// driver's whole substrate is built from — a terminal multiplexer session IS
+// a screen — so unlike ObservesState there is no substrate-fidelity reason
+// to report anything but true here.
+//
 // ConfirmsDelivery is false, and for TWO reasons rather than the one
 // originally written here.
 //
@@ -526,6 +533,7 @@ func runReal(ctx context.Context, name string, args ...string) ([]byte, error) {
 func (d *Driver) Capabilities() fleet.DriverCapabilities {
 	return fleet.DriverCapabilities{
 		ObservesState:    false,
+		DeliversRawKeys:  true,
 		ConfirmsDelivery: false,
 		SupportsResume:   true,
 		SupportsPin: fleet.PinSupport{

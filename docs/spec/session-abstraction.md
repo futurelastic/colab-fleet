@@ -160,6 +160,7 @@ SessionState {
   prompt?         : SessionPrompt // the question this session is blocked on (§2.7)
   waitingOn?      : WaitingReason // WHY status is waiting_input
   composerDigest? : string        // fingerprint of unsent composer text
+  screenDigest?   : string        // fingerprint of the screen read — corroborates `keys` (§3); only from a driver declaring deliversRawKeys (§4.3)
   quota?          : QuotaBlock    // set when status is quota_blocked
   lastTurn?       : TurnEnd       // how the most recent turn ended, if the driver knows
   credentialGeneration?: Timestamp // this machine's local credential generation at read time (#12)
@@ -190,13 +191,19 @@ TurnEnd {
 }
 ```
 
-> **`screenDigest` is deliberately NOT in this block.** The Go type carries it
-> (`state.go`), and it is real, load-bearing and documented — in
-> api-http.md §3.3, as the corroboration token for `POST …/keys`. It is left
-> out of the model here because whether it belongs in a runtime-neutral type
-> at all is an open question, not a documentation gap: see colab-fleet issue
-> #59, which lays out the two candidate resolutions. Until that lands, treat
-> api-http.md as this field's only normative home.
+> **`screenDigest` is present only from a driver that declares
+> `deliversRawKeys` (§4.3).** It fingerprints the whole screen this state was
+> read from and is the corroboration token `keys` (§3) quotes back — the same
+> discipline `close` uses with `startedAt` and `discard` with
+> `composerDigest`. A driver over a runtime with no screen to capture — no
+> terminal, nothing to fingerprint — leaves it absent and declares
+> `deliversRawKeys: false`; that absence is a real, honest answer (§5.7), the
+> same shape `AttachHint` already uses for a substrate with no interactive
+> attachment (§2.8). Decided by colab-fleet issue #59: the field was left out
+> of this block on purpose, pending exactly this choice between a
+> capability-gated first-class field and a permanently wire-only one; see
+> §3's `keys` entry for what the decision costs and why it does not close the
+> question it looks like it closes.
 
 Six fields above (`prompt` through `credentialGeneration`) were undocumented
 in this block until colab-fleet issue #57, which found the drift: the Go
@@ -549,17 +556,41 @@ interrupt(req, ref)            -> Ack
 close(req, ref)                -> Ack
 rename(req, ref, to)           -> Ack
 discard(req, ref, digest)      -> Ack
+keys(req, ref, key, expect)    -> DeliveryReceipt
 list(req, filter?)             -> Collection<Session>
 subscribe(req, filter?)        -> EventStream
 ```
 
-> **A tenth operation, `keys`, exists on the wire (api-http.md §3.3,
-> `POST …/keys`) and is deliberately not in this table.** It delivers one raw
-> key event (`Up`/`Down`/`Left`/`Right`/`Enter`/`Escape`) for the full-screen
-> dialogs `respond` cannot answer, corroborated by `SessionState.screenDigest`
-> — itself absent from §2.3 for the same reason. Whether it belongs here, as
-> a capability-gated operation every driver may decline, or stays wire-only
-> by design, is open: colab-fleet issue #59.
+**`keys` delivers one raw key event** — `Up`/`Down`/`Left`/`Right`/`Enter`/
+`Escape` (api-http.md §3.3, `POST …/keys`) — to the full-screen dialogs
+`respond` cannot answer, corroborated by `SessionState.screenDigest` (§2.3)
+the same way `discard` corroborates against `composerDigest`. A driver
+declares whether it can do this at all through
+`DriverCapabilities.deliversRawKeys` (§4.3); one that lacks a screen to
+capture answers `unsupported` (§5.6) rather than approximate one, the same
+shape `AttachHint` already uses for a substrate with no interactive
+attachment (§2.8) — except here the model has a place for the absence to be
+absent *from*, which is what colab-fleet issue #59 decided was missing. It
+joins this table as that ruling: wire-only and undecided on purpose, until
+#59 decided it.
+
+> **This does not resolve §5.1, and the table above should not be read as if
+> it did.** §5.1 asks every operation to express a question, never a
+> mechanism — `state()`, not `readScreen()`; `send()`, not `typeKeys()`.
+> `keys` delivers literal `Up`/`Down`/`Enter`: it IS the mechanism, and no
+> amount of capability-gating changes what it hands a caller. What the gate
+> buys is not compliance with §5.1 but honesty about the violation. An escape
+> hatch every driver is silently assumed to support is a fork in the model
+> nobody decided; one that must be declared, and that a driver may honestly
+> refuse, is a documented asymmetry instead — declared and bounded, not
+> resolved, in the same sense §14's open defects are named rather than hidden.
+> `keys` exists because `respond` — the question-shaped answer to a prompt —
+> cannot reach a full-screen dialog the classifier never recognised as a
+> prompt at all; the long-term aim stays what it always was, for `respond` to
+> grow until it covers those dialogs too (colab-fleet issue #49, the same
+> surface). Ruling #59 is a decision to stop pretending the hatch is not part
+> of the model while it exists — it is not a decision to stop trying to make
+> it unnecessary.
 
 `respond` answers a prompt a session is blocked on, and is a separate
 operation rather than a flag on `send` for a reason that is not stylistic:
@@ -681,6 +712,7 @@ callers must degrade rather than assume:
 ```
 DriverCapabilities {
   observesState   : boolean   // can report status without inference
+  deliversRawKeys : boolean   // can deliver a raw key event to a screen (§3 `keys`) and populate `screenDigest` (§2.3)
   confirmsDelivery: boolean   // can distinguish submitted from queued
   supportsResume  : boolean   // sessions survive a service restart
   supportsPin     : { model: boolean, effort: boolean, agent: boolean }
@@ -689,6 +721,25 @@ DriverCapabilities {
   observedAt?     : Timestamp | null
 }
 ```
+
+**`deliversRawKeys` gates `keys` and `screenDigest`** — colab-fleet issue
+#59's capability-gated resolution, shaped after `observesState` but not the
+same kind of thing: `observesState` distinguishes two ways of answering a
+question the model already asks; `deliversRawKeys` gates whether a driver
+supports an operation §5.1 asks every operation not to need. The tmux driver
+declares `true` — its whole substrate is the screen this describes. A driver
+over a runtime with no screen to capture — nothing to fingerprint, nowhere
+for an arrow key to land — declares `false` and answers `unsupported` (§5.6)
+for `keys`, never emulating a screen that is not there.
+
+Like every field in this block, `deliversRawKeys` is covered by `source`
+below rather than exempt from it: a peer that has never answered reports
+`deliversRawKeys: false` under `source: assumed`, which is a statement that
+nobody has said anything, never a claim that the peer cannot do this. A
+capability that silently read `false` on an unreachable peer, with nothing
+to mark the value as unconfirmed, is precisely the defect `source` exists to
+prevent (see below), and adding a flag is not a license to re-introduce it
+by accident.
 
 **A declaration carries its own provenance.** `observed` means the driver these
 describe reported them — a local driver is always this, since it is describing

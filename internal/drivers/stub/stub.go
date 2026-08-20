@@ -39,6 +39,7 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 	}
 	return fleet.DriverCapabilities{
 		ObservesState:    false,
+		DeliversRawKeys:  false,
 		ConfirmsDelivery: false,
 		SupportsResume:   false,
 		SupportsPin:      fleet.PinSupport{},
