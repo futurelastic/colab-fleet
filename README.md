@@ -172,6 +172,8 @@ internal/driver            the Driver interface and capability declaration
 internal/drivers/stub      a driver that answers unsupported everywhere
 internal/drivers/tmux      the first working driver — multiplexer + agent CLI
 internal/drivers/remote    the second — an HTTP client to a peer (federation)
+internal/drivers/opencode  the second LOCAL driver — a spawned subprocess,
+                           the first able to declare observesState: true
 internal/service           registry, one-hop fan-out, HTTP routing
 cmd/colab-fleetd           the binary
 ```

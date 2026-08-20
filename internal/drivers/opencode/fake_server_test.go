@@ -1,0 +1,271 @@
+package opencode
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// fakeServer is a minimal stand-in for opencode's HTTP API, scripted
+// against the three endpoints #55 identified as the ones this driver
+// actually needs (create, prompt_async, status) plus the handful of
+// others ops.go calls (get/list/delete/abort). It exists so the bulk of
+// this package's tests never require a real opencode install or a paid
+// provider credential — the provider ruling on #55.
+type fakeServer struct {
+	t    *testing.T
+	mu   sync.Mutex
+	srv  *httptest.Server
+	next int
+
+	username, password string
+
+	sessions map[string]wireSession // id -> session
+	statuses statusMap              // id -> status, present only when non-idle
+
+	// unauthorized, when true, makes every request fail Basic auth
+	// regardless of what was sent — simulates a credential mismatch.
+	unauthorized bool
+	// statusDown, when true, makes GET /session/status fail as a
+	// transport error (connection reset) rather than answering — the
+	// read-failure half of #55's discrimination.
+	statusDown bool
+
+	requests []recordedRequest
+}
+
+type recordedRequest struct {
+	method, path string
+}
+
+func newFakeServer(t *testing.T) *fakeServer {
+	t.Helper()
+	f := &fakeServer{
+		t:        t,
+		username: "colab-fleet",
+		password: "test-credential-do-not-log",
+		sessions: map[string]wireSession{},
+		statuses: statusMap{},
+	}
+	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeServer) baseURL() string { return f.srv.URL }
+
+func (f *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.requests = append(f.requests, recordedRequest{r.Method, r.URL.Path})
+	f.mu.Unlock()
+
+	user, pass, ok := r.BasicAuth()
+	f.mu.Lock()
+	unauthorized := f.unauthorized
+	wantUser, wantPass := f.username, f.password
+	f.mu.Unlock()
+	if unauthorized || !ok || user != wantUser || pass != wantPass {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/session":
+		f.handleCreate(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/session":
+		f.handleList(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/session/status":
+		f.handleStatus(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/session/") && !strings.Contains(r.URL.Path[len("/session/"):], "/"):
+		f.handleGet(w, r)
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/session/"):
+		f.handleDelete(w, r)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/prompt_async"):
+		f.handlePromptAsync(w, r)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/abort"):
+		f.handleAbort(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (f *fakeServer) handleCreate(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	f.mu.Lock()
+	f.next++
+	id := fmt.Sprintf("ses_fake%03d", f.next)
+	title := "New session"
+	if t, ok := body["title"].(string); ok && t != "" {
+		title = t
+	}
+	agent, _ := body["agent"].(string)
+	sess := wireSession{
+		ID:        id,
+		Directory: r.URL.Query().Get("directory"),
+		Title:     title,
+		Agent:     agent,
+		Time:      wireTime{Created: nowMillis(), Updated: nowMillis()},
+	}
+	f.sessions[id] = sess
+	f.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(sess)
+}
+
+func (f *fakeServer) handleGet(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/session/")
+	f.mu.Lock()
+	sess, ok := f.sessions[id]
+	f.mu.Unlock()
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(sess)
+}
+
+// handleList serves GET /session for completeness — the driver itself
+// never calls it (see ops.go's List, which found this endpoint unreliable
+// against the real server and works from its own local cache instead).
+// Kept here in case a later revision needs to test against it directly.
+func (f *fakeServer) handleList(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	out := make([]wireSession, 0, len(f.sessions))
+	for _, s := range f.sessions {
+		out = append(out, s)
+	}
+	f.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (f *fakeServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	down := f.statusDown
+	f.mu.Unlock()
+	if down {
+		hj, ok := w.(http.Hijacker)
+		if ok {
+			conn, _, err := hj.Hijack()
+			if err == nil {
+				conn.Close()
+				return
+			}
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	f.mu.Lock()
+	out := map[string]wireStatus{}
+	for id, st := range f.statuses {
+		out[id] = st
+	}
+	f.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (f *fakeServer) handleDelete(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/session/")
+	f.mu.Lock()
+	_, ok := f.sessions[id]
+	delete(f.sessions, id)
+	delete(f.statuses, id)
+	f.mu.Unlock()
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(true)
+}
+
+func (f *fakeServer) handlePromptAsync(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/session/"), "/prompt_async")
+	f.mu.Lock()
+	_, ok := f.sessions[id]
+	f.mu.Unlock()
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *fakeServer) handleAbort(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/session/"), "/abort")
+	f.mu.Lock()
+	_, ok := f.sessions[id]
+	f.mu.Unlock()
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(true)
+}
+
+// setBusy / setRetry / setIdle script the status map directly, bypassing
+// any real turn-taking — these tests are about this driver's mapping
+// logic, not about opencode's own agent loop.
+func (f *fakeServer) setBusy(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statuses[id] = wireStatus{Type: "busy"}
+}
+
+func (f *fakeServer) setRetry(id string, attempt int, message string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statuses[id] = wireStatus{Type: "retry", Attempt: attempt, Message: message}
+}
+
+func (f *fakeServer) clearStatus(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.statuses, id)
+}
+
+func (f *fakeServer) requestsSnapshot() []recordedRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]recordedRequest, len(f.requests))
+	copy(out, f.requests)
+	return out
+}
+
+func nowMillis() int64 { return time.Now().UnixMilli() }
+
+// newTestDriver builds a Driver pointed at f, bypassing Probe and process
+// spawning entirely — the WithBaseURL/WithHTTPClient seam.
+func newTestDriver(t *testing.T, f *fakeServer) *Driver {
+	t.Helper()
+	d, err := newDriverWithOptions(t, f)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return d
+}
+
+// newDriverWithOptions is newTestDriver plus room for extra Options, for
+// tests that need to configure something (a deadline, a clock) beyond the
+// base fake-server wiring.
+func newDriverWithOptions(t *testing.T, f *fakeServer, extra ...Option) (*Driver, error) {
+	t.Helper()
+	opts := append([]Option{
+		WithBaseURL(f.baseURL()),
+		WithCredential(f.username, f.password),
+		WithHTTPClient(f.srv.Client()),
+	}, extra...)
+	return New(context.Background(), "test-machine", opts...)
+}

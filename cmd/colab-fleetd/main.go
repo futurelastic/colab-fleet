@@ -24,6 +24,18 @@
 //	FLEET_TMUX_BIN         path to the multiplexer binary. Defaults to
 //	                       "tmux" on PATH — which a non-interactive ssh
 //	                       session may not have.
+//	FLEET_RUNTIME_OPENCODE set to 1 to ALSO register a second local driver
+//	                       (colab-fleet issue #55) over opencode
+//	                       (github.com/sst/opencode), a third-party agent
+//	                       this process spawns as a subprocess and talks
+//	                       to over HTTP. Additive, not a replacement for
+//	                       FLEET_RUNTIME — a machine may run both at once,
+//	                       which is the whole proof #55 exists to make.
+//	                       Absence of the opencode binary on this machine
+//	                       is logged and skipped, never fatal: this is an
+//	                       optional runtime, unlike FLEET_RUNTIME's tmux.
+//	FLEET_OPENCODE_BIN     path to the opencode binary. Defaults to
+//	                       "opencode" on PATH.
 //	FLEET_PEERS            comma-separated name=url list, e.g.
 //	                       "other=https://other.example:PORT". Peers are
 //	                       statically configured; there is no discovery
@@ -83,6 +95,7 @@ import (
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/godx-jp/colab-fleet/internal/drivers/opencode"
 	"github.com/godx-jp/colab-fleet/internal/drivers/remote"
 	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
 	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
@@ -257,6 +270,36 @@ func main() {
 	}
 	if err := svc.RegisterLocalDriver(runtimeID, localDriver); err != nil {
 		log.Fatalf("colab-fleetd: registering local runtime: %v", err)
+	}
+
+	// --- second local driver (colab-fleet issue #55) --------------------
+	//
+	// Additive and optional, unlike the switch above: this machine may run
+	// tmux (or stub) AND opencode at once, which is the entire proof #55
+	// exists to make — a second local driver, registered alongside the
+	// first, against a genuinely different runtime.
+	//
+	// A missing opencode binary is logged and skipped, never fatal
+	// (log.Fatalf above, for FLEET_RUNTIME, is deliberately NOT mirrored
+	// here). tmux is this daemon's baseline runtime, present at every
+	// deployment; opencode is optional and additive, so its absence must
+	// not take the whole fleet daemon down. This is opencode.New /
+	// opencode.Probe's own "absent install is a first-class answer, not a
+	// startup crash" contract, discharged at the one place that decides
+	// what to do about it.
+	var opencodeDriver *opencode.Driver
+	if getenv("FLEET_RUNTIME_OPENCODE", "") == "1" {
+		bin := os.Getenv("FLEET_OPENCODE_BIN")
+		d, err := opencode.New(context.Background(), self, opencode.WithBinary(bin))
+		if err != nil {
+			log.Printf("colab-fleetd: opencode runtime not started, continuing without it: %v", err)
+		} else if err := svc.RegisterLocalDriver(opencode.DefaultRuntime, d); err != nil {
+			log.Printf("colab-fleetd: registering opencode runtime: %v", err)
+			_ = d.Shutdown()
+		} else {
+			opencodeDriver = d
+			log.Printf("colab-fleetd: opencode runtime registered (#55)")
+		}
 	}
 
 	// The bare-id tiebreak once a second local driver is registered
@@ -446,6 +489,13 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+
+	// This process spawned the opencode server; nothing else will stop it.
+	if opencodeDriver != nil {
+		if err := opencodeDriver.Shutdown(); err != nil {
+			log.Printf("colab-fleetd: stopping opencode server: %v", err)
+		}
+	}
 }
 
 func getenv(key, fallback string) string {

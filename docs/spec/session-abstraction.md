@@ -722,6 +722,15 @@ DriverCapabilities {
 }
 ```
 
+**`observesState` had never been exercised by a local driver until colab-fleet
+issue #55.** Every local driver before it inferred status from a screen; the
+argument in §2.3 for keeping `observed` and `inferred` distinct was, until
+then, carried entirely by the remote driver relaying a peer's own report. #55
+added a second local driver — `internal/drivers/opencode` — over a runtime
+whose status is a structured API response rather than terminal output, so it
+declares `observesState: true` honestly rather than by relay. The distinction
+this field exists to make is no longer only a federation concern.
+
 **`deliversRawKeys` gates `keys` and `screenDigest`** — colab-fleet issue
 #59's capability-gated resolution, shaped after `observesState` but not the
 same kind of thing: `observesState` distinguishes two ways of answering a
@@ -906,6 +915,16 @@ failure to observe will report its ignorance as the world's.*
 > How this was found — a driver that could read nothing returned a complete,
 > error-free view of 22 sessions and passed its entire test suite:
 > Appendix A, F5.
+
+> Found a second time on a structurally different substrate — colab-fleet
+> issue #55: the second local driver's status endpoint omits an idle session
+> from its response map entirely, and a network failure or a rejected
+> credential renders as the exact same empty-looking absence at the HTTP
+> layer. `internal/drivers/opencode`'s reads therefore only ever call the
+> classifier that turns "present in the map" into busy/retry when the read is
+> known to have succeeded; a failed read returns a Go error and is never
+> handed to it. See `internal/drivers/opencode/state.go` and `ops.go`'s
+> `State`/`List`.
 
 ---
 
