@@ -206,6 +206,11 @@ This is the developer loop — running from source, on demand. Putting a merged
 commit in front of a service that stays up is a different, documented
 procedure: see [`docs/deploy.md`](docs/deploy.md).
 
+A `pre-commit` hook ships in `.githooks/`, but it does nothing until you point
+Git at it — run `.githooks/install.sh` once per checkout. `core.hooksPath`
+lives in `.git/config`, which is per-checkout and per-machine, so this does not
+travel with a clone: run it again on every fresh clone or new machine.
+
 ## Which agent-CLI versions this is tested against
 
 **A span, not a version: `2.1.220` through `2.1.223`.** Those are the versions
