@@ -99,15 +99,16 @@ stateDiagram-v2
     [*] --> idle
     idle --> working: send prompt
     working --> idle: turn completes
-    working --> waiting_input: agent hits a permission dialog
-    waiting_input --> working: respond — answer by index, nonce-checked
+    working --> waiting_input: permission dialog
+    waiting_input --> working: respond
     working --> quota_blocked: quota exhausted
     quota_blocked --> idle: quota window resets
 
     note right of waiting_input
-        Dead end. Nothing moves it
-        but a respond call. This is
-        the state that strands work.
+        Dead end. Only a respond call
+        moves it: answer by index,
+        checked against a nonce. This
+        is the state that strands work.
     end note
 
     note right of quota_blocked
