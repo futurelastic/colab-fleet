@@ -165,6 +165,144 @@ func TestState_IdleSessionThatStillExistsReportsIdleObserved(t *testing.T) {
 	}
 }
 
+// #77: the defect this whole file exists to fix. Measured live against a
+// real server — a provider refused a turn with HTTP 402, the runtime
+// recorded the refusal on the assistant message's own "error" field, and
+// GET /session/status simply never carried it, the same way it never
+// carries a genuinely finished turn. Absent from the status map is idle,
+// but idle alone is not the whole truth when the last thing that happened
+// was a refusal, not a reply.
+func TestState_RefusedTurnReportsIdleWithFailedLastTurn(t *testing.T) {
+	f := newFakeServer(t)
+	d := newTestDriver(t, f)
+	ref := createOne(t, d, "/work/x", "key-1")
+	// Never in the status map — the runtime already dropped it there,
+	// which is the whole defect — but the newest message is an assistant
+	// reply carrying a real provider error, nested the way a real server
+	// was measured to nest it (data.message, data.statusCode), not flat.
+	f.setLastMessage(ref.ID, wireMessage{Info: wireMessageInfo{
+		Role: "assistant",
+		Error: &wireAssistantError{
+			Name: "APIError",
+			Data: struct {
+				Message     string `json:"message"`
+				IsRetryable bool   `json:"isRetryable"`
+			}{Message: "insufficient balance", IsRetryable: false},
+		},
+	}})
+
+	st, err := d.State(context.Background(), fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID})
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.Status != fleet.StatusIdle {
+		t.Errorf("Status = %q, want idle — the session is genuinely alive and able to take more work", st.Status)
+	}
+	if st.LastTurn == nil {
+		t.Fatal("LastTurn = nil; a refused turn must not read exactly like a session that never took one")
+	}
+	if st.LastTurn.Outcome != "failed" {
+		t.Errorf("Outcome = %q, want failed", st.LastTurn.Outcome)
+	}
+	if !strings.Contains(st.LastTurn.Reason, "insufficient balance") {
+		t.Errorf("Reason = %q, must carry the runtime's own words", st.LastTurn.Reason)
+	}
+	if st.LastTurn.Retryable {
+		t.Error("Retryable = true; the runtime's own isRetryable said false, and this must not override it")
+	}
+}
+
+// The APIError variant is the one error name that carries its own
+// isRetryable — this pins that a runtime-asserted true is trusted and
+// carried through, not just the false case above.
+func TestState_RefusedTurnCarriesRuntimeAssertedRetryable(t *testing.T) {
+	f := newFakeServer(t)
+	d := newTestDriver(t, f)
+	ref := createOne(t, d, "/work/x", "key-1")
+	f.setLastMessage(ref.ID, wireMessage{Info: wireMessageInfo{
+		Role: "assistant",
+		Error: &wireAssistantError{
+			Name: "APIError",
+			Data: struct {
+				Message     string `json:"message"`
+				IsRetryable bool   `json:"isRetryable"`
+			}{Message: "upstream overloaded", IsRetryable: true},
+		},
+	}})
+
+	st, err := d.State(context.Background(), fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID})
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.LastTurn == nil || !st.LastTurn.Retryable {
+		t.Errorf("LastTurn = %+v, want Retryable: true — the runtime itself said so", st.LastTurn)
+	}
+}
+
+// A non-APIError variant (MessageOutputLengthError, measured to carry an
+// empty data object with no message at all) must still be reported —
+// honestly, by name alone — never dropped for lack of prose, and never
+// guessed retryable since the runtime said nothing either way for it.
+func TestState_RefusedTurnWithNoMessageReportsTheErrorNameAlone(t *testing.T) {
+	f := newFakeServer(t)
+	d := newTestDriver(t, f)
+	ref := createOne(t, d, "/work/x", "key-1")
+	f.setLastMessage(ref.ID, wireMessage{Info: wireMessageInfo{
+		Role:  "assistant",
+		Error: &wireAssistantError{Name: "MessageOutputLengthError"},
+	}})
+
+	st, err := d.State(context.Background(), fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID})
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.LastTurn == nil || st.LastTurn.Outcome != "failed" {
+		t.Fatalf("LastTurn = %+v, want a failed outcome even with no message text", st.LastTurn)
+	}
+	if !strings.Contains(st.LastTurn.Reason, "MessageOutputLengthError") {
+		t.Errorf("Reason = %q, must still name the failure", st.LastTurn.Reason)
+	}
+	if st.LastTurn.Retryable {
+		t.Error("Retryable = true; this error name never carries isRetryable, so it must not be claimed")
+	}
+}
+
+// A turn that actually succeeded must not be reported as failed — the
+// newest assistant message exists but carries no error, which is the
+// ordinary, unremarkable case.
+func TestState_SuccessfulTurnReportsNoLastTurn(t *testing.T) {
+	f := newFakeServer(t)
+	d := newTestDriver(t, f)
+	ref := createOne(t, d, "/work/x", "key-1")
+	f.setLastMessage(ref.ID, wireMessage{Info: wireMessageInfo{Role: "assistant"}})
+
+	st, err := d.State(context.Background(), fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID})
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.LastTurn != nil {
+		t.Errorf("LastTurn = %+v, want nil — the last turn produced a reply with no error", st.LastTurn)
+	}
+}
+
+// The newest message being from the human, not the runtime, must not be
+// read as a failure either way — that shape belongs to #55's busy/retry
+// territory, not to this function.
+func TestState_NewestMessageFromUserIsNotTreatedAsAFailure(t *testing.T) {
+	f := newFakeServer(t)
+	d := newTestDriver(t, f)
+	ref := createOne(t, d, "/work/x", "key-1")
+	f.setLastMessage(ref.ID, wireMessage{Info: wireMessageInfo{Role: "user"}})
+
+	st, err := d.State(context.Background(), fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID})
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.LastTurn != nil {
+		t.Errorf("LastTurn = %+v, want nil — the newest message is not an assistant reply", st.LastTurn)
+	}
+}
+
 // The trap #55 exists to close: a status-map read that FAILS must never
 // render as idle, even though an empty/unreachable body looks identical
 // to "nobody is busy" at the wire. This is the single most load-bearing

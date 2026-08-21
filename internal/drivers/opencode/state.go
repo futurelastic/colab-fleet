@@ -1,7 +1,9 @@
 package opencode
 
 import (
+	"context"
 	"fmt"
+	"net/url"
 
 	fleet "github.com/godx-jp/colab-fleet"
 )
@@ -53,4 +55,58 @@ func classify(present bool, st wireStatus) fleet.SessionState {
 		return fleet.UnknownState(fleet.ConfidenceObserved,
 			fmt.Sprintf("runtime reported an unrecognised status type %q", st.Type))
 	}
+}
+
+// lastTurnFailure asks the runtime's own message record whether the most
+// recent turn ended in a provider-side error that GET /session/status never
+// carries (colab-fleet #77). Measured live: a turn the provider refused
+// with HTTP 402 recorded the refusal on its own assistant-message record
+// and then simply left the status map — the session reads idle, at
+// `confidence: observed`, forever after, indistinguishable from one that
+// finished normally.
+//
+// Returns nil, nil whenever there is nothing to report: no message history
+// yet, the newest message is not an assistant reply (a user message with
+// no reply is #55's own "busy" territory, not this function's job), or
+// that reply carries no error. A read failure here also returns nil, nil
+// rather than propagating — the same best-effort-enrichment shape the tmux
+// driver's own upgradeLastTurnFromRecord already takes: the status read
+// that got this driver to "absent, therefore idle" already succeeded, and
+// this is enrichment on top of a real answer, not the source of it. A
+// caller wanting the message endpoint's own errors surfaced must read them
+// off the returned error value, which this function discards on purpose.
+//
+// Bounded to the single newest message (?limit=1, confirmed live against a
+// real server to return the TAIL of the conversation, not the head) —
+// constant cost regardless of how long the session's history is — and
+// never decodes "parts", the field carrying actual conversation content
+// (see wireMessageInfo). This is why State calls it and List does not:
+// List already visits every known session once per call, and one extra
+// request per session there is a real, unbounded cost this function's
+// single-session caller does not have. Left as a deliberate gap, not an
+// oversight — worth its own issue if List needs the same honesty.
+func (d *Driver) lastTurnFailure(ctx context.Context, id string) *fleet.TurnEnd {
+	var msgs []wireMessage
+	if err := d.do(ctx, "GET", "/session/"+url.PathEscape(id)+"/message?limit=1", nil, &msgs); err != nil {
+		return nil
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	info := msgs[0].Info
+	if info.Role != "assistant" || info.Error == nil {
+		return nil
+	}
+
+	reason := info.Error.Name
+	if info.Error.Data.Message != "" {
+		reason += ": " + info.Error.Data.Message
+	}
+	// IsRetryable is only ever populated by the runtime for the "APIError"
+	// variant (client.go's wireAssistantError doc). Every other Name leaves
+	// the zero value, which is correctly read here as "not claimed
+	// retryable" — the runtime never said either way for those, and this
+	// must not guess yes on their behalf.
+	retryable := info.Error.Name == "APIError" && info.Error.Data.IsRetryable
+	return &fleet.TurnEnd{Outcome: "failed", Reason: reason, Retryable: retryable}
 }

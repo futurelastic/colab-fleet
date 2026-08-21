@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -162,4 +164,73 @@ func TestIntegration_LiveStatusTransition_SpendsProviderMoney(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("did not observe a busy->idle transition within the deadline (sawWorking=%v)", sawWorking)
+}
+
+// The live measurement #77 itself made, reproduced with an invalid
+// credential rather than an unfunded account: a real provider refuses the
+// turn at the HTTP layer, before anything billable happens, so this needs
+// only FLEET_OPENCODE_INTEGRATION — never FLEET_OPENCODE_SPEND_MONEY. A
+// project-local opencode.json in the session's own cwd points a real
+// provider (deepseek) at a deliberately bogus API key, which a real
+// deepseek endpoint refuses with 401 — the same class of refusal the
+// issue's own 402 was, landing on the same assistant-message shape.
+func TestIntegration_RefusedTurnReportsFailedLastTurn(t *testing.T) {
+	requireOpencodeIntegration(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	d, err := New(ctx, "test-machine")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer d.Shutdown()
+
+	dir := t.TempDir()
+	const config = `{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "deepseek": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "https://api.deepseek.com/v1", "apiKey": "sk-invalid-integration-test-key" },
+      "models": { "deepseek-chat": { "name": "DeepSeek Chat" } }
+    }
+  }
+}`
+	if err := os.WriteFile(filepath.Join(dir, "opencode.json"), []byte(config), 0o644); err != nil {
+		t.Fatalf("writing project config: %v", err)
+	}
+
+	ref, err := d.Create(ctx, fleet.RequestFrom(fleet.Caller{Principal: "integration-test"}), "integration-key-3",
+		fleet.SessionSpec{Cwd: fleet.AbsolutePath(dir), Name: "colab-fleet #77 live", Model: "deepseek/deepseek-chat"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer d.Close(ctx, fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID})
+
+	if _, err := d.Send(ctx, fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID},
+		"say hi", driver.SendOptions{Submit: true}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := d.State(ctx, fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID})
+		if err != nil {
+			t.Fatalf("State: %v", err)
+		}
+		if st.Status == fleet.StatusIdle && st.LastTurn != nil {
+			if st.LastTurn.Outcome != "failed" {
+				t.Errorf("Outcome = %q, want failed", st.LastTurn.Outcome)
+			}
+			if !strings.Contains(strings.ToLower(st.LastTurn.Reason), "api key") &&
+				!strings.Contains(strings.ToLower(st.LastTurn.Reason), "auth") {
+				t.Errorf("Reason = %q, expected it to name the real refusal", st.LastTurn.Reason)
+			}
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatal("did not observe a failed LastTurn within the deadline — either the refusal never " +
+		"happened (provider behaviour changed) or #77's fix regressed")
 }

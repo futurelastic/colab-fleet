@@ -47,6 +47,51 @@ type wireStatus struct {
 // present only for a session with something to report.
 type statusMap map[string]wireStatus
 
+// wireAssistantError is the error union opencode's AssistantMessage.error
+// carries when a turn ends without a reply (colab-fleet #77). Measured
+// against a real server's own OpenAPI document: eight distinct error
+// "name" values, each with its own "data" shape. Seven of the eight nest a
+// human-readable "message" under data; the eighth (MessageOutputLengthError)
+// carries an empty data object, so Data.Message decodes to "" for it —
+// honestly, since the runtime itself says nothing further, not a gap this
+// type papers over. IsRetryable is only ever populated by the runtime for
+// the "APIError" variant; every other Name leaves it at its zero value,
+// which lastTurnFailure reads as "not claimed retryable" rather than "not
+// retryable" — the runtime never said either way for those.
+//
+// This driver never branches on Name or the message text — the same
+// discipline TurnEnd.Reason already holds itself to everywhere else in
+// this model — it only carries enough to report that a turn failed and
+// why, for a human.
+type wireAssistantError struct {
+	Name string `json:"name"`
+	Data struct {
+		Message     string `json:"message"`
+		IsRetryable bool   `json:"isRetryable"`
+	} `json:"data"`
+}
+
+// wireMessageInfo is the subset of GET /session/{id}/message's per-message
+// "info" object this driver reads. Deliberately excludes "parts" — the
+// field the real endpoint nests each message's actual conversation content
+// under. Not decoding it here is what makes reading it impossible by
+// construction, the same discipline ScreenDigest already holds the tmux
+// driver to: this answers "did the last turn fail and why", never "what
+// was said".
+type wireMessageInfo struct {
+	Role string `json:"role"`
+	Time struct {
+		Created int64 `json:"created"`
+	} `json:"time"`
+	Error *wireAssistantError `json:"error"`
+}
+
+// wireMessage is one entry of GET /session/{id}/message's response array —
+// the {info, parts} envelope the real server's OpenAPI schema documents.
+type wireMessage struct {
+	Info wireMessageInfo `json:"info"`
+}
+
 // do performs one request against this driver's own opencode server,
 // authenticating as this driver (never as the caller — see Driver.password's
 // doc comment; a local driver ignores fleet.Caller.Credential entirely).

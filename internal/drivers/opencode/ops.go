@@ -185,7 +185,14 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 			cwd: fleet.AbsolutePath(sess.Directory), name: sess.Title, agent: sess.Agent,
 			startedAt: time.UnixMilli(sess.Time.Created),
 		})
-		return classify(false, wireStatus{}), nil
+		st := classify(false, wireStatus{})
+		// #77: absent from the status map is idle ONLY when the last thing
+		// that happened was not a turn the provider refused. classify has
+		// no way to see that on its own — it only ever sees the status map
+		// — so it is checked here, once, on the one path that reaches a
+		// confirmed-idle verdict.
+		st.LastTurn = d.lastTurnFailure(ctx, ref.ID)
+		return st, nil
 	case isNotFound(err):
 		return fleet.InferredState(fleet.StatusDead,
 			"session was previously observed and no longer exists on the runtime", nil), nil

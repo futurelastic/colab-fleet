@@ -26,8 +26,9 @@ type fakeServer struct {
 
 	username, password string
 
-	sessions map[string]wireSession // id -> session
-	statuses statusMap              // id -> status, present only when non-idle
+	sessions map[string]wireSession   // id -> session
+	statuses statusMap                // id -> status, present only when non-idle
+	messages map[string][]wireMessage // id -> messages, newest last
 
 	// unauthorized, when true, makes every request fail Basic auth
 	// regardless of what was sent — simulates a credential mismatch.
@@ -52,6 +53,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 		password: "test-credential-do-not-log",
 		sessions: map[string]wireSession{},
 		statuses: statusMap{},
+		messages: map[string][]wireMessage{},
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
@@ -82,6 +84,8 @@ func (f *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 		f.handleList(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/session/status":
 		f.handleStatus(w, r)
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/message"):
+		f.handleMessages(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/session/") && !strings.Contains(r.URL.Path[len("/session/"):], "/"):
 		f.handleGet(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/session/"):
@@ -213,6 +217,37 @@ func (f *fakeServer) handleAbort(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(true)
+}
+
+// handleMessages serves GET /session/{id}/message?limit=N, honouring
+// `limit` the same way the real server does (measured live for #77): the
+// TAIL of the message list, newest last, never the head. Session existence
+// is not checked — a session with no scripted messages simply has none,
+// the same as a freshly created one that has never taken a turn.
+func (f *fakeServer) handleMessages(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/session/"), "/message")
+	f.mu.Lock()
+	all := append([]wireMessage(nil), f.messages[id]...)
+	f.mu.Unlock()
+
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		var limit int
+		_, _ = fmt.Sscanf(raw, "%d", &limit)
+		if limit >= 0 && limit < len(all) {
+			all = all[len(all)-limit:]
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(all)
+}
+
+// setLastMessage appends one message to id's scripted history — tests use
+// this to put a specific newest message (an assistant reply, with or
+// without an error) in place before reading state.
+func (f *fakeServer) setLastMessage(id string, msg wireMessage) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.messages[id] = append(f.messages[id], msg)
 }
 
 // setBusy / setRetry / setIdle script the status map directly, bypassing
