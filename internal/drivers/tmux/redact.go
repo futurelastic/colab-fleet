@@ -321,34 +321,18 @@ func redactModelLine(content string) (string, bool) {
 // otherwise verbatim — fixed vocabulary controlStateIn already trusts,
 // never the project name it happens to be glued to.
 //
-// Two shapes are checked because only one of the four states has been
-// captured for real so far (#70): the active state renders as a bare
-// label with nothing after it, so there is no trailing space for
-// controlLabel's own match (which requires one) to anchor on; the other
-// three are read out of the runtime binary rather than sampled from a
-// screen (controlchannel.go's own comment), so whether they render a
-// trailing word on THIS row — the way the constructed fixture assumed for
-// a different row entirely — is not yet confirmed. Keeping both shapes
-// means a real `failed`/`reconnecting`/`connecting` capture landing on
-// this row later is not silently re-broken by a fix tested against only
-// the one state reachable today.
-//
-// The bare shape only matches when a space separates it from whatever
-// precedes it — the alignment padding #70 actually measured — never when
-// it is glued directly onto other text with no gap, which is what a
-// project or session name that happened to end in the same three
-// characters would look like. That is what keeps this from ever treating
-// part of a real name as the label.
+// One check covers every shape (#75 simplified this from two): controlLabel
+// is the anchor alone, `"/rc"`, with no assumption about what follows it —
+// bare, for the one state measured live so far (active), or a trailing
+// word for the other three, unconfirmed either way. A project or session
+// name can never collide with this: it would need a literal `/` in a bare
+// directory or session name, which is not a shape either can take.
 func trailingControlLabel(tail string) (string, bool) {
-	if idx := strings.Index(tail, controlLabel); idx >= 0 {
-		return strings.TrimSpace(tail[idx:]), true
+	idx := strings.Index(tail, controlLabel)
+	if idx < 0 {
+		return "", false
 	}
-	bare := strings.TrimSpace(controlLabel) // "/rc" — controlLabel minus its trailing space
-	trimmed := strings.TrimRight(tail, " ")
-	if trimmed == bare || strings.HasSuffix(trimmed, " "+bare) {
-		return bare, true
-	}
-	return "", false
+	return strings.TrimSpace(tail[idx:]), true
 }
 
 // redactNoticeLine reconstructs a usage-limit or turn-failure notice from a

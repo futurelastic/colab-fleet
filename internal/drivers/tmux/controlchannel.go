@@ -25,6 +25,22 @@ import (
 // not guess from a capture — and it is the difference between a closed set and
 // a loose prose match somebody has to keep widening.
 //
+// # The connected row above is the binary's function; it is not what renders (#75)
+//
+// A real `active` capture (colab-fleet #70, #65) showed the connected state
+// rendering as a bare `/rc` hyperlink with NOTHING after it — no space, no
+// word, nothing an anchor requiring `"/rc "` could ever match. Two
+// independent live captures agree; controlStateIn now treats the anchor with
+// no word following it as `active` on that evidence.
+//
+// This is confirmed for `active` alone. Whether `failed`, `reconnecting` or
+// `connecting` ever render bare too — or always carry their word the way the
+// table above assumes — has NOT been measured against a real capture; only
+// `active` has been captured live so far. Do not read the table above as
+// confirmed rendering for the other three; it is the binary's function
+// signature, not a screen anyone has seen. Confirm before relying on it
+// further (tracked on #75).
+//
 // # Why only the footer, and why that is the entire safety property
 //
 // The incident that motivated this had a supervisor grepping panes for the
@@ -98,7 +114,14 @@ import (
 // is the slash-command name, which is what makes it a stable anchor: the label
 // is telling a human what to type, so it cannot drift without the command
 // drifting too.
-const controlLabel = "/rc "
+//
+// No trailing space (#75): an earlier version of this anchor required one,
+// on the assumption every state renders a word after the command name. A
+// real `active` capture showed that wrong — it renders bare, nothing after
+// the anchor at all — so requiring a space made the anchor unable to match
+// the very state it is most often looking for. Whatever follows the bare
+// anchor, word or nothing, is controlStateIn's job to interpret.
+const controlLabel = "/rc"
 
 // controlStates maps the runtime's four labels onto the model's closed set.
 //
@@ -137,15 +160,16 @@ func controlChannelOf(s screen) *fleet.ControlChannel {
 // tolerant match is the safe one here, and the region check above is what keeps
 // tolerance from becoming credulity.
 //
-// The tolerance is deliberate, but so is naming the gap behind it (colab-fleet
-// #65): the label's exact position within the footer comes from one capture
-// pasted into #48, where it appeared right-aligned, and has never been
-// re-captured through this driver — testdata/corpus/
-// control-channel-failed-reads-healthy's own `redactedFrom` says so in full.
-// Tightening this match to what that one capture showed would be trading a
-// real safety property for a guess dressed as precision; it stays loose until
-// there is a real corpus of the four label states to check it against, which
-// needs pane access this workspace's agents do not have.
+// The tolerance is deliberate, and stays exactly as it is (#75): the label's
+// position moved between every real capture taken so far — the model/plan
+// row once, an unrelated runtime-hint row another time — which is live
+// confirmation of the reason this was never pinned to a column in the first
+// place. Tightening it now would be trading a real safety property for a
+// guess dressed as precision, real captures or not.
+//
+// What DID need fixing, once real captures existed to check it against
+// (colab-fleet #70, #65), was the anchor match itself — see controlLabel's
+// own comment (#75) for the bare-`active` shape this line now handles.
 func controlStateIn(line string) (fleet.ControlChannelState, bool) {
 	idx := strings.Index(line, controlLabel)
 	if idx < 0 {
@@ -158,6 +182,17 @@ func controlStateIn(line string) (fleet.ControlChannelState, bool) {
 	word := rest
 	if cut := strings.IndexAny(word, " ·…."); cut >= 0 {
 		word = word[:cut]
+	}
+	if word == "" {
+		// #75: the only state measured rendering with nothing after the
+		// anchor at all is `active` (two independent live captures, #70 and
+		// #65) — no ellipsis, no word, not even a trailing space. This is
+		// NOT confirmed for the other three; it is entirely possible a real
+		// `failed`/`reconnecting`/`connecting` capture always carries its
+		// word and this branch never fires for them. Treat that as open,
+		// not assumed — see #75's own note asking for it to be checked
+		// against a real capture before anyone relies on it either way.
+		return fleet.ControlChannelActive, true
 	}
 	state, ok := controlStates[strings.ToLower(word)]
 	if !ok {

@@ -40,6 +40,45 @@ func TestControlChannelReadsEachOfTheRuntimesFourLabels(t *testing.T) {
 	}
 }
 
+// #75: a real capture (colab-fleet #70, #65) showed the active state
+// rendering as a bare `/rc` with nothing after it at all — not even a
+// trailing space — sharing the model/plan row with the project name rather
+// than the "auto mode on" row every other case here uses. The anchor used
+// to require a trailing space and could never match this shape; two live
+// captures agreeing is what justifies treating bare-anchor as active.
+func TestControlChannelReadsTheRealBareActiveLabel(t *testing.T) {
+	// The exact shape measured: "▸ Opus 5 · <project> /rc" is the whole
+	// line, and nothing on the model row required a space or a word after
+	// the anchor.
+	footer := "  ▸ Opus 5 · <project> /rc\n" +
+		"  ⏵⏵ auto mode on (shift+tab to cycle) · ← 3 agents"
+	s := "  transcript line\n" +
+		"✻ Brewed for 1m 0s\n" +
+		rule + "\n" +
+		"❯\n" +
+		rule + "\n" +
+		footer
+	got := controlChannelOf(newScreen(s))
+	if got == nil {
+		t.Fatal("a bare /rc with nothing after it reported no channel at all")
+	}
+	if got.State != fleet.ControlChannelActive {
+		t.Errorf("state = %q, want active", got.State)
+	}
+}
+
+// A bare anchor is the only shape confirmed by a real capture (active). A
+// FIFTH label glued to the anchor with no separator — never observed, and
+// not the shape #75 fixed — must still produce no claim, not the nearest
+// guess. This guards against the bare-match branch swallowing something it
+// was never meant to.
+func TestControlChannelDoesNotTreatAGluedWordAsBare(t *testing.T) {
+	if got := controlChannelOf(newScreen(paneWithFooter("   /rcsomething"))); got != nil {
+		t.Errorf("state = %+v, want nil — \"/rcsomething\" is not a recognised label, "+
+			"bare or otherwise", *got)
+	}
+}
+
 // THE test. The measured incident: a supervisor grepping panes for the
 // disconnection notice classified itself as disconnected, because its own tool
 // output contained the strings it was searching for.
