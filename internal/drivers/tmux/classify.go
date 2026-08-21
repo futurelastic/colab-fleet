@@ -1286,7 +1286,7 @@ func classifyAged(raw string, alive, young bool) fleet.SessionState {
 	return st
 }
 
-func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambiguity) {
+func classifyAgedDetail(raw string, alive, young bool) (st fleet.SessionState, amb ambiguity) {
 	if !alive {
 		// §8: dead is terminal. This is the one status this driver can
 		// state without reading a screen, and still it is inferred: the
@@ -1296,6 +1296,21 @@ func classifyAgedDetail(raw string, alive, young bool) (fleet.SessionState, ambi
 	}
 
 	s := newScreen(raw)
+
+	// Stamped on every path below rather than at each return.
+	//
+	// The control channel is orthogonal to what the session is DOING: it is
+	// true of a working session, an idle one, one blocked on a prompt and one
+	// blocked by a usage limit alike, and every one of those leaves this
+	// function by a different return. Threading it through each of them is how
+	// a branch added later quietly stops reporting it — and a field that
+	// silently stops being reported reads exactly like a healthy channel, which
+	// is the failure it exists to end.
+	//
+	// The dead branch above returns before this is armed, deliberately: a pane
+	// whose process is gone has no runtime left to be describing itself.
+	defer func() { st.ControlChannel = controlChannelOf(s) }()
+
 	if len(s.lines) == 0 {
 		return fleet.UnknownState(fleet.ConfidenceInferred, "pane captured empty"), ambNone
 	}

@@ -541,10 +541,15 @@ func runReal(ctx context.Context, name string, args ...string) ([]byte, error) {
 // in the chain manufactures an actor.
 func (d *Driver) Capabilities() fleet.DriverCapabilities {
 	return fleet.DriverCapabilities{
-		ObservesState:    false,
-		DeliversRawKeys:  true,
-		ConfirmsDelivery: false,
-		SupportsResume:   true,
+		ObservesState:   false,
+		DeliversRawKeys: true,
+		// This driver reads the runtime's own control-channel status label
+		// off the pane footer (controlchannel.go). Declared rather than
+		// assumed, so a nil ControlChannel is answerable: on this driver it
+		// means the runtime rendered no label, not that nobody looked.
+		ObservesControlChannel: true,
+		ConfirmsDelivery:       false,
+		SupportsResume:         true,
 		SupportsPin: fleet.PinSupport{
 			Model:  true,
 			Effort: true,

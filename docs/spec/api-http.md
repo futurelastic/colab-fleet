@@ -505,6 +505,28 @@ succeeded (§5.7). `retryable` is the runtime's own word for the failure, not
 our judgement of its error code: when true, sending anything resumes the
 session and no human is required.
 
+`state.controlChannel` — when present — is what the RUNTIME says about its own
+remote-control connection: `active`, `connecting`, `reconnecting` or `failed`.
+It is the runtime describing itself, not a claim about whatever is at the far
+end, and this service still does not model bridges.
+
+It exists because `failed` is otherwise invisible here. A session whose control
+channel is dead raises no prompt, blocks nothing and changes no status — it sits
+at an empty composer with a healthy status line and is, through every other
+field, an ordinary live session. Measured: 37 of 67 sessions came back from a
+fleet-wide recovery in that state, and the only way to find them was to read
+pane text.
+
+**Absent is not `active`** (§5.7). A runtime with no such channel reports
+nothing, and so does a driver that cannot look; `observesControlChannel` in
+`/v1/runtimes` is what separates those, and an unreached peer reports it
+`assumed` rather than `false`. It never changes `status`: a session nothing
+outside can reach is still running and still able to work.
+
+A change here fires `session.state` on the event stream (§4) like any other
+material change — which is the point, since nothing else about the session
+moves when a channel drops.
+
 `state.prompt.kind` — when present — names what is being asked
 (`resume-chooser`, `folder-trust`, `settings-trust`, `tool-permission`).
 `bypass-permissions` is deliberately absent from what CLASSIFICATION can produce:

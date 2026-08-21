@@ -87,6 +87,21 @@ type DriverCapabilities struct {
 	// screen that does not exist. See docs/spec/session-abstraction.md §3 for
 	// why this is a declared, bounded asymmetry and not a resolved one.
 	DeliversRawKeys bool `json:"deliversRawKeys"`
+	// ObservesControlChannel reports whether the driver can say anything about
+	// a session's remote-control channel (SessionState.ControlChannel).
+	//
+	// It exists so a nil ControlChannel is answerable rather than ambiguous.
+	// Without it, "this runtime has no control channel", "this driver never
+	// looks" and "it looked and the channel is fine" are one indistinguishable
+	// absence — §5.7 at the capability level, and the same argument
+	// DeliversRawKeys settled: an escape hatch or an observation every driver
+	// is silently assumed to make is a fork; one that must be DECLARED is a
+	// documented asymmetry.
+	//
+	// Like every flag here it inherits `source: assumed` from an unreached
+	// peer, so a temporarily unreachable machine can never report a bare false
+	// and become permanently incapable in a caller's cache (§4.3, D3).
+	ObservesControlChannel bool `json:"observesControlChannel"`
 	// ConfirmsDelivery reports whether the driver can distinguish
 	// "submitted" from "queued".
 	ConfirmsDelivery bool `json:"confirmsDelivery"`

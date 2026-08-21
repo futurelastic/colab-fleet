@@ -164,6 +164,11 @@ SessionState {
   quota?          : QuotaBlock    // set when status is quota_blocked
   lastTurn?       : TurnEnd       // how the most recent turn ended, if the driver knows
   credentialGeneration?: Timestamp // this machine's local credential generation at read time (#12)
+  controlChannel?: ControlChannel  // what the RUNTIME says about its own remote-control channel (#48)
+}
+
+ControlChannel {
+  state : "active" | "connecting" | "reconnecting" | "failed"
 }
 
 Status =
@@ -204,6 +209,34 @@ TurnEnd {
 > capability-gated first-class field and a permanently wire-only one; see
 > §3's `keys` entry for what the decision costs and why it does not close the
 > question it looks like it closes.
+
+> **`controlChannel` is what the RUNTIME says about its own remote-control
+> connection — never what the far end thinks (colab-fleet issue #48).** This
+> layer does not model bridges and should not; whether a far end is listening,
+> who owns it, whether it was archived elsewhere are all outside it. A runtime
+> describing its own connection is not: it is the same kind of self-report as
+> every other field here, and it is read the same way.
+>
+> It exists because that state is otherwise INVISIBLE. A dead control channel
+> raises no prompt, blocks nothing, and changes no status — the session sits at
+> an empty composer with a healthy status line and is, through every other
+> field, an ordinary live session. Measured: 37 of 67 sessions came back from a
+> fleet-wide recovery in exactly that state, and the supervisor that had to find
+> them read pane text instead, because nothing here carried it.
+>
+> **Absent never means connected** (§5.7). A runtime with no such channel
+> reports nothing, and so does a driver that cannot look; `observesControlChannel`
+> (§4.3) is the field that tells those two apart, and an unreached peer reports
+> it `assumed` rather than a bare false. It never rewrites `status`, unlike
+> `quota`: a session nothing outside can reach is still running and still able
+> to work, and folding one fact into the other is a precedence mistake this
+> specification has already made once.
+>
+> A driver reading this off a screen must read it from the runtime's own chrome
+> and not from the transcript. The transcript is whatever the agent chose to
+> print, and the measured consequence is specific: a supervisor grepping panes
+> for the disconnection notice classified ITSELF as disconnected, because its
+> own tool output contained the strings it was searching for.
 
 > **`QuotaBlock.since` and `TurnEnd.retryable`/`reason` are, where a driver
 > can manage it, sourced from the runtime's own durable record rather than
@@ -727,6 +760,7 @@ callers must degrade rather than assume:
 DriverCapabilities {
   observesState   : boolean   // can report status without inference
   deliversRawKeys : boolean   // can deliver a raw key event to a screen (§3 `keys`) and populate `screenDigest` (§2.3)
+  observesControlChannel: boolean // can report `controlChannel` (§2.3); absent state is answerable only against this
   confirmsDelivery: boolean   // can distinguish submitted from queued
   supportsResume  : boolean   // sessions survive a service restart
   supportsPin     : { model: boolean, effort: boolean, agent: boolean }

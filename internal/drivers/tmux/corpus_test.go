@@ -32,6 +32,16 @@ type corpusObservation struct {
 	Young bool `json:"young"`
 	// Want is the fleet.Status this observation must classify to.
 	Want string `json:"want"`
+	// WantControlChannel is the fleet.ControlChannelState this observation
+	// must report, or "none" to assert that it reports nothing at all.
+	//
+	// Optional, and absent means "this case does not speak to it" rather than
+	// "there is none" — the corpus should not start asserting a field for
+	// every case that never cared about it. It is here because the property
+	// #48 records cannot be expressed by Want alone: those 37 sessions
+	// classified to a perfectly correct `idle`, and the whole defect was the
+	// second fact nothing carried.
+	WantControlChannel string `json:"wantControlChannel,omitempty"`
 }
 
 // corpusCase is one testdata/corpus/<name>/case.json.
@@ -127,6 +137,21 @@ func TestCorpusReplaysToItsStatedState(t *testing.T) {
 			for i, obs := range c.Observations {
 				now := t0.Add(time.Duration(obs.AfterSeconds) * time.Second)
 				got, digest := classifyPaneRemembering(raw, true, c.Alive, obs.Young, prior, now)
+				if obs.WantControlChannel != "" {
+					switch {
+					case obs.WantControlChannel == "none":
+						if got.ControlChannel != nil {
+							t.Errorf("observation %d (t+%ds): control channel = %q, want none",
+								i, obs.AfterSeconds, got.ControlChannel.State)
+						}
+					case got.ControlChannel == nil:
+						t.Errorf("observation %d (t+%ds): control channel absent, want %q",
+							i, obs.AfterSeconds, obs.WantControlChannel)
+					case string(got.ControlChannel.State) != obs.WantControlChannel:
+						t.Errorf("observation %d (t+%ds): control channel = %q, want %q",
+							i, obs.AfterSeconds, got.ControlChannel.State, obs.WantControlChannel)
+					}
+				}
 				want := fleet.Status(obs.Want)
 				if got.Status != want {
 					t.Errorf("observation %d (t+%ds): status = %q, want %q (evidence: %s)",

@@ -1,0 +1,15 @@
+{
+  "name": "control-channel-failed-reads-healthy",
+  "for": "The whole of #48 in one screen: a session whose remote-control channel is DEAD classifies — correctly — as an ordinary healthy idle session. Status is not the defect and must not be 'fixed'; the defect was that nothing else was carried, so 37 of 67 sessions came back from a fleet-wide recovery indistinguishable from working ones and the only way to find them was to grep pane text. This case pins both halves at once: status stays idle, and the control channel is reported failed. A regression that dropped the channel field would leave this case's `want` passing, which is exactly why the second assertion exists.",
+  "source": "#48 (a fleet-wide recovery: 63 sessions lost at once, 67 rebuilt, 37 with no bridge)",
+  "redactedFrom": "CONSTRUCTED, not captured. The footer's label vocabulary is authoritative — read out of the runtime binary's own status-label function, which emits exactly `/rc active`, `/rc connecting…`, `/rc reconnecting`, `/rc failed` and nothing else. Its POSITION on the footer row is inferred from the incident's own capture, where the label appeared right-aligned on its own line, and has not been re-captured through this driver; the matcher is deliberately position-tolerant within the footer for that reason. A real capture is still owed and is filed separately.",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "idle",
+      "wantControlChannel": "failed"
+    }
+  ]
+}

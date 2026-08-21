@@ -260,6 +260,37 @@ type SessionState struct {
 	// unclassified — see WaitingReason.
 	WaitingOn WaitingReason `json:"waitingOn,omitempty"`
 
+	// ControlChannel is what the runtime says about its own remote-control
+	// connection, when it says anything (see ControlChannel).
+	//
+	// # Why a session-state field and not somebody else's problem
+	//
+	// A dead control channel raises no prompt, blocks nothing, and changes no
+	// status. The session sits at an empty composer with a healthy status line
+	// and reads, through every other field here, as an ordinary live session —
+	// which is precisely what it is, except that nothing outside the machine
+	// can reach it any more. Measured: 37 of 67 sessions came back from a
+	// fleet-wide recovery in that state and not one of them was distinguishable
+	// through this API.
+	//
+	// The supervisor that had to find them read pane text instead, and that is
+	// the cost worth naming. Grepping panes for a disconnection notice
+	// self-contaminates: the session doing the grepping printed the same
+	// strings into its own transcript and classified ITSELF as broken. A field
+	// read from the runtime's own status region is not forgeable that way,
+	// because the transcript is not where it is rendered.
+	//
+	// # Independent of Status, always
+	//
+	// It never rewrites Status, the way Quota legitimately does. A session with
+	// no control channel is still running, still holding its context, and still
+	// perfectly able to work — it simply cannot be driven from elsewhere. Those
+	// are different facts about different things, and folding one into the
+	// other is the precedence mistake #10's findings already named once.
+	//
+	// Nil is a real answer and never means "connected" — see ControlChannel.
+	ControlChannel *ControlChannel `json:"controlChannel,omitempty"`
+
 	// ScreenDigest fingerprints the whole screen this state was read from.
 	//
 	// It is the corroboration token for a RAW KEY (api-http.md §3.3, POST
@@ -416,6 +447,9 @@ func (s SessionState) MateriallyDiffers(other SessionState) bool {
 	if !sameTurnEnd(s.LastTurn, other.LastTurn) {
 		return true
 	}
+	if !sameControlChannel(s.ControlChannel, other.ControlChannel) {
+		return true
+	}
 	return !sameStamp(s.CredentialGeneration, other.CredentialGeneration)
 }
 
@@ -464,6 +498,22 @@ func sameTurnEnd(a, b *TurnEnd) bool {
 		return a == b
 	}
 	return a.Outcome == b.Outcome && a.Reason == b.Reason && a.Retryable == b.Retryable
+}
+
+// sameControlChannel compares what the runtime says about its own control
+// channel.
+//
+// Material, and it is the one field here whose materiality is the entire point:
+// a channel going down changes nothing else on this struct — same status, same
+// confidence, same composer, same prompt — so a feed that did not fire on it
+// would reproduce, one layer up, exactly the invisibility the field was added
+// to end. The recovery direction matters just as much: a supervisor never told
+// the channel came back goes on believing the session is unreachable.
+func sameControlChannel(a, b *ControlChannel) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.State == b.State
 }
 
 func sameStamp(a, b *Timestamp) bool {
