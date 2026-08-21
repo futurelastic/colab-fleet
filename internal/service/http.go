@@ -68,14 +68,14 @@ type Config struct {
 func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /v1/health", withAuth(cfg, handleHealth(svc)))
-	mux.HandleFunc("GET /v1/machines", withAuth(cfg, handleMachines(svc)))
-	mux.HandleFunc("GET /v1/runtimes", withAuth(cfg, handleRuntimes(svc)))
-	mux.HandleFunc("GET /v1/sessions", withAuth(cfg, handleListSessions(svc)))
-	mux.HandleFunc("GET /v1/sessions/watch", withAuth(cfg, handleWatchSessions(svc)))
+	mux.HandleFunc("GET /v1/health", withAuth(cfg, reading(handleHealth(svc))))
+	mux.HandleFunc("GET /v1/machines", withAuth(cfg, reading(handleMachines(svc))))
+	mux.HandleFunc("GET /v1/runtimes", withAuth(cfg, reading(handleRuntimes(svc))))
+	mux.HandleFunc("GET /v1/sessions", withAuth(cfg, reading(handleListSessions(svc))))
+	mux.HandleFunc("GET /v1/sessions/watch", withAuth(cfg, reading(handleWatchSessions(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions", withAuth(cfg, mutating(svc, cfg, handleCreateSession(svc))))
-	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}", withAuth(cfg, handleGetSession(svc)))
-	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}/environment", withAuth(cfg, handleSessionEnvironment(svc)))
+	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}", withAuth(cfg, reading(handleGetSession(svc))))
+	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}/environment", withAuth(cfg, reading(handleSessionEnvironment(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/input", withAuth(cfg, mutating(svc, cfg, handleSendInput(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/respond", withAuth(cfg, mutating(svc, cfg, handleRespond(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/interrupt", withAuth(cfg, mutating(svc, cfg, handleInterrupt(svc))))
@@ -83,7 +83,7 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/rename", withAuth(cfg, mutating(svc, cfg, handleRename(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/keys", withAuth(cfg, mutating(svc, cfg, handleKeys(svc))))
 	mux.HandleFunc("DELETE /v1/machines/{machine}/sessions/{id}", withAuth(cfg, mutating(svc, cfg, handleClose(svc))))
-	mux.HandleFunc("GET /v1/events", withAuth(cfg, handleEvents(svc)))
+	mux.HandleFunc("GET /v1/events", withAuth(cfg, reading(handleEvents(svc))))
 
 	return mux
 }
@@ -93,7 +93,13 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 // single shared secret appropriate to a small, statically-configured fleet
 // (§7.2); it is not a multi-tenant credential store, and this middleware
 // does not pretend otherwise. Per-peer, per-verb authorization (§6.3) is
-// future work once more than one peer identity exists to distinguish.
+// what Config.Principals implements below, once a deployment configures
+// more than one peer identity to distinguish — this function only
+// authenticates and resolves; mutating and reading are what consult a
+// resolved principal's grants (colab-fleet #80 found this comment had
+// drifted from the code it sits above: the "future work" it once was had
+// already landed for the mutating verbs by the time this was written, and
+// only the read half was still true).
 func withAuth(cfg Config, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if len(cfg.Principals) > 0 {
@@ -181,6 +187,60 @@ func mutating(svc *Service, cfg Config, next http.HandlerFunc) http.HandlerFunc 
 		}
 		if !allowed {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorUnauthorized, Message: why, Machine: target})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// reading gates every read route behind Config.Principals' read grant (§6)
+// — the read-side counterpart mutating already provides for every mutating
+// verb (colab-fleet #80). Before this existed, grantForVerb's own GrantRead
+// answer for a GET was computed by nothing and consulted by nothing:
+// withAuth resolved a principal and asked no further question, so any
+// authenticated principal — a janitor scoped to one narrow mutating grant,
+// or one holding no grants at all — could still list every session on
+// every configured peer, read every working directory, and subscribe to
+// the full event stream. Not exploitable (every route still needs a valid
+// bearer token; there is no unauthenticated mode), but the least-privilege
+// model the principal table exists to provide was not enforced on its read
+// half, and an operator reading the spec would reasonably believe it was.
+//
+// Deliberately NOT mutating()'s relay-target upgrade: a fleet-scoped read,
+// or one explicitly naming a peer machine, needs only GrantRead here,
+// regardless of target. Whether reading a peer's sessions through this
+// service should also cost the relay grant — mutating()'s own argument,
+// pointed at reads — is a decision this fix does not make: measured before
+// deciding, more than one principal relied on for a fleet-wide read today
+// holds read but not relay, and that call is how the surface most people
+// watch this fleet through gets its view. Bundling relay into this check
+// would silently break it. Filed separately with that measurement
+// (colab-fleet #81) rather than decided here as a side effect of closing a
+// defence-in-depth gap.
+//
+// A no-op when no principal table is configured. The legacy single-token
+// model's read side has no equivalent gate BY DESIGN — AllowLocalMutations'
+// own doc comment states it plainly: "reads may be granted broadly,
+// mutations are opt-in" — and this wrapper leaves that model exactly as it
+// was; it only ever has something to check once principalOf resolves.
+func reading(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalOf(r)
+		if !ok {
+			next(w, r)
+			return
+		}
+		if !p.Allows(GrantRead) {
+			target := fleet.MachineId(r.PathValue("machine"))
+			logDenied(p, GrantRead, target, r)
+			writeError(w, &fleet.Error{
+				Kind: fleet.ErrorUnauthorized,
+				Message: "principal " + p.Name + " does not hold the read grant (§6). " +
+					"Every grant defaults to denied, on a fresh deployment as much as an " +
+					"established one — this is expected until an operator adds read to " +
+					"this principal's grants, not a bug.",
+				Machine: target,
+			})
 			return
 		}
 		next(w, r)

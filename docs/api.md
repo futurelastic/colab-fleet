@@ -26,16 +26,16 @@ to denied. Without a principal table the service runs in single-token mode and
 two booleans stand in: mutations against local sessions, and relaying mutations
 to a peer.
 
-> ⚠️ **`read` is not currently enforced.** Grants are checked only on the
-> mutating routes. Every read endpoint in the table below is reachable by any
-> authenticated principal regardless of its grant list, including reads relayed
-> to a peer. Treat the token as the read boundary, not the grant. Tracked as a
-> defect; the specification describes the intended behaviour, not today's.
-
 **Relaying.** A mutation aimed at a machine other than the one you are talking
 to requires the `relay` grant on the service you called *and* the verb grant on
 the machine that actually performs it. Those are two separate refusals and you
 will meet them one at a time.
+
+> A read aimed at a peer — a fleet-scoped listing, or a path naming another
+> machine — needs only `read` today, on the same principal table, whether the
+> target is local or a peer. Whether it should *also* cost `relay`, the way a
+> relayed mutation does, is an open question rather than an oversight — see
+> the known gaps below.
 
 **Deadlines.** `Fleet-Deadline-Ms: <ms>` on any request. A caller may only
 shorten a driver's declared deadline, never extend it.
@@ -339,8 +339,9 @@ service, or this service has begun growing into a second supervisor.
 Recorded rather than smoothed over, because a reference that quietly disagrees
 with the implementation is worse than one that admits where it does.
 
-- **`read` is defined and documented but never checked.** See the warning at the
-  top.
+- **Whether a peer-targeted read should also require `relay`** is undecided
+  (filed separately from the fix that closed the underlying gap). Today a read
+  needs only `read`, local or relayed, the same principal table either way.
 - **`GET /v1/sessions?machine=`** appears in the specification. The filter has no
   such field; the parameter is silently ignored. Use `scope` and filter
   client-side.

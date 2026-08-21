@@ -69,6 +69,48 @@ func TestGrantsAreCheckedPerVerbPerPrincipal(t *testing.T) {
 	}
 }
 
+// #80: the gap itself, and the test every other grant test in this file
+// happened to leave unwritten by always handing the test principal `read`
+// alongside whatever grant was under test. A principal scoped to a single
+// mutating verb — never `read` — must not be able to list sessions,
+// read a session's state, or subscribe to the event stream, on any peer or
+// none: reads were reachable by any authenticated principal regardless of
+// its grants until this was checked at all.
+func TestReadRequiresItsOwnGrant(t *testing.T) {
+	srv := principalSrv(t, []Principal{
+		{Name: "sender-only", Token: "tok-send", Grants: []Grant{GrantSend}},
+		{Name: "no-grants", Token: "tok-none"},
+		{Name: "watcher", Token: "tok-watch", Grants: []Grant{GrantRead}},
+	})
+	denied := func(c int) bool { return c == 401 || c == 403 }
+
+	reads := []struct{ method, path string }{
+		{http.MethodGet, "/v1/health"},
+		{http.MethodGet, "/v1/machines"},
+		{http.MethodGet, "/v1/runtimes"},
+		{http.MethodGet, "/v1/sessions"},
+		{http.MethodGet, "/v1/sessions/watch?wait=0"}, // wait=0 only arms the feed; never blocks
+		{http.MethodGet, "/v1/machines/testbox/sessions/s1"},
+		{http.MethodGet, "/v1/machines/testbox/sessions/s1/environment"},
+		{http.MethodGet, "/v1/events"},
+		// A fleet-scoped read reaching a peer must be refused on `read`
+		// alone here too — this is deliberately NOT testing whether it
+		// should ALSO need `relay` (colab-fleet #81, undecided on purpose).
+		{http.MethodGet, "/v1/machines/otherbox/sessions/s1"},
+	}
+	for _, r := range reads {
+		if !denied(call(t, srv, r.method, r.path, "tok-send")) {
+			t.Errorf("%s %s: a principal holding send but not read was allowed to read", r.method, r.path)
+		}
+		if !denied(call(t, srv, r.method, r.path, "tok-none")) {
+			t.Errorf("%s %s: a principal with no grants at all was allowed to read", r.method, r.path)
+		}
+		if denied(call(t, srv, r.method, r.path, "tok-watch")) {
+			t.Errorf("%s %s: a principal holding read was refused", r.method, r.path)
+		}
+	}
+}
+
 // An unrecognised credential is unauthorized, and says nothing about which
 // part was wrong.
 func TestUnknownCredentialIsRefused(t *testing.T) {
