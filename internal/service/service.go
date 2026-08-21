@@ -486,21 +486,31 @@ func (s *Service) ListRuntimes(ctx context.Context) (fleet.Collection[fleet.Runt
 	// why this endpoint can stay cheap.
 	for m, d := range peers {
 		caps := d.Capabilities()
-		// The peer names its runtime in the same row this driver learned its
-		// capabilities from; reporting "" was a placeholder nobody removed.
-		// Empty remains possible and remains honest — it means the peer has
-		// not answered yet, which the row's `source: assumed` also says.
 		var rt fleet.RuntimeId
 		if r, ok := d.(interface{ Runtime() fleet.RuntimeId }); ok {
 			rt = r.Runtime()
 		}
-		items = append(items, fleet.RuntimeInfo{Machine: m, Runtime: rt, Capabilities: caps})
 		st := fleet.SourceOK
 		if caps.Source != fleet.CapabilitiesObserved {
 			// Nothing was reached to produce this row. §5.7: that is not
 			// the same as a peer that answered, and the envelope must not
 			// present it as one.
 			st = fleet.SourceDegraded
+		}
+		// colab-fleet #67: the fallback row for a peer nobody has heard
+		// from — `source: assumed` with no runtime learned yet — used to be
+		// reported anyway, empty runtime id and all, as a placeholder
+		// nobody removed. That is the one option that misleads a client
+		// keying its capability table by (machine, runtime): it reads as a
+		// runtime literally named "" on that machine, rather than as "no
+		// runtime known there yet". The degraded SourceStatus below already
+		// says "nothing is known" about this peer; omitting the item row
+		// instead of naming a runtime that was never learned is the option
+		// that does not invent a fact. A peer that HAS answered but
+		// happens to report an empty runtime id is a different, genuine
+		// case this endpoint has no basis to hide.
+		if rt != "" || st == fleet.SourceOK {
+			items = append(items, fleet.RuntimeInfo{Machine: m, Runtime: rt, Capabilities: caps})
 		}
 		sources = append(sources, fleet.SourceStatus{
 			Machine: m, Status: st, ObservedAt: now,

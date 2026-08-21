@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -558,6 +559,112 @@ func TestRefreshCapabilitiesAdoptsWhatThePeerReports(t *testing.T) {
 	}
 	if caps.ObservesState {
 		t.Error("invented a capability the peer did not declare")
+	}
+}
+
+// colab-fleet #67, ask #1 ("the safety half"): a cached `observed` describes
+// the peer as it was the moment it answered. Measured directly — a peer
+// upgraded seconds after being probed kept reading `observed` and wrong for
+// as long as the observing process happened to run, which under a
+// keep-alive supervisor is unbounded in practice. Past capabilityStaleness
+// the claim must degrade to `assumed` on every read, not just eventually.
+func TestObservedCapabilityDegradesToAssumedPastStaleness(t *testing.T) {
+	runtimes := map[string]any{
+		"items": []fleet.RuntimeInfo{{
+			Machine: "peerbox", Runtime: "claude-code-tmux",
+			Capabilities: fleet.DriverCapabilities{
+				DeliversRawKeys: true, DeadlineMs: 5000,
+				Source: fleet.CapabilitiesObserved,
+			},
+		}},
+		"sources":  []fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
+		"complete": true,
+	}
+	srv := peerServing(t, 200, runtimes, nil)
+
+	now := time.Now()
+	d := New("peerbox", srv.URL, withClock(func() time.Time { return now }))
+	if err := d.RefreshCapabilities(context.Background(), caller); err != nil {
+		t.Fatal(err)
+	}
+	if caps := d.Capabilities(); caps.Source != fleet.CapabilitiesObserved {
+		t.Fatalf("source = %q right after a fresh probe, want observed", caps.Source)
+	}
+
+	now = now.Add(capabilityStaleness + time.Second)
+	caps := d.Capabilities()
+	if caps.Source != fleet.CapabilitiesAssumed {
+		t.Errorf("source = %q after %s with no fresh contact, want assumed — "+
+			"a wrong observed is worse than a stale assumed (#67)", caps.Source, capabilityStaleness)
+	}
+	if caps.DeliversRawKeys {
+		t.Error("a degraded declaration must read as a conservative floor, " +
+			"not as the stale flags it can no longer stand behind")
+	}
+}
+
+// colab-fleet #67, ask #4 (the sharpened one, replacing a time-based
+// schedule): "probe on first successful contact, not only at startup."
+// Measured directly — a peer restarted, its capabilities never populated,
+// and a full round of successful relayed traffic (create, keypress, two
+// refusals, close) never changed that. An ordinary List reaching the peer
+// and getting a domain answer back must trigger the same opportunistic
+// refresh.
+func TestSuccessfulContactRefreshesNeverObservedCapabilities(t *testing.T) {
+	var mu sync.Mutex
+	var runtimesHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/runtimes":
+			mu.Lock()
+			runtimesHits++
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []fleet.RuntimeInfo{{
+					Machine: "peerbox", Runtime: "claude-code-tmux",
+					Capabilities: fleet.DriverCapabilities{
+						SupportsResume: true, DeadlineMs: 5000,
+						Source: fleet.CapabilitiesObserved,
+					},
+				}},
+				"sources":  []fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
+				"complete": true,
+			})
+		case "/v1/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"build": fleet.Build{}})
+		default:
+			_ = json.NewEncoder(w).Encode(collectionJSON(
+				[]fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}}, nil))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	d := New("peerbox", srv.URL)
+	if d.CapabilitiesKnown() {
+		t.Fatal("fixture drifted; capabilities must start unknown")
+	}
+
+	if _, err := d.List(context.Background(), caller, driver.ListFilter{}); err != nil {
+		t.Fatal(err)
+	}
+
+	waitUntil := time.Now().Add(2 * time.Second)
+	for !d.CapabilitiesKnown() && time.Now().Before(waitUntil) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !d.CapabilitiesKnown() {
+		t.Fatal("an ordinary List that reached the peer should have opportunistically " +
+			"refreshed capabilities instead of leaving them assumed forever (#67)")
+	}
+	if !d.Capabilities().SupportsResume {
+		t.Error("refreshed capabilities did not adopt what the peer reported")
+	}
+	mu.Lock()
+	hits := runtimesHits
+	mu.Unlock()
+	if hits == 0 {
+		t.Error("expected the successful List to have triggered a probe of /v1/runtimes")
 	}
 }
 

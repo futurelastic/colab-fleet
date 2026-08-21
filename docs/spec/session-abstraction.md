@@ -818,6 +818,30 @@ A caller acting on a capability **must** consult `source`. Reading `assumed`
 values as an answer is how a temporarily unreachable peer gets treated as a
 permanently incapable one.
 
+**A cached `observed` still has a shelf life, enforced by the driver itself
+rather than left entirely to the caller (colab-fleet #67).** The remote
+driver's cache was found surviving a peer restart for as long as the
+observing process happened to run — under a keep-alive supervisor, that is
+weeks — still reporting `observed`, still wrong. Past a bounded window with
+no fresh evidence, the remote driver degrades its own cache to `assumed`
+rather than let `observedAt`'s age be the only thing standing between a
+caller and a stale claim nobody re-checked. This does not contradict the
+paragraph above: `observedAt` still travels on the wire for a caller with its
+own, possibly stricter, notion of "too old"; the driver's bound is a
+backstop for callers who only look at `source`, which is most of them,
+including this repo's own capability-gated resolution.
+
+**That degrade is paired with a re-probe triggered by ordinary traffic, not
+a schedule.** Every session operation the remote driver relays already
+reaches the peer and gets a domain answer back — a create, a keypress, even
+a guarded refusal. That answer is proof the peer is up and speaking the
+protocol right now, and is used to opportunistically refresh the cached
+capabilities when they are unseen or past the bound above, rather than
+waiting for something to probe on a timer nobody is driving. A peer that
+never receives an operation still degrades to `assumed` on the schedule
+above; a peer under real traffic reconverges for free, off the round trips
+that were happening anyway.
+
 A driver must never silently emulate a capability it lacks.
 
 > **Partly resolved (D3).** `source` now separates "nobody has told me" from
@@ -1509,6 +1533,24 @@ proxy uses a floor it has no reason to believe.
 - **Proposed fix:** capability discovery becomes an operation like any other
   cross-machine question — fallible, context-taking, and refreshable — rather
   than a property read.
+
+**Narrowed further (colab-fleet #67).** "Something out of band must populate
+it" turned out to mean, in practice, "exactly once, at peer registration,
+never again" — a gap the type could not express and nothing was closing. Two
+measured bad states followed from that: a cache correctly labelled `observed`
+at startup stayed labelled `observed` after the peer it describes restarted
+onto different code; and, separately, a cache that missed at startup stayed
+`assumed` through an entire successful session's worth of relayed traffic,
+never once re-asked. Both are now bounded rather than open-ended: `source`
+degrades on its own past a fixed staleness window (closing the first), and
+every ordinary operation that reaches the peer opportunistically re-probes
+capabilities that are unseen or past that window (closing the second, and in
+the common case pre-empting the first). See Appendix A, F58.
+
+The proposed fix above is not this — capability discovery is still a cached
+property read, not a fallible, context-taking operation a caller can invoke
+directly. What changed is what *drives* the cache: ordinary traffic now
+does, where before only a single startup call did.
 
 ### D4 — `subscribe`'s filter cannot name a session · §5.5 — **RESOLVED**
 
@@ -2881,6 +2923,49 @@ on a fleet where nothing was happening.
 > **When a consumer must ask to find out, the answer arrives after the cost.**
 > A fact worth acting on is worth pushing — and reporting it accurately N times
 > is not the same as telling someone once.
+
+**F58 · A capability answer correctly labelled `observed` at the moment it was
+cached stayed labelled `observed` forever, because nothing ever asked again.**
+D3 (§4.3) fixed the label separating "nobody has told me" from "supports
+nothing" — but `source: observed` only asserts that the driver these
+capabilities describe reported them *at some point*, and the remote driver's
+one and only probe ran at peer registration. Under a keep-alive supervisor
+that process lives for weeks, so the assertion's actual shelf life was "until
+someone happens to restart the machine reading it" — unbounded in practice,
+and the wrong machine to look at besides: the workaround is a restart of the
+*observer*, which is right about itself and wrong about its peer, not of the
+peer everyone would think to check first.
+
+Two bad states came out of the same root cause, reproduced on purpose rather
+than found by accident:
+
+- A capability-adding release, deployed peer-second per the documented order,
+  leaves the peer that upgraded *first* describing the second one exactly as
+  it was before the release — `observed`, and inverted on both flags that
+  gate behaviour.
+- Restarting the observer *after* the peer had already upgraded produces the
+  opposite failure: capabilities never populate at all, labelled `assumed`
+  honestly, and — this is the part that would not have been guessed — that
+  never converges. A create (`201`), a keypress (`200`), two guarded refusals
+  (`409`) and a close (`202`) all reached the peer's driver and came back
+  with a domain answer in between, and not one of them touched the cache.
+
+The instinct the first bad state suggests — schedule a re-probe — turned out
+to be the wrong fix to reach for. What resolves both bad states is not a
+timer nobody would tune correctly anyway, but the fact already sitting in
+every one of those five successful calls: **an ordinary verb that returns a
+domain answer is proof of exactly what a capability probe is trying to
+establish**, obtained for the cost of a request that was going to be made
+regardless. The fix piggybacks on it — refresh when the cache is unseen or
+past a bounded age, off the back of whatever operation a caller happened to
+send — and adds a synchronous degrade to `assumed` past that same bound, so
+the first bad state cannot recur even in the gap before a refresh completes.
+
+> **An `observed` label answers "did anyone ever tell me," not "is this still
+> true."** The two questions coincide at the moment of observation and
+> silently diverge afterward, for exactly as long as the cache lives — which,
+> for a value nothing ever re-checks, is the life of the process. A label
+> that means the first thing will eventually be read as meaning the second.
 
 ### The pattern worth naming
 

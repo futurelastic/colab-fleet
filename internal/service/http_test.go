@@ -542,6 +542,80 @@ func TestRuntimesIncludesPeersAndMarksUnconfirmedOnes(t *testing.T) {
 	}
 }
 
+// peerCapsDriver is a peer whose Capabilities() and Runtime() are scripted
+// directly, so ListRuntimes's fallback-row decision (colab-fleet #67) can be
+// exercised without standing up a real remote.Driver and HTTP peer.
+type peerCapsDriver struct {
+	stub.Driver
+	caps    fleet.DriverCapabilities
+	runtime fleet.RuntimeId
+}
+
+func (p *peerCapsDriver) Capabilities() fleet.DriverCapabilities { return p.caps }
+func (p *peerCapsDriver) Runtime() fleet.RuntimeId               { return p.runtime }
+
+// colab-fleet #67: the fallback row for a peer nobody has heard from —
+// `source: assumed`, no runtime learned yet — used to be reported anyway
+// under an empty runtime id, which is the one option that misleads a client
+// keying its capability table by (machine, runtime): it reads as a runtime
+// literally named "" on that machine rather than as "nothing known here
+// yet". It must not appear as an item row; the peer still contributes a
+// degraded SourceStatus, so a caller polling this endpoint can see it exists.
+func TestRuntimesOmitsTheEmptyRuntimeFallbackRow(t *testing.T) {
+	svc := New("testbox")
+	if err := svc.RegisterPeerDriver("otherbox", &peerCapsDriver{
+		caps: fleet.DriverCapabilities{DeadlineMs: 3000, Source: fleet.CapabilitiesAssumed},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	col, err := svc.ListRuntimes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range col.Items() {
+		if it.Machine == "otherbox" {
+			t.Fatalf("an assumed peer with no runtime learned yet should not appear as an item row, got %+v", it)
+		}
+	}
+	var peerSrc *fleet.SourceStatus
+	for i := range col.Sources() {
+		if col.Sources()[i].Machine == "otherbox" {
+			peerSrc = &col.Sources()[i]
+		}
+	}
+	if peerSrc == nil {
+		t.Fatal("peer contributed no SourceStatus; a caller polling this endpoint should still see it exists")
+	}
+	if peerSrc.Status != fleet.SourceDegraded {
+		t.Errorf("status = %v, want degraded", peerSrc.Status)
+	}
+}
+
+// The omission above is specific to the unconfirmed+unnamed combination. A
+// peer that has genuinely answered and happens to report no runtime name is
+// a different, real case this endpoint has no basis to hide.
+func TestRuntimesKeepsAnObservedRowEvenWithNoRuntimeName(t *testing.T) {
+	svc := New("testbox")
+	if err := svc.RegisterPeerDriver("otherbox", &peerCapsDriver{
+		caps: fleet.DriverCapabilities{DeadlineMs: 3000, Source: fleet.CapabilitiesObserved},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	col, err := svc.ListRuntimes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saw bool
+	for _, it := range col.Items() {
+		if it.Machine == "otherbox" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatal("a peer that genuinely answered should not be hidden merely for naming no runtime")
+	}
+}
+
 // api-http.md §3.3 says a single-session read returns cwd, agent, model and
 // startedAt. It returned only id and state — and startedAt is what a caller
 // quotes back to make a destroy corroborable (§5.4), so the strong guarantee

@@ -95,6 +95,23 @@ import (
 
 const defaultDeadlineMs = 3000
 
+// capabilityStaleness bounds how long a cached, previously-`observed`
+// capability declaration may still be reported as `observed` without fresh
+// evidence from the peer it describes (colab-fleet #67).
+//
+// Nothing before this bound existed: RefreshCapabilities ran exactly once,
+// at peer registration, and never again for the life of the process — which
+// under a keep-alive supervisor is weeks. Measured directly: restart a peer
+// onto a capability-adding revision and the observer's cached answer stays
+// labelled `observed` and wrong for as long as it happens to run. That is
+// the worse of #67's two bad states — a stale claim that does not admit to
+// being stale — so it gets a hard ceiling rather than staying unbounded.
+// Capabilities degrades its own answer to `assumed` past this bound (the
+// "or degrade the label" half of #67's ask #1); noteSuccessfulContact is
+// the "re-probe" half, and in practice keeps a driver seeing any traffic
+// well under the ceiling.
+const capabilityStaleness = 5 * time.Minute
+
 // ErrNoCallerAuthority is returned when an operation arrives with no
 // credential to present to the peer. Every operation checks it, reads
 // included: this driver has no credential of its own to substitute, so an
@@ -137,6 +154,10 @@ type Driver struct {
 	mu       sync.RWMutex
 	caps     fleet.DriverCapabilities
 	capsSeen bool
+	// refreshing is true while a capability probe triggered by
+	// noteSuccessfulContact is in flight, so a burst of concurrent traffic
+	// triggers at most one probe rather than one per call.
+	refreshing bool
 	// runtime is the peer's own runtime id, learned on the same probe as
 	// caps. Empty until the peer has answered — which is honest, and is
 	// distinguishable because the cached capabilities say `assumed` in
@@ -285,6 +306,26 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 		// an all-false declaration alone cannot express.
 		return caps.Assumed()
 	}
+	// A cached `observed` is a claim about the peer AS IT WAS the moment it
+	// answered. Past capabilityStaleness that claim can no longer be
+	// attributed to whatever the peer is currently running — it may have
+	// restarted onto a different build any time since — so it degrades
+	// rather than keep asserting an observation that may no longer hold
+	// (colab-fleet #67, ask #1: "a wrong `observed` is worse than a stale
+	// `assumed`"). This check runs on every read, so the degrade is not
+	// contingent on a background refresh having noticed first.
+	//
+	// The degraded value is a genuine conservative floor — every flag
+	// false, same as an unreached peer — rather than the stale flags
+	// relabelled. `source: assumed` already tells a caller not to trust
+	// these flags as an answer, but leaving true values sitting there
+	// under that label is still a claim this driver has no evidence for
+	// any more; a floor is the only value it can still stand behind.
+	if caps.ObservedAt != nil && d.now().Sub(*caps.ObservedAt) > capabilityStaleness {
+		var floor fleet.DriverCapabilities
+		floor.DeadlineMs = caps.DeadlineMs
+		return floor.Assumed()
+	}
 	return caps
 }
 
@@ -355,6 +396,55 @@ func (d *Driver) peerBuild(ctx context.Context, req fleet.Request) (fleet.Build,
 		return fleet.Build{}, err
 	}
 	return body.Build, nil
+}
+
+// noteSuccessfulContact opportunistically re-probes this peer's capabilities
+// off the back of an ordinary operation that just reached it and got a
+// domain answer back — colab-fleet #67's sharpened ask, which replaces a
+// time-based schedule nobody was driving: "probe on first successful
+// contact, not only at startup." An ordinary verb succeeding — a create, a
+// keypress, even a guarded refusal — is proof the peer is up and speaking
+// the protocol, and this is the cheapest moment to use that proof: the round
+// trip already happened.
+//
+// Two situations warrant a refresh, and both are #67's reported bad states:
+//
+//   - capabilities have never been observed (capsSeen is false): the peer
+//     may have been down, or on an older build, the one time this driver
+//     probed it at startup, and nothing has asked again since. #67 measured
+//     this surviving a full round of successful relayed traffic — a create,
+//     a keypress, two refusals, a close — none of which populated the
+//     record.
+//   - the cached observation is older than capabilityStaleness: still
+//     usable, but old enough that Capabilities() has already started
+//     degrading it to `assumed` on read (see above); refreshing it is what
+//     lets `observed` come back rather than staying degraded indefinitely.
+//
+// Runs in its own goroutine against its own bounded context: the operation
+// that discovered the staleness must not wait on the probe it triggers, and
+// must not hand the probe a context this call is about to cancel on return.
+// The refreshing flag keeps concurrent traffic to one in-flight probe.
+func (d *Driver) noteSuccessfulContact(req fleet.Request) {
+	d.mu.Lock()
+	stale := !d.capsSeen || d.caps.ObservedAt == nil ||
+		d.now().Sub(*d.caps.ObservedAt) > capabilityStaleness
+	if !stale || d.refreshing {
+		d.mu.Unlock()
+		return
+	}
+	d.refreshing = true
+	d.mu.Unlock()
+
+	go func() {
+		defer func() {
+			d.mu.Lock()
+			d.refreshing = false
+			d.mu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), d.deadline)
+		defer cancel()
+		_ = d.RefreshCapabilities(ctx, req)
+	}()
 }
 
 // Runtime reports the peer's runtime id, empty until the peer has answered.
@@ -450,6 +540,15 @@ func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string,
 		}
 	}
 	defer resp.Body.Close()
+
+	// A response is a domain answer, whatever the status: the peer is up
+	// and speaking the protocol (colab-fleet #67). Excluded here are the two
+	// paths capability discovery itself uses — RefreshCapabilities and
+	// peerBuild — so a probe triggered below does not immediately trigger
+	// another one recursively.
+	if path != "/v1/runtimes" && path != "/v1/health" {
+		d.noteSuccessfulContact(req)
+	}
 
 	if resp.StatusCode >= 400 {
 		return decodeError(resp, d.machine)
@@ -715,6 +814,13 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 		}
 	}
 	defer resp.Body.Close()
+
+	// Same reasoning as do(): a response, whatever the status, is a domain
+	// answer and proof the peer is up (colab-fleet #67). doWithKey's only
+	// caller is Create, never a capability-discovery path, so no exclusion
+	// is needed here.
+	d.noteSuccessfulContact(req)
+
 	if resp.StatusCode >= 400 {
 		return decodeError(resp, d.machine)
 	}
