@@ -2075,6 +2075,28 @@ func claudeCodeCommand(spec fleet.SessionSpec, contextFile string) []string {
 	if spec.Resume != "" && safeArgvValue(string(spec.Resume)) {
 		argv = append(argv, "--resume", spec.Resume)
 	}
+	// # Resuming pins the bridge the transcript remembers (#48)
+	//
+	// `--resume` and `--remote-control` interact in a way that only shows up
+	// after something invalidates control channels fleet-wide. The transcript
+	// records the channel id the session was bound to; resuming it makes the
+	// runtime retry THAT id rather than mint a new one. If the id was orphaned
+	// — a multiplexer death, a machine restart, anything that ends the old
+	// worker — the retry can fail, and a session that resumed its conversation
+	// perfectly comes back unreachable from outside.
+	//
+	// Measured: 63 sessions lost at once, 67 rebuilt with resume plus a
+	// remote-control binding, 37 with no live channel. Retrying by hand
+	// recovered 25 of them; 12 were refused permanently, the server having
+	// archived the session — and for those the only way to mint a new channel
+	// is to start WITHOUT `--resume`, which costs the conversation.
+	//
+	// Nothing here can prevent that; the trade is the caller's. What this
+	// driver now does is stop hiding it: the runtime's own view of the channel
+	// is reported as SessionState.ControlChannel (controlchannel.go), so a
+	// supervisor can find the affected sessions by reading state instead of
+	// grepping panes.
+	//
 	// Nil means "whatever a first-class session gets", which on this
 	// substrate is enabled — an unaware caller must not silently receive the
 	// second-class shape. Only an explicit false opts out.
