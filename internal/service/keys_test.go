@@ -160,6 +160,39 @@ func TestKeys_IsItsOwnGrantAndNotImpliedBySend(t *testing.T) {
 	}
 }
 
+// colab-fleet #68: a fresh deployment refuses every keypress until an
+// operator explicitly grants `keys` — expected, since every grant defaults
+// to denied, but the refusal used to say only what was missing, not that
+// missing it is the normal state of an unconfigured principal. Measured
+// consequence: a caller reads `deliversRawKeys: true`, gets refused, and
+// reasonably concludes the endpoint is not ready rather than that a setup
+// step was skipped. The refusal now says so.
+func TestKeys_RefusalSaysTheGrantIsDeniedByDefault(t *testing.T) {
+	svc := New("testbox")
+	d := &keySender{Driver: stub.Driver{DeadlineMs: 1000}}
+	if err := svc.RegisterLocalDriver("fake", d); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewMux(svc, Config{
+		Token: testToken,
+		Principals: []Principal{
+			{Name: "bare", Token: "tok-bare", Grants: []Grant{GrantRead}},
+		},
+	}))
+	defer srv.Close()
+
+	resp := keyRequest(t, srv, "tok-bare", `{"key":"Enter"}`, "?expect=abc")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "denied") || !strings.Contains(string(body), "not a bug") {
+		t.Errorf("refusal did not say the grant defaults to denied and that this is "+
+			"expected rather than a bug (#68): %s", body)
+	}
+}
+
 // A refusal from the driver is a 200 carrying an outcome, exactly as for input
 // and respond. Mapping it to 4xx would train a client to retry a keypress the
 // driver deliberately declined to make.

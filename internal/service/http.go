@@ -154,7 +154,10 @@ func mutating(svc *Service, cfg Config, next http.HandlerFunc) http.HandlerFunc 
 				writeError(w, &fleet.Error{
 					Kind: fleet.ErrorUnauthorized,
 					Message: "principal " + p.Name + " does not hold the " +
-						string(need) + " grant (§6)",
+						string(need) + " grant (§6). Every grant defaults to " +
+						"denied, on a fresh deployment as much as an established " +
+						"one — this is expected until an operator adds " +
+						string(need) + " to this principal's grants, not a bug.",
 					Machine: target,
 				})
 				return

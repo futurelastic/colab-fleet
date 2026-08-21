@@ -22,8 +22,8 @@
 #
 # USAGE
 #
-#   scripts/deploy.sh HOST [REMOTE_PATH]
-#   scripts/deploy.sh local [REMOTE_PATH]
+#   scripts/deploy.sh HOST REMOTE_PATH
+#   scripts/deploy.sh local REMOTE_PATH
 #
 #   HOST          ssh destination, as your ssh config understands it, or the
 #                 literal word "local" to deploy to the machine you are
@@ -31,7 +31,17 @@
 #                 identical, including the read-back at the end. This is the
 #                 ordinary case: the machine most likely to need a deploy is
 #                 the one this session is already running on.
-#   REMOTE_PATH   where the binary lands. Default: ~/bin/colab-fleetd
+#   REMOTE_PATH   where the binary lands. Required — colab-fleet issue #66:
+#                 an earlier default of ~/bin/colab-fleetd did not match what
+#                 the service manager on either machine actually execs, so a
+#                 deploy could install a correct, freshly-stamped binary to a
+#                 path nothing runs, restart the service onto the OLD one,
+#                 and report FAILED with a message that pointed at
+#                 FLEET_RESTART — the one thing that was actually right. That
+#                 failure is indistinguishable from the one this script
+#                 exists to prevent (two machines silently running different
+#                 builds), so it joins FLEET_RESTART and FLEET_HEALTH_URL
+#                 below: an operational fact this script will not guess.
 #
 # Environment:
 #   GOOS, GOARCH        target platform. Defaults to the remote host's own,
@@ -56,11 +66,15 @@
 set -eu
 
 HOST=${1:-}
-REMOTE_PATH=${2:-'~/bin/colab-fleetd'}
+REMOTE_PATH=${2:-}
 
-if [ -z "$HOST" ]; then
-	echo "usage: scripts/deploy.sh HOST [REMOTE_PATH]" >&2
-	echo "       scripts/deploy.sh local [REMOTE_PATH]" >&2
+if [ -z "$HOST" ] || [ -z "$REMOTE_PATH" ]; then
+	echo "usage: scripts/deploy.sh HOST REMOTE_PATH" >&2
+	echo "       scripts/deploy.sh local REMOTE_PATH" >&2
+	echo "" >&2
+	echo "REMOTE_PATH is required (colab-fleet #66) — it must match what the" >&2
+	echo "service manager on that machine execs, and this script has no way" >&2
+	echo "to know that on your behalf." >&2
 	exit 2
 fi
 
@@ -163,9 +177,27 @@ fi
 
 echo "deploy: verifying"
 i=0
+RUNNING=""
+STATUS=""
+BODY=""
 while [ "$i" -lt 10 ]; do
-	RUNNING=$(run "curl -fsS -H \"Authorization: Bearer \$(cat ~/.config/colab-fleet/token)\" ${FLEET_HEALTH_URL}" 2>/dev/null |
-		tr ',' '\n' | sed -n 's/.*"revision":"\([^"]*\)".*/\1/p' | head -1) || true
+	# No -f: colab-fleet #66 found a health URL pointing at the WRONG
+	# service (a stray port, an unrelated server on the same host) producing
+	# a near-identical FAILED to a service that never came back up — because
+	# -f discards the body on any non-2xx status, so a 403 from something
+	# else entirely looked exactly like no answer at all. The status rides
+	# along on its own trailing line so it survives whatever shape the body
+	# is, and both are kept for the diagnostic below regardless of status.
+	RAW=$(run "curl -sS -w '\\n%{http_code}' -H \"Authorization: Bearer \$(cat ~/.config/colab-fleet/token)\" ${FLEET_HEALTH_URL}" 2>/dev/null) && CURL_OK=1 || CURL_OK=0
+	if [ "$CURL_OK" = "1" ]; then
+		STATUS=$(printf '%s\n' "$RAW" | tail -n1)
+		BODY=$(printf '%s\n' "$RAW" | sed '$d')
+		RUNNING=$(printf '%s\n' "$BODY" | tr ',' '\n' | sed -n 's/.*"revision":"\([^"]*\)".*/\1/p' | head -1)
+	else
+		STATUS=""
+		BODY=""
+		RUNNING=""
+	fi
 	if [ -n "$RUNNING" ]; then
 		break
 	fi
@@ -174,9 +206,21 @@ while [ "$i" -lt 10 ]; do
 done
 
 if [ -z "$RUNNING" ]; then
-	echo "deploy: FAILED to read a build identity from the running service." >&2
-	echo "        Either it did not come back up, or it is running a binary" >&2
-	echo "        old enough not to report one — which is itself the problem." >&2
+	if [ -n "$STATUS" ]; then
+		# Reached SOMETHING, and it did not report a build identity. #66:
+		# this is not "it did not come back up" — the connection itself
+		# worked — so say what actually answered instead of the one
+		# explanation that fits the OTHER failure.
+		echo "deploy: FAILED — ${FLEET_HEALTH_URL} answered (status ${STATUS}) but the" >&2
+		echo "        body carried no build identity. That means the URL names" >&2
+		echo "        something that is not this service, or a binary old enough not" >&2
+		echo "        to report one — not that the restart failed. First line of what" >&2
+		echo "        came back:" >&2
+		printf '%s\n' "$BODY" | head -1 | sed 's/^/            /' >&2
+	else
+		echo "deploy: FAILED — ${FLEET_HEALTH_URL} could not be reached at all." >&2
+		echo "        The service did not come back up." >&2
+	fi
 	exit 1
 fi
 

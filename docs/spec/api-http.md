@@ -627,7 +627,21 @@ It requires its own **`keys` grant** (§6), not `send`. `respond` shares `send`
 on a same-blast-radius argument that does not survive here: `respond` is gated
 by a recognised prompt and this deliberately is not, so an operator may permit
 one and withhold the other. Absent means denied, so no existing principal gains
-it by upgrading.
+it by upgrading — which means a fresh deployment cannot press a key until an
+operator explicitly grants it, on purpose, not as an oversight (colab-fleet
+#68). `deliversRawKeys: true` on a runtime is a statement about the DRIVER;
+whether any caller may reach it is a separate, orthogonal fact this grant
+alone controls, and a capability that reads as present while every caller is
+refused looks identical to the endpoint not existing.
+
+**A federated keypress needs two grants, at two different machines, discovered
+in the wrong order if you only read the refusal you hit first (#68).** The
+machine that will actually run the key needs `keys`; the machine relaying the
+request there needs `relay` — the ordinary grant §13 already requires for any
+proxied mutation, nothing special to `keys`. A caller debugging the relayed
+path who fixes the `keys` refusal first (because that is the grant named in
+the first 401) will find the call still refused, now naming `relay` — not a
+second bug, the other half of the same requirement.
 
 ```
 POST   /v1/machines/{machine}/sessions/{id}/interrupt?runtime=   → 202
@@ -835,7 +849,10 @@ ordering is wrong rather than handing you a cursor that would skip.
   development.
 - Permissions are **per verb, per machine**. `list` and `state` may be granted
   broadly; `create`, `input`, `interrupt`, `close`, `rename`, `discard` and
-  `keys` are granted per peer and default to denied.
+  `keys` are granted per peer and default to denied. That default is deliberate
+  and applies to a fresh deployment as much as an established one — no grant is
+  implied by anything else, including a runtime advertising the capability the
+  grant gates (§3, `keys`; colab-fleet #68).
 - Each caller presents its own credential and holds per-verb grants (§6).
 - When proxying (§13), the relaying service authenticates as **itself** with the
   credential it holds on that peer, and asserts the original principal in
