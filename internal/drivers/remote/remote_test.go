@@ -43,7 +43,23 @@ type capture struct {
 func peerServing(t *testing.T, status int, payload any, rec *capture) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if rec != nil {
+		// colab-fleet #67: a driver whose capabilities are unseen now
+		// opportunistically probes them (noteSuccessfulContact) off the back
+		// of ANY successful call, in its own goroutine, concurrently with
+		// whatever the test does next. That probe hits this same server at
+		// /v1/runtimes (and /v1/health, on the same round trip) — paths no
+		// test using `rec` is ever exercising the operation under test
+		// against. Recording into the single shared `rec` from that
+		// goroutine too would be a real data race (two goroutines writing
+		// the same memory with nothing ordering them) AND, race detector
+		// aside, a real correctness bug: whichever request happened to land
+		// last would silently overwrite what the test actually meant to
+		// capture. Confining writes to the one goroutine handling the
+		// operation under test — by never recording the probe's own
+		// requests here — removes both, without serializing anything: the
+		// probe still runs concurrently, it just never touches this slot.
+		probing := r.URL.Path == "/v1/runtimes" || r.URL.Path == "/v1/health"
+		if rec != nil && !probing {
 			raw, _ := io.ReadAll(r.Body)
 			*rec = capture{
 				method: r.Method,
