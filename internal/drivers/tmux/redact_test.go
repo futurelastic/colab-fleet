@@ -86,6 +86,20 @@ func TestRedactRuleLineDropsALabelButKeepsTheRule(t *testing.T) {
 			raw:  "────────────────────────────────────────────────────────────────────────────────",
 			want: "────────────────────────────────────────────────────────────────────────────────",
 		},
+		{
+			// A first version of this fix stripped every isRule-accepted
+			// line the same way, and a real capture (still working #74)
+			// showed that reaching too far: the welcome screen's own boxed
+			// border also satisfies isRule (plenty of dashes) but is not a
+			// labelled fence — it is fixed, non-sensitive product chrome
+			// wrapped in box corners, and shredding its title into several
+			// stray placeholders made an already-safe line unreadable for
+			// no safety gained. A line carrying box corners or verticals
+			// is left exactly as it always was.
+			name: "a boxed welcome-screen border is not touched at all",
+			raw:  "╭─── Claude Code v2.1.238 ─────────────────────────────────────────╮",
+			want: "╭─── Claude Code v2.1.238 ─────────────────────────────────────────╮",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

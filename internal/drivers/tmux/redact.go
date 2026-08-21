@@ -163,18 +163,38 @@ func leadingSpaces(s string) string {
 // happening — recorded and fixed as its own issue, #74).
 const sessionLabelPlaceholder = "<session>"
 
-// redactRuleLine keeps only the box-drawing characters and surrounding
-// spaces of a line isRule accepted, replacing every maximal run of
-// anything else with a single placeholder. isRule's own threshold is an
-// absolute rune count, not a proportion, so a line can satisfy it while
-// carrying real content — classify.go's own comment says the opening rule
-// is labelled with the session name. Collapsing each such run to one fixed
-// placeholder (rather than keeping the label) is what stops that name
-// reaching a corpus this repository publishes; the rule characters that
-// remain are still enough for isRule to accept the line again on replay,
-// which is what keeps the fence recognisable to the classifier this
-// redaction serves.
+// otherBoxDrawing is every box-drawing glyph this package's own captures
+// have shown decorating a WELCOME-SCREEN box (corners and verticals) —
+// never the plain fence isRule was written for. A line built from these
+// plus dashes is chrome around fixed, non-sensitive product text (a
+// version string, a tips panel), not a labelled fence: it renders as
+// `╭─── Claude Code v2.1.238 ───╮`, corners included, and stripping its
+// title the way a real session name must be stripped would only make an
+// already-safe line harder to read for no safety gained. redactRuleLine
+// leaves any line carrying one of these untouched, the same way it always
+// has, and treats a plain-dash rule — the shape #74 actually measured a
+// session name riding on — as the one that needs a look.
+const otherBoxDrawing = "╭╮╰╯│"
+
+// redactRuleLine keeps a PLAIN rule (dashes and spaces only) if that is
+// all it is, and — when something else rides along with it — replaces
+// every maximal run of that something with a single placeholder. isRule's
+// own threshold is an absolute rune count, not a proportion, so a line can
+// satisfy it while carrying real content — classify.go's own comment says
+// the opening rule is labelled with the session name. Collapsing that run
+// to one fixed placeholder (rather than keeping the label) is what stops
+// the name reaching a corpus this repository publishes; the rule
+// characters that remain are still enough for isRule to accept the line
+// again on replay, which is what keeps the fence recognisable to the
+// classifier this redaction serves.
+//
+// A line carrying any OTHER box-drawing glyph (see otherBoxDrawing) is
+// left exactly as it was before this function existed — see its comment
+// for why that shape is not the one this exists to guard.
 func redactRuleLine(stripped string) string {
+	if strings.ContainsAny(stripped, otherBoxDrawing) {
+		return stripped
+	}
 	runes := []rune(stripped)
 	var b strings.Builder
 	i := 0
