@@ -387,17 +387,49 @@ if not d.get("complete", True): print("  (view incomplete)")'
 #     bulk is how automation kills the session it meant to rescue.
 #   - each answer carries the prompt's nonce, so it cannot land on a question
 #     that changed while we were working through the list.
+#   - --machine scopes the target list to one machine (#71). Fleet-wide stays
+#     the default — this is opt-in, and does not change existing scripts.
+#     An unknown machine name is refused rather than silently matching
+#     nothing: answering zero targets looks identical to "nothing was
+#     parked", which is the exact failure this option exists to prevent
+#     during a one-machine recovery. No comma-separated list is accepted —
+#     run the command once per machine if more than one needs scoping.
 #
-# fleetctl answer <kind> <choice> [--dry-run]
+# fleetctl answer <kind> <choice> [--machine <name>] [--dry-run]
 fleetctl_answer() {
-  local kind="$1" choice="$2" dry="$3"
+  local dry="" machine_filter=""
+  local -a rest
+  while (( $# )); do
+    case $1 in
+      --dry-run) dry=--dry-run ;;
+      --machine) machine_filter="$2"; shift ;;
+      *)         rest+=("$1") ;;
+    esac
+    shift
+  done
+  local kind="${rest[1]}" choice="${rest[2]}"
   if [[ -z $kind || -z $choice ]]; then
-    print -u2 "usage: fleetctl answer <kind> <choice> [--dry-run]"
+    print -u2 "usage: fleetctl answer <kind> <choice> [--machine <name>] [--dry-run]"
     print -u2 "  e.g. fleetctl answer resume-chooser 1"
+    print -u2 "  e.g. fleetctl answer resume-chooser 2 --machine silverplate"
     print -u2 "  kinds: resume-chooser · folder-trust · settings-trust · tool-permission"
     print -u2 "  (bypass-permissions is never classified from a screen — see the client guide)"
     print -u2 "  Both arguments are required on purpose: no default kind, no default choice."
     return 2
+  fi
+  if [[ -n $machine_filter ]]; then
+    local known
+    known="$(_flc_get /v1/machines)" || return $?
+    if ! print -r -- "$known" | _flc_py '
+import sys, json
+want = sys.argv[1]
+d = json.load(sys.stdin)
+names = [m.get("machine") for m in d.get("items", [])]
+sys.exit(0 if want in names else 1)' "$machine_filter"; then
+      print -u2 "fleetctl: no machine named \"$machine_filter\" is known to this service"
+      print -u2 "  (run \`fleetctl up\` to see every machine currently known)"
+      return 2
+    fi
   fi
   local body
   body="$(_flc_get "/v1/sessions?scope=fleet")" || return $?
@@ -406,6 +438,7 @@ fleetctl_answer() {
   targets=("${(@f)$(print -r -- "$body" | _flc_py '
 import sys, json
 want = sys.argv[1]
+want_machine = sys.argv[2] if len(sys.argv) > 2 else ""
 d = json.load(sys.stdin)
 if not d.get("complete", True):
     down = [s["machine"] for s in d.get("sources", []) if s.get("status") != "ok"]
@@ -415,8 +448,11 @@ for s in d.get("items", []):
     if not p: continue
     # No kind => never a target, whatever it looks like.
     if (p.get("kind") or "") != want: continue
+    # #71: narrowed right here, alongside the kind filter — a target this
+    # loop never sees is a target that cannot be answered by accident.
+    if want_machine and s["machine"] != want_machine: continue
     n = len(p.get("options") or [])
-    print("\t".join([s["machine"], s["id"], p.get("nonce",""), str(n)]))' "$kind")}")
+    print("\t".join([s["machine"], s["id"], p.get("nonce",""), str(n)]))' "$kind" "$machine_filter")}")
 
   local machine id nonce n answered=0 skipped=0
   for line in "${targets[@]}"; do
@@ -445,7 +481,11 @@ d=json.load(sys.stdin); print(d.get("outcome","?"), d.get("reason","") or "")')"
       (( skipped++ ))
     fi
   done
-  print -- "answered $answered, skipped $skipped (kind=$kind, choice=$choice)"
+  if [[ -n $machine_filter ]]; then
+    print -- "answered $answered, skipped $skipped (kind=$kind, choice=$choice, machine=$machine_filter)"
+  else
+    print -- "answered $answered, skipped $skipped (kind=$kind, choice=$choice)"
+  fi
 }
 
 # ── entry point ─────────────────────────────────────────────────────────────
@@ -465,7 +505,7 @@ fleetctl() {
       print -r -- "fleetctl new <machine> <name> <cwd> [--trust-cwd] [--resume <id>]"
       print -r -- "                    [--permission-mode bypass] [--env NAME=value ...]"
       print -r -- "fleetctl kill <prefix>"
-      print -r -- "fleetctl answer <kind> <choice> [--dry-run]   answer every prompt of one kind" ;;
+      print -r -- "fleetctl answer <kind> <choice> [--machine <name>] [--dry-run]   answer every prompt of one kind" ;;
     *)          fleetctl_attach "$1" ;;
   esac
 }
