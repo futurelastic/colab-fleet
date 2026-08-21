@@ -2441,7 +2441,10 @@ func TestResumingAStrandedSendAlsoWakesThePane(t *testing.T) {
 // slower one, which is the bug wearing a different hat.
 func TestSendRefusesASessionThatCannotReceiveYet(t *testing.T) {
 	f := twoSessions()
-	// A pane mid-startup: output, but no composer fenced by rules.
+	// A pane mid-startup: output, but no composer fenced by rules. twoSessions'
+	// alpha is created well outside startingWindow relative to the fixed test
+	// clock (newTestDriver), so this exercises the "old" branch — see
+	// colab-fleet #64 below for why that branch's wording matters.
 	f.captures["%1"] = "starting up\nloading configuration\n"
 	d := newTestDriver(f)
 
@@ -2458,6 +2461,20 @@ func TestSendRefusesASessionThatCannotReceiveYet(t *testing.T) {
 	if !strings.Contains(got.Reason, "idle") {
 		t.Errorf("reason = %q; it must tell the caller what to wait for", got.Reason)
 	}
+	// colab-fleet #64: an old pane with no composer painted is not
+	// necessarily "still starting or is not listening" — that guess was
+	// wrong for a session showing a full-screen interface (a
+	// control-channel dialog, measured directly). The refusal must not
+	// assert a single cause, and must point at keys() as the one surface
+	// that can still reach the screen either way.
+	if !strings.Contains(got.Reason, "full-screen") {
+		t.Errorf("reason = %q; an old pane's refusal must not assume startup "+
+			"is the only explanation (#64)", got.Reason)
+	}
+	if !strings.Contains(got.Reason, "keys()") {
+		t.Errorf("reason = %q; must point at keys() as the surface that can still "+
+			"reach a full-screen interface (#64)", got.Reason)
+	}
 	// And nothing may have been delivered. A refusal that pasted first would
 	// leave the session holding text nobody can account for.
 	for _, c := range f.callsSnapshot() {
@@ -2467,6 +2484,99 @@ func TestSendRefusesASessionThatCannotReceiveYet(t *testing.T) {
 		case "send-keys":
 			t.Error("a keystroke was sent despite the refusal")
 		}
+	}
+}
+
+// The companion case: a session created moments ago, still with no
+// composer painted. Here "still starting" IS the honest, established
+// reading — age is the discriminator classify.go already uses for the
+// identical ambiguity, and Send's refusal must agree with it rather than
+// hedge about a full-screen interface a two-second-old session cannot yet
+// be showing.
+func TestSendRefusesAYoungSessionAsStartingNotAmbiguous(t *testing.T) {
+	f := twoSessions()
+	f.captures["%1"] = "starting up\nloading configuration\n"
+	d := newTestDriver(f)
+	// newTestDriver's clock is fixed at 1785760000; put this pane's creation
+	// just inside startingWindow (90s) of it.
+	for i := range f.sessions {
+		if f.sessions[i].paneID == "%1" {
+			f.sessions[i].created = 1785760000 - 10
+		}
+	}
+
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "do the thing",
+		driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %q (%s), want refused", got.Outcome, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "young enough to still be starting") {
+		t.Errorf("reason = %q; a genuinely young session should read as starting, "+
+			"not hedge about a full-screen interface it cannot yet be showing (#64)", got.Reason)
+	}
+	if strings.Contains(got.Reason, "full-screen") {
+		t.Errorf("reason = %q; the young case should not raise a possibility the "+
+			"old case exists to cover (#64)", got.Reason)
+	}
+}
+
+// colab-fleet #64: Respond's refusal fires whenever no structured prompt is
+// recognised, which is right and common (nothing is being asked) — but a
+// composer present settles which case this is. An idle, empty composer is
+// definitely not a full-screen interface (that shape has no composer of its
+// own), so the original wording is correct and unhedged here.
+func TestRespondRefusesOrdinarilyWhenComposerIsPresent(t *testing.T) {
+	f := twoSessions() // alpha: idle fixture, composer present and empty, no prompt
+	d := newTestDriver(f)
+
+	got, err := d.Respond(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.Response{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %q, want refused", got.Outcome)
+	}
+	if !strings.Contains(got.Reason, "consumed by whatever it is doing") {
+		t.Errorf("reason = %q; an idle composer settles that nothing is being "+
+			"asked, unhedged (#64)", got.Reason)
+	}
+	if strings.Contains(got.Reason, "keys()") {
+		t.Errorf("reason = %q; must not point at keys() when a composer proves "+
+			"there is no full-screen interface to reach (#64)", got.Reason)
+	}
+}
+
+// The companion case: no recognised prompt AND no composer, which is the
+// shape #64 measured a real control-channel dialog producing. respond()
+// cannot answer an unrecognised full-screen prompt — there is no option
+// list or nonce — so the refusal must say that, and point at keys(), rather
+// than assert the session is doing something else when it may be waiting on
+// exactly this keypress.
+func TestRespondHedgesWhenNeitherPromptNorComposerIsFound(t *testing.T) {
+	f := twoSessions()
+	f.captures["%1"] = "starting up\nloading configuration\n"
+	d := newTestDriver(f)
+
+	got, err := d.Respond(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.Response{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %q, want refused", got.Outcome)
+	}
+	if strings.Contains(got.Reason, "consumed by whatever it is doing") {
+		t.Errorf("reason = %q; must not assert the session is doing something "+
+			"else — it may be waiting on exactly this keypress (#64)", got.Reason)
+	}
+	if !strings.Contains(got.Reason, "keys()") {
+		t.Errorf("reason = %q; must point at keys() as the surface that can still "+
+			"reach an unrecognised full-screen prompt (#64)", got.Reason)
 	}
 }
 

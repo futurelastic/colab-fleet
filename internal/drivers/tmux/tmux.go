@@ -1237,12 +1237,38 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 					"drive the menu rather than be received as input (§2.4)",
 			}, nil
 		}
+		// colab-fleet #64: no composer painted is one fact with (at least) two
+		// causes, and the old wording asserted one of them as if it were
+		// established — "still starting or is not listening" — when the
+		// actual observation is only "no composer". A runtime showing a
+		// full-screen interface with no composer of its own (a dialog, for
+		// one) paints exactly this way too, and reads as "possibly broken"
+		// through a message that guessed wrong.
+		//
+		// `young` is the same discriminator classify.go already uses for the
+		// identical ambiguity (starting vs. unknown) — reused here rather
+		// than invented, so the two places that hit this shape stay
+		// consistent rather than developing their own private judgment calls.
+		young := d.now().Sub(target.created) < startingWindow
+		if young {
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason: "session is not able to receive input yet: no composer has been " +
+					"painted, and the session is young enough to still be starting. " +
+					"Delivering now would render the text and lose the submit. Wait for " +
+					"the session to report idle, then send again",
+			}, nil
+		}
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: "session is not able to receive input yet: no composer has been " +
-				"painted, so the runtime is still starting or is not listening. " +
-				"Delivering now would render the text and lose the submit. Wait for " +
-				"the session to report idle, then send again",
+				"painted, and the session is old enough that this is unlikely to be " +
+				"ordinary startup. That could still mean the runtime is slow to start, " +
+				"or it could mean the runtime is showing a full-screen interface with " +
+				"no composer of its own — a dialog, for one — which this driver cannot " +
+				"tell apart from here. Delivering now would render the text and lose " +
+				"the submit. If the session does not settle to idle on its own, keys() " +
+				"can still reach the screen directly (deliversRawKeys: true)",
 		}, nil
 	}
 
@@ -2231,12 +2257,36 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: "session process has exited"}, nil
 	}
 
-	before := parsePrompt(newScreen(captures[target.paneID]))
+	screenNow := newScreen(captures[target.paneID])
+	before := parsePrompt(screenNow)
 	if before == nil {
+		// colab-fleet #64: this refusal fires whenever the screen has no
+		// structured prompt this driver recognises — which is right and
+		// common (nothing is being asked) but was worded as though that
+		// were the only possibility. A full-screen interface with no
+		// composer either paints exactly the same way, and there "a
+		// keypress would be consumed by whatever it is doing instead" is
+		// false: what it is doing is waiting for that keypress.
+		//
+		// A composer being present settles it: the runtime is doing
+		// something ordinary (idle, or a human mid-message), definitely
+		// not blocked on an unrecognised full-screen prompt, since that
+		// shape has no composer of its own to paint.
+		if _, hasComposer := composerText(screenNow); hasComposer {
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason: "session is not waiting on a prompt; a keypress would be " +
+					"consumed by whatever it is doing instead",
+			}, nil
+		}
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
-			Reason: "session is not waiting on a prompt; a keypress would be " +
-				"consumed by whatever it is doing instead",
+			Reason: "no recognised prompt is on screen, and no composer either. If " +
+				"the runtime is not asking anything, this refusal is the correct " +
+				"one. If it is — a full-screen interface this driver did not " +
+				"recognise as a structured prompt — respond() cannot answer it: " +
+				"there is no option list or nonce here to answer against. keys() " +
+				"can still reach the screen directly (deliversRawKeys: true)",
 		}, nil
 	}
 

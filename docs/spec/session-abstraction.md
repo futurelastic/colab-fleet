@@ -2967,6 +2967,52 @@ the first bad state cannot recur even in the gap before a refresh completes.
 > for a value nothing ever re-checks, is the life of the process. A label
 > that means the first thing will eventually be read as meaning the second.
 
+**F59 · A runtime taking the whole screen reads exactly like a pane running
+the wrong thing, and both refusals a caller could try next assert a cause
+neither one had actually established.** #48 asked whether a control-channel
+command raises a *prompt*; it does something the model handles worse. The
+runtime takes the whole screen — the composer disappears along with
+everything else the classifier reads by — and the driver loses its anchor
+entirely rather than seeing a dialog it merely fails to recognise.
+
+Measured live, not reproduced from a description: a session sent its own
+control-channel command, settled through `starting` while young, and then —
+still with no composer — crossed into `unknown` with an evidence sentence
+that named one cause of the missing composer as though it were the only one:
+*"pane may not be running the expected runtime."* The runtime was running
+exactly the expected thing. It was showing a screen the classifier has no
+furniture to read.
+
+Both refusals a caller would reach for next made the same mistake in the
+opposite direction — not silent about the cause, confidently wrong about it:
+
+- `input` said the runtime "is still starting or is not listening." It was
+  listening, to a dialog.
+- `respond` said a keypress "would be consumed by whatever it is doing
+  instead." What it was doing was waiting for exactly that keypress.
+
+Each message is correct for the failure it was written for and false for
+this one, and a session in this state was unreachable by both text verbs at
+once — `keys` (#49/#50) is the only surface that reaches it, and nothing in
+any of the three responses said so.
+
+The fix does not add a new status or a `PromptKind` — there is no
+options-prompt here to classify, and #48 already warned that inventing one
+is how a name gets added that nothing emits. What it adds is honesty about
+what was actually established versus guessed, using a discriminator this
+codebase already had rather than a new detector: `young`, the same signal
+`starting` vs. `unknown` uses for the identical shape one branch up. A young
+pane with no composer reads as starting, unhedged — that guess is earned. An
+old one now names both real explanations instead of picking the one that
+makes the pane sound broken, and both text-verb refusals point at `keys()`
+once age stops making "still starting" the likely story.
+
+> **A refusal that names a cause it only inferred teaches a caller the wrong
+> lesson as confidently as one that names no cause at all.** `unknown`
+> saying nothing would have been honest; `unknown` naming the wrong thing
+> sent whoever read it looking at the pane instead of at the screen it was
+> actually showing.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

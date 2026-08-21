@@ -1454,7 +1454,19 @@ func classifyAgedDetail(raw string, alive, young bool) (st fleet.SessionState, a
 			return fleet.InferredState(fleet.StatusStarting,
 				"no TUI composer yet; session is young enough to still be starting", nil), ambNone
 		}
+		// colab-fleet #64: "pane may not be running the expected runtime" names
+		// only one of the two situations this shape actually covers, and picks
+		// the one that makes the pane sound broken. The other, measured
+		// directly: the runtime takes the whole screen for a full-screen
+		// interface — a control-channel dialog, for one — which has no
+		// composer of its own to paint and looks identical to a pane running
+		// the wrong thing from here. Composer absence is the only fact this
+		// branch has established; naming just one cause as if it were the
+		// finding is what #64 measured going wrong.
 		return fleet.UnknownState(fleet.ConfidenceInferred,
-			"no TUI composer found in pane; pane may not be running the expected runtime"), ambNone
+			"no TUI composer found in pane; this may be a full-screen interface "+
+				"with no composer of its own (a dialog, for one), or the pane may "+
+				"not be running the expected runtime — composer absence alone "+
+				"cannot tell those apart"), ambNone
 	}
 }

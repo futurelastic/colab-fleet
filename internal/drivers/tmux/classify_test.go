@@ -468,8 +468,21 @@ func TestYoungPaneWithNoInterfaceIsStartingNotUnknown(t *testing.T) {
 	if got := classifyAged(booting, true, true); got.Status != fleet.StatusStarting {
 		t.Errorf("young pane = %q, want starting", got.Status)
 	}
-	if got := classifyAged(booting, true, false); got.Status != fleet.StatusUnknown {
-		t.Errorf("old pane = %q, want unknown — age is the discriminator", got.Status)
+	old := classifyAged(booting, true, false)
+	if old.Status != fleet.StatusUnknown {
+		t.Errorf("old pane = %q, want unknown — age is the discriminator", old.Status)
+	}
+	// colab-fleet #64: composer absence has (at least) two real causes — a
+	// pane running the wrong thing, and a runtime showing a full-screen
+	// interface with no composer of its own (a control-channel dialog,
+	// measured directly). The evidence must not assert only the first as if
+	// it were established; that is what let a healthy dialog read as a
+	// broken pane.
+	if !strings.Contains(old.Evidence, "full-screen") {
+		t.Errorf("evidence %q does not mention the full-screen-interface possibility (#64)", old.Evidence)
+	}
+	if !strings.Contains(old.Evidence, "may not be running the expected runtime") {
+		t.Errorf("evidence %q dropped the wrong-runtime possibility, which is still real", old.Evidence)
 	}
 }
 
