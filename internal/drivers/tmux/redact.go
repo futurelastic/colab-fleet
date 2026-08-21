@@ -217,14 +217,71 @@ func isKnownFooter(content string) bool {
 // runtime chrome; what follows it is the working directory or session
 // name — exactly the vocabulary this public repo's own conventions forbid
 // naming (CLAUDE.local.md, "no application, repo... names").
+//
+// # The row is not always just a name (#73)
+//
+// A real capture (#70) showed the control-channel label sharing this exact
+// row, glued to the project name by right-alignment padding rather than
+// the " · " separator every other footer element uses —
+// `▸ Opus 5 · src                    /rc` for the active state, which
+// renders as a bare hyperlink with no trailing word once redaction's own
+// escape-stripping has run. Replacing everything after the last " · "
+// could not tell that fragment apart from the name it shares the row with,
+// and discarded both (#73) — which would have made a corpus case built
+// from this row look real while proving nothing, the exact failure #70
+// stopped short of shipping. Only the project/session name is sensitive;
+// the label is the same fixed, closed-set vocabulary controlchannel.go
+// already trusts, and belongs in a corpus case as much as any other
+// footer chrome does.
 func redactModelLine(content string) (string, bool) {
 	if !strings.HasPrefix(content, "▸") {
 		return "", false
 	}
-	if idx := strings.LastIndex(content, " · "); idx >= 0 {
-		return content[:idx+len(" · ")] + "<project>", true
+	idx := strings.LastIndex(content, " · ")
+	if idx < 0 {
+		return content, true
 	}
-	return content, true
+	prefix := content[:idx+len(" · ")]
+	tail := content[idx+len(" · "):]
+	if label, ok := trailingControlLabel(tail); ok {
+		return prefix + "<project> " + label, true
+	}
+	return prefix + "<project>", true
+}
+
+// trailingControlLabel finds the control-channel label when it shares the
+// model line's tail with the project name, and reports it trimmed but
+// otherwise verbatim — fixed vocabulary controlStateIn already trusts,
+// never the project name it happens to be glued to.
+//
+// Two shapes are checked because only one of the four states has been
+// captured for real so far (#70): the active state renders as a bare
+// label with nothing after it, so there is no trailing space for
+// controlLabel's own match (which requires one) to anchor on; the other
+// three are read out of the runtime binary rather than sampled from a
+// screen (controlchannel.go's own comment), so whether they render a
+// trailing word on THIS row — the way the constructed fixture assumed for
+// a different row entirely — is not yet confirmed. Keeping both shapes
+// means a real `failed`/`reconnecting`/`connecting` capture landing on
+// this row later is not silently re-broken by a fix tested against only
+// the one state reachable today.
+//
+// The bare shape only matches when a space separates it from whatever
+// precedes it — the alignment padding #70 actually measured — never when
+// it is glued directly onto other text with no gap, which is what a
+// project or session name that happened to end in the same three
+// characters would look like. That is what keeps this from ever treating
+// part of a real name as the label.
+func trailingControlLabel(tail string) (string, bool) {
+	if idx := strings.Index(tail, controlLabel); idx >= 0 {
+		return strings.TrimSpace(tail[idx:]), true
+	}
+	bare := strings.TrimSpace(controlLabel) // "/rc" — controlLabel minus its trailing space
+	trimmed := strings.TrimRight(tail, " ")
+	if trimmed == bare || strings.HasSuffix(trimmed, " "+bare) {
+		return bare, true
+	}
+	return "", false
 }
 
 // redactNoticeLine reconstructs a usage-limit or turn-failure notice from a
