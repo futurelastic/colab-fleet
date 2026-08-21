@@ -698,6 +698,41 @@ func TestResolveAmbiguityUsesTheSecondLook(t *testing.T) {
 	}
 }
 
+// #76: a promotion through resolveAmbiguity used to rebuild the returned
+// state via fleet.InferredState, which sets only Status, Confidence,
+// Evidence and Since — silently dropping everything else the candidate
+// carried. Caught landing a real corpus case (#65): a session's genuinely
+// active control channel read as absent a few seconds later, once the
+// no-spinner-empty-composer promotion this test drives had run. Pinned
+// here at the unit level too, on a minimal fixture, so this is not the
+// corpus case's job alone to guard.
+func TestResolveAmbiguityCarriesTheControlChannelThroughThePromotion(t *testing.T) {
+	const idleScreen = "some transcript\n" +
+		"────────────────────\n" +
+		"❯ \x1b[2mTry \"fix the tests\"\x1b[0m\n" +
+		"────────────────────\n" +
+		"  ⏵⏵ auto mode on   /rc active"
+
+	t0 := time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
+	first, digest := classifyPaneRemembering(idleScreen, true, true, false, paneMemory{}, t0)
+	if first.ControlChannel == nil || first.ControlChannel.State != fleet.ControlChannelActive {
+		t.Fatalf("setup: first sighting's own channel = %+v, want active", first.ControlChannel)
+	}
+
+	prior := paneMemory{known: true, digest: digest, at: t0}
+	second, _ := classifyPaneRemembering(idleScreen, true, true, false, prior, t0.Add(30*time.Second))
+	if second.Status != fleet.StatusIdle {
+		t.Fatalf("setup: second look = %s, want idle — the promotion must actually fire for "+
+			"this test to be testing anything", second.Status)
+	}
+	if second.ControlChannel == nil || second.ControlChannel.State != fleet.ControlChannelActive {
+		t.Errorf("control channel = %+v after promotion to idle, want active — the same "+
+			"channel the first sighting reported. A promotion that rebuilds the state from "+
+			"scratch reports every channel as absent a few seconds after every sighting, "+
+			"which reads exactly like a healthy session either way", second.ControlChannel)
+	}
+}
+
 // Unsent text on a screen that has stopped moving is the case a sibling
 // project measured at 37 of 39 panes: blocked on a human pressing enter, with
 // the age as the discriminator between mid-thought and abandoned.

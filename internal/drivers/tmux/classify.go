@@ -1202,26 +1202,56 @@ func resolveAmbiguity(st fleet.SessionState, amb ambiguity, prior paneMemory, di
 		return st
 	}
 	age := stable.Round(time.Second).String()
+	// Both branches below MUTATE the candidate st and return it, rather than
+	// building a fresh SessionState the way this code used to (colab-fleet
+	// #76). InferredState only ever set Status, Confidence, Evidence and
+	// Since — every other field the candidate carried (ControlChannel, most
+	// concretely: measured landing a real corpus case, a session's genuinely
+	// active channel read as absent a few seconds later, once this exact
+	// promotion ran) was silently dropped, because nothing here re-attached
+	// it and nobody had reason to notice: the promotion is upgrade-only, so
+	// the session it fires on always looks healthy either way.
+	//
+	// Mutating st is the fix that cannot repeat the mistake: it carries
+	// forward whatever the candidate had, known fields and any future one
+	// alike, the same way resolveUnrecognisedPrompt's own corroborated
+	// branch already returns st unchanged rather than rebuilding it. The
+	// two fields set below are exactly the ones this promotion is actually
+	// deciding; everything else on st is left as classifyAgedDetail built
+	// it.
+	//
+	// Checked deliberately rather than assumed: Prompt is untouched here
+	// because selectionPrompt's branch (above) returns before this switch is
+	// ever reached, so it is always nil on a candidate carrying either of
+	// these two ambiguities. ScreenDigest, Quota, LastTurn and
+	// CredentialGeneration are stamped by callers in tmux.go AFTER this
+	// function returns, so they were never at risk from this rebuild either
+	// way — only ControlChannel (set inside classifyAgedDetail, before this
+	// runs) was actually being lost.
 	switch amb {
 	case ambNoSpinnerEmpty:
-		return fleet.InferredState(fleet.StatusIdle,
-			"no spinner, and the screen is unchanged after "+age+
-				" — a turn that had just begun would have painted one by now", nil)
+		st.Status = fleet.StatusIdle
+		st.Confidence = fleet.ConfidenceInferred
+		st.Evidence = "no spinner, and the screen is unchanged after " + age +
+			" — a turn that had just begun would have painted one by now"
+		return st
 	case ambNoSpinnerPending:
 		// Unsent text on a screen that has stopped moving is the same
 		// situation as the finished-turn case above: blocked on a human
 		// pressing enter. §8's `since` then carries the age, which is the
 		// discriminator between an operator mid-thought and a pane nobody
 		// is coming back to.
-		blocked := fleet.InferredState(fleet.StatusWaitingInput,
-			"composer holds unsent input; screen unchanged after "+age, nil)
-		blocked.WaitingOn = fleet.WaitingUnsentInput
-		// Carried from the unresolved state, which computed it from the
-		// composer text. NOT the screen digest this function was handed —
-		// they fingerprint different things and only one is what discard
-		// compares against.
-		blocked.ComposerDigest = st.ComposerDigest
-		return blocked
+		st.Status = fleet.StatusWaitingInput
+		st.Confidence = fleet.ConfidenceInferred
+		st.Evidence = "composer holds unsent input; screen unchanged after " + age
+		st.WaitingOn = fleet.WaitingUnsentInput
+		// ComposerDigest is NOT reassigned here (the prior version copied it
+		// from itself under a different name): the candidate already
+		// carries the value classifyAgedDetail computed from the composer
+		// text — NOT the screen digest this function was handed, which
+		// fingerprints something else and is not what discard compares
+		// against.
+		return st
 	}
 	return st
 }
