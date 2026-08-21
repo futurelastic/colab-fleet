@@ -250,6 +250,11 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 	err := d.do(ctx, "GET", "/session/"+url.PathEscape(ref.ID), nil, &sess)
 	if err != nil {
 		if isNotFound(err) {
+			// #78: the runtime itself just confirmed this id is gone — the
+			// cache entry describes a session that no longer exists, on
+			// exactly the same authority Close's own success path relies
+			// on below, so it is pruned here too rather than only there.
+			d.forgetSeen(ref.ID)
 			return fleet.Ack{}, fmt.Errorf("%w: %q", fleet.ErrNoSuchSession, ref.ID)
 		}
 		return fleet.Ack{}, err
@@ -270,10 +275,18 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 
 	if err := d.do(ctx, "DELETE", "/session/"+url.PathEscape(ref.ID), nil, nil); err != nil {
 		if isNotFound(err) {
+			d.forgetSeen(ref.ID)
 			return fleet.Ack{}, fmt.Errorf("%w: %q", fleet.ErrNoSuchSession, ref.ID)
 		}
 		return fleet.Ack{}, err
 	}
+	// #78: List answers entirely from this driver's own cache (knownIDs),
+	// and nothing had ever pruned a closed session from it — a session the
+	// runtime's own store had genuinely dropped kept being listed,
+	// correctly attributed, indefinitely. The map itself stays: it is the
+	// documented workaround for the runtime's own unreliable bulk listing,
+	// not the defect. Only the missing prune on a confirmed close is.
+	d.forgetSeen(ref.ID)
 	return fleet.Ack{Accepted: true}, nil
 }
 

@@ -359,6 +359,24 @@ func (d *Driver) wasSeen(id string) (knownSession, bool) {
 	return info, ok
 }
 
+// forgetSeen removes id from this driver's cache — the counterpart
+// markSeen never had (colab-fleet #78). List answers entirely from this
+// cache (see knownIDs' own comment on why: the runtime's own bulk listing
+// is measured unreliable, not a design this driver chose for its own
+// sake), so an id nothing ever prunes from it is an id List reports
+// forever, however confidently the runtime itself says otherwise.
+//
+// Called only once this driver has the runtime's own confirmation the
+// session is gone — a successful DELETE, or a 404 on a read that expected
+// to find it — never speculatively: forgetting an id this driver might
+// still need to corroborate a later call against (§5.4) would trade one
+// bug for a worse one.
+func (d *Driver) forgetSeen(id string) {
+	d.mu.Lock()
+	delete(d.seen, id)
+	d.mu.Unlock()
+}
+
 // knownIDs returns a snapshot of every session this driver has cached,
 // keyed by id — used by List, which builds its answer from this cache
 // rather than the runtime's own unreliable bulk listing (see List's doc

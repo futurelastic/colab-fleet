@@ -488,6 +488,78 @@ func TestClose_SucceedsAndDeletesTheSession(t *testing.T) {
 	}
 }
 
+// #78: the defect itself. Close reporting success is not enough — the
+// natural client sequence is close, then confirm it is gone, and that
+// second half must see it too.
+func TestClose_PrunesTheSessionFromList(t *testing.T) {
+	f := newFakeServer(t)
+	d := newTestDriver(t, f)
+	ref := createOne(t, d, "/work/x", "key-1")
+
+	if _, err := d.Close(context.Background(), fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID}); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	col, err := d.List(context.Background(), fleet.RequestFrom(fleet.Caller{}), driver.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, s := range col.Items() {
+		if s.ID == ref.ID {
+			t.Fatalf("closed session %q is still in List, correctly attributed, as though live — "+
+				"this is the whole defect #78 measured", ref.ID)
+		}
+	}
+}
+
+// A second Close on the same id must refuse — not because the runtime is
+// asked twice (wasSeen refuses before any round trip), but because that
+// refusal is only trustworthy if the FIRST Close actually pruned the
+// cache. Confirms forgetSeen runs on the real success path, not just that
+// List happens to look right afterward.
+func TestClose_TwiceRefusesTheSecondTime(t *testing.T) {
+	f := newFakeServer(t)
+	d := newTestDriver(t, f)
+	ref := createOne(t, d, "/work/x", "key-1")
+
+	if _, err := d.Close(context.Background(), fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID}); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	_, err := d.Close(context.Background(), fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID})
+	if !errors.Is(err, fleet.ErrNoSuchSession) {
+		t.Errorf("second Close: err = %v, want fleet.ErrNoSuchSession", err)
+	}
+}
+
+// The runtime confirming "already gone" on Close's own pre-check GET (a
+// session closed by another caller between this driver's last sighting and
+// now) must prune the cache exactly as the DELETE success path does —
+// the id is stale on the same authority either way.
+func TestClose_PrunesOnA404FromThePreCheckGet(t *testing.T) {
+	f := newFakeServer(t)
+	d := newTestDriver(t, f)
+	ref := createOne(t, d, "/work/x", "key-1")
+
+	// Simulate another caller having already closed it directly on the
+	// runtime, behind this driver's back.
+	delete(f.sessions, ref.ID)
+
+	_, err := d.Close(context.Background(), fleet.RequestFrom(fleet.Caller{}), fleet.SessionRef{ID: ref.ID})
+	if !errors.Is(err, fleet.ErrNoSuchSession) {
+		t.Fatalf("Close: err = %v, want fleet.ErrNoSuchSession", err)
+	}
+
+	col, err := d.List(context.Background(), fleet.RequestFrom(fleet.Caller{}), driver.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, s := range col.Items() {
+		if s.ID == ref.ID {
+			t.Fatalf("session %q still in List after a confirmed-gone Close attempt", ref.ID)
+		}
+	}
+}
+
 func TestClose_UnseenIDIsRefused(t *testing.T) {
 	f := newFakeServer(t)
 	d := newTestDriver(t, f)
