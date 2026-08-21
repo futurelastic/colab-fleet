@@ -509,11 +509,17 @@ func sameTurnEnd(a, b *TurnEnd) bool {
 // would reproduce, one layer up, exactly the invisibility the field was added
 // to end. The recovery direction matters just as much: a supervisor never told
 // the channel came back goes on believing the session is unreachable.
+//
+// Reason is compared too, the same call sameTurnEnd already makes for its own
+// Reason: it is written once, from a record entry the runtime appends when the
+// channel fails (#69), not repainted continuously the way Evidence is — so
+// comparing it cannot produce a storm, and a second failure explained
+// differently from the first is a second event worth having.
 func sameControlChannel(a, b *ControlChannel) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.State == b.State
+	return a.State == b.State && a.Reason == b.Reason
 }
 
 func sameStamp(a, b *Timestamp) bool {

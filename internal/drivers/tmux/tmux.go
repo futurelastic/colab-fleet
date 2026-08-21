@@ -905,6 +905,25 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			// when no record store is configured or this session's
 			// record cannot be matched.
 		}
+		// The control channel is orthogonal to what the session is DOING
+		// (controlchannel.go's own comment says so, and this is that rule
+		// again): a session can be StatusWorking with LastTurn nil and
+		// still have a failed channel, so this is its own check rather
+		// than another case of the switch above, which a session matching
+		// both would only ever enter once.
+		if ch := sessions[i].State.ControlChannel; ch != nil && ch.State == fleet.ControlChannelFailed {
+			// Only a session the footer already flagged Failed pays for
+			// this (#69, the same "quiet session's record is never
+			// opened" discipline the switch above already holds). Reason
+			// stays empty — never a guess — whenever the record cannot
+			// explain why: no store, no matched conversation, or no
+			// matching entry.
+			if fact, ok := d.controlReasonFor(sessions[i]); ok {
+				channel := *ch
+				channel.Reason = fact.reasonText()
+				sessions[i].State.ControlChannel = &channel
+			}
+		}
 	}
 
 	// A usage limit belongs to the ACCOUNT, not to whichever pane happened to
@@ -1117,6 +1136,10 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		// lookup memoises successes in conversationStore, so a session List
 		// already resolved this cycle costs a map read here, not a rescan.
 		st = d.upgradeLastTurnFromRecord(st, r.cwd, r.session, r.created, r.paneID)
+		// Same record upgrade List applies to ControlChannel.Reason (#69),
+		// same reason State does its own lookup rather than reusing a
+		// resolved Conversation.
+		st = d.upgradeControlChannelFromRecord(st, r.cwd, r.session, r.created, r.paneID)
 		// Same rewrite List applies, generalised to a one-session read (#10)
 		// — see quotaBlockedState's own comment for why a session's own
 		// state must not be reported as an unqualified "starting"/"idle"/

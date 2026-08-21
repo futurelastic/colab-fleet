@@ -168,7 +168,8 @@ SessionState {
 }
 
 ControlChannel {
-  state : "active" | "connecting" | "reconnecting" | "failed"
+  state   : "active" | "connecting" | "reconnecting" | "failed"
+  reason? : string  // the runtime's own words for why `failed` (colab-fleet #69); for humans, never branched on
 }
 
 Status =
@@ -237,6 +238,38 @@ TurnEnd {
 > print, and the measured consequence is specific: a supervisor grepping panes
 > for the disconnection notice classified ITSELF as disconnected, because its
 > own tool output contained the strings it was searching for.
+
+> **`ControlChannel.reason` is sourced from the runtime's own durable record,
+> never from a screen (colab-fleet issue #69).** `state` alone cannot say
+> WHY a channel is `failed` — some failures are the runtime retrying on its
+> own after a drop it will recover from, some are terminal and only a fresh
+> session can follow — and that difference decided the response during the
+> incident behind #48. Promoting it out of the transcript was deferred for
+> exactly the reason the paragraph above states: the transcript is
+> forgeable, and an agent's own tool output can contain the same words a
+> supervisor is searching for.
+>
+> The record turned out to carry the same notice, structured rather than
+> rendered — a `system`/`informational` entry the runtime itself appends —
+> and reading THAT is sound in a way reading the transcript is not, on the
+> same reasoning §5's `QuotaBlock`/`TurnEnd` upgrade already relies on: a
+> `user`-role entry can hold captured command output containing the identical
+> phrase, a region an agent's own actions populate, so a driver must check
+> the entry's own `type`/`subtype` before ever comparing its content against
+> the phrase — never a substring search across every entry in the record.
+> That ordering is the entire safety property; a phrase match across entry
+> types reintroduces exactly the forgeability the footer-only rule exists to
+> end, one layer lower and harder to see.
+>
+> `reason` carries the runtime's own sentence whole, close code included when
+> the runtime put one in it, and stops there: which close codes are
+> transient versus terminal has never been measured, and this specification
+> does not classify them (colab-fleet #65 declined that inference once
+> already). A caller sees the runtime's own words and decides for itself.
+> Absent whenever `state` is not `failed`, or is `failed` but no record, no
+> readable record, or no matching entry can explain why (§5.7) — the same
+> "we don't know" that an absent `controlChannel` itself already means, one
+> field down.
 
 > **`QuotaBlock.since` and `TurnEnd.retryable`/`reason` are, where a driver
 > can manage it, sourced from the runtime's own durable record rather than

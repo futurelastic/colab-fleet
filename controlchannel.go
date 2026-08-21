@@ -106,4 +106,21 @@ func (c *ControlChannelState) UnmarshalJSON(b []byte) error {
 // disconnection notice is not evidence of a connection.
 type ControlChannel struct {
 	State ControlChannelState `json:"state"`
+
+	// Reason is the runtime's own words about why the channel failed —
+	// sourced from its own durable record (colab-fleet #69), never from a
+	// screen, which is the forgeable region this whole type exists to stay
+	// out of. For humans and logs; do not branch on it, the same discipline
+	// TurnEnd.Reason already holds itself to. In particular this carries no
+	// transient-versus-terminal claim: the runtime's close codes are not
+	// classified here (#65's declined inference), so a caller sees the
+	// runtime's own sentence — code number included, when the runtime put
+	// one in it — and decides for itself.
+	//
+	// Empty whenever State is not Failed, or when it is Failed but the
+	// record could not explain why: no record, an unreadable one, or no
+	// matching entry within it. §5.7 applies here exactly as it does to
+	// State itself — an empty Reason is "we don't know why", never evidence
+	// that there was no reason.
+	Reason string `json:"reason,omitempty"`
 }

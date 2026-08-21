@@ -152,16 +152,23 @@ type apiErrorRecordEntry struct {
 // while that entry is itself an unanswered `rate_limit` refusal — anything
 // after it, success or a different kind of failure, means something has
 // happened since), and how the session's LAST TURN ended.
-func latestAPIError(path string) (apiErrorFact, recordVerdict) {
+// recordTail reads the last recordTailBytes of one runtime record and
+// returns it as decoded lines, oldest first — the same window and the same
+// torn-first-line allowance every reader of this store needs, factored out
+// so latestAPIError (#56) and latestControlDisconnect (#69) cannot drift
+// apart on it. ok is false whenever the file could not be opened or stat'd;
+// an empty record (ok true, zero lines) is a different, legitimate fact from
+// that.
+func recordTail(path string) (lines []string, ok bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return apiErrorFact{}, recordUnavailable
+		return nil, false
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return apiErrorFact{}, recordUnavailable
+		return nil, false
 	}
 	start := int64(0)
 	torn := false
@@ -170,12 +177,11 @@ func latestAPIError(path string) (apiErrorFact, recordVerdict) {
 		torn = true
 	}
 	if _, err := f.Seek(start, io.SeekStart); err != nil {
-		return apiErrorFact{}, recordUnavailable
+		return nil, false
 	}
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), recordLineLimit)
-	var lines []string
 	for sc.Scan() {
 		lines = append(lines, sc.Text())
 	}
@@ -186,6 +192,14 @@ func latestAPIError(path string) (apiErrorFact, recordVerdict) {
 		// answer would have needed — the line we actually want is later
 		// (closer to EOF), never this one.
 		lines = lines[1:]
+	}
+	return lines, true
+}
+
+func latestAPIError(path string) (apiErrorFact, recordVerdict) {
+	lines, ok := recordTail(path)
+	if !ok {
+		return apiErrorFact{}, recordUnavailable
 	}
 
 	inspected := 0

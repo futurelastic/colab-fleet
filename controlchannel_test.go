@@ -91,6 +91,52 @@ func TestAChannelChangeIsAMaterialChange(t *testing.T) {
 	}
 }
 
+// Reason is absent-safe on the wire the same way the channel itself is: a
+// zero-value Reason must not appear, and a set one must round-trip.
+func TestControlChannelReasonOmitsWhenEmptyAndRoundTripsWhenSet(t *testing.T) {
+	st := SessionState{Status: StatusIdle, Confidence: ConfidenceInferred}
+	st.ControlChannel = &ControlChannel{State: ControlChannelFailed}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if got := string(b); contains(got, "reason") {
+		t.Errorf("an empty Reason appeared on the wire: %s", got)
+	}
+
+	st.ControlChannel.Reason = "Remote Control disconnected — this session was ended or archived from another device or app (code 4090)"
+	b, err = json.Marshal(st)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var back SessionState
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if back.ControlChannel == nil || back.ControlChannel.Reason != st.ControlChannel.Reason {
+		t.Errorf("reason lost in transit: %s", b)
+	}
+}
+
+// A second failure explained differently from the first is a second event
+// worth having, the same call sameTurnEnd already makes for TurnEnd.Reason —
+// this pins that ControlChannel.Reason gets the same treatment (#69).
+func TestAChannelReasonChangeIsAMaterialChangeEvenWithTheSameState(t *testing.T) {
+	a := SessionState{Status: StatusIdle, Confidence: ConfidenceInferred}
+	a.ControlChannel = &ControlChannel{State: ControlChannelFailed, Reason: "heartbeat failure"}
+	b := a
+	b.ControlChannel = &ControlChannel{State: ControlChannelFailed, Reason: "worker credential rejected"}
+	if !b.MateriallyDiffers(a) {
+		t.Error("the same state with a different runtime-reported reason must still fire — " +
+			"a second failure explained differently is a second event")
+	}
+	c := b
+	c.ControlChannel = &ControlChannel{State: ControlChannelFailed, Reason: b.ControlChannel.Reason}
+	if c.MateriallyDiffers(b) {
+		t.Error("an unchanged reason must not fire an event")
+	}
+}
+
 func contains(hay, needle string) bool {
 	for i := 0; i+len(needle) <= len(hay); i++ {
 		if hay[i:i+len(needle)] == needle {

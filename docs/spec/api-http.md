@@ -527,6 +527,17 @@ A change here fires `session.state` on the event stream (§4) like any other
 material change — which is the point, since nothing else about the session
 moves when a channel drops.
 
+`state.controlChannel.reason` — when present — is why a `failed` channel
+failed, in the runtime's own words, sourced from its own durable record
+rather than from a screen (colab-fleet #69): `{"state":"failed","reason":"Remote
+Control disconnected — this session was ended or archived from another
+device or app (code 4090)"}`. It carries a close code when the runtime put
+one in the sentence, but classifies nothing — no field here says whether a
+retry helps; that mapping was never measured (#65) and this endpoint does
+not guess it. Absent whenever `state` is not `failed`, or is `failed` but no
+record, no readable one, or no matching entry can explain why — the same
+§5.7 discipline `controlChannel` itself already applies one field up.
+
 `state.prompt.kind` — when present — names what is being asked
 (`resume-chooser`, `folder-trust`, `settings-trust`, `tool-permission`).
 `bypass-permissions` is deliberately absent from what CLASSIFICATION can produce:
