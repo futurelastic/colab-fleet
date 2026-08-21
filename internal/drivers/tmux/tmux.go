@@ -243,6 +243,14 @@ type Driver struct {
 	// did.
 	stranded map[string]strandedRecord
 
+	// resumeIntents remembers, per session, the conversation id a create
+	// asked the runtime to resume — the durable note #72 needs to say
+	// whether that was honoured, once the session's own conversation
+	// resolves. Same shape as stranded, for the same reasons: durable when
+	// a state store is configured, in memory otherwise, keyed on session
+	// id with cwd carried for corroboration (§5.4). See resumeintent.go.
+	resumeIntents map[string]resumeIntentRecord
+
 	// environments remembers what each created session's process received
 	// (see environment.go). In memory only, for the reason stated on
 	// Environment.
@@ -481,6 +489,7 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 	d.idem = idem
 	d.loadQuota()
 	d.loadStranded()
+	d.loadResumeIntents()
 	return d
 }
 
@@ -865,7 +874,15 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	// that can answer "I looked and could not tell" — which is a different
 	// answer from the absent field a driver with no store leaves behind.
 	for _, p := range pending {
-		sessions[p.index].Conversation = d.conversations.lookup(p.key, p.cwd, p.name, p.started)
+		conv := d.conversations.lookup(p.key, p.cwd, p.name, p.started)
+		sessions[p.index].Conversation = conv
+		// #72: a session whose CREATE asked to resume a conversation gets
+		// that intent compared against what actually resolved, so a resume
+		// silently downgraded to a fresh conversation is reported rather
+		// than looking like an ordinary healthy start.
+		if requested, ok := d.resumeIntentFor(p.name, p.cwd); ok {
+			sessions[p.index].ResumeOutcome = resumeOutcomeFor(requested, conv)
+		}
 	}
 
 	// Ask the runtime's own record about whatever the screen already
@@ -2086,6 +2103,11 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	ref := fleet.SessionRef{Machine: d.machine, ID: name, Name: name}
 	if err := d.idem.complete(key, ref); err != nil {
 		return fleet.SessionRef{}, fmt.Errorf("create: recording result: %w", err)
+	}
+	if spec.Resume != "" {
+		// #72: recorded now, before there is any way yet to tell whether
+		// the runtime actually honoured it — see resumeintent.go.
+		d.noteResumeIntent(name, string(spec.Cwd), string(spec.Resume))
 	}
 
 	if recordPath != "" {

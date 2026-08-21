@@ -349,5 +349,20 @@ type Session struct {
 	// a ref is an address, this is something learned.
 	Conversation *ConversationRef `json:"conversation,omitempty"`
 
+	// ResumeOutcome states whether this session's creation asked to resume
+	// a conversation and, once it can be told, whether that was honoured
+	// (colab-fleet #72). Named distinctly from SessionSpec.Resume (the
+	// create-time request field, a bare conversation id) on purpose — the
+	// two are never in the same message, but one names an intent and the
+	// other names a verdict about it, and giving them the same wire name
+	// across the API would blur that.
+	//
+	// Nil means no resume was requested at creation. It is never a claim
+	// that one was requested and succeeded — that claim is
+	// ResumeOutcome.Honoured true, and the two must not be collapsed
+	// (§5.7), for the same reason Conversation's own nil does not mean
+	// "no record".
+	ResumeOutcome *ResumeOutcome `json:"resumeOutcome,omitempty"`
+
 	State SessionState `json:"state"`
 }

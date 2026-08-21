@@ -187,6 +187,12 @@ rejected with `invalid`. The rationale is §10: a timed-out federated create
 that gets retried produces two agents writing to the same working directory,
 and the caller cannot detect it afterwards.
 
+**A 201 for a `resume` create is not proof the resume was honoured** — a
+concurrent burst can have the runtime silently start a fresh conversation
+instead, with no refusal and no degraded status (colab-fleet #72). Poll the
+session afterward and read `resumeOutcome` (§2.10) once its `conversation`
+resolves; do not infer success from the create response alone.
+
 **`runtime` on the response is the runtime that actually served this
 create** — not an echo of the request body's own `runtime`, which is
 commonly absent (session-abstraction.md §7.1a: a caller with one local
@@ -323,6 +329,8 @@ GET /v1/machines/{machine}/sessions/{id}?runtime=
                     "shared": true },
         "conversation": { "known": true, "id": "...",
                           "source": "derived", "evidence": "..." },
+        "resumeOutcome": { "requested": "...", "honoured": false,
+                           "evidence": "..." },
         "state": { "status": "working", "confidence": "inferred",
                    "evidence": "...", "since": "..." } }
 ```
@@ -343,6 +351,14 @@ ordinary 200, with the evidence saying why), and `known: true` carries the
 identifier plus a `source` saying whether it was matched or dictated. A caller
 that reads the absent field as "this session has no record" has turned a driver
 without a record store into a finding about somebody's session.
+
+`resumeOutcome` (§2.10) is present only when this session's `create` set
+`resume`, and says whether that was actually honoured — never assume it from
+a create that merely returned 201, because a resume can be silently ignored
+under load and the create still succeeds on a fresh conversation (colab-fleet
+#72). Absent means no resume was requested; `honoured` absent (with
+`evidence`) means the session's own `conversation` has not resolved yet, not
+a "no"; `honoured: true`/`false` is the verdict once it has.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/input

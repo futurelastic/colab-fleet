@@ -623,6 +623,44 @@ between. Picking the most recently written one is the failure this section
 exists to prevent: a guess shaped like a reading, right often enough that
 nobody checks it.
 
+### 2.10 ResumeOutcome
+
+```
+ResumeOutcome {
+  requested : string      // the conversation id `create` asked the runtime to resume
+  honoured? : boolean     // nil until the session's own ConversationRef resolves
+  evidence  : string      // prose for humans, present either way; never parse it
+}
+```
+
+Optional on `Session`, and present only when the session's `create` set
+`resume`. Three states, the same shape §2.9 already takes and for the same
+reason:
+
+| shape | means |
+|---|---|
+| field absent | no resume was requested at creation — never a claim that one was requested and honoured |
+| `honoured` absent + `evidence` | a resume WAS requested, but this session's own `ConversationRef` has not resolved yet — too early to say either way |
+| `honoured: true`/`false` + `evidence` | the conversation resolved, and this states whether it is the one that was asked for |
+
+**Why this exists (colab-fleet #72).** A `create`'s `resume` is a single
+request field with no receipt of its own — the runtime is free to ignore it
+and start a fresh conversation instead, and measured under a concurrent
+burst it does: silently, no refusal and no degraded status, the created
+session reading as an ordinary healthy start on a conversation nobody asked
+for. Every other write in this API carries the opposite discipline —
+`DeliveryReceipt` reports `unknown` rather than claiming a delivery it
+cannot confirm, `keys` refuses an uncorroborated screen, a capability read
+distinguishes `observed` from `assumed`. `create`'s `resume` was the one
+write that did not, and the recovery this model exists to make survivable
+is exactly a concurrent burst by construction.
+
+**Why it is not folded into `ConversationRef`.** "Which record identifies
+this session" and "did the create that made this session get what it
+asked for" are different questions — a session that never requested a
+resume still answers the first one every time it is listed, and carries no
+`ResumeOutcome` at all.
+
 ---
 
 ## 3. Operations
