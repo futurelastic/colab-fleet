@@ -62,3 +62,54 @@ func TestRedactModelLineWithControlLabelIsAFixedPoint(t *testing.T) {
 		}
 	}
 }
+
+// #74: a real capture (taken while working #65) showed the composer's own
+// opening fence rendering the session name centred on it — exactly what
+// isRule's own doc comment in classify.go says happens ("the opening rule
+// is labelled with the session name"), and exactly the vocabulary this
+// repo's local conventions forbid naming. The prior rule — keep any line
+// isRule accepts verbatim, on the assumption it is pure box-drawing — kept
+// that name too. This pins the fix: the rule survives, the label does not.
+func TestRedactRuleLineDropsALabelButKeepsTheRule(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "a labelled opening fence loses the label, keeps the rule",
+			raw:  "──────────────────────────────────────────────────────────────── my-session-42 ─",
+			want: "──────────────────────────────────────────────────────────────── <session> ─",
+		},
+		{
+			name: "a pure rule with no label is untouched",
+			raw:  "────────────────────────────────────────────────────────────────────────────────",
+			want: "────────────────────────────────────────────────────────────────────────────────",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RedactCapture(tc.raw)
+			if got != tc.want {
+				t.Errorf("RedactCapture(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+			// The redacted line must still be recognisable as a rule, or the
+			// fence it marks would stop classifying as one on replay.
+			if !isRule(got) {
+				t.Errorf("redacted line %q no longer satisfies isRule", got)
+			}
+		})
+	}
+}
+
+// Same fixed-point discipline as the model-line case above, for the same
+// reason: a corpus case built from a labelled fence must survive
+// TestCorpusIsFullyRedacted the moment it lands.
+func TestRedactRuleLineWithLabelIsAFixedPoint(t *testing.T) {
+	raw := "──────────────────────────────────────────────────────────────── my-session-42 ─"
+	once := RedactCapture(raw)
+	twice := RedactCapture(once)
+	if once != twice {
+		t.Errorf("not a fixed point: first pass %q, second pass %q", once, twice)
+	}
+}

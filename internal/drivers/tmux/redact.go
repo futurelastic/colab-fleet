@@ -77,12 +77,18 @@ func redactLine(raw string) string {
 		return ""
 	}
 
-	// Pure box-drawing. isRule tolerates a centred label but requires the
-	// rule characters to dominate, so this never carries content by
-	// construction — see isRule's own comment for why that threshold is
-	// what it is.
+	// A rule — but not necessarily PURE box-drawing. isRule's own comment
+	// (classify.go) says plainly that "the opening rule is labelled with
+	// the session name," and its threshold is an absolute rune count with
+	// no proportionality requirement — deliberately, because "requiring
+	// rule characters to outnumber the label failed... the label is often
+	// longer than the dashes around it." So a line satisfying isRule can
+	// carry real content, and a session name is exactly the vocabulary
+	// this repo's own conventions forbid naming. redactRuleLine keeps the
+	// rule characters — fixed chrome, needed so the fence still classifies
+	// as one on replay — and discards anything else riding along with them.
 	if isRule(stripped) {
-		return stripped
+		return redactRuleLine(stripped)
 	}
 
 	// The spinner/status line. Its verb is drawn from the runtime's own
@@ -146,6 +152,47 @@ func redactLine(raw string) string {
 func leadingSpaces(s string) string {
 	n := len(s) - len(strings.TrimLeft(s, " "))
 	return s[:n]
+}
+
+// sessionLabelPlaceholder replaces a label carried on a rule line — the
+// composer's opening fence renders the session name centred on it, and a
+// session name is exactly the vocabulary this repo's own conventions forbid
+// naming (CLAUDE.local.md, "session names ... no — by eye": nothing on the
+// automated blocklist catches this, which is why it fell through here
+// undetected until a real capture, taken while working #65, showed it
+// happening — recorded and fixed as its own issue, #74).
+const sessionLabelPlaceholder = "<session>"
+
+// redactRuleLine keeps only the box-drawing characters and surrounding
+// spaces of a line isRule accepted, replacing every maximal run of
+// anything else with a single placeholder. isRule's own threshold is an
+// absolute rune count, not a proportion, so a line can satisfy it while
+// carrying real content — classify.go's own comment says the opening rule
+// is labelled with the session name. Collapsing each such run to one fixed
+// placeholder (rather than keeping the label) is what stops that name
+// reaching a corpus this repository publishes; the rule characters that
+// remain are still enough for isRule to accept the line again on replay,
+// which is what keeps the fence recognisable to the classifier this
+// redaction serves.
+func redactRuleLine(stripped string) string {
+	runes := []rune(stripped)
+	var b strings.Builder
+	i := 0
+	for i < len(runes) {
+		r := runes[i]
+		if r == ruleRune || r == ' ' {
+			b.WriteRune(r)
+			i++
+			continue
+		}
+		j := i
+		for j < len(runes) && runes[j] != ruleRune && runes[j] != ' ' {
+			j++
+		}
+		b.WriteString(sessionLabelPlaceholder)
+		i = j
+	}
+	return b.String()
 }
 
 // redactComposerLine handles the one line where a rendering ATTRIBUTE, not
