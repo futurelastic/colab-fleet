@@ -166,10 +166,101 @@ with an actor, not an address.
 
 ---
 
+## Quickstart
+
+Go 1.26 or newer. No dependencies.
+
+```sh
+go build ./... && go test ./...
+```
+
+### One machine
+
+```sh
+export FLEET_MACHINE=machine-a
+export FLEET_TOKEN="$(openssl rand -hex 32)"
+export FLEET_ADDR=127.0.0.1:9000
+go run ./cmd/colab-fleetd
+```
+
+```sh
+curl -s -H "Authorization: Bearer $FLEET_TOKEN" http://127.0.0.1:9000/v1/health
+```
+
+There is no default port — pick one and keep it. The default bind is loopback on
+an ephemeral port, so a service you have not deliberately configured is
+reachable only from its own machine.
+
+### Two machines, over a LAN or a VPN
+
+Four steps. Do **machine-b first** — machine-a needs an address to point at.
+
+**1. Give each machine its own credential.** Not one shared token: the whole
+point of the next three steps is that the two machines have distinct identities.
+
+```sh
+mkdir -p ~/.config/colab-fleet
+openssl rand -hex 32 > ~/.config/colab-fleet/machine-a.token
+chmod 600 ~/.config/colab-fleet/machine-a.token
+```
+
+**2. On machine-b — the one that owns the sessions.** Bind the interface the
+peer will actually reach: **a specific address, never `0.0.0.0`**. On a VPN that
+is the VPN address; on a trusted LAN it is the LAN address. Loopback is added
+alongside it automatically, so the service never becomes undiagnosable from its
+own machine.
+
+```sh
+export FLEET_MACHINE=machine-b
+export FLEET_TOKEN="$(cat ~/.config/colab-fleet/machine-b.token)"
+export FLEET_ADDR=10.8.0.12:9000        # this machine's VPN or LAN address
+export FLEET_ALLOW_MUTATIONS=1          # permit writes to its own sessions
+colab-fleetd
+```
+
+**3. On machine-a — the one that will call it.** A peer is statically
+configured; there is no discovery. The address is one **you** have confirmed
+reachable from this machine, never the peer's own idea of its name — that is how
+a fleet ends up pointing at a hostname which resolves on only one side.
+
+```sh
+export FLEET_MACHINE=machine-a
+export FLEET_TOKEN="$(cat ~/.config/colab-fleet/machine-a.token)"
+export FLEET_PEERS="machine-b=http://10.8.0.12:9000"
+export FLEET_ALLOW_RELAY=1              # permit forwarding writes to a peer
+colab-fleetd
+```
+
+**4. Verify, from machine-a.**
+
+```sh
+curl -s -H "Authorization: Bearer $(cat ~/.config/colab-fleet/machine-a.token)" \
+  http://127.0.0.1:9000/v1/machines
+```
+
+```json
+{ "items": [ { "machine": "machine-a", "self": true,  "status": "ok" },
+             { "machine": "machine-b", "self": false, "status": "ok" } ],
+  "complete": true }
+```
+
+Both reading `ok` is the entire handshake. If machine-b reads `unreachable`,
+the bind address or the network path is wrong — **not** the token: a bad
+credential is a `401`, not a silence.
+
+> **The two credentials are not symmetric.** The token machine-a presents for a
+> peer is *machine-a's identity on machine-b*, not machine-b's identity here.
+> They are different secrets, and conflating them is how a fleet quietly ends up
+> back on one shared token.
+
+You now have one API over both machines. What to do with it is below.
+
+
 ## One machine drives another
 
-This is the whole point of the layer, so here it is end to end, over a LAN or a
-VPN link.
+What the two-machine setup above actually buys you, end to end. Every call is
+made against the **local** service; that it crosses a LAN or a VPN to reach the
+other machine is the service's problem, not the caller's.
 
 ```mermaid
 sequenceDiagram
@@ -196,47 +287,7 @@ sequenceDiagram
     Note over C,A: the caller never learns the session was remote.<br/>Fan-out stops here — peers never recurse.
 ```
 
-### Configure the machine that owns the sessions
-
-Bind the interface the peer will actually reach — **a specific address, never
-`0.0.0.0`**. On a VPN that is the VPN interface; on a trusted LAN it is the LAN
-address. Loopback is added automatically alongside it, so the service never
-becomes undiagnosable from its own machine.
-
-```sh
-export FLEET_MACHINE=machine-b
-export FLEET_TOKEN="$(cat ~/.config/colab-fleet/machine-b.token)"
-export FLEET_ADDR=10.8.0.12:9000        # the VPN address of this machine
-export FLEET_ALLOW_MUTATIONS=1          # permit writes to its own sessions
-colab-fleetd
-```
-
-There is no default port — pick one and keep it.
-
-### Configure the machine that will call it
-
-A peer is statically configured; there is no discovery. The address is one
-**you** have confirmed reachable from this machine — never the peer's own idea
-of its name, which is how a fleet ends up pointing at a hostname that only
-resolves on one side.
-
-```sh
-export FLEET_MACHINE=machine-a
-export FLEET_TOKEN="$(cat ~/.config/colab-fleet/machine-a.token)"
-export FLEET_PEERS="machine-b=http://10.8.0.12:9000"
-export FLEET_ALLOW_RELAY=1              # permit forwarding writes to a peer
-colab-fleetd
-```
-
-Note the asymmetry: the credential configured for a peer is **this machine's
-identity on that peer**, not that peer's identity here. They are different
-secrets, and conflating them is how a fleet quietly ends up back on one shared
-token.
-
 ### Drive it
-
-Everything below is sent to the **local** service. That it reaches another
-machine is the service's problem, not yours.
 
 ```sh
 FLEET=http://127.0.0.1:9000
@@ -314,30 +365,6 @@ denied, on a fresh deployment as much as an established one.
 > when mutations are enabled, starts processes. Put it on a VPN or a trusted
 > LAN segment, bind a specific interface, and give each caller its own
 > credential with only the grants it needs.
-
----
-
-## Quickstart, one machine
-
-Go 1.26 or newer. No dependencies.
-
-```sh
-go build ./...
-go test ./...
-
-export FLEET_MACHINE=machine-a
-export FLEET_TOKEN="$(openssl rand -hex 32)"
-export FLEET_ADDR=127.0.0.1:9000
-go run ./cmd/colab-fleetd
-```
-
-```sh
-curl -s -H "Authorization: Bearer $FLEET_TOKEN" http://127.0.0.1:9000/v1/health
-```
-
-A `pre-commit` hook ships in `.githooks/` and does nothing until you point Git
-at it — run `.githooks/install.sh` once per checkout. It does not travel with a
-clone.
 
 ---
 
