@@ -60,7 +60,31 @@ import (
 // region — the exact region the self-contamination came from — so promoting
 // prose out of it into a structured field would rebuild the hazard this file
 // exists to avoid, one layer higher and harder to see. The distinction is worth
-// having and is recorded as its own issue rather than taken on unsound evidence.
+// having and is recorded as its own issue (colab-fleet #65) rather than taken
+// on unsound evidence.
+//
+// The close codes underneath, read out of the runtime binary rather than
+// guessed from a capture, recorded here so the next attempt does not have to
+// re-derive them. Which ones are transient versus terminal is NOT recorded
+// below because it was not established by that reading — the binary
+// distinguishes these codes; it is not confirmed here which ones it treats
+// as retryable. Do not infer that mapping from the code numbers or from
+// which two happened to come with example message text; measure it before
+// building anything that branches on it.
+//
+//	4090  session ended or archived from another device or app, with four
+//	      sub-reasons the binary distinguishes but the message text above
+//	      does not surface separately
+//	4091  transport init failure
+//	4092  no close reason given
+//	4093  heartbeat failure
+//	4094  worker credential rejected
+//
+// Whoever solves #65 soundly needs a way to read this that is not "trust the
+// transcript" — the runtime would need to put it somewhere an agent cannot
+// write, the way the footer label already is, or this field would need to
+// come from the runtime's own durable record the way QuotaBlock.since and
+// TurnEnd do (colab-fleet #56) rather than from a screen at all.
 //
 // # A label that is absent is absent, never "connected"
 //
@@ -112,6 +136,16 @@ func controlChannelOf(s screen) *fleet.ControlChannel {
 // connected, which is the failure this whole field exists to end — so the
 // tolerant match is the safe one here, and the region check above is what keeps
 // tolerance from becoming credulity.
+//
+// The tolerance is deliberate, but so is naming the gap behind it (colab-fleet
+// #65): the label's exact position within the footer comes from one capture
+// pasted into #48, where it appeared right-aligned, and has never been
+// re-captured through this driver — testdata/corpus/
+// control-channel-failed-reads-healthy's own `redactedFrom` says so in full.
+// Tightening this match to what that one capture showed would be trading a
+// real safety property for a guess dressed as precision; it stays loose until
+// there is a real corpus of the four label states to check it against, which
+// needs pane access this workspace's agents do not have.
 func controlStateIn(line string) (fleet.ControlChannelState, bool) {
 	idx := strings.Index(line, controlLabel)
 	if idx < 0 {
