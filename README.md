@@ -105,16 +105,15 @@ stateDiagram-v2
     quota_blocked --> idle: quota window resets
 
     note right of waiting_input
-        Dead end. Only a respond call
-        moves it: answer by index,
-        checked against a nonce. This
-        is the state that strands work.
+        Dead end. Only a respond call moves it:
+        answer by index, checked against a nonce.
+        This is the state that strands work.
     end note
 
     note right of quota_blocked
-        Not idle. On screen both are
-        a quiet terminal with an empty
-        composer - the API keeps them apart.
+        Not idle. On screen both are a quiet
+        terminal with an empty composer.
+        The API keeps them apart.
     end note
 ```
 
