@@ -205,7 +205,11 @@ reaches a command line (§5.3).
 
 **`name` is a request, not the id.** The driver owns the naming rules
 (session-abstraction.md §2.1) and may sanitize the name, number it against
-sessions already live, or append `marker`. **Read the returned `id`** — it is
+sessions already live, or append `marker`. A marker is carried, never
+stacked, whatever alphabet it is drawn from — a name that already ends in
+the one sent keeps the one it has, so a caller resuming an already-marked
+name may send the same `marker` again without growing it (colab-fleet #88).
+**Read the returned `id`** — it is
 the resolved string, and it is what every later call must address. A caller
 that assumes the name it sent is the id it got will address the wrong session
 the first time two carry the same name.
