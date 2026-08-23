@@ -99,13 +99,13 @@ func decoration(name string) string {
 }
 
 // applyMarker appends the caller's session-type marker unless the name already
-// carries a decoration of its own.
-//
-// Carry it, never stack it. Without this guard a name that already ends in a
-// marker gains a second one on every pass, and the doubled form is a different
-// session name — so the next lookup misses and creates yet another.
+// ends in that marker OR already carries any trailing decoration from an
+// earlier type. Both conditions are "carry, never stack": the first catches a
+// marker drawn only from the same alphabet as the name body, which
+// decoration() alone cannot see; the second preserves the older rule that a
+// name already outside the nameBody alphabet is left alone.
 func applyMarker(name, marker string) string {
-	if marker == "" || decoration(name) != "" {
+	if marker == "" || decoration(name) != "" || strings.HasSuffix(name, marker) {
 		return name
 	}
 	return name + marker
@@ -118,11 +118,19 @@ func applyMarker(name, marker string) string {
 // that has a number after it is no longer a trailing marker, and the session
 // stops being recognisable as its own type at exactly the moment there are two
 // of them.
-func numberedName(name string, n int) string {
+//
+// marker is the same sanitized marker passed to applyMarker; when name ends in
+// that marker, it is used as the decoration even if it is drawn only from the
+// nameBody alphabet (which generic decoration() alone cannot detect as a
+// separate suffix).
+func numberedName(name, marker string, n int) string {
 	if n < 2 {
 		return name
 	}
 	deco := decoration(name)
+	if marker != "" && strings.HasSuffix(name, marker) && deco == "" {
+		deco = marker
+	}
 	base := strings.TrimSuffix(name, deco)
 	return base + "-" + strconv.Itoa(n) + deco
 }
@@ -166,7 +174,8 @@ const maxNameAttempts = 64
 // a marker applied after numbering would sit behind the counter where nothing
 // keying on a trailing marker can see it.
 func (d *Driver) resolveName(ctx context.Context, requested, marker string) (string, bool) {
-	name := applyMarker(sanitizeName(requested), sanitizeName(marker))
+	marker = sanitizeName(marker)
+	name := applyMarker(sanitizeName(requested), marker)
 	if name == "" {
 		return "", false
 	}
@@ -175,7 +184,7 @@ func (d *Driver) resolveName(ctx context.Context, requested, marker string) (str
 		return name, true
 	}
 	for n := 1; n <= maxNameAttempts; n++ {
-		candidate := numberedName(name, n)
+		candidate := numberedName(name, marker, n)
 		if !taken[candidate] {
 			return candidate, true
 		}
