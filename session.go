@@ -55,8 +55,11 @@ type SessionSpec struct {
 	// previously ask for OR detect.
 	//
 	// The driver carries a marker, never stacks it: a name that already
-	// ends in one keeps the one it has. The service assigns no vocabulary
-	// of its own — what a marker MEANS is the caller's business.
+	// ends in one keeps the one it has. This holds regardless of what
+	// alphabet the marker is drawn from — a marker built only from the
+	// same characters as the name body is carried exactly like one that
+	// is not. The service assigns no vocabulary of its own — what a
+	// marker MEANS is the caller's business.
 	Marker string `json:"marker,omitempty"`
 
 	// RemoteControl requests that the session be reachable by remote
