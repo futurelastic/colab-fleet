@@ -68,6 +68,23 @@ id_rsa*
 # every checkout before anyone has to hand-repair it machine by machine.
 *.local.md
 
+# ─── Coding-assistant session/cache artefacts (never commit) — see #91 ───
+# A session transcript or index is prose nobody wrote deliberately and
+# nobody proof-reads — it records whatever was on screen while the
+# assistant worked: paths, hostnames, command output, the contents of
+# files that scrolled past. The pre-commit guard inspects commands, not
+# tracked files, so this class reaches the remote silently unless it is
+# ignored outright. Any assistant or editor that persists state into the
+# working directory belongs in this list, added the moment it's first
+# seen rather than after it's been staged once.
+.aider.chat.history.md
+.aider.input.history
+.aider.llm.history
+.aider.tags.cache.v*/
+.continue/
+.cursor/
+.windsurf/
+
 # ─── Raw pane captures (by suffix — never a directory, never committed) ───
 # testdata/corpus/README.md's curation path saves a raw capture to a scratch
 # file before redact.go's RedactCapture ever sees it. That file must never
