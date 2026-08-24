@@ -56,6 +56,21 @@
 #                       verification is skipped and the script says so loudly,
 #                       because an unverified deploy is the thing this script
 #                       was written to stop.
+#   FLEET_HEALTH_TOKEN       bearer token to verify with, taken literally.
+#                             Takes precedence over FLEET_HEALTH_TOKEN_FILE
+#                             below when set (colab-fleet #93 — see the verify
+#                             section for why this exists).
+#   FLEET_HEALTH_TOKEN_FILE  path to a token file, read ON THE HOST via `cat`,
+#                             same as this script's behaviour before #93.
+#                             Defaults to ~/.config/colab-fleet/token, so a
+#                             caller who sets neither of these two sees no
+#                             change at all.
+#   FLEET_VERIFY_TIMEOUT      seconds to poll the health URL before giving up.
+#                             Default 180 — colab-fleet #93 measured a real,
+#                             successful startup taking 98s under load, so the
+#                             deadline needs slack above that, not just above
+#                             a quiet-box startup.
+#   FLEET_VERIFY_INTERVAL     seconds between polls while waiting. Default 2.
 #   ALLOW_DIRTY=1       build from a modified tree anyway. The resulting
 #                       binary reports itself as dirty and will never compare
 #                       equal to anything, including the next deploy.
@@ -175,12 +190,41 @@ if [ -z "${FLEET_HEALTH_URL:-}" ]; then
 	exit 0
 fi
 
-echo "deploy: verifying"
-i=0
+# colab-fleet #93: verification used to assume the token file under the
+# service's own config directory, read ON THE HOST, was always a credential
+# that host's service accepts. Measured false on a federated fleet: the
+# credential that answers for a peer can be one only the machine running THIS
+# script holds, so the host's own file answered 401 for a perfectly healthy
+# service. Take the credential as configuration instead of assuming it.
+if [ -n "${FLEET_HEALTH_TOKEN:-}" ]; then
+	AUTH_HEADER="Authorization: Bearer ${FLEET_HEALTH_TOKEN}"
+else
+	TOKEN_FILE=${FLEET_HEALTH_TOKEN_FILE:-~/.config/colab-fleet/token}
+	AUTH_HEADER="Authorization: Bearer \$(cat ${TOKEN_FILE})"
+fi
+
+# colab-fleet #93: a single probe cannot tell "not up yet" from "not coming
+# up" — startup does real work (a trust-seed pass and a session
+# reconciliation) that scales with how much the machine is carrying, and was
+# measured taking 98 seconds on the busiest machine. Poll to a deadline
+# instead, generous enough to clear that: the cost of waiting a few minutes
+# longer is nothing next to the cost of an operator rolling back, or
+# abandoning, a deploy that was already fine.
+FLEET_VERIFY_TIMEOUT=${FLEET_VERIFY_TIMEOUT:-180}
+FLEET_VERIFY_INTERVAL=${FLEET_VERIFY_INTERVAL:-2}
+
+echo "deploy: verifying (up to ${FLEET_VERIFY_TIMEOUT}s)"
+START=$(date +%s)
+NEXT_NOTICE=30
 RUNNING=""
 STATUS=""
 BODY=""
-while [ "$i" -lt 10 ]; do
+while :; do
+	ELAPSED=$(($(date +%s) - START))
+	if [ "$ELAPSED" -ge "$FLEET_VERIFY_TIMEOUT" ]; then
+		break
+	fi
+
 	# No -f: colab-fleet #66 found a health URL pointing at the WRONG
 	# service (a stray port, an unrelated server on the same host) producing
 	# a near-identical FAILED to a service that never came back up — because
@@ -188,7 +232,7 @@ while [ "$i" -lt 10 ]; do
 	# else entirely looked exactly like no answer at all. The status rides
 	# along on its own trailing line so it survives whatever shape the body
 	# is, and both are kept for the diagnostic below regardless of status.
-	RAW=$(run "curl -sS -w '\\n%{http_code}' -H \"Authorization: Bearer \$(cat ~/.config/colab-fleet/token)\" ${FLEET_HEALTH_URL}" 2>/dev/null) && CURL_OK=1 || CURL_OK=0
+	RAW=$(run "curl -sS -w '\\n%{http_code}' -H \"${AUTH_HEADER}\" ${FLEET_HEALTH_URL}" 2>/dev/null) && CURL_OK=1 || CURL_OK=0
 	if [ "$CURL_OK" = "1" ]; then
 		STATUS=$(printf '%s\n' "$RAW" | tail -n1)
 		BODY=$(printf '%s\n' "$RAW" | sed '$d')
@@ -201,8 +245,20 @@ while [ "$i" -lt 10 ]; do
 	if [ -n "$RUNNING" ]; then
 		break
 	fi
-	i=$((i + 1))
-	sleep 1
+	if [ -n "$STATUS" ]; then
+		# Reached something concrete (a real HTTP status) rather than
+		# nothing at all. Retrying blindly will not fix a wrong URL or a
+		# rejected credential — that is a configuration problem, not a
+		# timing one — so stop here instead of waiting out the whole
+		# deadline on an answer that will not change.
+		break
+	fi
+
+	if [ "$ELAPSED" -ge "$NEXT_NOTICE" ]; then
+		echo "deploy: not up yet (${ELAPSED}s elapsed) — this is expected while the service is still starting"
+		NEXT_NOTICE=$((NEXT_NOTICE + 30))
+	fi
+	sleep "$FLEET_VERIFY_INTERVAL"
 done
 
 if [ -z "$RUNNING" ]; then
@@ -210,16 +266,27 @@ if [ -z "$RUNNING" ]; then
 		# Reached SOMETHING, and it did not report a build identity. #66:
 		# this is not "it did not come back up" — the connection itself
 		# worked — so say what actually answered instead of the one
-		# explanation that fits the OTHER failure.
+		# explanation that fits the OTHER failure. #93: this also covers a
+		# wrong credential — a 401 with no build identity in the body, from
+		# a service that is otherwise perfectly healthy, is what a wrong
+		# FLEET_HEALTH_TOKEN or FLEET_HEALTH_TOKEN_FILE produces.
 		echo "deploy: FAILED — ${FLEET_HEALTH_URL} answered (status ${STATUS}) but the" >&2
 		echo "        body carried no build identity. That means the URL names" >&2
-		echo "        something that is not this service, or a binary old enough not" >&2
-		echo "        to report one — not that the restart failed. First line of what" >&2
-		echo "        came back:" >&2
+		echo "        something that is not this service, a binary old enough not" >&2
+		echo "        to report one, or a credential this service does not accept" >&2
+		echo "        (see FLEET_HEALTH_TOKEN / FLEET_HEALTH_TOKEN_FILE) — not that" >&2
+		echo "        the restart failed. First line of what came back:" >&2
 		printf '%s\n' "$BODY" | head -1 | sed 's/^/            /' >&2
 	else
-		echo "deploy: FAILED — ${FLEET_HEALTH_URL} could not be reached at all." >&2
-		echo "        The service did not come back up." >&2
+		# #93: distinct from the branch above on purpose. Nothing answered at
+		# all for the full deadline — unlike a single failed probe mid-poll,
+		# this is not "not up yet": FLEET_VERIFY_TIMEOUT was chosen to clear
+		# a slow, heavily-loaded start, so a service that still has not
+		# answered by then is the genuine "did not come up".
+		echo "deploy: FAILED — ${FLEET_HEALTH_URL} did not come up within ${FLEET_VERIFY_TIMEOUT}s." >&2
+		echo "        Raise FLEET_VERIFY_TIMEOUT if this machine is carrying more" >&2
+		echo "        than that normally covers, then check it by hand before" >&2
+		echo "        assuming the restart itself failed." >&2
 	fi
 	exit 1
 fi

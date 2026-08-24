@@ -63,6 +63,19 @@ fact this script otherwise refuses to guess, and guessing it wrong produced a
 deploy that looked FAILED while every step had actually succeeded — see the
 trap below.
 
+Four more variables tune verification itself, all optional and all defaulted
+to the prior behaviour (colab-fleet #93 — see the trap below for why they
+exist):
+
+- `FLEET_VERIFY_TIMEOUT` — seconds to poll the health URL before giving up.
+  Default **180**.
+- `FLEET_VERIFY_INTERVAL` — seconds between polls. Default **2**.
+- `FLEET_HEALTH_TOKEN` — the literal bearer token to verify with. Takes
+  precedence when set.
+- `FLEET_HEALTH_TOKEN_FILE` — a path, read on the host via `cat`. Defaults to
+  `~/.config/colab-fleet/token`, the script's original hardcoded path — so a
+  caller who sets neither of the last two sees no change at all.
+
 ## Traps, measured running this
 
 Each of these cost real time before it earned a place here.
@@ -89,6 +102,40 @@ nothing" produced the same empty `RUNNING` and the same generic FAILED. The
 script now keeps the status and the first line of the body specifically for
 this case, so a wrong URL says *what answered* instead of pointing at whichever
 step ran most recently.
+
+**Two more deploys succeeded at every step and still verified as FAILED, for
+two more reasons neither of the above covers (colab-fleet #93).**
+
+The first is startup that is not instant. Verification used to probe once and
+declare the service dead if that single probe found nothing. Startup does real
+work after the process is back — a trust-seed pass and a session
+reconciliation over everything the machine was carrying — and that work scales
+with how much the machine is carrying, so the busiest machine is the one most
+likely to be declared dead. One measured case came back **98 seconds** after
+the restart and was healthy from then on; the single-probe script had already
+printed the most alarming message it has ("the service did not come back up")
+and exited 1, inviting a rollback of a deploy that was already fine. `scripts/deploy.sh`
+now polls to a deadline (`FLEET_VERIFY_TIMEOUT`, default 180s — chosen with
+slack above that 98s measurement) instead of probing once, and distinguishes
+"not up yet" (an interim notice while still inside the deadline — expected,
+not alarming) from "did not come up" (the deadline was reached with nothing
+ever answering — a real failure). A probe that reaches something concrete — a
+real HTTP status, even a bad one — still fails fast rather than waiting out
+the whole deadline, because retrying will not change a stable answer like that.
+
+The second is a credential mismatch across a federation. Verification curls the
+health URL **on the host**, with a token file read on that same host. On a
+federated fleet that file is not guaranteed to hold a credential the far
+machine's own service accepts — the credential that answers for a peer can
+instead be one only the machine driving the deploy holds. The deploy itself was
+completely fine; verification simply asked with the wrong credential and got a
+`401` with no build identity in the body — indistinguishable, to the operator,
+from the deploy having actually failed, and landing on exactly the step that
+talks you out of finishing a two-machine deploy. `FLEET_HEALTH_TOKEN` (a
+literal token) and `FLEET_HEALTH_TOKEN_FILE` (an alternate path, still read on
+the host) make the credential configuration instead of an assumption; neither
+is required, so a caller who sets neither sees the prior hardcoded path and no
+change in behaviour.
 
 **An untracked file the committed ignore rules do not cover makes the build
 report itself modified, and a modified build compares equal to nothing.**
