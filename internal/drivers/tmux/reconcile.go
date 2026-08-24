@@ -360,6 +360,66 @@ func identityDrift(rows []paneRow, prior map[string]sessionRecord) []nameDrift {
 	return out
 }
 
+// driftSentence is the one wording for "this machine asserted X, the runtime
+// now carries Y", used by both channels that report it — SessionState.
+// Evidence's prose (§2.3, tmux.go's List) and IdentityAssertion.Evidence
+// (colab-fleet #102, identityAssertionFor below) — so the two can never
+// disagree about the same read. The wording, and the absence of a leading
+// separator, are unchanged from what tmux.go published before #102: List's
+// own call site supplies its own "; " so the published evidence string is
+// byte-identical to what it was.
+func driftSentence(asserted, carried string) string {
+	return fmt.Sprintf(
+		"this machine last asserted %q for this session and the runtime now carries %q",
+		asserted, carried)
+}
+
+// heldSentence and uncorroboratedSentence are driftSentence's siblings for
+// IdentityAssertion's other two present-but-not-drifted states — colab-fleet
+// #102. Neither has a prose precedent to stay byte-identical to; both follow
+// driftSentence's voice.
+func heldSentence(asserted string) string {
+	return fmt.Sprintf("this machine asserted %q for this session and the runtime carries it", asserted)
+}
+
+func uncorroboratedSentence(asserted string) string {
+	return fmt.Sprintf(
+		"this machine asserted %q for this session and no read has yet matched the record to a live run; not a claim the runtime disagrees",
+		asserted)
+}
+
+// identityAssertionFor builds colab-fleet #102's machine-readable field from
+// exactly the facts List already has in hand for this row — no detection of
+// its own. byRun is indexByPaneCreated(prior), passed in rather than
+// recomputed, because List builds it once per listing; prior is the same map
+// identityDrift itself reads, used here only for the uncorroborated stub
+// case indexByPaneCreated's own Pane=="" skip excludes from byRun.
+//
+// The run-match (byRun) is tried first, deliberately: it is the match that
+// survives a rename, the entire reason indexByPaneCreated exists, and it
+// must never be shadowed by the name-keyed fallback below it.
+func identityAssertionFor(r paneRow, prior map[string]sessionRecord, byRun map[paneCreated]sessionRecord) *fleet.IdentityAssertion {
+	if rec, ok := byRun[paneCreatedOf(r.paneID, r.created)]; ok && rec.Name != "" {
+		if rec.Name == r.session {
+			return fleet.IdentityHeld(rec.Name, rec.NameAssertedAt, heldSentence(rec.Name))
+		}
+		evidence := driftSentence(rec.Name, r.session)
+		if rec.Reasserts > 0 {
+			evidence += fmt.Sprintf("; this machine has already put that name back %d time(s)", rec.Reasserts)
+		}
+		return fleet.IdentityDrifted(rec.Name, r.session, rec.NameAssertedAt, evidence)
+	}
+	// No run match — either nothing was ever asserted for this session, or a
+	// Create just wrote a stub (Name set, Pane not yet corroborated by a
+	// List). Distinguish those by looking the live name up directly: a stub
+	// is keyed under the name Create resolved, same as every other record,
+	// until the first List's noteSessionSet fills in Pane/Created.
+	if stub, ok := prior[r.session]; ok && stub.Name != "" && stub.Pane == "" {
+		return fleet.IdentityUncorroborated(stub.Name, stub.NameAssertedAt, uncorroboratedSentence(stub.Name))
+	}
+	return nil
+}
+
 // markerStateFor answers colab-fleet #96 exactly, when this driver has a
 // record to answer from: whether the marker resolveName would apply to
 // name is already there because THIS driver put it there — never guessed
@@ -379,6 +439,27 @@ func (d *Driver) markerStateFor(name, marker string) markerState {
 		return markerApplied
 	}
 	return markerAbsent
+}
+
+// identityAssertionForCreate answers colab-fleet #102 for every Create-family
+// return — a fresh create, an idempotent replay of one already completed, or
+// an adopted pending recovery. None of the three enumerate the runtime live,
+// so none may claim more than "asserted, not yet corroborated": that
+// stronger claim (held or drifted) is List's alone to make, once an actual
+// read has matched this record against a live run (identityAssertionFor,
+// above). Reads the durable record rather than reconstructing the values
+// from the caller's own arguments, for the same "one fact, not two that can
+// drift" reason noteCreateRecord's own comment already states for
+// pins/surface/prompt.
+func (d *Driver) identityAssertionForCreate(name string) *fleet.IdentityAssertion {
+	if d.store == nil {
+		return nil
+	}
+	rec, ok := d.loadRecords()[name]
+	if !ok || rec.Name == "" {
+		return nil
+	}
+	return fleet.IdentityUncorroborated(rec.Name, rec.NameAssertedAt, uncorroboratedSentence(rec.Name))
 }
 
 // noteAssertedName records the identity a Create just resolved — colab-fleet

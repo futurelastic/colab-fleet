@@ -881,6 +881,13 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	for _, nd := range drift {
 		driftBySession[nd.live.session] = nd
 	}
+	// colab-fleet #102: a second, independent index over the same prior
+	// records, for identityAssertionFor below. Not threaded through
+	// identityDrift itself — that function's output also drives
+	// reassertNames, and TestIdentityReassertStopsOnceContested /
+	// TestReassertRefusesWhenTheNameIsTaken cover that path unchanged; this
+	// keeps it that way rather than reshaping it to serve a second reader.
+	assertedByRun := indexByPaneCreated(priorRecords)
 
 	d.noteSessionSet(rows, priorRecords)
 
@@ -925,9 +932,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		// response must not see it agree silently the way #97's own
 		// measurement found it doing.
 		if nd, ok := driftBySession[r.session]; ok {
-			st.Evidence += fmt.Sprintf(
-				"; this machine last asserted %q for this session and the runtime now carries %q",
-				nd.want, r.session)
+			st.Evidence += "; " + driftSentence(nd.want, r.session)
 		}
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
@@ -943,6 +948,12 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			Attach:     d.attachHint(r.session),
 			State:      st,
 		}
+		// colab-fleet #102: the same fact the evidence sentence above
+		// carries, machine-readable. Populated HERE — at response-build
+		// time, from what THIS read observed — not from reassertNames'
+		// repair below, which runs after this response is built and lands
+		// on the caller's NEXT poll, not this one.
+		s.IdentityAssertion = identityAssertionFor(r, priorRecords, assertedByRun)
 		// #84/#85/#86: this session's own create record, if one is still on
 		// file — see createrecord.go. Absent means either nothing was
 		// requested that this record would carry, or the record already
@@ -2321,6 +2332,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 			return fleet.Session{
 				SessionRef: ref, Cwd: spec.Cwd,
 				Pins: pins, RuntimeSurface: surface, PromptDelivery: prompt,
+				IdentityAssertion: d.identityAssertionForCreate(ref.ID),
 			}, nil
 		}
 		if adopted, ok := d.resolvePending(ctx, key, rec); ok {
@@ -2329,6 +2341,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 			return fleet.Session{
 				SessionRef: adopted, Cwd: spec.Cwd,
 				Pins: pins, RuntimeSurface: surface, PromptDelivery: prompt,
+				IdentityAssertion: d.identityAssertionForCreate(adopted.ID),
 			}, nil
 		}
 		// Nothing was started, or nothing survives. Safe to proceed.
@@ -2527,9 +2540,18 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	}
 	rec, found := d.createRecordFor(name, string(spec.Cwd))
 	pins, surface, prompt := sessionFactsFor(rec, found, name)
+	// colab-fleet #102: the identity this call just asserted, read back from
+	// the same durable record noteAssertedName just wrote above — honestly
+	// unresolved, since nothing has read this session back yet and this
+	// cannot claim the runtime carries it (that claim is List's to make, on
+	// a later read). Same "one fact, not two that can drift" property
+	// noteCreateRecord's own comment states for pins/surface/prompt above,
+	// and shared with the idempotent-replay returns near the top of this
+	// function via identityAssertionForCreate.
 	return fleet.Session{
 		SessionRef: ref, Cwd: spec.Cwd,
 		Pins: pins, RuntimeSurface: surface, PromptDelivery: prompt,
+		IdentityAssertion: d.identityAssertionForCreate(name),
 	}, nil
 }
 

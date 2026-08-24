@@ -817,6 +817,80 @@ is `state.controlChannel`'s question (§2.3), which already distinguishes
 `failed`/`reconnecting`/`active`. Unresolving `runtimeSurface` on every
 dropped connection would make an identity field flicker with a health signal.
 
+### 2.14 IdentityAssertion
+
+```
+IdentityAssertion {
+  asserted    : string      // the identity this machine last asserted for this session
+  drifted?    : boolean     // nil = asserted, not yet corroborated against a live read;
+                            // false = the runtime carries `asserted`; true = it carries `carried` instead
+  carried?    : string      // what the runtime carries right now; present only when drifted is true
+  assertedAt? : Timestamp   // when `asserted` was last SET; optional in every state
+  evidence    : string      // prose for humans, present in every state; never parse it
+}
+```
+
+Optional on `Session`. **Four** states, one more than §2.9-§2.12, for a
+specific reason rather than symmetry with §2.13:
+
+| shape | means |
+|---|---|
+| the field absent | this machine has asserted no identity for this session at all — an adopted, foreign or cold-store session it never named, or a driver with no state store. Never a claim the identity agrees |
+| `drifted` absent + `evidence` | an identity WAS asserted, and no read has yet matched the durable record to a live run to corroborate it. Clears on the next read. Never read as "no drift" |
+| `drifted: false` + `evidence` | settled, as of THIS read: the runtime carries exactly what this machine asserted |
+| `drifted: true` + `carried` + `evidence` | this read found them disagreeing — colab-fleet #97's defect, machine-readable |
+
+**Why this exists (colab-fleet #102, on the back of #96/#97).** #97 measured a
+rename that returned `202 accepted`, read back correct for roughly half an
+hour, then silently reverted — id, name and attach target all restored, with
+nothing in any response saying so for that whole window. #97's own fix made
+the disagreement detectable and self-repairing: a driver's `List` now compares
+what it just enumerated against a durable record of what it last asserted, and
+puts a name back when the two disagree. But the only place that fact surfaced
+was a prose sentence appended to `state.evidence` — a field §2.3 tells every
+caller never to parse. A fact that exists, is durable, and is reachable only
+by pattern-matching prose is not on the wire; this field is.
+
+**Why the third state is real, not invented for symmetry.** An asserted
+identity is recorded the instant a create or a rename resolves it — before
+any read has had a chance to corroborate it against a live run, matched by
+`(pane, created)` so a later rename does not orphan the match. A record still
+missing that pairing cannot yet be told apart from a drifted one, so this
+state reports it as unresolved rather than guessing either way. It clears on
+the very next read, the same "clears in seconds, never read as no" property
+§2.13 already establishes for `runtimeSurface`.
+
+**Not latched, unlike `runtimeSurface`.** §2.13's `known: true` stays true for
+the life of the record once corroborated, because it names an address, not a
+health check. `drifted: false` here is the opposite: a claim about THIS read
+alone. The runtime's name for a session can change again the moment after a
+read reports agreement, and it is the *next* read that says so — never a
+cached verdict from an earlier one.
+
+**The repair, if there is one, lands on the next read, not this one.** The
+read that first discovers a drift reports `drifted: true`; the driver's own
+repair of it is attempted afterward, once this response already exists. A
+caller polling twice in the ordinary case sees `drifted: true` then
+`drifted: false`. A single `drifted: true` is not a permanent condition, and a
+`drifted: false` is not proof no drift ever happened.
+
+**Why there is no `source` field.** `pins` and `runtimeSurface` each fork a
+real question — observed against declared, observed against derived. Here
+there is exactly one source in every state: `asserted` comes from this
+machine's own durable record, `carried` from the live enumeration in the same
+read. A field with one possible value would teach a caller nothing.
+
+**Why "contested" is not a state here.** A driver that gives up repairing a
+drift — the wanted name is live under another session, or a bounded number of
+attempts is already spent — is reporting a fact about its own repair policy,
+not about what this read observed; folding a decision about a future action
+into a field describing the present is the same category of error `agent`/
+`model` are documented to avoid (colab-fleet #84). It is also not a stable
+fact: a name taken by another session becomes free the moment that session
+closes. The operational need is met elsewhere, outside this wire contract. A
+field added to a published contract later is additive; retracting one is not
+— so the narrower shape is the one that ships.
+
 ---
 
 ## 3. Operations

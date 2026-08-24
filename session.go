@@ -451,5 +451,14 @@ type Session struct {
 	// rule ResumeOutcome's own nil follows for resume.
 	PromptDelivery *PromptDelivery `json:"promptDelivery,omitempty"`
 
+	// IdentityAssertion is what this machine last asserted this session's
+	// identity to be, and whether the runtime still carries it (colab-fleet
+	// #97, #102; see IdentityAssertion). Nil means this machine has asserted
+	// no identity for this session at all — an adopted, foreign or
+	// cold-store session it never named, or a driver with no state store.
+	// It is never a claim that the identity agrees; that claim is
+	// IdentityAssertion.Drifted false.
+	IdentityAssertion *IdentityAssertion `json:"identityAssertion,omitempty"`
+
 	State SessionState `json:"state"`
 }

@@ -1958,6 +1958,148 @@ func idsOf(col fleet.Collection[fleet.Session]) []string {
 	return out
 }
 
+func sessionByID(col fleet.Collection[fleet.Session], id string) (fleet.Session, bool) {
+	for _, s := range col.Items() {
+		if s.ID == id {
+			return s, true
+		}
+	}
+	return fleet.Session{}, false
+}
+
+// colab-fleet #102: the same fact evidenceMentionsDrift checks for in prose
+// must also be readable structurally, and the two must never disagree about
+// the same read — walks the same revert scenario
+// TestRenameSurvivesARuntimeRevert does, then checks IdentityAssertion at
+// each step: drifted on the read that discovers it, held on the read after
+// the repair, absent for a session this driver never asserted anything for.
+func TestIdentityAssertionReportsDriftStructurally(t *testing.T) {
+	ctx := context.Background()
+	started := time.Unix(1785600001, 0) // beta's own created time, from twoSessions
+	dir := t.TempDir()
+	f := twoSessions()
+	d := stateDriver(t, f, dir)
+
+	if _, err := d.List(ctx, testCaller, listAll()); err != nil {
+		t.Fatal(err)
+	}
+	req := testCaller
+	req.Expect.StartedAt = &started
+	if _, err := d.Rename(ctx, req, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "beta-x"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	col, err := d.List(ctx, testCaller, listAll())
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed, ok := sessionByID(col, "beta-x")
+	if !ok {
+		t.Fatalf("rename did not read back: %v", idsOf(col))
+	}
+	if renamed.IdentityAssertion == nil || renamed.IdentityAssertion.Drifted == nil || *renamed.IdentityAssertion.Drifted {
+		t.Errorf("a freshly held rename must report IdentityAssertion.Drifted = false, got %+v", renamed.IdentityAssertion)
+	}
+
+	// alpha was never created or renamed by this driver — an adopted/foreign
+	// session in every sense this record store knows. The field must be
+	// absent, never Drifted:false.
+	alpha, ok := sessionByID(col, "alpha💬")
+	if !ok {
+		t.Fatalf("alpha went missing: %v", idsOf(col))
+	}
+	if alpha.IdentityAssertion != nil {
+		t.Errorf("a session this driver never asserted an identity for must carry no IdentityAssertion, got %+v", alpha.IdentityAssertion)
+	}
+
+	// A second actor on the machine reverts it — outside this driver
+	// entirely, directly against the fake, the way something this service
+	// does not own would touch the real multiplexer.
+	f.mu.Lock()
+	for i := range f.sessions {
+		if f.sessions[i].name == "beta-x" {
+			f.sessions[i].name = "beta"
+		}
+	}
+	f.mu.Unlock()
+
+	firstAfterRevert, err := d.List(ctx, testCaller, listAll())
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted, ok := sessionByID(firstAfterRevert, "beta")
+	if !ok {
+		t.Fatalf("beta went missing after the revert: %v", idsOf(firstAfterRevert))
+	}
+	ia := drifted.IdentityAssertion
+	if ia == nil || ia.Drifted == nil || !*ia.Drifted {
+		t.Fatalf("the first read after the revert must report Drifted = true, got %+v", ia)
+	}
+	if ia.Asserted != "beta-x" || ia.Carried != "beta" {
+		t.Errorf("Asserted/Carried = %q/%q, want beta-x/beta", ia.Asserted, ia.Carried)
+	}
+	// Cross-check: the same read's prose evidence and the structural field
+	// must agree — one computation, two channels (reconcile.go's
+	// driftSentence).
+	if !evidenceMentionsDrift(firstAfterRevert, "beta", "beta-x") {
+		t.Error("the first read after the revert did not say so in state.evidence either")
+	}
+
+	// The read that discovered the drift also repaired it as a side effect
+	// (reassertNames, after this response was already built) — the NEXT
+	// read is where that repair shows up, never this one.
+	col, err = d.List(ctx, testCaller, listAll())
+	if err != nil {
+		t.Fatal(err)
+	}
+	converged, ok := sessionByID(col, "beta-x")
+	if !ok {
+		t.Fatalf("the next read did not converge onto the asserted name: %v", idsOf(col))
+	}
+	if converged.IdentityAssertion == nil || converged.IdentityAssertion.Drifted == nil || *converged.IdentityAssertion.Drifted {
+		t.Errorf("the read after repair must report Drifted = false (a per-read observation, not a latch), got %+v", converged.IdentityAssertion)
+	}
+}
+
+// colab-fleet #102: a create's own response, and the first listing right
+// after it, both report the asserted identity as unresolved — nothing has
+// read the session back yet, so neither may claim the runtime carries it.
+func TestIdentityAssertionUncorroboratedAtCreate(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	f := twoSessions()
+	d := stateDriver(t, f, dir)
+
+	ref, err := d.Create(ctx, testCaller, "key-gamma", fleet.SessionSpec{Cwd: "/work/gamma", Name: "gamma"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	f.addSession(fakeSession{name: ref.ID, paneID: "%50", cwd: "/work/gamma", pid: 500, created: 1785600600},
+		idleFixtureFor("gamma"))
+
+	ia := ref.IdentityAssertion
+	if ia == nil {
+		t.Fatal("Create's own response must carry IdentityAssertion, not leave it absent")
+	}
+	if ia.Drifted != nil {
+		t.Errorf("Create's response must report Drifted = nil (unresolved), got %v", ia.Drifted)
+	}
+	if ia.Asserted != ref.ID {
+		t.Errorf("Asserted = %q, want %q", ia.Asserted, ref.ID)
+	}
+
+	col, err := d.List(ctx, testCaller, listAll())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, ok := sessionByID(col, ref.ID)
+	if !ok {
+		t.Fatalf("the created session did not read back: %v", idsOf(col))
+	}
+	if first.IdentityAssertion == nil || first.IdentityAssertion.Drifted != nil {
+		t.Errorf("the first listing right after create must still report Drifted = nil, got %+v", first.IdentityAssertion)
+	}
+}
+
 func slicesContains(hay []string, needle string) bool {
 	for _, h := range hay {
 		if h == needle {

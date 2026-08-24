@@ -179,6 +179,7 @@ Idempotency-Key: <caller-supplied, required>
 → 201 { "machine": "...", "id": "...", "name": "...", "runtime": "...",
         "runtimeSurface": {"known": null, "evidence": "..."},
         "promptDelivery": {"outcome": null, "evidence": "..."},
+        "identityAssertion": {"asserted": "...", "drifted": null, "evidence": "..."},
         "state": {...} }
 → 200 (same body) if the key was already seen — the existing session
 → 409 if the key was seen with a different body
@@ -225,6 +226,13 @@ before delivery can be known. Read `promptDelivery` (session-abstraction.md
 prompt was lost — a session polled moments later reading `idle` with
 "composer empty, no turn yet" looks identical to one that never had a prompt
 at all (colab-fleet #86). Do not re-send through `input` while it holds.
+
+**A 201's `name` is what this machine asserted, not proof the runtime still
+carries it.** Nothing has read the session back yet, so `identityAssertion`
+(§2.14) legitimately reads `drifted: null` on the create response — the same
+"asserted, not yet corroborated" state a rename can also produce, and the
+one whose absence a prose-only sentence used to leave undetectable
+(colab-fleet #97, #102).
 
 **`runtime` on the response is the runtime that actually served this
 create** — not an echo of the request body's own `runtime`, which is
@@ -368,6 +376,8 @@ GET /v1/machines/{machine}/sessions/{id}?runtime=
                           "source": "derived", "evidence": "..." },
         "resumeOutcome": { "requested": "...", "honoured": false,
                            "evidence": "..." },
+        "identityAssertion": { "asserted": "...", "drifted": false,
+                               "evidence": "..." },
         "state": { "status": "working", "confidence": "inferred",
                    "evidence": "...", "since": "..." } }
 ```
@@ -396,6 +406,17 @@ under load and the create still succeeds on a fresh conversation (colab-fleet
 #72). Absent means no resume was requested; `honoured` absent (with
 `evidence`) means the session's own `conversation` has not resolved yet, not
 a "no"; `honoured: true`/`false` is the verdict once it has.
+
+`identityAssertion` (§2.14) says what identity **this machine** last asserted
+for the session, and whether the runtime still carries it — machine-readable,
+where before this fact only reached a caller as prose inside `state.evidence`
+(colab-fleet #97, #102). Absent means this machine asserted no identity for
+this session at all (adopted or foreign); `drifted` absent means an identity
+was asserted but not yet corroborated against a live read; `drifted: false`
+means the runtime carries it as of this read; `drifted: true` carries
+`carried`, naming what it holds instead. The repair, when this machine
+attempts one, lands on the *next* read, not this one — a single
+`drifted: true` is not a permanent condition.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/input
