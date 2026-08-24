@@ -126,17 +126,19 @@ func main() {
 	selfBuild := fleet.SelfBuild()
 	log.Printf("colab-fleetd: build %s (%s)", selfBuild.Short(), selfBuild.Go)
 
-	// There is no unauthenticated mode (api-http.md §5) — not for
-	// loopback, not for development. A missing token is a refusal to
-	// start, not a fallback to open.
-	token := os.Getenv("FLEET_TOKEN")
-	if token == "" {
-		log.Fatal("colab-fleetd: FLEET_TOKEN must be set — there is no unauthenticated mode (api-http.md §5)")
-	}
-
 	// A principal table, when configured, decides everything about who may
 	// do what (§6). Without one the service runs in single-token mode,
 	// which is honest for one machine and unstatable for a fleet.
+	//
+	// Loaded BEFORE the token gate below (colab-fleet #95): the doc comment
+	// on FLEET_CONFIG promises that a configured principal table makes
+	// FLEET_TOKEN irrelevant, but a fatal token check that runs first can
+	// never see that table, so it refused a deployment the documentation
+	// said was fine. loadConfig itself is already a closed gate — it fatals
+	// on a file that cannot be read, cannot be parsed, or names no
+	// principals at all (config.go) — so reaching the token check below
+	// with cfgFile != nil means a non-empty, validated principal table is
+	// in hand, not merely a path that was set.
 	var cfgFile *fileConfig
 	if path := os.Getenv("FLEET_CONFIG"); path != "" {
 		var err error
@@ -144,6 +146,17 @@ func main() {
 		if err != nil {
 			log.Fatalf("colab-fleetd: %v", err)
 		}
+	}
+
+	// There is no unauthenticated mode (api-http.md §5) — not for
+	// loopback, not for development. A missing token is a refusal to
+	// start UNLESS the principal table loaded above already decides who
+	// may do what, per FLEET_CONFIG's own doc comment. requireToken is a
+	// pure function precisely so this gate has a test that does not have
+	// to invoke main()'s os.Exit path.
+	token := os.Getenv("FLEET_TOKEN")
+	if requireToken(cfgFile) && token == "" {
+		log.Fatal("colab-fleetd: FLEET_TOKEN must be set — there is no unauthenticated mode (api-http.md §5)")
 	}
 
 	// Durable state (§7.3, §10, §12). Nil is a valid configuration; a
@@ -523,6 +536,24 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// requireToken reports whether the absence of FLEET_TOKEN is fatal, given
+// the outcome of loading FLEET_CONFIG (colab-fleet #95). cfgFile is nil for
+// two different reasons that must be treated alike here: FLEET_CONFIG was
+// never set, or main already called log.Fatal on a loadConfig error before
+// this is ever consulted — either way, nil means no validated principal
+// table is in hand, so a token is the only authentication left and its
+// absence must refuse to start.
+//
+// cfgFile non-nil means loadConfig returned successfully, which — see
+// config.go's loadConfig — is only possible for a file that parsed and
+// named at least one principal with both a name and a token. So a non-nil
+// cfgFile is never "an empty or malformed table slipped through"; it is
+// always a validated one, and FLEET_TOKEN becomes optional exactly as
+// FLEET_CONFIG's doc comment promises.
+func requireToken(cfgFile *fileConfig) bool {
+	return cfgFile == nil
 }
 
 // withLoopback guarantees the service is reachable from its own machine.

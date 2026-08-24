@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -59,5 +61,113 @@ func TestSplitList(t *testing.T) {
 	want := []string{"a=1", "b=2"}
 	if !slices.Equal(got, want) {
 		t.Errorf("splitList = %v, want %v", got, want)
+	}
+}
+
+// colab-fleet #95: the startup doc comment on FLEET_CONFIG says that when a
+// principal table is present, FLEET_TOKEN is ignored — but the fatal check
+// used to run before the config file was even opened, so a fully-specified
+// principal table could never satisfy it. requireToken is the extracted
+// decision so this regression has a direct, os.Exit-free test: a token must
+// still be required whenever no validated principal table is in hand, and
+// only then.
+func TestRequireToken(t *testing.T) {
+	if !requireToken(nil) {
+		t.Error("requireToken(nil) = false, want true — no config loaded means a token is the only auth left")
+	}
+	if requireToken(&fileConfig{}) {
+		t.Error("requireToken(non-nil) = true, want false — a loaded config is never empty (loadConfig refuses that), so the token becomes optional")
+	}
+}
+
+// TestStartupAuthGateNeverStartsUnauthenticated composes loadConfig and
+// requireToken exactly as main() does, and is the regression test the issue
+// asked for: it must be impossible to reach a state where the daemon would
+// start with neither a token nor a validated principal table — including
+// when FLEET_CONFIG names a file that is unreadable, malformed, or carries
+// an empty principal table. Each case says which guard is the one that
+// refuses it, per the issue's request.
+func TestStartupAuthGateNeverStartsUnauthenticated(t *testing.T) {
+	writeConfig := func(t *testing.T, body string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	cases := []struct {
+		name       string
+		configPath string // "" means FLEET_CONFIG unset
+		token      string
+		wantStart  bool
+		guard      string
+	}{
+		{
+			name:      "no config, no token — refused by requireToken",
+			token:     "",
+			wantStart: false,
+			guard:     "requireToken(nil)",
+		},
+		{
+			name:       "config path names a file that does not exist — refused by loadConfig's ReadFile",
+			configPath: filepath.Join(t.TempDir(), "missing.json"),
+			token:      "",
+			wantStart:  false,
+			guard:      "loadConfig (unreadable)",
+		},
+		{
+			name:       "config file is present but malformed — refused by loadConfig's Decode",
+			configPath: writeConfig(t, `{"principals": [{"name": "op", "token": "tok"}`),
+			token:      "",
+			wantStart:  false,
+			guard:      "loadConfig (malformed JSON)",
+		},
+		{
+			name:       "config file is present but names no principals — refused by loadConfig's empty-table check",
+			configPath: writeConfig(t, `{"principals": []}`),
+			token:      "",
+			wantStart:  false,
+			guard:      "loadConfig (empty principal table)",
+		},
+		{
+			name:      "no config, token set — allowed by single-token mode",
+			token:     "shared-secret",
+			wantStart: true,
+			guard:     "none — single-token mode",
+		},
+		{
+			name:       "valid config, no token — allowed, principal table is authoritative",
+			configPath: writeConfig(t, `{"principals": [{"name": "op", "token": "tok"}]}`),
+			token:      "",
+			wantStart:  true,
+			guard:      "none — principal table is authoritative",
+		},
+		{
+			name:       "valid config, token also set — allowed, both present",
+			configPath: writeConfig(t, `{"principals": [{"name": "op", "token": "tok"}]}`),
+			token:      "shared-secret",
+			wantStart:  true,
+			guard:      "none — both present",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfgFile *fileConfig
+			var loadErr error
+			if tc.configPath != "" {
+				cfgFile, loadErr = loadConfig(tc.configPath)
+			}
+
+			// Mirror main()'s ordering exactly: a loadConfig error is
+			// fatal on its own, before requireToken is ever consulted.
+			started := loadErr == nil && !(requireToken(cfgFile) && tc.token == "")
+
+			if started != tc.wantStart {
+				t.Errorf("started = %v, want %v (guard: %s, loadErr: %v)", started, tc.wantStart, tc.guard, loadErr)
+			}
+		})
 	}
 }

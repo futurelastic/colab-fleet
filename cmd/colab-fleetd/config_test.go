@@ -193,3 +193,59 @@ func TestTrustSeedIntervalDefaultsAndValidates(t *testing.T) {
 		}
 	}
 }
+
+// colab-fleet #95: main.go's FLEET_TOKEN gate is only safe to relax for a
+// missing token when loadConfig's own guards are trustworthy — an
+// unreadable file, a malformed one, and a file naming no principals must
+// all still refuse to load, exactly as before. These three had no direct
+// test; the pipeline this issue touches is only as sound as they are, so
+// pin all three here rather than trust that main.go's log.Fatal on any
+// loadConfig error was ever exercised.
+func TestLoadConfigRejectsAnUnreadableFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does-not-exist.json")
+	if _, err := loadConfig(path); err == nil {
+		t.Fatal("a config path that does not exist was accepted silently")
+	}
+}
+
+func TestLoadConfigRejectsMalformedJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{"principals": [{"name": "op", "token": "tok"}` // truncated, no closing brackets
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(path); err == nil {
+		t.Fatal("malformed JSON was accepted silently")
+	}
+}
+
+// This is the guard that decides whether an "empty-principal-table" startup
+// is even reachable: loadConfig refuses it outright, so main.go's
+// requireToken(cfgFile) can safely read cfgFile != nil as "a validated,
+// non-empty table" rather than having to re-check emptiness itself.
+func TestLoadConfigRejectsAnEmptyPrincipalTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{"principals": []}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(path); err == nil {
+		t.Fatal("a config naming no principals was accepted silently")
+	}
+}
+
+func TestLoadConfigRejectsAPrincipalMissingATokenOrName(t *testing.T) {
+	cases := []string{
+		`{"principals": [{"name": "op"}]}`,
+		`{"principals": [{"token": "tok"}]}`,
+	}
+	for _, body := range cases {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadConfig(path); err == nil {
+			t.Errorf("body %s: a principal missing a name or token was accepted silently", body)
+		}
+	}
+}
