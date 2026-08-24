@@ -141,9 +141,8 @@ func ValidateSessionEnv(entries []SessionEnvEntry) error {
 // and is where colab-fleet issue #94's precedence table (recorded in full on
 // the issue) is implemented:
 //
-//   - required entry, caller silent            → configuration provides it
-//   - required entry, caller supplies the SAME  → proceed, no change
-//   - required entry, caller supplies a DIFFERENT value → refuse the create
+//   - required entry, caller silent           → configuration provides it
+//   - required entry, caller supplies ANY value → refuse, uncompared
 //   - non-required entry, caller supplies a value → the caller wins
 //   - non-required entry, caller silent          → configuration provides it
 //
@@ -151,15 +150,42 @@ func ValidateSessionEnv(entries []SessionEnvEntry) error {
 // all: not provisioned, not required, not compared against. That is the
 // escape hatch appliesTo exists to be.
 //
+// # A required entry never compares a caller's value against the configured one — this was an equality oracle
+//
+// An earlier revision let a caller supply the identical value and proceed,
+// on the reasoning that agreement is not a conflict. It was wrong: a caller
+// holding only the `create` grant could supply a CANDIDATE value for a
+// variable it has no read access to and learn, from whether the create
+// succeeded or was refused, whether the candidate matched the configured
+// secret. Brute-forcing a long credential this way is infeasible and was
+// never the threat — confirming a candidate is. "Is this stale copy still
+// the live credential" is exactly the question someone holding a leaked or
+// outdated value wants answered, and the old rule answered it through a
+// documented, authorized path with no failed-auth trace anywhere. See the
+// issue thread for the full write-up; the general shape is worth carrying
+// elsewhere too — branching OBSERVABLY on a comparison against a
+// caller-unreadable secret is an oracle whatever the surrounding intent was,
+// and the intent here was only ever to be helpful to a caller who already
+// happened to hold the right value.
+//
+// So a required entry now refuses ANY caller-supplied value for that name,
+// without reading the configured file and without comparing — the read and
+// the comparison are what made the outcome depend on the secret, so both are
+// skipped entirely rather than performed and then discarded, which would
+// reopen the same oracle as a timing difference between the match and
+// no-match paths. The refusal message says only that the name is required on
+// this machine and must be omitted; it never says whether the supplied value
+// would have matched.
+//
 // # Which refusal is which kind, and why that is a decision rather than a default
 //
 // Two different things can go wrong here, and they must not answer alike:
 //
-//   - The CALLER supplied a value that conflicts with a required entry.
-//     Correctable by the caller — omit the field, or send the same value —
-//     so this returns a bare error, which falls through writeDriverError's
-//     default arm to "invalid" / 400 exactly like every other malformed-input
-//     refusal already in Create.
+//   - The CALLER supplied ANY value for a name a required entry owns.
+//     Correctable by the caller — omit the field — so this returns a bare
+//     error, which falls through writeDriverError's default arm to
+//     "invalid" / 400 exactly like every other malformed-input refusal
+//     already in Create.
 //   - This MACHINE cannot back a required entry: the file is missing,
 //     unreadable, or empty. No correction to the request body fixes a
 //     machine whose credential file is absent — the caller would retry
@@ -185,7 +211,20 @@ func (d *Driver) provisionSessionEnv(spec fleet.SessionSpec) (map[string]string,
 			continue
 		}
 
-		callerValue, callerSet := spec.Env[entry.Name]
+		_, callerSet := spec.Env[entry.Name]
+
+		// A required entry refuses ANY caller-supplied value for this name,
+		// before the configured file is read and without ever comparing —
+		// see the doc comment above. This must be the first thing checked
+		// once an entry is in scope: reading the file first and comparing
+		// after would still make the refusal depend on the caller's value,
+		// which is the oracle this guard exists to close.
+		if entry.Required && callerSet {
+			return nil, fmt.Errorf(
+				"create: env %s is required on this machine and must be omitted from the "+
+					"request; this machine provides its own value for it",
+				entry.Name)
+		}
 
 		value, err := readSessionEnvFile(entry.FromFile)
 		if err != nil {
@@ -204,19 +243,14 @@ func (d *Driver) provisionSessionEnv(spec fleet.SessionSpec) (map[string]string,
 		}
 
 		if callerSet {
-			// Non-required: "the caller wins" (§94's precedence table) — the
-			// caller's value is already in spec.Env/merged, so there is
-			// nothing to compare and nothing to do. Only a REQUIRED entry
-			// disagreeing with the caller is a conflict; a non-required one
-			// disagreeing is just the caller choosing something else, which
-			// is exactly what leaving it optional means.
-			if entry.Required && callerValue != value {
-				return nil, fmt.Errorf(
-					"create: env %s conflicts with this machine's required sessionEnv "+
-						"declaration; omit it from the request or supply the identical value",
-					entry.Name)
-			}
-			continue // identical, or non-required — the caller's own copy stands
+			// Only reachable here when the entry is NOT required — a
+			// required entry with callerSet already returned above. "The
+			// caller wins" (§94's precedence table): the caller's own value
+			// is already in spec.Env/merged, so there is nothing to compare
+			// and nothing to do. There is no protected value to leak on this
+			// path, because a non-required entry never refuses on the
+			// caller's account.
+			continue
 		}
 
 		if merged == nil {

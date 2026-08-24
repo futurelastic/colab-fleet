@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	fleet "github.com/godx-jp/colab-fleet"
@@ -83,10 +84,16 @@ func TestRequiredEntrySilentCallerGetsTheConfiguredValue(t *testing.T) {
 	}
 }
 
-// A caller who supplies the SAME value as the required entry is not in
-// conflict — recorded explicitly in the issue because "any disagreement
-// refuses" would be too broad a rule.
-func TestRequiredEntryMatchingCallerValueProceeds(t *testing.T) {
+// The oracle, pinned shut: a caller supplying the CORRECT value for a
+// required entry must still be refused, exactly like a caller supplying a
+// wrong one. An earlier revision let an identical value proceed, on the
+// reasoning that agreement is not a conflict — but that let a caller holding
+// only the create grant use the create endpoint to confirm a candidate value
+// for a secret it has no read access to (the create succeeds only when the
+// guess is right). This test is the one that would catch a future
+// well-meaning person re-adding that convenience: it must fail the moment
+// "matching proceeds" comes back, however it is spelled.
+func TestRequiredEntryEvenTheCorrectCallerValueIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	credFile := filepath.Join(dir, "cred")
 	writeFile(t, credFile, "the-identity")
@@ -94,21 +101,34 @@ func TestRequiredEntryMatchingCallerValueProceeds(t *testing.T) {
 	d := New("testbox", WithSessionEnv([]SessionEnvEntry{
 		{Name: "FLEET_IDENTITY", FromFile: credFile, Required: true},
 	}))
-	got, err := d.provisionSessionEnv(fleet.SessionSpec{
+	_, err := d.provisionSessionEnv(fleet.SessionSpec{
 		Cwd: "/work/x", Env: map[string]string{"FLEET_IDENTITY": "the-identity"},
 	})
-	if err != nil {
-		t.Fatalf("provisionSessionEnv: %v", err)
+	if err == nil {
+		t.Fatal("a caller supplying the CORRECT value for a required entry was accepted; " +
+			"this is the equality oracle the create endpoint must not offer — see the issue thread")
 	}
-	if got["FLEET_IDENTITY"] != "the-identity" {
-		t.Errorf("FLEET_IDENTITY = %q", got["FLEET_IDENTITY"])
+	// Caller-correctable (omit the field), so this must NOT be the
+	// operator-addressed kind the missing-file case uses below.
+	var fe *fleet.Error
+	if errors.As(err, &fe) {
+		t.Errorf("a caller-supplied value for a required entry was reported as a typed %s "+
+			"error; it should fall through to the ordinary invalid/400 path", fe.Kind)
+	}
+	// The refusal must not betray whether the value matched — no comparison
+	// happened at all, so there is nothing to leak, but the message itself
+	// must not claim otherwise.
+	if strings.Contains(err.Error(), "the-identity") {
+		t.Errorf("the refusal message quoted the caller's value: %v", err)
 	}
 }
 
 // A caller asking for a DIFFERENT identity than the one this machine
-// requires must be refused, not silently overridden either direction:
-// "configuration wins silently" is fail-closed but dishonest, and "the
-// caller wins" defeats the point of declaring the entry required.
+// requires must be refused too — same refusal, same reason: a required
+// entry does not compare a caller's value against the configured one at all,
+// so "different" and "identical" answer identically. See
+// TestRequiredEntryEvenTheCorrectCallerValueIsRefused for why "identical
+// proceeds" was removed.
 func TestRequiredEntryConflictingCallerValueIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	credFile := filepath.Join(dir, "cred")
@@ -121,14 +141,38 @@ func TestRequiredEntryConflictingCallerValueIsRefused(t *testing.T) {
 		Cwd: "/work/x", Env: map[string]string{"FLEET_IDENTITY": "something-else"},
 	})
 	if err == nil {
-		t.Fatal("a caller-supplied identity that disagrees with the required configuration was accepted")
+		t.Fatal("a caller-supplied value for a required entry was accepted")
 	}
-	// The caller can fix this by matching or omitting the field, so it must
-	// NOT be the operator-addressed kind the missing-file case uses below.
+	// The caller can fix this by omitting the field (never by matching — see
+	// above), so it must NOT be the operator-addressed kind the missing-file
+	// case uses below.
 	var fe *fleet.Error
 	if errors.As(err, &fe) {
 		t.Errorf("a caller-correctable conflict was reported as a typed %s error; "+
 			"it should fall through to the ordinary invalid/400 path", fe.Kind)
+	}
+}
+
+// A required entry must refuse a caller-supplied value WITHOUT reading the
+// configured file at all — not merely without comparing after reading it.
+// Pointing FromFile at a path that does not exist and getting the ordinary
+// caller-correctable refusal (not the operator-addressed missing-file kind)
+// proves the file was never opened: if it had been, entry.Required's
+// missing-file branch would have returned the unsupported/501 error instead.
+func TestRequiredEntryRefusesACallerValueBeforeReadingTheFile(t *testing.T) {
+	d := New("testbox", WithSessionEnv([]SessionEnvEntry{
+		{Name: "FLEET_IDENTITY", FromFile: "/no/such/credential/file", Required: true},
+	}))
+	_, err := d.provisionSessionEnv(fleet.SessionSpec{
+		Cwd: "/work/x", Env: map[string]string{"FLEET_IDENTITY": "anything"},
+	})
+	if err == nil {
+		t.Fatal("a caller-supplied value for a required entry was accepted")
+	}
+	var fe *fleet.Error
+	if errors.As(err, &fe) {
+		t.Fatalf("got the missing-file kind (%s); the file must never be read when the "+
+			"caller supplied a value for a required entry", fe.Kind)
 	}
 }
 

@@ -109,28 +109,58 @@ shape this whole feature exists to close.
 
 ## Precedence against the caller
 
-Recorded here because it is the one part of this design with a genuinely
-non-obvious answer, and it is implemented exactly as written
+Recorded here because it is the one part of this design that has already been
+wrong once, and it is implemented exactly as written
 (`provisionSessionEnv` in `internal/drivers/tmux/sessionenv.go`):
 
 | Entry | Caller | Result |
 |---|---|---|
 | required | silent | configuration provides the value |
-| required | supplies the SAME value | proceed — not a conflict |
-| required | supplies a DIFFERENT value | **refuse the create** |
+| required | supplies ANY value | **refuse the create, uncompared** |
 | non-required | supplies a value | the caller's value wins |
 | non-required | silent | configuration provides the value |
 
-The middle-refusal row is the deliberate one. "Configuration wins silently"
-would be fail-closed but dishonest — the caller asked for one identity and
-got a different one with nothing said. "The caller wins" is worse: any caller
-could hand a session a different credential and quietly downgrade a required
-identity, which defeats the point of marking it required. Refusing is the
-option that is both fail-closed and legible.
+A required entry never looks at what the caller supplied beyond "did it
+supply anything at all" — it does not read the configured file and does not
+compare, whatever the caller's value is. "The caller wins" is not on the
+table for a required entry either: any caller could otherwise hand a session
+a different credential and quietly downgrade a required identity, which
+defeats the point of marking it required. Refusing every caller-supplied
+value is the option that is both fail-closed and legible about it.
 
-Because this is opt-in through configuration, the refusal can never affect an
-existing caller until an operator adds a `required` entry — and `appliesTo` is
-the escape hatch when one genuinely needs to differ (below).
+### Why "the same value proceeds" was removed — it was an equality oracle
+
+An earlier revision of this table had a third required-entry row: *"caller
+supplies the SAME value → proceed, not a conflict."* That reasoning sounds
+right — agreement is not a disagreement — and it shipped, was implemented
+faithfully, and was wrong. It turns the create endpoint into a way to confirm
+or deny a **candidate** value for a secret the caller has no read access to:
+a caller holding only the `create` grant can supply a guess for a configured
+variable and learn, from whether the create succeeds or is refused, whether
+the guess matched. Brute-forcing a long credential this way is infeasible and
+was never the threat; confirming a candidate is. "Is this stale copy still
+the live credential" is exactly the question someone holding a leaked or
+outdated value wants answered, and the old rule answered it through a
+documented, authorized path with no failed-auth trace anywhere.
+
+The fix removes the comparison entirely rather than tightening it: a required
+entry refuses any caller-supplied value for that name **before the configured
+file is even read**. Reading the file first and comparing afterward would
+still make the outcome depend on the secret — at minimum through a timing
+difference between the match and no-match code paths, which is the same
+oracle with extra steps. The refusal message says only that the name is
+required on this machine and must be omitted; it never says whether the
+value the caller sent would have matched.
+
+Nobody loses a capability from this fix. A caller that wants the configured
+identity omits the field, which was always the intended path — the removed
+row was only ever a convenience for a caller that happened to already hold
+the right value, and that convenience was the leak.
+
+Because this whole feature is opt-in through configuration, the refusal can
+never affect an existing caller until an operator adds a `required` entry —
+and `appliesTo` is the escape hatch when one genuinely needs to differ
+(below).
 
 ## Scoping: `appliesTo`
 
@@ -150,10 +180,12 @@ the machine refuses.
 Two distinct things can go wrong inside `provisionSessionEnv`, and they must
 not read alike to a caller:
 
-- **The caller's own value conflicts with a required entry.** Correctable by
-  the caller — omit the field, or send the identical value — so this is an
-  ordinary error that reaches the wire as `invalid` / 400, same as every other
-  malformed-create refusal in this driver.
+- **The caller supplied ANY value for a name a required entry owns** —
+  matching or not; the two are not distinguished (see "Why 'the same value
+  proceeds' was removed" above). Correctable by the caller — omit the field,
+  there is no other fix — so this is an ordinary error that reaches the wire
+  as `invalid` / 400, same as every other malformed-create refusal in this
+  driver.
 - **This machine cannot back a required entry** — the file is missing,
   unreadable, or empty. No correction to the request body fixes an absent
   file on this machine; a caller that retries is retrying forever against a
