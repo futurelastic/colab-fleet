@@ -166,10 +166,21 @@ Returns `200` with a **delivery receipt** — always `200`, even on refusal.
 
 | `outcome` | Meaning | What to do |
 |---|---|---|
-| `submitted` | The agent received it | Done |
+| `submitted` | The agent received it — reachable only when the driver's `confirmsDelivery` capability is `true` (see below) | Done |
 | `queued` | Accepted, submission unconfirmed | Done |
 | `refused` | The driver actively declined; `reason` says why | Read the reason — this is information, not a fault |
 | `unknown` | Sent, outcome unverifiable — **the text may be sitting unsent** | Retry with `resumeIfStranded: true` |
+
+**`submitted` is not one of the outcomes `input` can return today.** Every driver
+in this fleet reports `confirmsDelivery: false` on `/v1/runtimes` — none can
+distinguish "the agent received it" from "the runtime accepted it" — so a
+confirmed delivery through `input`, including a confirmed `resumeIfStranded`
+retry, reports `queued` instead. `submitted` stays real: it is what `respond`
+and `keys()` report for a keystroke that visibly changed the screen, which is
+evidence `input`'s own confirmation (the composer emptying) does not have. A
+client that keys on `submitted` from `input`, or loops until it sees one,
+waits forever — check `confirmsDelivery` before writing that client rule, not
+this table alone.
 
 `resumeIfStranded` completes a delivery the service itself attempted and lost
 confirmation of. It only ever resubmits text the service's own record says it
@@ -354,5 +365,11 @@ with the implementation is worse than one that admits where it does.
 - **`respond`'s outcome vocabulary** is documented in the specification as
   `queued | refused`. It shares its type with `input` and can also return
   `submitted` or `unknown`.
+- **`input`'s outcome vocabulary** is documented in the specification as
+  including `submitted`, and the type genuinely allows it — but no driver in
+  this fleet currently reports `confirmsDelivery: true`, so `input` cannot
+  actually return it today. A confirmed submission, including a confirmed
+  `resumeIfStranded` retry, reports `queued` instead. `submitted` remains
+  reachable through `respond` and `keys()`.
 - **`/v1/machines` and `/v1/runtimes` take no `scope`.** Every other plural
   endpoint does.

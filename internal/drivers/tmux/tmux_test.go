@@ -392,9 +392,39 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			if f.swallowSubmit {
 				// The failure this models: the keystroke goes nowhere and the
 				// delivered text is left sitting in the composer.
-				f.captures[pane] = composerHolding(f.pasted[pane])
+				//
+				// Only overwrite f.captures when THIS call also pasted
+				// something (f.pasted non-empty): that is the ordinary
+				// first-attempt shape, where the paste and the submit happen
+				// in the same Send call and f.pasted is where the delivered
+				// text actually lives. A resume's swallowed keystroke pastes
+				// nothing new — the text it is trying to submit already sits
+				// in f.captures from an earlier call or from a test's own
+				// setCapture — and a swallowed key changes NOTHING on
+				// screen, by definition. Overwriting captures with
+				// composerHolding("") here would show an EMPTY composer
+				// despite the "swallow" the test asked for, which is exactly
+				// backwards.
+				if f.pasted[pane] != "" {
+					f.captures[pane] = composerHolding(f.pasted[pane])
+				}
 			} else {
 				delete(f.pasted, pane)
+				// #101: a genuinely successful submit empties the composer,
+				// full stop — real tmux does not leave the PREVIOUS screen's
+				// fenced text sitting there just because a test fixture wrote
+				// it directly into f.captures instead of routing it through
+				// f.pasted. Without this, a test that models a stranded
+				// composer via setCapture/composerHolding (rather than a
+				// paste that populates f.pasted) can never observe a
+				// confirmed resume clearing it: the deleted f.pasted entry
+				// was already empty, and f.captures was never touched, so
+				// the fake would go on reporting the composer as full forever
+				// regardless of whether the driver's confirmation logic is
+				// even exercised. Symmetric with the C-u clear branch above,
+				// which already resets to idleFixtureFor("cleared") on its
+				// own success.
+				f.captures[pane] = idleFixtureFor("cleared")
 			}
 		}
 		return nil, nil
@@ -2493,8 +2523,11 @@ func TestResumeSubmitsOnlyWhatThisDriverStranded(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if r2.Outcome != fleet.OutcomeSubmitted {
-			t.Errorf("resume outcome = %s (%s), want submitted", r2.Outcome, r2.Reason)
+		// #101: a confirmed resume reports the same outcome the first-attempt
+		// path would for the same evidence — queued, never submitted, since
+		// §4.3's ConfirmsDelivery is false on this substrate either way.
+		if r2.Outcome != fleet.OutcomeQueued {
+			t.Errorf("resume outcome = %s (%s), want queued", r2.Outcome, r2.Reason)
 		}
 	})
 
@@ -2905,14 +2938,19 @@ func TestStateCarriesCredentialGeneration(t *testing.T) {
 // has been sitting on an unsubmitted line — so if a lone newline is ever
 // swallowed anywhere, it is swallowed here.
 //
-// It also fails worse than the others. This path returns `submitted`, the
-// strongest outcome in the enum, without verifying anything; and it calls
+// #101: it used to fail worse than the others. This path reported `submitted`,
+// the strongest outcome in the enum, without verifying anything, and called
 // forgetStranded immediately afterwards, discarding the driver's own record of
-// the text on the strength of a keystroke nobody checked. A swallowed newline
-// here turns a recoverable stranding into a permanent one and reports success.
+// the text on the strength of a keystroke nobody checked — a swallowed newline
+// here turned a recoverable stranding into a permanent one while reporting
+// success. It now confirms the submit the same evidence-based way the
+// first-attempt path already does (composer emptying, or the attributed
+// marker clearing) before reporting anything, and keeps the record if it
+// cannot. TestSendReportsUnknownWhenTheSubmitDoesNotRegisterOnResume covers the
+// swallowed-keystroke case directly.
 //
-// Reaching it needs a stranded record AND a busy composer. The first send
-// manufactures both: a pane that never renders what was pasted cannot be
+// Reaching this branch needs a stranded record AND a busy composer. The first
+// send manufactures both: a pane that never renders what was pasted cannot be
 // confirmed, so the driver records the text and reports unknown.
 func TestResumingAStrandedSendAlsoWakesThePane(t *testing.T) {
 	f := twoSessions()
@@ -2945,8 +2983,8 @@ func TestResumingAStrandedSendAlsoWakesThePane(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != fleet.OutcomeSubmitted {
-		t.Fatalf("resume outcome = %q (%s), want submitted", got.Outcome, got.Reason)
+	if got.Outcome != fleet.OutcomeQueued {
+		t.Fatalf("resume outcome = %q (%s), want queued", got.Outcome, got.Reason)
 	}
 
 	submits := 0
@@ -2969,6 +3007,55 @@ func TestResumingAStrandedSendAlsoWakesThePane(t *testing.T) {
 	}
 	if submits != 1 {
 		t.Fatalf("expected exactly one submit from the resume, saw %d", submits)
+	}
+}
+
+// #101. Confirmed to fail against the pre-fix code: reverting the resume
+// branch to report OutcomeSubmitted unconditionally makes this test fail on
+// BOTH assertions — the outcome would read submitted despite the composer
+// still holding the text, and forgetStranded would already have discarded
+// the record the second t.Fatal below checks for.
+//
+// This is the exact failure #101 was filed over: a resume's own submit
+// keystroke can be swallowed exactly like any other, and the old code never
+// looked before reporting the strongest outcome in the enum.
+func TestSendReportsUnknownWhenTheSubmitDoesNotRegisterOnResume(t *testing.T) {
+	f := twoSessions()
+	f.noEcho = true // the first attempt never renders the paste, so confirm times out
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const text = "an instruction whose resume submit will also be swallowed"
+
+	first, err := d.Send(context.Background(), testCaller, ref, text, driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("setup: first send outcome = %q, want unknown so the text is recorded as stranded",
+			first.Outcome)
+	}
+
+	// The composer now holds the stranded text, and THIS time the resume's
+	// own wake-key submit is the one that gets swallowed too.
+	f.setCapture("%1", fixtureUnsent)
+	f.noEcho = false
+	f.swallowSubmit = true
+
+	got, err := d.Send(context.Background(), testCaller, ref, text,
+		driver.SendOptions{Submit: true, ResumeIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome == fleet.OutcomeSubmitted {
+		t.Fatal("a resume whose own submit keystroke was swallowed was reported as submitted " +
+			"— the exact false receipt #101 was filed over")
+	}
+	if got.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("outcome = %q (%s), want unknown", got.Outcome, got.Reason)
+	}
+	if !d.strandedMatches(ref.ID, "/work/alpha", text) {
+		t.Fatal("the stranded record was discarded on a submit that was never confirmed; " +
+			"a third attempt now has nothing left to resume")
 	}
 }
 
@@ -3352,20 +3439,25 @@ func TestTrustConsentIsSpentOnce(t *testing.T) {
 // code path ever calls Send a second time and the stranded record this
 // fixture already proves Send itself keeps (noteStranded) just sits there.
 //
-// swallowSubmit is left permanently on — unlike #44's own pane, which was
-// receptive again "seconds later, nothing changed but time" — because the
-// retry this fix adds does not depend on that: it resumes through the
-// SAME mechanism a human already used successfully 6 times out of 6 (see
-// deliverInitialPrompt's doc comment), which corroborates against this
-// driver's own record of what it delivered rather than re-reading the
-// screen for confirmation. A fixture that turned swallowSubmit off between
-// attempts would be testing a gentler scenario than #44 needed recovered
-// from.
+// #101 revised this fixture: swallowSubmit used to be left permanently on,
+// on the reasoning that the retry "resumes through the SAME mechanism ...
+// which corroborates against this driver's own record of what it delivered
+// rather than re-reading the screen for confirmation" — true for WHICH TEXT
+// is ours (§F49 still holds, a collapsed paste cannot be matched byte for
+// byte), but the resume path now also confirms WHETHER THE SUBMIT
+// REGISTERED, the same evidence-based way the first attempt already does.
+// A terminal that swallows every keystroke forever is a terminal on which
+// neither attempt should ever be reported as delivered — that is now the
+// correct, honest outcome, not a fixture bug. So this models #44's actual
+// recovery shape instead: the pane was receptive again "seconds later,
+// nothing changed but time" (deliverInitialPrompt's own doc comment) — the
+// FIRST submit is swallowed, manufacturing the strand, and the retry's own
+// submit succeeds normally, exactly as #44 was measured recovering by hand.
 func TestSettleNewSessionRecoversFromASwallowedInitialPromptSubmit(t *testing.T) {
 	f := twoSessions()
 	f.captures["%1"] = idleFixtureFor("alpha") // ready immediately, no boot question
-	f.swallowSubmit = true
-	d := newTestDriver(f)
+	d := New("testbox", withExec(swallowFirstSubmitOnly(f)), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return time.Unix(1785760000, 0) }))
 	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
 	const text = "the work it was created for, long enough to strand"
 
@@ -3396,6 +3488,38 @@ func TestSettleNewSessionRecoversFromASwallowedInitialPromptSubmit(t *testing.T)
 	if got[counterInitialPromptStranded] != 0 {
 		t.Errorf("initial_prompt.delivery_stranded = %d, want 0 — the retry cleared it",
 			got[counterInitialPromptStranded])
+	}
+}
+
+// swallowFirstSubmitOnly wraps a fakeMux so exactly the FIRST send-keys
+// invocation carrying a newline (C-m or Enter) is swallowed — the composer
+// renders the text but the keystroke registers nothing — and every later
+// submit, including a resume's, succeeds normally. This is #44's own
+// measured recovery shape: the pane was receptive again "seconds later,
+// nothing changed but time", not a terminal that swallows every keystroke
+// forever. #101: a fixture that leaves swallowSubmit permanently on now
+// means NEITHER attempt's submit ever registers, which is a correct strand
+// forever, not a recoverable one — so a test wanting to see a resume
+// actually recover needs the swallow to be transient, matching the
+// incident it is named for.
+func swallowFirstSubmitOnly(f *fakeMux) execFunc {
+	seen := false
+	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		isSubmit := false
+		if len(args) > 0 && args[0] == "send-keys" {
+			for _, a := range args {
+				if a == "C-m" || a == "Enter" {
+					isSubmit = true
+				}
+			}
+		}
+		f.mu.Lock()
+		f.swallowSubmit = isSubmit && !seen
+		f.mu.Unlock()
+		if isSubmit {
+			seen = true
+		}
+		return f.exec(ctx, name, args...)
 	}
 }
 

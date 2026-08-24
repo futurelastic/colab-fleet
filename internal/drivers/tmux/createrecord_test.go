@@ -125,19 +125,25 @@ func TestPromptDeliveryAlwaysResolves(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown then submitted on the one retry", func(t *testing.T) {
+	t.Run("unknown then queued on the one retry", func(t *testing.T) {
+		// #101: the retry's own submit must be genuinely confirmed now, not
+		// reported blind — so the swallow that manufactures the strand must
+		// be transient (swallowFirstSubmitOnly), matching #44's own measured
+		// recovery ("receptive again seconds later, nothing changed but
+		// time"), not a permanent swallow that would strand the retry too.
 		f := twoSessions()
 		f.captures["%1"] = idleFixtureFor("alpha")
-		f.swallowSubmit = true
-		d := newTestDriver(f)
+		d := New("testbox", withExec(swallowFirstSubmitOnly(f)), withNonce(func() string { return testNonce }),
+			withClock(func() time.Time { return time.Unix(1785760000, 0) }))
 		const text = "the work it was created for, long enough to strand"
 		seedRecord(d, text)
 
 		d.deliverInitialPrompt(context.Background(), testCaller, ref, text)
 
 		rec, ok := d.createRecordFor(ref.ID, cwd)
-		if !ok || rec.PromptOutcome != string(fleet.OutcomeSubmitted) {
-			t.Errorf("record = %+v (found=%v), want resolved submitted (delivered on retry)", rec, ok)
+		if !ok || rec.PromptOutcome != string(fleet.OutcomeQueued) {
+			t.Errorf("record = %+v (found=%v), want resolved queued (delivered on retry; this "+
+				"substrate cannot confirm agent receipt on either attempt)", rec, ok)
 		}
 		if !strings.Contains(rec.PromptEvidence, "second attempt") {
 			t.Errorf("evidence = %q, does not say this was the retry", rec.PromptEvidence)

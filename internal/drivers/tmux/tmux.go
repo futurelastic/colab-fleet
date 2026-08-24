@@ -1547,6 +1547,14 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// not there to compare (F49), and the messages most likely to strand
 		// are exactly the long ones.
 		if opts.ResumeIfStranded && d.strandedMatches(ref.ID, target.cwd, text) {
+			// #101: this branch only ever runs when the composer is already
+			// holding OUR OWN pending delivery (strandedMatches, just above)
+			// — there is nothing left to land, only to submit. opts.Submit is
+			// therefore not re-checked here: resume is a completion of a
+			// submit already requested by the call that stranded this text,
+			// not a fresh request that could reasonably ask to land-without-
+			// submitting a delivery that is already landed.
+			//
 			// Wake key before the newline, the same shape as the other two
 			// submit sites (#21). This pane is idle BY DEFINITION — the branch
 			// only runs when a composer has been sitting on an unsubmitted
@@ -1560,13 +1568,62 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			// consistency, not that number — three submit sites, one shape,
 			// and no reason for this one to differ. The cost either way is a
 			// trailing space.
+			//
+			// #101: attribute whatever collapsed-paste marker is currently
+			// sitting in the composer to OUR text, using an empty `before` so
+			// any marker already present counts as "gained" — there is no
+			// fresh paste here to distinguish it from, the paste already
+			// happened on the attempt that stranded it. This is the same
+			// attribution confirmLanded already performs for a fresh paste;
+			// reused here for a paste that landed earlier. `landed` is not
+			// checked: composerText already established the text is pending,
+			// above, and a failed re-match here only degrades atCount to 0,
+			// which confirmSubmitted already treats as "fall back to the
+			// composer-empty check alone" — never a reason to skip
+			// confirmation.
+			key, atCount, _ := d.confirmLanded(ctx, target.paneID, text, map[pasteKey]int{})
 			if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "Space", "C-m"); err != nil {
 				return fleet.DeliveryReceipt{}, fmt.Errorf("send: submitting stranded text: %w", err)
 			}
+			// #101: this used to report `submitted` — the strongest outcome in
+			// the enum — and call forgetStranded immediately afterwards,
+			// discarding this driver's own record of the text on the strength
+			// of a keystroke nobody checked. Getting `unknown` on a resume
+			// left the caller exactly where it started, unable to tell a
+			// transient artefact from the strand this driver already counts.
+			//
+			// CORROBORATING WHICH TEXT IS OURS still goes through this
+			// driver's own record (strandedMatches, above) rather than
+			// re-reading the screen — #49 still holds, a collapsed multi-line
+			// paste cannot be compared byte for byte. WHETHER THE SUBMIT
+			// REGISTERED is a different question, and it is answered the same
+			// evidence-based way the first-attempt path already answers it
+			// below: the composer emptying, or this delivery's own attributed
+			// marker clearing. Delivering a receipt this driver did not earn
+			// is the exact conflation delivery.go's OutcomeSubmitted doc
+			// forbids.
+			if !d.confirmSubmitted(ctx, target.paneID, key, atCount) {
+				// The record is KEPT, deliberately unlike the old behaviour: a
+				// swallowed keystroke here must leave something for a third
+				// attempt to resume, not discard the only trace of the text on
+				// a keystroke nobody checked.
+				return fleet.DeliveryReceipt{
+					Outcome: fleet.OutcomeUnknown,
+					Reason: "resumed a delivery this driver had stranded earlier, but the " +
+						"submit could not be confirmed this time either; the record is " +
+						"kept — retry the same send with resumeIfStranded again",
+				}, nil
+			}
 			d.forgetStranded(ref.ID)
 			return fleet.DeliveryReceipt{
-				Outcome: fleet.OutcomeSubmitted,
-				Reason:  "submitted text this driver had delivered and could not confirm earlier",
+				// Queued, not submitted — matching the first-attempt path's
+				// own outcome for the identical evidence (§4.3's
+				// ConfirmsDelivery stays false for the same reason on both
+				// paths): a confirmed submit says the bytes left this
+				// driver's hands, not that the agent consumed them.
+				Outcome: fleet.OutcomeQueued,
+				Reason: "resumed a delivery this driver had stranded earlier, and the submit " +
+					"registered this time; agent receipt is not observable on this substrate",
 			}, nil
 		}
 		return fleet.DeliveryReceipt{
@@ -2961,11 +3018,18 @@ func (d *Driver) deliverInitialPrompt(ctx context.Context, req fleet.Request, re
 
 	d.counters.incr(counterInitialPromptRetried)
 	retry, err := d.Send(ctx, req, ref, prompt, driver.SendOptions{Submit: true, ResumeIfStranded: true})
-	if err == nil && retry.Outcome == fleet.OutcomeSubmitted {
+	// #101: the resume path used to report `submitted` unconditionally, which
+	// is why this compared against it. It now confirms the submit the same
+	// way the first attempt does and reports `queued` on the same evidence
+	// (§4.3 — this substrate cannot observe agent receipt on either path).
+	// Comparing against `queued` here keeps this call site in step with that
+	// contract instead of silently degrading to "always retry failed" the
+	// moment resume stopped over-claiming.
+	if err == nil && retry.Outcome == fleet.OutcomeQueued {
 		// #86: delivered on the retry — a different fact from an ordinary
 		// first-attempt submission, worth saying so in the evidence rather
 		// than reporting it identically.
-		d.notePromptDelivered(ref.ID, fleet.OutcomeSubmitted,
+		d.notePromptDelivered(ref.ID, fleet.OutcomeQueued,
 			"delivered on the second attempt; the first could not be confirmed in time")
 		return
 	}

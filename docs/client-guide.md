@@ -549,7 +549,9 @@ service keeps waiting, and the prompt goes in once the session is receptive.
 
 **If you passed a `prompt`, read `promptDelivery` — never `input` — to check
 on it.** It carries the same outcome vocabulary `send`'s own receipt does
-(`submitted`/`queued`/`refused`/`unknown`), but resolves after the 201:
+(`submitted`/`queued`/`refused`/`unknown` — though no driver in this fleet can
+currently return `submitted` on either path; api.md's known-gaps section
+tracks it), but resolves after the 201:
 `outcome: null` means delivery has not resolved yet, and — this is the part
 colab-fleet #86 exists to say plainly — **that is not the same fact as "no
 prompt was sent."** A session polled moments after this create may well read

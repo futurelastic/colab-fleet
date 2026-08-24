@@ -51,8 +51,12 @@ func TestStrandedRecordSurvivesARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Outcome != fleet.OutcomeSubmitted {
-		t.Fatalf("resume after restart: outcome = %s (%s), want submitted — the stranded "+
+	// #101: a confirmed resume now reports the same outcome the first-attempt
+	// path reports for the same evidence — queued, never submitted, since
+	// this substrate cannot observe agent receipt either way (§4.3). Refused
+	// or unknown here would mean the record did not survive the restart.
+	if resumed.Outcome != fleet.OutcomeQueued {
+		t.Fatalf("resume after restart: outcome = %s (%s), want queued — the stranded "+
 			"record did not survive the restart", resumed.Outcome, resumed.Reason)
 	}
 }

@@ -540,6 +540,13 @@ POST /v1/machines/{machine}/sessions/{id}/input?runtime=
         "reason": "prompt holds unsent input" }
 ```
 
+`submitted` is genuinely part of this type — it is what a driver reporting
+`confirmsDelivery: true` on `/v1/runtimes` would return here — but no driver
+in this fleet currently declares that capability, so `input` cannot actually
+produce it today; a confirmed submission reports `queued` instead. api.md's
+known-gaps section tracks this alongside the equivalent, opposite-direction
+gap already recorded for `respond`.
+
 **A refusal is `200`, not an HTTP error.** Refusal is an expected domain
 outcome carrying structured information, not a fault. Mapping it to 4xx would
 train clients to treat it as an exception and retry — which is precisely the
