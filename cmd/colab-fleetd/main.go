@@ -48,11 +48,15 @@
 //	                       instance and is the defect D5 described for a real
 //	                       one. Created if missing, mode 0700.
 //	FLEET_CONFIG           path to a JSON file carrying the principal table,
-//	                       per-peer credentials (§6), and this machine's
+//	                       per-peer credentials (§6), this machine's
 //	                       defaultRuntime (§60: the bare-id tiebreak once a
 //	                       second local driver is registered — absent means
 //	                       bare-id addressing among more than one stays
-//	                       refused, the older behaviour). When present the
+//	                       refused, the older behaviour), and this machine's
+//	                       sessionEnv (colab-fleet issue #94: an identity
+//	                       declared for every session this machine starts,
+//	                       rather than every caller having to pass it on
+//	                       every create forever). When present the
 //	                       principal table is authoritative and FLEET_TOKEN /
 //	                       FLEET_ALLOW_* are ignored. Absent means
 //	                       single-token mode.
@@ -243,6 +247,22 @@ func main() {
 			}
 			opts = append(opts, tmux.WithTrustSeed(trustStatePath, home, trustRoots))
 			log.Printf("colab-fleetd: trust-seed configured for %d root(s)", len(trustRoots))
+		}
+		// colab-fleet issue #94: an identity this machine's sessions carry,
+		// declared once here instead of every caller passing the same
+		// variable on every create forever. Config-file-only, like
+		// TrustRoots and DefaultRuntime above — which credential a
+		// machine's sessions should hold is a fact about this machine, not
+		// the fleet. Validated once at startup (ValidateSessionEnv) for the
+		// same reason DefaultRuntime is: a typo here should be a message an
+		// operator reads once, not a refusal every later caller meets.
+		if cfgFile != nil && len(cfgFile.SessionEnv) > 0 {
+			entries := cfgFile.sessionEnv()
+			if err := tmux.ValidateSessionEnv(entries); err != nil {
+				log.Fatalf("colab-fleetd: %v", err)
+			}
+			opts = append(opts, tmux.WithSessionEnv(entries))
+			log.Printf("colab-fleetd: sessionEnv configured for %d entry(ies) (#94)", len(entries))
 		}
 		d := tmux.New(self, opts...)
 		// An unreadable key table is surfaced, never absorbed: continuing

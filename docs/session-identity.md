@@ -1,0 +1,281 @@
+# Session identity — a machine declaring what its sessions carry
+
+Reference for `sessionEnv`, the `FLEET_CONFIG` entry from colab-fleet issue
+#94. If you are looking for the wire shape of a create request, that is
+[`api.md`](api.md) and [`spec/api-http.md`](spec/api-http.md) — this feature
+adds no field there (see "Why this needed no wire change" below). This page is
+for the person writing the machine's configuration file and the person
+debugging why a session did, or did not, come up holding a credential.
+
+---
+
+## The problem this closes
+
+A create's `env` map is what a caller passes explicitly. Nothing before this
+let an *operator* say "every session this machine starts also carries X" —
+so the variable had to be repeated on every create, forever, by every caller,
+and the one caller that forgot did not get an error. It got a session that
+looked healthy and quietly fell back to whatever ambient identity the
+consuming tool found lying around on disk. Wrong identity, exit code zero,
+nothing on screen to say so.
+
+`sessionEnv` is the fix: a machine-local declaration, read at session-creation
+time, of what that machine's sessions always hold.
+
+## Configuration shape
+
+A list under `sessionEnv` in the same JSON file `principals`, `peers`,
+`trustRoots` and `defaultRuntime` already live in (`FLEET_CONFIG`):
+
+```json
+{
+  "principals": [{"name": "op", "token": "…", "grants": ["create", "send"]}],
+  "sessionEnv": [
+    {
+      "name": "FLEET_IDENTITY",
+      "fromFile": "/absolute/path/an/operator/controls",
+      "required": true,
+      "appliesTo": {"agents": ["some-agent"], "markers": []}
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `name` | The variable a session's process will see. Same shape rule every env name in this project follows: letters, digits, underscore, not starting with a digit. |
+| `fromFile` | An absolute path this machine reads **fresh on every create** — see "Restart enables it; rotation needs nothing" below. |
+| `required` | Fail closed (`true`) or silently omit (`false`) when the file cannot be read. Per entry, not machine-wide — see "Fail-closed, per entry". |
+| `appliesTo` | Optional. `agents` and/or `markers`, matched against `SessionSpec.Agent` / `SessionSpec.Marker`. Absent or both-empty matches every session on the machine. |
+
+Nothing here is optional to *validate*: every entry is checked once, at daemon
+start, against the same rule set a Go test exercises directly
+(`ValidateSessionEnv` in `internal/drivers/tmux`) — an empty `fromFile`, a
+relative path, a bad variable name, or the same `name` declared twice all fail
+startup with a message naming the entry, rather than becoming a create-time
+refusal every later caller meets.
+
+### Why this is config-file-only, with no `FLEET_` environment variable
+
+`trustRoots` and `defaultRuntime` set the precedent: which runtimes exist and
+which directories are pre-trusted are facts about *this machine*, not the
+fleet, so they belong in the file an operator already edits per machine. A
+`sessionEnv` entry is a structured record — name, path, a flag, a scope — and
+a comma-separated environment variable has no honest way to carry that shape
+without inventing a second delimiter grammar. The file an operator already
+diffs is the right place for a fourth structured field, not a reason to widen
+the number of state sources this daemon reads at startup.
+
+### The config loader refuses unknown fields — so the order of operations is fixed
+
+`loadConfig` decodes with `DisallowUnknownFields`. A `sessionEnv` key placed in
+a machine's configuration file **before** the code understands it does not get
+ignored — the whole file fails to parse and the daemon refuses to start. So the
+order is always: ship the code, then add the config entry. Never the reverse,
+and never both machines in the same step — see "Rollout" below.
+
+## Restart enables it; rotation needs nothing
+
+Two different operations, and the split is the entire feature:
+
+| Operation | What it needs |
+|---|---|
+| Adding or changing a `sessionEnv` entry (the **declaration**) | A daemon restart. Configuration is read once, at startup; there is no reload path. |
+| Rotating the credential a `fromFile` points at (the **value**) | Nothing. The next session created picks up the new content — no restart, no coordination. |
+
+This is a requirement, not an implementation shortcut. Caching the value at
+daemon start was the obvious first implementation and the wrong one: rotate
+the file, and every session created afterward would keep receiving the stale
+value until somebody restarted the service, with nothing on screen to explain
+why. Reading `fromFile` fresh on every `Create` is what makes rotation a file
+write instead of a deploy.
+
+## Fail-closed, per entry
+
+`required` answers "what happens when `fromFile` is missing, unreadable, or
+empty" — and it is per entry because both answers are legitimate on the same
+machine for different variables. An identity credential almost certainly wants
+`required: true`; a nice-to-have almost certainly does not.
+
+- `required: true`, file unusable → the create refuses (see "Two different
+  refusals" below for which wire answer).
+- `required: false`, file unusable → the variable is silently omitted, exactly
+  as if the entry were not declared for this session at all.
+
+Silent omission is not on the table for a required entry, because it is
+indistinguishable from success at creation time and only becomes visible as an
+action taken under the wrong identity later, somewhere else — the same failure
+shape this whole feature exists to close.
+
+## Precedence against the caller
+
+Recorded here because it is the one part of this design with a genuinely
+non-obvious answer, and it is implemented exactly as written
+(`provisionSessionEnv` in `internal/drivers/tmux/sessionenv.go`):
+
+| Entry | Caller | Result |
+|---|---|---|
+| required | silent | configuration provides the value |
+| required | supplies the SAME value | proceed — not a conflict |
+| required | supplies a DIFFERENT value | **refuse the create** |
+| non-required | supplies a value | the caller's value wins |
+| non-required | silent | configuration provides the value |
+
+The middle-refusal row is the deliberate one. "Configuration wins silently"
+would be fail-closed but dishonest — the caller asked for one identity and
+got a different one with nothing said. "The caller wins" is worse: any caller
+could hand a session a different credential and quietly downgrade a required
+identity, which defeats the point of marking it required. Refusing is the
+option that is both fail-closed and legible.
+
+Because this is opt-in through configuration, the refusal can never affect an
+existing caller until an operator adds a `required` entry — and `appliesTo` is
+the escape hatch when one genuinely needs to differ (below).
+
+## Scoping: `appliesTo`
+
+`appliesTo.agents` and `appliesTo.markers` match `SessionSpec.Agent` and
+`SessionSpec.Marker`. A scope naming neither is the common case — an operator
+declaring an identity for the whole machine — and a session outside a scoped
+entry's reach never meets that entry at all: not provisioned, not required,
+not compared against.
+
+This exists so the first session that must deliberately act as something
+other than the configured identity costs a configuration edit, not a code
+change and a deploy on the exact path where a bug means every new session on
+the machine refuses.
+
+## Two different refusals, and why they answer differently on the wire
+
+Two distinct things can go wrong inside `provisionSessionEnv`, and they must
+not read alike to a caller:
+
+- **The caller's own value conflicts with a required entry.** Correctable by
+  the caller — omit the field, or send the identical value — so this is an
+  ordinary error that reaches the wire as `invalid` / 400, same as every other
+  malformed-create refusal in this driver.
+- **This machine cannot back a required entry** — the file is missing,
+  unreadable, or empty. No correction to the request body fixes an absent
+  file on this machine; a caller that retries is retrying forever against a
+  condition only an operator can clear. This is reported as a typed error with
+  `Kind: unsupported` (HTTP 501), addressed to the operator in its message,
+  not to the caller.
+
+The second choice closes a pre-existing asymmetry rather than inventing a
+third answer: this driver's own plain env refusal used to fall through to
+`invalid` by default, while the *other* local driver in this repository
+(`internal/drivers/opencode`) already answers its own env refusal with
+`unsupported`. Same category of refusal, two different wire answers, before
+this. `driver.ErrUnsupported`'s own contract — "nothing will change by asking
+again" — is precisely true of a create that keeps failing until an operator
+repairs a file, which is why this case uses it rather than a bespoke kind.
+
+*Open item, not yet made normative:* `spec/api-http.md` does not yet document
+this refusal — it is deferred until the naming/marker work already in flight
+on this file lands, to avoid two sessions editing one uncommitted document.
+Proposed wording, for whoever picks that up:
+
+> A `create` may fail with `unsupported` (501) for a reason that has nothing
+> to do with the request body: an operator-declared `sessionEnv` entry is
+> `required` on the target machine and its backing file is missing,
+> unreadable, or empty. The message names the entry and addresses the
+> operator; retrying the same request will not help until the file is
+> repaired.
+
+## Why this needed no wire change at all
+
+`sessionEnv` feeds values into `SessionSpec.Env`, the field a caller can
+already set — through the same staging file, consumed by the same
+login-shell wrap. No new field reaches the wire, so:
+
+- `spec_fields_test.go`'s conformance check (every `SessionSpec` field appears
+  in the normative spec documents) is untouched — nothing was added to check.
+- The implementation stays off the files another in-flight change on this
+  repository is holding (`session.go`, the naming driver and its test, this
+  spec document, `.gitignore`).
+- The feature is honestly described as what it is: an operator-side
+  declaration, not a new thing for a caller to learn.
+
+## Why provisioning happens in the driver, never in the HTTP handler
+
+A create aimed at this machine can arrive two ways: served locally, or relayed
+here by a peer that forwards the request body — `env` included — verbatim
+(`internal/drivers/remote`). If configuration were merged into the spec in the
+HTTP handler, a create this service only **relays** onward to a third machine
+would read this machine's files and ship the value over the network to a
+session that will actually run somewhere else — then get merged a *second*
+time against that other machine's own configuration. "Per-machine identity"
+has to mean the machine that runs the session, not the machine that took the
+call, so provisioning runs inside `Driver.Create` itself, strictly after the
+relay decision has already routed the request to whichever driver instance
+will actually serve it.
+
+## Secret discipline — inherited, not reinvented
+
+A configured value goes through exactly the channel a caller's own `Env`
+value already does: staged to a 0600 file, applied by the login-shell wrap,
+unlinked before the agent runs. Nothing new was built:
+
+- Never reaches an argv, a log line, or a response body.
+- Bounded to no newline and no NUL — checked against the configured value
+  specifically, before the merge, so a bad file is attributed to the operator
+  who owns it rather than reported as the caller's malformed input.
+- An empty file is treated as no value at all, not as a value that happens to
+  be the empty string.
+
+## Two traps this feature inherits, not new ones
+
+Both are properties of the driver `sessionEnv` feeds into, not of this
+feature specifically, and both are measured in
+`internal/drivers/tmux/environment.go`:
+
+1. **Never add the variable to the process-manager unit.** Sessions are
+   wrapped in a login-and-interactive shell precisely so a caller's `Env`
+   reaches the process without ever touching the service's own environment;
+   putting a `sessionEnv` value on the unit instead would leak it to every
+   session, including ones `appliesTo` was configured to exclude.
+2. **A clean shell has a four-entry search path**
+   (`/bin:/usr/bin:/usr/ucb:/usr/local/bin`). Anything this daemon itself
+   shells out on — outside the login-shell wrap a created session gets — must
+   use an absolute path or construct its own search path; a bare command name
+   can fail with a message that reads as "not installed" rather than "wrong
+   PATH".
+
+## Verifying an enabled entry
+
+An exit code is not evidence, and the environment record's names-only shape
+(§5.7; see `fleet.SessionEnvironment`) cannot distinguish a correct value from
+a wrong one — it only shows that a name is present. The claim this feature
+makes — a session came up holding a credential *because configuration put it
+there* — is proven only by asking the tool the credential authenticates
+**from inside the session** which identity it holds.
+
+Checklist for enabling an entry on a machine:
+
+1. Restart the daemon with the entry in place; confirm it started (a bad
+   entry fails startup with a message naming it — see `ValidateSessionEnv`).
+2. Create a session that falls inside the entry's `appliesTo` scope (or the
+   whole machine, if unscoped). From inside it, run the tool the credential
+   authenticates and read back the identity it reports.
+3. Create a session **outside** the scope (a different `agent`/`marker`) and
+   confirm the variable is genuinely absent — the negative case, and the one
+   `appliesTo` exists to make possible.
+4. For a `required` entry, point `fromFile` at a path that does not exist and
+   confirm the create refuses as `unsupported`, not as a hang or a
+   healthy-looking session.
+5. Rotate the file's contents with no restart and confirm the *next* session
+   created picks up the new value — the property that motivated reading it
+   fresh rather than caching it at startup.
+
+## Rollout
+
+Enable and verify on whichever machine hosts the smaller share of sessions
+first — this touches the session-creation path, and a bug in a `required`
+entry's plumbing means fail-closed refuses **every** new session on that
+machine, so the ordering is about blast radius, not convenience. Sessions
+already running are unaffected either way: they keep the identity they
+booted with until they are themselves restarted, and there is no cutover
+moment where every session on a machine changes identity at once.
+
+Enabling this on a second machine is a separate decision on that machine's
+own configuration; nothing here couples the two.

@@ -288,6 +288,14 @@ type Driver struct {
 	// credentialPath: a driver built for a test never touches a real state
 	// file merely because it was constructed. See WithTrustSeed.
 	trustSeed *trustseed.Seeder
+
+	// sessionEnv is this machine's declared identity for its sessions —
+	// colab-fleet issue #94. Nil/empty means unconfigured, the same
+	// off-by-default contract as credentialPath and trustSeed: a driver
+	// built for a test never merges configuration into a caller's env
+	// merely because it was constructed. See WithSessionEnv and
+	// sessionenv.go's provisionSessionEnv.
+	sessionEnv []SessionEnvEntry
 }
 
 type observation struct {
@@ -436,6 +444,20 @@ func WithCredentialPath(path string) Option {
 // configured.
 func WithTrustSeed(statePath, home string, roots []string) Option {
 	return func(d *Driver) { d.trustSeed = trustseed.New(statePath, home, roots) }
+}
+
+// WithSessionEnv declares this machine's identity for its sessions —
+// colab-fleet issue #94. entries is expected to have already passed
+// ValidateSessionEnv; this option does no validation of its own; the same
+// division main.go already keeps for TrustRoots (validated once at startup,
+// wired here without re-checking).
+//
+// Off by default for the same reason as WithRecordRoot, WithCredentialPath
+// and WithTrustSeed: a driver built for a test must not merge configuration
+// into a caller's env merely because it was constructed. An empty or nil
+// list leaves provisionSessionEnv a no-op (see sessionenv.go).
+func WithSessionEnv(entries []SessionEnvEntry) Option {
+	return func(d *Driver) { d.sessionEnv = entries }
 }
 
 // TrustSeedResult passes through internal/trustseed.Result so a caller
@@ -2004,6 +2026,19 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if contextFile != "" && !filepath.IsAbs(contextFile) {
 		return fleet.SessionRef{}, fmt.Errorf("create: contextRef must be absolute, got %q", contextFile)
 	}
+	// colab-fleet issue #94: fold this machine's declared identity into the
+	// caller's env BEFORE any of the validation below, so a configured value
+	// is checked by the same bound as a caller's own (see sessionenv.go's
+	// readSessionEnvFile) and a bareExec driver refuses a configured value
+	// exactly as it already refuses a caller-supplied one. Must run here,
+	// inside the local driver's own Create — never in the HTTP handler — so
+	// a create this machine only relays onward never reads this machine's
+	// files (see sessionenv.go's package doc for why).
+	mergedEnv, err := d.provisionSessionEnv(spec)
+	if err != nil {
+		return fleet.SessionRef{}, err
+	}
+	spec.Env = mergedEnv
 	if err := validateEnv(spec.Env); err != nil {
 		return fleet.SessionRef{}, fmt.Errorf("create: %w", err)
 	}
@@ -2012,7 +2047,8 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// carrying variables cannot be honoured there — and a session that comes up
 	// without the identity its supervisor gave it looks perfectly healthy and
 	// fails later, somewhere else, which is the failure mode this whole area
-	// keeps producing.
+	// keeps producing. This also catches a value sessionEnv contributed above:
+	// bareExec has no out-of-band channel for it either.
 	if len(spec.Env) > 0 && d.bareExec {
 		return fleet.SessionRef{}, errors.New(
 			"create: this driver is configured without the login-shell wrap, so it has " +

@@ -379,6 +379,7 @@ denied, on a fresh deployment as much as an established one.
 | Adopt this in an existing system | [`docs/adoption.md`](docs/adoption.md) — staged so each step is reversible; §2 is the precondition that surprised us |
 | Work on the service | [`docs/internals.md`](docs/internals.md) — measurements, decided questions, known gaps |
 | Deploy it | [`docs/deploy.md`](docs/deploy.md) |
+| Declare a machine-wide session identity | [`docs/session-identity.md`](docs/session-identity.md) — `sessionEnv`, precedence against a caller, verification |
 
 The specs carry the reasoning; the code is a transcription of them, not the
 other way round. The session spec is organised so you can tell current truth

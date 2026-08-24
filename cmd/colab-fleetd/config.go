@@ -6,6 +6,7 @@ import (
 	"os"
 
 	fleet "github.com/godx-jp/colab-fleet"
+	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
 	"github.com/godx-jp/colab-fleet/internal/service"
 )
 
@@ -69,6 +70,28 @@ type fileConfig struct {
 	// per machine rather than in an environment variable that would read as
 	// though it meant something fleet-wide.
 	DefaultRuntime string `json:"defaultRuntime,omitempty"`
+
+	// SessionEnv declares an identity this machine's sessions carry —
+	// colab-fleet issue #94. Each entry names a variable, a fromFile path
+	// this machine reads FRESH ON EVERY CREATE (never cached at daemon
+	// start — see internal/drivers/tmux.SessionEnvEntry's doc comment for
+	// why that split is the entire feature), a required flag, and an
+	// optional appliesTo scope.
+	//
+	// Config-file-only, like TrustRoots and DefaultRuntime: which
+	// credential a machine's sessions should hold is a fact about that
+	// machine, not about the fleet. Adding or changing an entry — the
+	// declaration — needs the same restart TrustRoots and DefaultRuntime
+	// do; rotating the file an existing entry points at needs nothing.
+	SessionEnv []struct {
+		Name      string `json:"name"`
+		FromFile  string `json:"fromFile"`
+		Required  bool   `json:"required,omitempty"`
+		AppliesTo *struct {
+			Agents  []string `json:"agents,omitempty"`
+			Markers []string `json:"markers,omitempty"`
+		} `json:"appliesTo,omitempty"`
+	} `json:"sessionEnv,omitempty"`
 }
 
 func loadConfig(path string) (*fileConfig, error) {
@@ -108,6 +131,29 @@ func (c *fileConfig) principals() ([]service.Principal, error) {
 		out = append(out, service.Principal{Name: p.Name, Token: p.Token, Grants: grants})
 	}
 	return out, nil
+}
+
+// sessionEnv converts the wire shape into internal/drivers/tmux's own type,
+// the same division principals() keeps: this file only knows the JSON shape,
+// the driver package owns what a valid entry means (ValidateSessionEnv is
+// called by the caller, not here — same reasoning as principals() leaving
+// grant validation to its own call site).
+func (c *fileConfig) sessionEnv() []tmux.SessionEnvEntry {
+	if len(c.SessionEnv) == 0 {
+		return nil
+	}
+	out := make([]tmux.SessionEnvEntry, 0, len(c.SessionEnv))
+	for _, e := range c.SessionEnv {
+		entry := tmux.SessionEnvEntry{Name: e.Name, FromFile: e.FromFile, Required: e.Required}
+		if e.AppliesTo != nil {
+			entry.AppliesTo = tmux.SessionEnvScope{
+				Agents:  e.AppliesTo.Agents,
+				Markers: e.AppliesTo.Markers,
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func (c *fileConfig) peerFor(machine fleet.MachineId) (url, token string, ok bool) {
