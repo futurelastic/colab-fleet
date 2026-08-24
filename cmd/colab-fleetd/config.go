@@ -165,6 +165,38 @@ func (c *fileConfig) peerFor(machine fleet.MachineId) (url, token string, ok boo
 	return "", "", false
 }
 
+// selfCredential returns the token this machine has assigned its OWN system
+// identity in the principal table, if the table names one (colab-fleet #98).
+//
+// internal/service.Service.peerRequest already builds this exact name —
+// "system:" + self — for every long-lived peer subscription; nothing here
+// invents a new identity. What was missing was a credential for it: a
+// table-only deployment (FLEET_CONFIG present, FLEET_TOKEN absent) presented
+// that principal with an empty credential, so the peer refused every
+// subscription. Naming a principal for it here gives that identity a token
+// the same way it would give any caller's identity one.
+//
+// Every entry loadConfig returns already has a non-empty Name and Token (the
+// validation loop above), so a found entry can never carry an empty token —
+// "no entry" (ok == false) is the only "nothing configured" case a caller
+// needs to handle.
+//
+// This entry alone is not enough to make a peer subscription work — only
+// enough to make this machine have something to offer. See the FLEET_CONFIG
+// doc comment in main.go for the two-sided requirement: the returned token
+// is matched by VALUE against the peer's own principal table, not by this
+// entry's name, so the peer needs a principal holding the same token (and at
+// least the read grant) for the credential this returns to be accepted.
+func (c *fileConfig) selfCredential(self fleet.MachineId) (token string, ok bool) {
+	name := "system:" + string(self)
+	for _, p := range c.Principals {
+		if p.Name == name {
+			return p.Token, true
+		}
+	}
+	return "", false
+}
+
 // newTrimReader exists so a config file may carry a leading byte-order mark or
 // stray whitespace without failing to parse, which is the kind of thing that
 // costs an operator twenty minutes at an unhelpful hour.

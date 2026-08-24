@@ -60,6 +60,36 @@
 //	                       principal table is authoritative and FLEET_TOKEN /
 //	                       FLEET_ALLOW_* are ignored. Absent means
 //	                       single-token mode.
+//
+//	                       colab-fleet #98: a table-only deployment (no
+//	                       FLEET_TOKEN) has nothing to present for its OWN
+//	                       long-lived peer reads unless the table names a
+//	                       principal for this machine's system identity —
+//	                       "system:"+FLEET_MACHINE — and gives it a token.
+//	                       Without that entry, peer subscriptions are
+//	                       refused (fail closed); local requests are
+//	                       unaffected either way.
+//
+//	                       This is a TWO-SIDED requirement, and only the local
+//	                       half is described above. The token from that entry
+//	                       is presented to the PEER as a bearer credential, and
+//	                       the peer resolves it by comparing the TOKEN VALUE
+//	                       against its own principal table (constant-time,
+//	                       §6) — the peer never looks at the name "system:"+
+//	                       FLEET_MACHINE at all, so a name mismatch on the far
+//	                       side is harmless and a token mismatch is fatal. So
+//	                       the SAME token value has to appear in both tables:
+//	                       locally under "system:"+FLEET_MACHINE (so this
+//	                       daemon can find it and offer it), and on the peer
+//	                       under some principal holding at least the read
+//	                       grant (GrantRead — GET /v1/events is gated by
+//	                       reading(), colab-fleet #80) — grants beyond that
+//	                       are unneeded for a subscription and are the
+//	                       peer-side operator's call, same as any other
+//	                       principal. Configuring only the local half leaves
+//	                       every peer subscription refused exactly as before
+//	                       #98's fix, with a doc that reads as if it should
+//	                       already work.
 //	FLEET_ALLOW_MUTATIONS  set to 1 to permit create/input/interrupt/close
 //	                       against sessions ON THIS MACHINE. Defaults OFF.
 //	FLEET_ALLOW_RELAY      set to 1 to permit forwarding a mutation to a
@@ -177,7 +207,7 @@ func main() {
 	// The service's own authority for long-lived peer reads (event
 	// subscriptions, §14 D9). Never used for a proxied unary call — those
 	// authenticate as this machine and assert the caller (§6, §13).
-	svc.SetPeerCredential(token)
+	svc.SetPeerCredential(peerCredential(token, cfgFile, self))
 
 	// --- local runtime -------------------------------------------------
 	var (
@@ -554,6 +584,39 @@ func getenv(key, fallback string) string {
 // FLEET_CONFIG's doc comment promises.
 func requireToken(cfgFile *fileConfig) bool {
 	return cfgFile == nil
+}
+
+// peerCredential decides what this service presents for its OWN long-lived
+// peer subscriptions (internal/service.Service.SetPeerCredential, §14 D9;
+// colab-fleet #98). token is FLEET_TOKEN as read in main; self is this
+// machine's own id, the same one Service.peerRequest names ("system:"+self).
+//
+// FLEET_TOKEN wins when set — single-token mode, and the "config and token
+// both set" state main_test.go's TestStartupAuthGateNeverStartsUnauthenticated
+// already exercises, are unchanged by #98 and stay exactly as they were.
+//
+// Only when there is no token does the principal table get a say: a
+// table-only deployment (FLEET_CONFIG present, FLEET_TOKEN absent) may name
+// its own system identity as a principal and give it a credential there
+// (fileConfig.selfCredential) — closing the #98 gap without adding a new
+// config surface for a fact the table can already state.
+//
+// No token AND no matching principal returns "", same as before #98: this
+// function never invents a credential, so the fail-closed posture from #95
+// (an absent credential refuses the peer subscription rather than attempting
+// it unauthenticated — enforced downstream by internal/drivers/remote.Driver.
+// bearerFor and the peer's own principalFor, neither of which this function
+// touches) is exactly as strict for a deployment that never opts into a
+// self-credential as it always was.
+func peerCredential(token string, cfgFile *fileConfig, self fleet.MachineId) string {
+	if token != "" {
+		return token
+	}
+	if cfgFile == nil {
+		return ""
+	}
+	v, _ := cfgFile.selfCredential(self)
+	return v
 }
 
 // withLoopback guarantees the service is reachable from its own machine.

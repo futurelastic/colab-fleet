@@ -234,6 +234,55 @@ func TestLoadConfigRejectsAnEmptyPrincipalTable(t *testing.T) {
 	}
 }
 
+// colab-fleet #98: selfCredential is what lets a table-only deployment give
+// its own outbound peer identity a credential — Service.peerRequest already
+// names that identity "system:"+self, so the table only needs to carry a
+// principal by that exact name.
+func TestSelfCredentialFindsTheMatchingPrincipal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{"principals": [
+		{"name": "op", "token": "op-tok"},
+		{"name": "system:machine-a", "token": "self-tok"}
+	]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, ok := cfg.selfCredential("machine-a")
+	if !ok || tok != "self-tok" {
+		t.Errorf("selfCredential(\"machine-a\") = (%q, %v), want (\"self-tok\", true)", tok, ok)
+	}
+}
+
+// No principal named for this machine's own system identity is "nothing
+// configured", not an error — main.go's peerCredential must be free to fall
+// through to an empty credential (fail closed) rather than treat this as a
+// malformed table. Also covers the "no principals at all for this identity,
+// but the table names OTHER principals" case, which is the one an operator
+// who has never heard of #98 will actually have.
+func TestSelfCredentialWithNoMatchingPrincipalIsNotFound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{"principals": [{"name": "op", "token": "op-tok"}]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok, ok := cfg.selfCredential("machine-a"); ok || tok != "" {
+		t.Errorf("selfCredential(\"machine-a\") = (%q, %v), want (\"\", false) — no principal names this machine's system identity", tok, ok)
+	}
+	// A different machine's identity must not match either — this is a
+	// per-machine name, not a wildcard.
+	if tok, ok := cfg.selfCredential("machine-b"); ok || tok != "" {
+		t.Errorf("selfCredential(\"machine-b\") = (%q, %v), want (\"\", false)", tok, ok)
+	}
+}
+
 func TestLoadConfigRejectsAPrincipalMissingATokenOrName(t *testing.T) {
 	cases := []string{
 		`{"principals": [{"name": "op"}]}`,

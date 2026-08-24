@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	fleet "github.com/godx-jp/colab-fleet"
 )
 
 // The rule under test: after this function, the machine can always reach its
@@ -77,6 +79,82 @@ func TestRequireToken(t *testing.T) {
 	}
 	if requireToken(&fileConfig{}) {
 		t.Error("requireToken(non-nil) = true, want false — a loaded config is never empty (loadConfig refuses that), so the token becomes optional")
+	}
+}
+
+// colab-fleet #98: starting from a principal table alone left the peer
+// credential empty, so this pins which states now proceed (a non-empty
+// credential is handed to SetPeerCredential) and which still refuse
+// (svc.SetPeerCredential("") — internal/drivers/remote.Driver.bearerFor and
+// the peer's own principalFor both then have nothing to authenticate,
+// exactly as before #98). A regression that made any REFUSE case below start
+// presenting an unauthenticated peer subscription is precisely the bug #98's
+// ruling required stay impossible.
+func TestPeerCredentialFailsClosedWithoutASelfPrincipal(t *testing.T) {
+	writeConfig := func(t *testing.T, body string) *fileConfig {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+
+	const self = fleet.MachineId("machine-a")
+
+	cases := []struct {
+		name    string
+		token   string
+		cfgFile *fileConfig
+		want    string
+	}{
+		{
+			name:  "single-token mode — no config at all — REFUSE",
+			token: "",
+			want:  "",
+		},
+		{
+			name:  "single-token mode with a token set — the token is the credential",
+			token: "shared-secret",
+			want:  "shared-secret",
+		},
+		{
+			name:    "table-only, no self principal configured — REFUSE (the #98 gap, still refused for a deployment that hasn't opted in)",
+			token:   "",
+			cfgFile: writeConfig(t, `{"principals": [{"name": "op", "token": "op-tok"}]}`),
+			want:    "",
+		},
+		{
+			name:    "table-only, self principal configured — the #98 fix: its token becomes the credential",
+			token:   "",
+			cfgFile: writeConfig(t, `{"principals": [{"name": "op", "token": "op-tok"}, {"name": "system:machine-a", "token": "self-tok"}]}`),
+			want:    "self-tok",
+		},
+		{
+			name:    "table-only, a DIFFERENT machine's self principal is configured — REFUSE, this is not a wildcard",
+			token:   "",
+			cfgFile: writeConfig(t, `{"principals": [{"name": "system:machine-b", "token": "other-tok"}]}`),
+			want:    "",
+		},
+		{
+			name:    "config and token both set — FLEET_TOKEN still wins, unchanged by #98",
+			token:   "shared-secret",
+			cfgFile: writeConfig(t, `{"principals": [{"name": "system:machine-a", "token": "self-tok"}]}`),
+			want:    "shared-secret",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := peerCredential(tc.token, tc.cfgFile, self)
+			if got != tc.want {
+				t.Errorf("peerCredential(%q, cfgFile, %q) = %q, want %q", tc.token, self, got, tc.want)
+			}
+		})
 	}
 }
 
