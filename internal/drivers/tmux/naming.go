@@ -119,18 +119,16 @@ func applyMarker(name, marker string) string {
 // stops being recognisable as its own type at exactly the moment there are two
 // of them.
 //
-// marker is the same sanitized marker passed to applyMarker; when name ends in
-// that marker, it is used as the decoration even if it is drawn only from the
-// nameBody alphabet (which generic decoration() alone cannot detect as a
-// separate suffix).
-func numberedName(name, marker string, n int) string {
+// This function relies only on decoration() to decide where a trailing marker
+// sits, and never on strings.HasSuffix(name, marker). A suffix check cannot
+// distinguish an applied ascii-alphabet marker from a name that coincidentally
+// ends in the same characters; guessing wrong here doesn't merely skip a
+// marker — it actively cuts the name apart and misplaces the counter. See issue #90.
+func numberedName(name string, n int) string {
 	if n < 2 {
 		return name
 	}
 	deco := decoration(name)
-	if marker != "" && strings.HasSuffix(name, marker) && deco == "" {
-		deco = marker
-	}
 	base := strings.TrimSuffix(name, deco)
 	return base + "-" + strconv.Itoa(n) + deco
 }
@@ -184,7 +182,7 @@ func (d *Driver) resolveName(ctx context.Context, requested, marker string) (str
 		return name, true
 	}
 	for n := 1; n <= maxNameAttempts; n++ {
-		candidate := numberedName(name, marker, n)
+		candidate := numberedName(name, n)
 		if !taken[candidate] {
 			return candidate, true
 		}

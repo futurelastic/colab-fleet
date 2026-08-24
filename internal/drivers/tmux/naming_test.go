@@ -73,19 +73,18 @@ func TestNumberedName(t *testing.T) {
 	cases := []struct {
 		name   string
 		inName string
-		marker string
 		n      int
 		want   string
 	}{
-		{name: "n < 2 returns name", inName: "alpha💬", marker: "💬", n: 1, want: "alpha💬"},
-		{name: "counter before non-ASCII marker", inName: "alpha💬", marker: "💬", n: 2, want: "alpha-2💬"},
-		{name: "counter before ASCII marker", inName: "append", marker: "end", n: 2, want: "app-2end"},
-		{name: "no marker, decoration empty", inName: "alpha", marker: "", n: 2, want: "alpha-2"},
+		{name: "n < 2 returns name", inName: "alpha💬", n: 1, want: "alpha💬"},
+		{name: "counter before non-ASCII marker", inName: "alpha💬", n: 2, want: "alpha-2💬"},
+		{name: "ascii-alphabet suffix is not mistaken for a marker (issue #90)", inName: "append", n: 2, want: "append-2"},
+		{name: "no marker, decoration empty", inName: "alpha", n: 2, want: "alpha-2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := numberedName(tc.inName, tc.marker, tc.n); got != tc.want {
-				t.Errorf("numberedName(%q, %q, %d) = %q, want %q", tc.inName, tc.marker, tc.n, got, tc.want)
+			if got := numberedName(tc.inName, tc.n); got != tc.want {
+				t.Errorf("numberedName(%q, %d) = %q, want %q", tc.inName, tc.n, got, tc.want)
 			}
 		})
 	}
