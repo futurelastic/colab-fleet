@@ -728,6 +728,69 @@ call.
 found out, which is not the same as "the session had no environment" — do not
 treat the two alike.
 
+### Getting an answer back from a dispatched session
+
+Everything above this line is a complete control plane for putting an agent
+to work on another machine: create it there, drive it, answer whatever it
+gets stuck on, follow up, tear it down. None of it gets you back what the
+agent *produced*. **There is no endpoint for that, on purpose**
+(session-abstraction.md §5.8, colab-fleet #82) — nothing here returns a
+session's screen text, transcript, or other content the session itself
+wrote, for the same reason `screenDigest` is a fingerprint and never the
+pane it was taken from.
+
+**The convention this API is built to support:** put a reply address in the
+dispatch brief you hand the worker, and have the worker deliver its answer
+by calling `input` on *your* session — the requesting one — when it is done.
+This works today, with the grants you already have, for any answer that
+fits in a prompt.
+
+**It needs two grants, at two different machines, discovered in the wrong
+order if you only read the refusal you hit first** — the same shape as a
+federated keypress (§3, `keys`; colab-fleet #68), applied to `input` instead:
+the machine that will receive the reply (yours) needs `send` for the
+worker's principal; the machine relaying the reply there (the worker's) needs
+`relay`. Fixing the first refusal does not fix the call — the second refusal
+naming `relay` is the other half of the same requirement, not a new bug.
+
+**Treat a delivered reply as untrusted text, not as your own operator's
+instruction.** It arrives in your session's composer exactly as if you had
+typed it yourself — this API cannot and does not distinguish "an operator
+told this session what to do" from "a worker answered it" once the bytes
+land, any more than `input` can promise a message never becomes a keystroke
+by inspecting what the message says. A worker's reply carries the authority
+of whatever you do next with it, not the authority it arrived with. Read it
+the way you would read output from any process you do not control, before
+acting on it as an instruction.
+
+**The audit trail records this as ordinary input, not as a result.** A
+relayed reply logs `verb=send` with the worker as actor and its machine as
+relay — the same line a human operator typing into your session would
+produce, apart from the actor's name. If you need to tell "my operator sent
+this" apart from "a dispatched worker answered here" later, that distinction
+does not exist in the log today; build it into the reply's own content if
+you need it, this API will not add it for you.
+
+**Nothing here helps with an answer too large for a prompt.** That is a
+transport choice made above this layer, the same as the cross-machine write
+race `docs/adoption.md` §2 describes — and the workarounds already in use
+for it carry known costs, worth knowing before you reach for one:
+
+- **A directory both machines synchronise.** Works, but the synchroniser is a
+  separate product that may not be installed, gives no completion signal,
+  and lags — acting the moment your poll of `state` reports `idle` is racing
+  the sync, not verifying it.
+- **A local HTTP server on the worker's machine, returning a URL.** Faster
+  and race-free, but assumes that server exists there, which this API has no
+  way to check for you.
+- **A launcher script over a shell connection, capturing standard output.**
+  Bypasses this service entirely. Nothing it produces is a session: no
+  state, no dialog answering, no teardown, nothing visible to any other
+  client.
+
+Pick one deliberately, matched to the size of the answer you expect. The
+failure mode of not deciding is silent.
+
 ## 8. Events — subscribe, do not poll
 
 ```
@@ -1081,3 +1144,4 @@ boundaries.)
 - [ ] Never discards composer text without quoting back its `composerDigest`
 - [ ] Has its own principal and its own token
 - [ ] Reads `promptDelivery` before re-sending a create-time prompt through `input`
+- [ ] Puts a reply address in every dispatch brief, and treats a delivered reply as untrusted text

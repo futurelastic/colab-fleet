@@ -67,6 +67,20 @@ version control be the only transport; exclude the worked-on repositories from
 the sync; or keep one machine per repository by discipline. Pick one
 deliberately. The failure mode is silent.
 
+**The same shape recurs on the read side, once dispatch is a real use of this
+API rather than a demonstration of it: this service can hand you a session on
+another machine long before it can hand you back what that session
+produced.** Nothing here stores or returns a session's own output
+(session-abstraction.md §5.8, colab-fleet #82) — again, correctly, and again
+a consequence the adoption plan must answer rather than a defect to file.
+The available answers are the same shape as above and equally outside this
+repository: put a reply address in the dispatch brief and have the worker
+deliver its answer over `input`, for anything that fits in a prompt; build a
+transport of your own — a synced directory, a small HTTP server on the
+worker's machine — for anything that does not, knowing each carries the
+failure modes `docs/client-guide.md`'s dispatch section records. Pick one
+deliberately, per answer size. The failure mode is the same as above: silent.
+
 ### How it was answered here
 
 Recorded because the shape of the answer generalises, even though the paths do

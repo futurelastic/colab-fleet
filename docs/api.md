@@ -352,6 +352,12 @@ service, or this service has begun growing into a second supervisor.
 > **colab-fleet knows a session has a working directory.
 > It does not know what a worktree is.**
 
+Nor does any endpoint return a session's screen text, transcript, or other
+content the session itself produced — no "give me the result" route, and
+nothing stores one on a session's behalf (colab-fleet #82). A dispatched
+agent's answer travels the way its input did: the caller names a reply
+address at dispatch time, and the worker delivers its answer there itself.
+
 ---
 
 ## Known gaps between this document and the code

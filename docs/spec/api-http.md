@@ -1029,3 +1029,11 @@ No endpoint exposes version control, worktrees, issues, claims, or work
 planning (§1 non-goals). If such an endpoint ever looks necessary, the
 supervisor is asking the wrong service, or this service has begun to grow into
 a second supervisor.
+
+No endpoint returns a session's screen text, transcript, or other content the
+session itself produced, and none stores a result on a session's behalf
+(session-abstraction.md §5.8, colab-fleet #82). This is a different kind of
+absence from the paragraph above — not a domain this service doesn't
+understand, but a data class it declines to carry regardless of domain. A
+dispatched agent's answer is delivered by the agent, to a reply address the
+caller supplied at dispatch, over `input` — never read back through this API.

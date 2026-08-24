@@ -1300,6 +1300,46 @@ failure to observe will report its ignorance as the world's.*
 > handed to it. See `internal/drivers/opencode/state.go` and `ops.go`'s
 > `State`/`List`.
 
+### 5.8 Report facts about content, never content the session produced
+
+**The boundary this API draws around content is provenance, not
+sensitivity.** A field may carry the runtime's own words about itself —
+`ControlChannel.reason`, `TurnEnd.reason`, `QuotaBlock.resetHint` all do this
+today, and none of them is a violation of this rule. What this API never
+does, and what colab-fleet #82 asked it to reconsider, is report content the
+**session** produced — the text an agent read, decided, or wrote for a
+reader, as opposed to the runtime's own structured account of its own
+condition.
+
+This is not a new decision; it is three independent ones, restated as one
+rule so a fourth proposal is answered by derivation rather than
+re-litigated from nothing:
+
+- **`screenDigest` (§2.3) is a fingerprint, never the text it was taken
+  from.** A read that returned pane content would make every listing a
+  transcript leak (`docs/spec/api-http.md` §4, the `keys` route).
+- **`environment.names` carries variable names and never values**
+  (`docs/spec/api-http.md`, the `environment` route) — the same instinct
+  applied to a different kind of content.
+- **§2.9's `ConversationRef` names a transcript record without ever opening
+  it.** The record it names is one the *runtime* wrote unasked, which is
+  exactly why §2.9 calls it "an independent witness... the first source in
+  this model that is not an echo." That provenance is what makes naming it
+  safe, and it is also what a session's own *result* does not have: a result
+  is written by the agent, on purpose, for whoever reads it back — the
+  forgeable class §2.3's `ControlChannel.reason` note (colab-fleet #69)
+  already warned about, twice measured: a supervisor grepping panes for a
+  disconnection notice classified *itself* as disconnected because its own
+  tool output contained the string it was searching for, and a prompt
+  classifier was once fooled into reading "No auth bypass" — typed by the
+  agent into its own prompt — as the runtime's own account of the decision.
+
+A "result" a caller wants back from a dispatched session is definitionally
+session-authored. It does not become the runtime's own account of itself by
+being written to a field or a slot instead of a screen, so this API does not
+carry one. See `docs/adr/82-session-result-belongs-above-this-layer.md` for
+the alternatives this ruled out and why.
+
 ---
 
 ## 6. Authorization
@@ -1490,6 +1530,36 @@ plus an explicit completeness flag. See §9.
 On restart the service re-discovers sessions its drivers can still see and
 adopts them. Anything it finds but cannot confidently identify is surfaced as
 `unknown`, never dropped from listings and never destroyed. See §12.
+
+### 7.6 A session's result is delivered by the session, not by this service
+
+Dispatching a named agent to a peer through this API is a complete round
+trip for everything except the answer: create, drive, answer a dialog,
+follow up, and destroy all work end to end, but nothing here returns what
+the dispatched agent produced (colab-fleet #82). Three out-of-band
+workarounds grew to close that gap — a directory both machines
+synchronise, a local HTTP server on the worker's machine, a shell
+connection capturing stdout — each substituting a dependency this API does
+not have, and none of them a session this service can see, answer, or tear
+down.
+
+**Decided: no result endpoint, no result-carrying field, no service-held
+result slot.** The reply address belongs in the dispatch brief, and the
+worker delivers its answer by calling `input` on the requesting session —
+the endorsed shape of what was already happening, written down rather than
+left to be rediscovered by the next caller. §5.8 states why a result field
+specifically is out of bounds; `docs/adr/82-session-result-belongs-above-this-layer.md`
+records the alternatives this considered and rejected, including why a
+`ConversationRef`-shaped reference does not transfer to this case. A large
+answer that does not fit in a prompt remains a transport choice made above
+this layer, the same shape `docs/adoption.md` §2 already uses for the
+cross-machine write race: neither is a defect in this service, and neither
+is fixed here.
+
+**This is not silent on authority.** A reply delivered this way lands in
+the requesting session's composer exactly as if its own operator had typed
+it — see `docs/client-guide.md`, "Getting an answer back from a dispatched
+session," for what that costs and the grants it requires on each machine.
 
 ## 7a. Still open
 
