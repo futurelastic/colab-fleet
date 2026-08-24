@@ -380,8 +380,11 @@ POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&starte
 → 202 { "accepted": true }
 → 409 if the digest does not match what is there now, or none was supplied
 → 409 also if the clear could not be confirmed to have finished — the message
-  says whether the composer is unchanged (safe to retry with the same digest)
-  or now damaged (re-read before doing anything else; do not retry blind)
+  says which of three things happened: the composer is unchanged and this is
+  the first time (safe to retry with the same digest), the composer is
+  unchanged and a PRIOR full clear pass already proved retrying does nothing
+  (do not retry — see below), or the composer is now damaged (re-read before
+  doing anything else; do not retry blind)
 ```
 
 Removes unsent composer text without submitting it. `expect` is
@@ -394,12 +397,31 @@ current text has no business removing it. An already-empty composer returns
 
 A driver that cannot confirm its own clear keystroke finished reports that as
 409 too, never 400: the request was well formed, and a keystroke failing to
-land is not the caller's mistake to fix by resending the same bytes. The two
-ways that can happen need opposite next steps, so the message says which:
-the composer may be exactly what the caller already read (nothing destroyed,
-retry away), or it may hold neither that text nor nothing — partially cleared,
-which is worse than either extreme and must not be retried without a fresh
-read.
+land is not the caller's mistake to fix by resending the same bytes. Three
+outcomes share that 409, and need three different next steps:
+
+- **unchanged, first pass** — the composer reads exactly what the caller
+  already corroborated. Nothing was destroyed, so retrying with the same
+  digest is exactly as safe as the first attempt was.
+- **unchanged, proven futile** — a *prior* call already spent a full pass
+  against this exact residue and it did not move. This driver does not press
+  again against text already proven not to respond; it refuses before
+  touching the pane at all, and the message deliberately does not repeat
+  "safe to retry" — repeating it was #87's failure mode, a caller that
+  followed that advice to the letter, four times, and made zero progress
+  each time. The message instead names the one operation guaranteed to work
+  regardless of what state the composer is stuck in: `DELETE
+  /v1/machines/{machine}/sessions/{id}`.
+- **damaged** — the keystroke registered PARTIALLY: some of the text is
+  gone, none of it cleanly, and the composer now holds neither what the
+  caller saw nor nothing — worse than either extreme, and not safe to retry
+  blind. The message carries the residue's current digest, so the caller's
+  next legal call needs no extra re-read to learn it.
+
+A single call also stops pressing early once it has clear evidence a pass has
+stalled — movement observed, then several presses in a row that changed
+nothing — rather than spending the rest of its window on keystrokes already
+proven to do nothing against text nobody has re-read.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/rename?startedAt=&runtime=

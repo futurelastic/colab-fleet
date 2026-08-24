@@ -105,6 +105,18 @@ const (
 	promptClearWindow   = 3 * time.Second
 	promptClearInterval = 200 * time.Millisecond
 
+	// stallPresses bounds how many CONSECUTIVE identical captures Discard's
+	// clear loop tolerates once it has already seen the composer move at
+	// least once (#87). Before any movement, "unchanged" is not yet
+	// evidence of anything — a pane that has simply not redrawn — so the
+	// loop still spends the whole promptClearWindow there. AFTER movement,
+	// an unchanged capture is a press that did nothing, and repeating it
+	// for the rest of the window is not buying more time, it is more
+	// destructive keystrokes aimed at text nobody has re-read. Three is
+	// enough to distinguish "stopped" from "one slow repaint" without
+	// costing the caller most of the window finding out.
+	stallPresses = 3
+
 	// startingWindow is how long a session with no visible interface is
 	// given the benefit of the doubt. The runtime takes tens of seconds to
 	// paint; beyond this, silence means something other than booting.
@@ -153,6 +165,12 @@ const (
 	// text a human typed that happens to be identical — precisely what
 	// strandedMatches's exact-match rule exists to exclude.
 	strandedRetention = 30 * time.Minute
+
+	// futileClearRetention is how long a "this exact residue would not
+	// move" record (#87) is trusted. Same reasoning as strandedRetention:
+	// kept forever it stops being evidence about a composer the caller can
+	// still see, since anything could have happened to the pane by then.
+	futileClearRetention = 30 * time.Minute
 )
 
 // ErrAmbiguousTarget is returned by a destructive operation whose target
@@ -255,6 +273,15 @@ type Driver struct {
 	// (see environment.go). In memory only, for the reason stated on
 	// Environment.
 	environments map[string]fleet.SessionEnvironment
+
+	// futile remembers, per session, that Discard's clear loop already
+	// spent a full pass against a specific composer residue and produced
+	// no movement at all (#87). In memory only, like environments: this is
+	// transient evidence about one clear attempt, not a fact the service
+	// owes a restart — a restart re-earns it in the time one ordinary pass
+	// takes, exactly as a genuinely first-time-frozen composer would. See
+	// noteFutile/futileClearAttempts/forgetFutile below.
+	futile map[string]futileClear
 
 	// counters is this driver's self-observability registry — see
 	// counters.go. Its own mutex, not d.mu: nothing about a count is
@@ -1732,6 +1759,16 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 			ErrAmbiguousTarget, expectDigest, got)
 	}
 
+	// #87: this EXACT residue may already be proven to resist a clear pass
+	// — a prior call spent the whole promptClearWindow pressing C-u against
+	// it and it never moved. If so, do not press again: a second identical
+	// pass against text nobody has re-read is not gathering more evidence,
+	// it is destructive keystrokes spent to learn what the first pass
+	// already learned. Refuse outright, before touching the pane.
+	if attempts := d.futileClearAttempts(ref.ID, live.cwd, expectDigest); attempts > 0 {
+		return fleet.Ack{}, discardProvenFutile(attempts)
+	}
+
 	// C-u clears the line the cursor sits on. Measured on a live session
 	// rather than assumed: C-a C-k and Escape were tried too, and C-u alone
 	// is enough — for a single line.
@@ -1753,8 +1790,18 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	// stays in the loop for the reason it was already there: a keypress
 	// that did not register looks exactly like one that did, the same
 	// reason send confirms before submitting.
+	//
+	// #87 added the early exit below: once movement has actually been
+	// observed, `stallPresses` further presses that change nothing are no
+	// longer "still walking it backward" — they are new evidence the pass
+	// has stopped working, and pressing MORE just makes a bigger dent for
+	// no further gain. An UNMOVED composer still gets the whole window,
+	// because a pane that has not redrawn even once is not yet evidence of
+	// anything — see discardIncomplete/moved below.
 	deadline := d.now().Add(promptClearWindow)
 	left := pending
+	moved := false
+	stall := 0
 	for {
 		if _, err := d.run(ctx, d.bin, "send-keys", "-t", live.paneID, "C-u"); err != nil {
 			return fleet.Ack{}, fmt.Errorf("discard: %w", err)
@@ -1762,12 +1809,22 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		if sc, ok := d.captureForClassify(ctx, live.paneID); ok {
 			got, _ := composerText(sc)
 			if got == "" {
+				d.forgetFutile(ref.ID)
 				return fleet.Ack{Accepted: true}, nil
+			}
+			if got != left {
+				moved = true
+				stall = 0
+			} else if moved {
+				stall++
 			}
 			left = got
 		}
+		if moved && stall >= stallPresses {
+			break
+		}
 		if d.now().After(deadline) || ctx.Err() != nil {
-			return fleet.Ack{}, discardIncomplete(pending, left)
+			break
 		}
 		select {
 		case <-ctx.Done():
@@ -1775,6 +1832,15 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		case <-time.After(promptClearInterval):
 		}
 	}
+
+	if !moved {
+		// First time this exact residue has been seen not to move — record
+		// it so a caller that retries with the SAME digest, exactly as the
+		// message below tells it to, is refused before spending another
+		// full pass on it (see the futileClearAttempts check above).
+		d.noteFutile(ref.ID, live.cwd, expectDigest)
+	}
+	return fleet.Ack{}, discardIncomplete(pending, left)
 }
 
 // discardIncomplete reports a clear that ran out of time without ever
@@ -1825,6 +1891,16 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // (Close, Rename, and the two above) differentiates by message text alone,
 // and a caller of this API already gets the general instruction for
 // conflict — re-read and decide — from api-http.md §2.
+//
+// # #87: "unchanged" stopped meaning "safe AND worth retrying"
+//
+// This function only ever sees the FIRST time a given residue is observed
+// not to move — Discard's futileClearAttempts check above refuses a repeat
+// before this is even reached, so "safe to retry" here is no longer the
+// lie it used to become on the second, third, fourth identical call. See
+// discardProvenFutile for what a caller gets once retrying stops being
+// useful, and this call's own doc comment for why the two must not share a
+// message.
 func discardIncomplete(before, after string) error {
 	if after == before {
 		return fmt.Errorf(
@@ -1834,9 +1910,43 @@ func discardIncomplete(before, after string) error {
 	}
 	return fmt.Errorf(
 		"%w: discard: the clear keystroke ran but did not finish; the composer now "+
-			"holds neither the original text nor nothing — it is damaged, not merely "+
-			"unclear, so re-read it before doing anything else rather than retrying blind",
-		ErrAmbiguousTarget)
+			"holds neither the original text nor nothing (found digest %s) — it is "+
+			"damaged, not merely unclear, so re-read it before doing anything else "+
+			"rather than retrying blind",
+		ErrAmbiguousTarget, screenDigest(after))
+}
+
+// discardProvenFutile reports the state discardIncomplete's "unchanged"
+// branch cannot: this is not the first pass against this residue, it is at
+// least the second, and the prior pass already spent a full
+// promptClearWindow pressing C-u against it without moving it at all (#87).
+//
+// The Issue this closes described exactly the failure this guards against:
+// a caller that followed "retrying with the same digest is safe" to the
+// letter, four times, and made zero progress each time — the advice was
+// true in the narrow sense (nothing was destroyed) and false in the sense
+// that mattered (retrying was never going to help). This message stops
+// making that promise once the evidence for it is gone, and — unlike the
+// "safe to retry" wording — deliberately contains neither "safe" nor
+// "unchanged", so a caller pattern-matching on either of those substrings
+// to decide whether to retry sees a different answer here, not a repeat of
+// the first one.
+//
+// It names the one escape hatch this driver can actually offer: `keys`
+// refuses outright while the composer holds text (see keys.go), and this
+// file's own history already measured Escape as not helping here (Discard's
+// C-u comment: "C-a C-k and Escape were tried too"). What is left, and what
+// this says, is the session-level operation that is guaranteed to work
+// regardless of what state the composer is stuck in: close it.
+func discardProvenFutile(attempts int) error {
+	return fmt.Errorf(
+		"%w: discard: a full clear pass already left this exact composer text "+
+			"unmoved %d time(s); pressing again is not expected to do anything "+
+			"different, so this call made no attempt — re-read the composer before "+
+			"deciding anything, and if it genuinely must go, close the session "+
+			"(DELETE /v1/machines/{machine}/sessions/{id}) rather than retrying the "+
+			"same digest indefinitely",
+		ErrAmbiguousTarget, attempts)
 }
 
 // Rename changes a session's id (§3).
@@ -3280,6 +3390,88 @@ func (d *Driver) sweepStrandedLocked() {
 	for id, rec := range d.stranded {
 		if now.Sub(rec.At) > strandedRetention {
 			delete(d.stranded, id)
+		}
+	}
+}
+
+// futileClear is what noteFutile records: a composer residue Discard's
+// clear loop already spent one full pass on and could not move (#87).
+//
+// Cwd travels with it for the same reason it does on strandedRecord (§5.4):
+// an id is recyclable, and matching on id alone would let a record made for
+// one session's composer be misread as describing an unrelated session
+// that later reused the same id. ResidueDigest is what makes the match
+// exact rather than merely "this id had trouble once" — a caller's own
+// progress (a NEW residue, a new digest) must never be blocked by a record
+// that describes a DIFFERENT, earlier piece of text.
+type futileClear struct {
+	Cwd           string
+	ResidueDigest string
+	Attempts      int
+	At            time.Time
+}
+
+// noteFutile records that a clear pass against this exact residue produced
+// no movement at all. Called only from Discard's own "unchanged" branch.
+//
+// Attempts counts consecutive passes against the SAME (cwd, residue) pair;
+// a new residue (the composer changed, however slightly) or a different cwd
+// (the id was recycled) starts back at 1 rather than accumulating, because
+// neither describes the state this attempt just observed.
+func (d *Driver) noteFutile(id, cwd, residueDigest string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.futile == nil {
+		d.futile = map[string]futileClear{}
+	}
+	attempts := 1
+	if prior, ok := d.futile[id]; ok && prior.Cwd == cwd && prior.ResidueDigest == residueDigest {
+		attempts = prior.Attempts + 1
+	}
+	d.futile[id] = futileClear{Cwd: cwd, ResidueDigest: residueDigest, Attempts: attempts, At: d.now()}
+}
+
+// futileClearAttempts reports how many consecutive times a pass against
+// this EXACT residue has already produced zero movement — 0 means no
+// matching record, i.e. Discard has not yet spent a pass on this text.
+//
+// Corroborated on cwd, not id alone (§5.4, same rule strandedMatches
+// applies): a record for a recycled id describes a different session's
+// composer and must not gate this one. A record older than
+// futileClearRetention is treated as absent, the same reasoning
+// sweepStrandedLocked already applies to stranded records.
+func (d *Driver) futileClearAttempts(id, cwd, residueDigest string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.sweepFutileLocked()
+	prior, ok := d.futile[id]
+	if !ok || prior.Cwd != cwd || prior.ResidueDigest != residueDigest {
+		return 0
+	}
+	return prior.Attempts
+}
+
+// forgetFutile drops any futile-clear record for id. Called once Discard
+// actually empties the composer — evidence that whatever was stopping a
+// prior pass no longer applies, so a future stall against a NEW residue
+// deserves a fresh full pass, not a record left over from a different one.
+func (d *Driver) forgetFutile(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.futile, id)
+}
+
+// sweepFutileLocked drops records older than futileClearRetention. Caller
+// holds d.mu. Cheap and unconditional, same shape as sweepStrandedLocked:
+// at most one entry per session with a clear pass genuinely still stuck.
+func (d *Driver) sweepFutileLocked() {
+	if len(d.futile) == 0 {
+		return
+	}
+	now := d.now()
+	for id, rec := range d.futile {
+		if now.Sub(rec.At) > futileClearRetention {
+			delete(d.futile, id)
 		}
 	}
 }

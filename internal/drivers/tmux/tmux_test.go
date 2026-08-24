@@ -58,6 +58,12 @@ type fakeMux struct {
 	// all — the untouched half of #32's missing branch, as distinct from
 	// composerLines' partial-clear model of the damaged half.
 	frozen map[string]bool
+	// composerFloor models the shape #87 needs and neither of the above
+	// two do: a composer that clears down to a certain number of lines and
+	// then STOPS moving, as opposed to composerLines (always empties given
+	// enough presses) or frozen (never moves even once). Only meaningful
+	// alongside composerLines — see setComposerFloor.
+	composerFloor map[string]int
 	// keyRepaint models a DIALOG: a pane that redraws when a raw key lands on
 	// it. That redraw is the only evidence Keys has that its key registered,
 	// so a pane without this models the opposite case — a screen that
@@ -104,6 +110,20 @@ func (f *fakeMux) freezeComposer(paneID string) {
 		f.frozen = map[string]bool{}
 	}
 	f.frozen[paneID] = true
+}
+
+// setComposerFloor arms the "moved, then stalled" shape for paneID: C-u
+// keeps removing lines (setMultilineComposer's usual model) until only
+// floor lines remain, and then becomes a no-op — real progress that
+// genuinely stops, rather than composerLines' unconditional convergence to
+// empty or freezeComposer's total non-response (#87).
+func (f *fakeMux) setComposerFloor(paneID string, floor int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.composerFloor == nil {
+		f.composerFloor = map[string]int{}
+	}
+	f.composerFloor[paneID] = floor
 }
 
 func (f *fakeMux) addSession(s fakeSession, capture string) {
@@ -307,20 +327,27 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			if f.frozen[pane] {
 				// Models a keystroke that goes nowhere: composer untouched.
 			} else if lines, armed := f.composerLines[pane]; armed && len(lines) > 0 {
-				// unix-line-discard kills the line the cursor sits on, not the
-				// whole buffer: one press drops the LAST logical line, leaving
-				// every line above it exactly as it was. A composer with one
-				// line therefore still clears in a single press — same as the
-				// plain branch below — and only a composer with several needs
-				// this pressed more than once to go empty.
-				lines = lines[:len(lines)-1]
-				f.composerLines[pane] = lines
-				if len(lines) == 0 {
-					delete(f.composerLines, pane)
-					delete(f.pasted, pane)
-					f.captures[pane] = idleFixtureFor("cleared")
+				if floor, hasFloor := f.composerFloor[pane]; hasFloor && len(lines) <= floor {
+					// #87's "moved, then stalled" shape: real progress was
+					// made getting here, and now this press — like every
+					// press after it — changes nothing. Unlike frozen,
+					// which never moved at all.
 				} else {
-					f.captures[pane] = composerHolding(strings.Join(lines, "\n"))
+					// unix-line-discard kills the line the cursor sits on, not the
+					// whole buffer: one press drops the LAST logical line, leaving
+					// every line above it exactly as it was. A composer with one
+					// line therefore still clears in a single press — same as the
+					// plain branch below — and only a composer with several needs
+					// this pressed more than once to go empty.
+					lines = lines[:len(lines)-1]
+					f.composerLines[pane] = lines
+					if len(lines) == 0 {
+						delete(f.composerLines, pane)
+						delete(f.pasted, pane)
+						f.captures[pane] = idleFixtureFor("cleared")
+					} else {
+						f.captures[pane] = composerHolding(strings.Join(lines, "\n"))
+					}
 				}
 			} else {
 				delete(f.pasted, pane)
@@ -1915,6 +1942,265 @@ func TestDiscardReportsADamagedComposerDistinctlyAndUnsafely(t *testing.T) {
 	// the untouched case: the keystroke partially ran.
 	if got := countClears(f.callsSnapshot()); got == 0 {
 		t.Error("no clear keystroke was even attempted")
+	}
+}
+
+// #87: a clear pass that made real progress and then genuinely stopped
+// must not keep pressing C-u for the rest of the 3s window — every press
+// past the stall is a destructive keystroke aimed at text nobody has
+// re-read, for zero further effect. Six lines, floor 3: three presses make
+// real progress, then the pane holding the fixture's "moved" model stops
+// moving. `stallPresses` more presses are tolerated to tell "stopped" apart
+// from "one slow repaint", and no more.
+func TestDiscardStopsPressingOnceTheComposerStopsMoving(t *testing.T) {
+	f := twoSessions()
+	lines := []string{"one", "two", "three", "four", "five", "six"}
+	f.setMultilineComposer("%2", lines)
+	f.setComposerFloor("%2", 3)
+
+	// Real clock: see the sibling untouched/damaged tests for why — this
+	// needs promptClearWindow to actually elapse.
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("setup: no composerDigest published")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err = d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err == nil {
+		t.Fatal("a composer that stops moving above empty must not report success")
+	}
+	if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+		t.Errorf("kind: got %v, want ErrAmbiguousTarget", err)
+	}
+	if !strings.Contains(err.Error(), "damaged") {
+		t.Errorf("message = %q; a floor above empty is the damaged shape, same as issue #32's", err.Error())
+	}
+	if strings.Contains(err.Error(), "safe") {
+		t.Errorf("message = %q; a damaged composer must not read as safe to retry", err.Error())
+	}
+	got := countClears(f.callsSnapshot())
+	if got < 3 {
+		t.Errorf("sent %d clear keystrokes; the fixture makes 3 lines of real progress "+
+			"before stalling, so fewer than that means the loop gave up before it should", got)
+	}
+	if got > 3+stallPresses {
+		t.Errorf("sent %d clear keystrokes against a composer that stopped moving after 3 "+
+			"presses; the loop should have stopped within stallPresses (%d) more instead of "+
+			"spending the rest of the 3s window on presses already proven to do nothing",
+			got, stallPresses)
+	}
+}
+
+// #87's core liveness fix: a residue already proven — by a full, exhausted
+// pass — not to move must not be told "safe to retry" again. The FIRST
+// call against a frozen pane gets the existing honest message (nothing was
+// destroyed, first time seeing this). The SECOND call, same digest because
+// nothing moved, must not repeat that promise, and — the actual convergence
+// proof, not just wording — must not press C-u again at all: pressing a
+// second identical, already-exhausted pass would just be more of the same
+// destructive keystrokes for the same zero effect.
+func TestDiscardStopsPromisingASafeRetryOnceItHasProvedFutile(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent
+	f.freezeComposer("%2")
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("setup: no composerDigest published")
+	}
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	// context.Background(), not a short WithTimeout: this call needs the
+	// full promptClearWindow to actually elapse, exactly like the sibling
+	// ReportsAnUntouchedComposer test — a caller-supplied deadline shorter
+	// than that window races the internal ctx.Done() case and returns a
+	// bare "context deadline exceeded" instead of exercising this path.
+	_, err1 := d.Discard(context.Background(), testCaller, ref, digest)
+	if err1 == nil {
+		t.Fatal("a frozen pane must not report success on the first call")
+	}
+	if !strings.Contains(err1.Error(), "unchanged") || !strings.Contains(err1.Error(), "safe") {
+		t.Errorf("first call message = %q; a genuinely first-time unmoved composer "+
+			"must still read as unchanged and safe to retry", err1.Error())
+	}
+	before := countClears(f.callsSnapshot())
+	if before == 0 {
+		t.Fatal("setup: the first call never pressed C-u at all")
+	}
+
+	// This call must be refused BEFORE pressing anything, so it returns
+	// immediately — a generous hang-guard here only catches a regression
+	// back to the old behaviour, it is never expected to fire.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	_, err2 := d.Discard(ctx2, testCaller, ref, digest)
+	if err2 == nil {
+		t.Fatal("a residue already proven futile must not report success either")
+	}
+	if !errors.Is(err2, fleet.ErrAmbiguousTarget) {
+		t.Errorf("kind: got %v, want ErrAmbiguousTarget", err2)
+	}
+	if strings.Contains(err2.Error(), "safe") {
+		t.Errorf("second call message = %q; must not promise a retry is safe/worth doing "+
+			"once a full pass already proved this exact residue will not move", err2.Error())
+	}
+	if strings.Contains(err2.Error(), "unchanged") {
+		t.Errorf("second call message = %q; must read as a genuinely different outcome, "+
+			"not a repeat of the first call's wording", err2.Error())
+	}
+	after := countClears(f.callsSnapshot())
+	if after != before {
+		t.Errorf("second call sent %d new clear keystrokes; a residue already proven "+
+			"futile must be refused BEFORE pressing, not re-learn the same lesson", after-before)
+	}
+}
+
+// #87: a residue that moves — even to something still non-empty — is
+// evidence the earlier "would not move" record no longer describes this
+// composer. The next call, against the FRESH digest that produced, must
+// press again rather than being blocked by a futile record made for a
+// different piece of text.
+func TestDiscardForgetsFutilityWhenTheComposerMoves(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent
+	f.freezeComposer("%2")
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest1 string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest1 = s.State.ComposerDigest
+		}
+	}
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	// context.Background(): the frozen composer needs the full
+	// promptClearWindow to elapse before reporting "unchanged" — see the
+	// sibling ProvedFutile test's comment on why a short WithTimeout races
+	// the internal ctx.Done() case here.
+	if _, err := d.Discard(context.Background(), testCaller, ref, digest1); err == nil {
+		t.Fatal("setup: expected the frozen pane to refuse on the first call")
+	}
+
+	// The composer changes underneath — someone typed, or a later escape
+	// hatch cleared part of it. Either way it is no longer the residue the
+	// futile record above describes.
+	f.mu.Lock()
+	delete(f.frozen, "%2")
+	f.mu.Unlock()
+	f.setMultilineComposer("%2", []string{"a brand new unsent message"})
+
+	col2, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest2 string
+	for _, s := range col2.Items() {
+		if s.ID == "beta" {
+			digest2 = s.State.ComposerDigest
+		}
+	}
+	if digest2 == "" || digest2 == digest1 {
+		t.Fatalf("setup: expected a fresh digest for the fresh composer, got %q (was %q)", digest2, digest1)
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	ack, err := d.Discard(ctx2, testCaller, ref, digest2)
+	if err != nil {
+		t.Fatalf("a fresh residue must get a fresh pass, not be blocked by a stale futile "+
+			"record: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false clearing a single-line composer that was never frozen")
+	}
+}
+
+// #87: futility is corroborated on cwd, not id alone (§5.4) — the same rule
+// strandedMatches already applies. An id that gets recycled onto a
+// different session's pane must not inherit a futile record made for the
+// session that used to hold that id.
+func TestDiscardFutilityIsCorroboratedByCwd(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent
+	f.freezeComposer("%2")
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	// context.Background(): see the ProvedFutile test's comment — both
+	// calls below need the full promptClearWindow, since the composer stays
+	// frozen throughout and neither is expected to be blocked before
+	// pressing (the second is deliberately NOT proven-futile-blocked here,
+	// that is the property under test).
+	if _, err := d.Discard(context.Background(), testCaller, ref, digest); err == nil {
+		t.Fatal("setup: expected the frozen pane to refuse on the first call")
+	}
+	before := countClears(f.callsSnapshot())
+
+	// Simulate the id being recycled onto a different session: same id,
+	// different working directory, same (still-frozen) composer text so the
+	// digest is unchanged — the one case only the cwd check can catch.
+	f.mu.Lock()
+	for i := range f.sessions {
+		if f.sessions[i].paneID == "%2" {
+			f.sessions[i].cwd = "/work/a-different-checkout"
+		}
+	}
+	f.mu.Unlock()
+
+	if _, err := d.Discard(context.Background(), testCaller, ref, digest); err == nil {
+		t.Fatal("a still-frozen composer must not report success")
+	}
+	after := countClears(f.callsSnapshot())
+	if after == before {
+		t.Error("a recycled id with a different cwd must get its own fresh pass, not be " +
+			"blocked by a futile record made for the previous occupant of that id")
 	}
 }
 
