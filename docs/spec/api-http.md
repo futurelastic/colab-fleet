@@ -82,7 +82,23 @@ GET /v1/runtimes
                                        "source": "observed",
                                        "observedAt": "..." } } ],
         "sources": [...], "complete": true }
+
+GET /v1/whoami[?machine=<id>]
+→ 200 { "principal": "...", "machine": "...", "grants": ["read", "send"],
+        "source": "observed" }
 ```
+
+**`/v1/whoami` reports the presented credential's own grants, and nothing
+about any other principal** (colab-fleet #106, session-abstraction.md §7.7).
+Unlike every other read route, it does not require the `read` grant — see §5
+— because a principal holding no grants at all is exactly the caller who
+needs it most. `machine` defaults to this service's own id; naming a peer
+always answers `source: "assumed"`, `grants: []`, the same conservative-floor
+meaning `/v1/runtimes` already gives an unreached peer's capabilities —
+reused rather than reinvented, because it is the identical "nobody has told
+me anything" fact. This service has no mechanism to learn what a peer has
+granted a credential (unlike a peer's driver capabilities, which are probed
+and cached), so a peer's real answer must be read from that machine directly.
 
 Clients **must** consult `/v1/runtimes` before relying on a capability, and
 degrade rather than assume. A driver never emulates (§5.6).
@@ -999,6 +1015,12 @@ ordering is wrong rather than handing you a cursor that would skip.
   implied by anything else, including a runtime advertising the capability the
   grant gates (§3, `keys`; colab-fleet #68).
 - Each caller presents its own credential and holds per-verb grants (§6).
+- **`GET /v1/whoami` is the one read exempt from needing the `read` grant
+  itself** (§3.1, session-abstraction.md §7.7, colab-fleet #106). It reports
+  only the presented credential's own grants, never another principal's, so
+  the risk `read` gates elsewhere — reading someone else's data — does not
+  apply; and gating it on `read` would make it unusable by the principal who
+  needs it most, the one holding none.
 - When proxying (§13), the relaying service authenticates as **itself** with the
   credential it holds on that peer, and asserts the original principal in
   `Fleet-On-Behalf-Of`. A caller's own credential is not meaningful on another

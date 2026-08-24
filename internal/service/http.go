@@ -69,6 +69,11 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /v1/health", withAuth(cfg, reading(handleHealth(svc))))
+	// GET /v1/whoami deliberately skips reading()'s GrantRead gate — see
+	// handleWhoAmI's doc comment (whoami.go) for why a caller reading its
+	// own grants is not the same authorization question as a caller
+	// reading someone else's data.
+	mux.HandleFunc("GET /v1/whoami", withAuth(cfg, handleWhoAmI(svc, cfg)))
 	mux.HandleFunc("GET /v1/machines", withAuth(cfg, reading(handleMachines(svc))))
 	mux.HandleFunc("GET /v1/runtimes", withAuth(cfg, reading(handleRuntimes(svc))))
 	mux.HandleFunc("GET /v1/sessions", withAuth(cfg, reading(handleListSessions(svc))))

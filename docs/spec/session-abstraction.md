@@ -1561,6 +1561,43 @@ the requesting session's composer exactly as if its own operator had typed
 it — see `docs/client-guide.md`, "Getting an answer back from a dispatched
 session," for what that costs and the grants it requires on each machine.
 
+### 7.7 A caller can read its own grants; a peer's are never observed
+
+§6 makes every precondition for a mutating call a per-verb grant, and a
+relayed one needs two: one on the machine receiving the call, a different one
+on the machine performing it (§7.6's reply convention, and colab-fleet #68's
+federated-keypress precedent, are the same shape twice). Nothing before this
+let a caller read either ahead of time — every precondition was discovered by
+attempting the call and reading whichever refusal came back first, and fixing
+the first refusal only ever revealed the second (colab-fleet #106).
+
+**Decided: `GET /v1/whoami` (api-http.md §3.1) reports the presented
+credential's own grants, and nothing about any other principal.** It sits
+behind authentication (§6 requirement 2 — no unauthenticated mode, no
+exception) but deliberately not behind the `read` grant every other read
+route requires. A principal holding no grants at all is exactly the caller
+most in need of this route, and gating it on `read` would make it unusable by
+that caller. Reporting a credential's own authority back to itself is not the
+risk the `read` gate exists to hold off — that gate protects OTHER
+principals' data (every session, every peer, the full event stream) from a
+credential nobody granted it to; this route names only the credential that
+authenticated the request, and never enumerates the principal table.
+
+**A peer machine's answer is always the conservative floor, never an
+observation.** This service probes and caches what a peer's DRIVER can do
+(§4.3, `RefreshCapabilities`) because that is a runtime fact worth asking
+about; it has no equivalent for what a peer has GRANTED a given credential,
+because that is per-machine configuration nobody here has a channel to ask
+for, and building one to answer a read route would be new federation surface
+for a fact that rarely changes. So `GET /v1/whoami?machine=<peer>` reuses
+`CapabilitySource`'s existing "assumed" meaning — nothing confirmed, a floor,
+never that machine's real table — rather than inventing a second vocabulary
+for the identical "nobody has told me anything" fact §4.3 already named. The
+second grant a relay needs still has to be learned by asking that machine
+directly: run its own `whoami` there, or read its principal table locally
+(`colab-fleetd principal list` on that machine) — neither of which this
+service can do on a caller's behalf.
+
 ## 7a. Still open
 
 - **Input ordering under concurrency.** If two callers `send()` to one session
