@@ -208,15 +208,17 @@ func mutating(svc *Service, cfg Config, next http.HandlerFunc) http.HandlerFunc 
 //
 // Deliberately NOT mutating()'s relay-target upgrade: a fleet-scoped read,
 // or one explicitly naming a peer machine, needs only GrantRead here,
-// regardless of target. Whether reading a peer's sessions through this
-// service should also cost the relay grant — mutating()'s own argument,
-// pointed at reads — is a decision this fix does not make: measured before
-// deciding, more than one principal relied on for a fleet-wide read today
-// holds read but not relay, and that call is how the surface most people
-// watch this fleet through gets its view. Bundling relay into this check
-// would silently break it. Filed separately with that measurement
-// (colab-fleet #81) rather than decided here as a side effect of closing a
-// defence-in-depth gap.
+// regardless of target. Ruled, not defaulted into (colab-fleet #81): a
+// relayed mutation changes state on a machine the caller is not talking to,
+// while a relayed read does not, so requiring GrantRelay for both would
+// treat reaching and changing as one act. The symmetric rule — folding
+// relay into this check too — was considered and rejected on a measured
+// cost, not a hypothetical one: at least one principal this fleet is
+// observed through holds read without relay today, and that option would
+// have refused its calls silently the moment it landed. Full reasoning,
+// including both alternatives considered and rejected: docs/spec/api-http.md
+// §5 (Authorization, the normative grants section) and
+// docs/adr/81-relay-grant-not-required-for-reads.md.
 //
 // A no-op when no principal table is configured. The legacy single-token
 // model's read side has no equivalent gate BY DESIGN — AllowLocalMutations'
