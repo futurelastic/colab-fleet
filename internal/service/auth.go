@@ -34,6 +34,13 @@ import (
 // It asks whether this principal may have mutations FORWARDED to peers on its
 // behalf, which is a question about what this service will do as a client for
 // them — D6's distinction, now expressible per caller instead of per service.
+//
+// Deliberately mutations only, not reads: a peer-targeted or fleet-scoped
+// read stays gated by GrantRead alone (see reading() in http.go), and never
+// gets mutating()'s upgrade to this grant. A relayed mutation changes state
+// on a machine the caller is not talking to; a relayed read does not — so
+// requiring GrantRelay for both would treat reaching and changing as one
+// act. Ruled, not defaulted into: colab-fleet #81.
 
 // Grant is a permitted verb (§6 requirement 3).
 type Grant string

@@ -32,10 +32,19 @@ the machine that actually performs it. Those are two separate refusals and you
 will meet them one at a time.
 
 > A read aimed at a peer — a fleet-scoped listing, or a path naming another
-> machine — needs only `read` today, on the same principal table, whether the
-> target is local or a peer. Whether it should *also* cost `relay`, the way a
-> relayed mutation does, is an open question rather than an oversight — see
-> the known gaps below.
+> machine — needs only `read`, on the same principal table, whether the target
+> is local or a peer. It does **not** also cost `relay`, unlike a relayed
+> mutation. Ruled deliberately, not left as an oversight: a relayed mutation
+> changes state on a machine the caller is not talking to, a relayed read does
+> not, and requiring the same grant for both would treat reaching and changing
+> as one act. The symmetric rule was measured and rejected — at least one
+> principal this fleet is observed through holds `read` without `relay`, and
+> that call would have broken silently the moment `relay` was required for it
+> too. A separate, narrower cross-machine-reach grant would be the most
+> precise separation and was not rejected on its merits — it costs a new
+> grant plus a migration for every existing principal, which is not worth
+> buying against a distinction nothing has yet been harmed by (colab-fleet
+> #81).
 
 **Deadlines.** `Fleet-Deadline-Ms: <ms>` on any request. A caller may only
 shorten a driver's declared deadline, never extend it.
@@ -339,9 +348,6 @@ service, or this service has begun growing into a second supervisor.
 Recorded rather than smoothed over, because a reference that quietly disagrees
 with the implementation is worse than one that admits where it does.
 
-- **Whether a peer-targeted read should also require `relay`** is undecided
-  (filed separately from the fix that closed the underlying gap). Today a read
-  needs only `read`, local or relayed, the same principal table either way.
 - **`GET /v1/sessions?machine=`** appears in the specification. The filter has no
   such field; the parameter is silently ignored. Use `scope` and filter
   client-side.

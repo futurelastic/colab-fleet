@@ -915,6 +915,20 @@ ordering is wrong rather than handing you a cursor that would skip.
   relay never obtains more than it was granted. A peer authorizes the principal who initiated the request. A
   service that substituted its own identity would make every machine a confused
   deputy for every other.
+- **A read that reaches beyond this machine — `scope=fleet`, or a path naming a
+  specific peer — needs only the `read` grant, never `relay`.** This is a
+  deliberate asymmetry with the proxying rule above, not an oversight: a
+  relayed mutation changes state on a machine the caller is not talking to,
+  while a relayed read does not, so requiring one grant for both would treat
+  reaching and changing as the same act. The symmetric rule was considered and
+  not taken — at least one principal this fleet is observed through holds
+  `read` without `relay` today, and folding `relay` into the read check would
+  have refused that call silently the moment it landed, with no error a caller
+  could act on. A third, narrower grant for cross-machine reach alone would be
+  the most precise separation and was not rejected on its merits; it costs a
+  new grant in the model plus a migration for every existing principal, which
+  is not worth buying against a distinction nothing has yet been harmed by
+  (colab-fleet #81).
 - Every remote-originated mutation is logged: actor, verb, target, outcome.
 
 ## 6. What this API deliberately lacks
