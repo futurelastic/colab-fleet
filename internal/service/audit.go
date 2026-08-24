@@ -78,15 +78,45 @@ func outcomeOf(status int) string {
 	}
 }
 
+// routeOf names the HTTP route a request actually matched — the method and
+// path pattern ServeMux resolved it against (e.g. "POST
+// /v1/machines/{machine}/sessions/{id}/input") — a fact the standard library
+// itself records when the mux dispatches, not something a caller supplies.
+//
+// This is what colab-fleet#105 asked for: input and respond both require
+// GrantSend, so verb=send alone cannot tell them apart in the audit trail,
+// and colab-fleet#82 made that collision the ordinary case rather than a
+// rare one — its endorsed reply-delivery convention has a dispatched worker
+// call input on the requester's own session, so a delivered reply and a
+// respond-to-a-dialog call now differ only by route, never by grant.
+//
+// It does NOT recover every collision #105 names. A delivered reply and an
+// ordinary operator follow-up both match POST .../input — same method, same
+// pattern — so no amount of route detail tells those two apart; #82's ADR
+// already declined to add a caller-supplied marker for exactly that
+// distinction ("proposed against a harm nothing has yet caused"), and this
+// function does not reopen that. Whatever already distinguishes them does so
+// through actorOf, when the two calls authenticate as different principals —
+// unaffected by, and not a substitute for, this field.
+func routeOf(r *http.Request) string {
+	if r.Pattern != "" {
+		return r.Pattern
+	}
+	// Defensive only: r.Pattern is populated by ServeMux once it has
+	// matched, and every route this service logs is reached through NewMux.
+	// A coarser fact beats a silently empty field if that ever isn't true.
+	return r.Method + " " + r.URL.Path
+}
+
 func logMutation(p Principal, g Grant, target fleet.MachineId, r *http.Request, status int) {
 	if g == GrantRead {
 		return // reads are not mutations; logging them would drown the signal
 	}
-	log.Printf("audit: actor=%q verb=%s target=%s/%s outcome=%s status=%d",
-		actorOf(p, r), g, target, r.PathValue("id"), outcomeOf(status), status)
+	log.Printf("audit: actor=%q verb=%s route=%s target=%s/%s outcome=%s status=%d",
+		actorOf(p, r), g, routeOf(r), target, r.PathValue("id"), outcomeOf(status), status)
 }
 
 func logDenied(p Principal, g Grant, target fleet.MachineId, r *http.Request) {
-	log.Printf("audit: actor=%q verb=%s target=%s/%s outcome=DENIED",
-		actorOf(p, r), g, target, r.PathValue("id"))
+	log.Printf("audit: actor=%q verb=%s route=%s target=%s/%s outcome=DENIED",
+		actorOf(p, r), g, routeOf(r), target, r.PathValue("id"))
 }

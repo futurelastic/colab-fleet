@@ -764,12 +764,16 @@ the way you would read output from any process you do not control, before
 acting on it as an instruction.
 
 **The audit trail records this as ordinary input, not as a result.** A
-relayed reply logs `verb=send` with the worker as actor and its machine as
-relay — the same line a human operator typing into your session would
-produce, apart from the actor's name. If you need to tell "my operator sent
-this" apart from "a dispatched worker answered here" later, that distinction
-does not exist in the log today; build it into the reply's own content if
-you need it, this API will not add it for you.
+relayed reply logs `verb=send route=POST /v1/machines/{machine}/sessions/{id}/input`
+with the worker as actor and its machine as relay — the same route a human
+operator typing into your session would produce, apart from the actor's
+name (colab-fleet#105 added `route` so `input` and `respond` at least stop
+sharing one line under `verb=send`; it does not, and was not meant to,
+separate a delivered reply from an ordinary follow-up, since both are the
+same route). If you need to tell "my operator sent this" apart from "a
+dispatched worker answered here" later, that distinction does not exist in
+the log today; build it into the reply's own content if you need it, this
+API will not add it for you.
 
 **Nothing here helps with an answer too large for a prompt.** That is a
 transport choice made above this layer, the same as the cross-machine write
