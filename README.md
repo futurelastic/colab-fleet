@@ -52,7 +52,8 @@ A fleet of coding agents needs two separable things: something that decides
 **what work should happen**, and something that knows **how a session is
 actually run and where**. Most implementations fuse them — the supervisor shells
 out to a terminal multiplexer, scrapes the screen to guess what the agent is
-doing, and is thereby permanently bound to one runtime on one host.
+doing, and is thereby permanently bound to one runtime on one host. (Survey of
+comparable projects, and what that split buys: [`docs/positioning.md`](docs/positioning.md).)
 
 `colab-fleet` is the second half, extracted. Supervisors become clients.
 
@@ -90,7 +91,9 @@ against that sentence.
 Most tools in this space manage sessions on one laptop, for one vendor's agent,
 behind a TUI. The properties below are the ones that turned out to be rare, and
 they are all consequences of taking failure seriously rather than features that
-were designed for their own sake.
+were designed for their own sake. ["Rare" is measured, not asserted —
+`docs/positioning.md`](docs/positioning.md) is the survey behind this claim,
+including the combination nothing else in it had.
 
 ### A session has a state, not a pulse
 
@@ -380,6 +383,7 @@ denied, on a fresh deployment as much as an established one.
 | Work on the service | [`docs/internals.md`](docs/internals.md) — measurements, decided questions, known gaps |
 | Deploy it | [`docs/deploy.md`](docs/deploy.md) |
 | Declare a machine-wide session identity | [`docs/session-identity.md`](docs/session-identity.md) — `sessionEnv`, precedence against a caller, verification |
+| See what this is positioned against | [`docs/positioning.md`](docs/positioning.md) — a survey of comparable projects: category, what turned out rare, trajectory |
 
 The specs carry the reasoning; the code is a transcription of them, not the
 other way round. The session spec is organised so you can tell current truth
