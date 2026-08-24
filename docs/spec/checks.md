@@ -62,7 +62,9 @@ of `state()` and the item type of `list()`, arguably the single most
 important type in the model — has no `Session { ... }` block anywhere in
 either document; api-http.md documents its shape only as an inline `GET`
 response example, and session-abstraction.md only references it in prose
-("Optional on `Session`", §2.8/§2.9). There is nothing named for this test
+("Optional on `Session`", §2.8-§2.12 — `attach`, `conversation`,
+`resumeOutcome`, `promptDelivery`, `pins` all documented this way). There is
+nothing named for this test
 to parse a field list out of, so `Session` is not registered. Giving it a
 proper block is a documentation improvement worth doing on its own; this
 test cannot demand it, only benefit from it once it exists.

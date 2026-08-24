@@ -412,6 +412,20 @@ sitting in the composer — measured at two runs in three — and the receipt is
 `queued` throughout. **Wait for a session to report `idle` before sending to it**,
 rather than sending as soon as `create` returns.
 
+**Exception: a session you just created with a `prompt`.** That advice is for a
+session you did not create — for one you did, `idle` is not the signal to wait
+for, and reading it as one is exactly the mistake colab-fleet #86 measured: a
+session created with a `prompt`, polled ~12s later, read `idle` with
+`"interface painted, composer empty, no turn yet"` — the correct classification
+for "nothing was ever sent", and indistinguishable from "the create-time prompt
+has not been delivered yet" without a further field. The caller concluded the
+prompt was lost and re-sent it through `input` four times. Read `promptDelivery`
+instead ("Creating a session", below): absent means the create carried no prompt at all; present
+with `outcome: null` means it is still in flight and `idle` says nothing about
+it; present with an `outcome` means delivery has resolved, the same vocabulary
+`send`'s own receipt uses. Never re-send a create-time prompt through `input`
+while `promptDelivery.outcome` is still `null`.
+
 One consequence worth planning for: this class of stranding leaves no record, so
 the `resumeIfStranded` retry below does not apply to it, and every later `send`
 to that session is refused for holding unsent input. Re-reading state is how you
@@ -479,6 +493,9 @@ Idempotency-Key: 4f1c9e2a-…          ← REQUIRED
 ```json
 → 201 { "machine": "aurora", "id": "alpha", "name": "alpha",
         "runtime": "claude-code-tmux", "cwd": "/work/alpha",
+        "pins": { "model": { "requested": "opus", "honoured": null, "evidence": "…" } }, ← only for a requested pin
+        "runtimeSurface": { "known": null, "evidence": "…" },  ← usually still resolving at create time
+        "promptDelivery": { "outcome": null, "evidence": "…" },  ← only when you sent a prompt
         "state": { "status": "starting", "confidence": "inferred", … } }
 ```
 
@@ -493,7 +510,18 @@ is the server's answer, not your input — sending one is ignored, not honoured)
 
 `agent`, `model` and `effort` are **hints**. A driver that cannot pin one says
 so rather than silently substituting a default — check `supportsPin` in
-`/v1/runtimes` before relying on any of them.
+`/v1/runtimes` before relying on any of them. **A value that WOULD be
+mistaken for a flag is refused outright at creation** (`invalid`, naming the
+field) rather than silently dropped; a value that reaches the runtime intact
+can still be defaulted or ignored there, which is what the response's `agent`
+and `model` top-level fields, plus `pins`, are for (colab-fleet #84). Read the
+top-level `agent`/`model` as the APPLIED values — what the driver actually
+observed, empty when it does not know — never as an echo of what you asked
+for; the request lives in `pins.<field>.requested`, and whether it was
+honoured is `pins.<field>.honoured` (`null` until the driver can tell, which
+on most drivers today is never — a driver that passes a pin on a command line
+has no channel back from the runtime to confirm it, so `honoured: null` is
+the honest, standing answer, not a sign of anything wrong).
 
 **The `Idempotency-Key` header is required**, and a create without one is
 rejected with `invalid` before any driver is consulted. A federated create that
@@ -518,6 +546,21 @@ ready yet. If you passed a `prompt`, the service delivers it once the runtime
 is up; you do not need to wait and send it yourself. A question the runtime
 puts up on the way there **delays** that delivery, it does not cancel it: the
 service keeps waiting, and the prompt goes in once the session is receptive.
+
+**If you passed a `prompt`, read `promptDelivery` — never `input` — to check
+on it.** It carries the same outcome vocabulary `send`'s own receipt does
+(`submitted`/`queued`/`refused`/`unknown`), but resolves after the 201:
+`outcome: null` means delivery has not resolved yet, and — this is the part
+colab-fleet #86 exists to say plainly — **that is not the same fact as "no
+prompt was sent."** A session polled moments after this create may well read
+`idle` with "composer empty, no turn yet"; that is the correct classification
+for a session with nothing sent, and it looks identical to one whose prompt
+is still on its way in. Wait for `promptDelivery.outcome` to stop being
+`null` before concluding anything was lost, and never re-send through `input`
+while it still is — a re-send racing an in-flight delivery is refused by the
+same busy-composer rule §7 already describes, but by the time you notice,
+you have already sent the same instruction twice as far as anyone watching
+the transcript can tell.
 
 **`trustCwd` is your consent to one question, about the directory you just
 named.** Some runtimes ask, on the first session in a directory, whether you
@@ -637,6 +680,13 @@ me a first-class session". Send `false` only when you deliberately want one that
 cannot be reached remotely. This asymmetry is deliberate: a plain boolean would
 make every client that has never heard of the field silently create sessions
 nobody can reach from a phone.
+
+**Whether that request actually succeeded is `runtimeSurface`, read later.**
+The runtime registers the surface asynchronously, after the process starts, so
+the create response usually shows it still resolving (`known: null`) — poll a
+read and check again rather than treating the create response as the final
+word. `remoteControl: false` is the one case that resolves immediately, to a
+settled `known: false`, because there was never anything to wait for.
 
 **`marker` stamps the session type onto the name**, because on some substrates
 the name is the only channel there is — it is what listings, remote clients and
@@ -903,6 +953,24 @@ session carries a hint:
 - **Offer `readOnly` for "watch".** The read-write attachment shares a real
   keyboard with a running agent.
 
+**"How do I reach this session" has three different answers, not one** —
+they answer different questions and none of them substitutes for another:
+
+| question | field | answers |
+|---|---|---|
+| a human's terminal, on that session's own machine | `attach` (above) | local argv, or absent if the driver has none |
+| a surface the RUNTIME operates, reachable from elsewhere | `runtimeSurface` | an opaque address on a named `kind`, or `known: false`/`null` (colab-fleet #85) |
+| is that runtime surface healthy right now | `state.controlChannel` | `failed`/`reconnecting`/`active`/absent |
+
+`runtimeSurface` is an **identity**, not a health check: once `known: true`,
+it stays true even if `controlChannel` later reads `failed` — the address
+does not change just because the connection dropped. Its `target` is opaque
+on purpose, the same reason `attach.command` is argv rather than a URL: this
+service does not know how you reach that surface, only that the session is
+addressed on it. A client that understands `kind` (`"control-channel"` is the
+one value today) knows how to resolve `target` into something a human can
+open; one that does not must not be handed a guess.
+
 ## 10. Errors
 
 ```json
@@ -1010,3 +1078,4 @@ boundaries.)
 - [ ] Reads `lastTurn` before treating an `idle` session as having succeeded
 - [ ] Never discards composer text without quoting back its `composerDigest`
 - [ ] Has its own principal and its own token
+- [ ] Reads `promptDelivery` before re-sending a create-time prompt through `input`

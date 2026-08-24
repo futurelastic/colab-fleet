@@ -12,12 +12,12 @@ import (
 
 func createOne(t *testing.T, d *Driver, cwd, key string) fleet.SessionRef {
 	t.Helper()
-	ref, err := d.Create(context.Background(), fleet.RequestFrom(fleet.Caller{Principal: "test"}), key,
+	sess, err := d.Create(context.Background(), fleet.RequestFrom(fleet.Caller{Principal: "test"}), key,
 		fleet.SessionSpec{Cwd: fleet.AbsolutePath(cwd), Name: "t"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	return ref
+	return sess.SessionRef
 }
 
 func TestCreate_IdempotencyKeyReturnsSameSession(t *testing.T) {

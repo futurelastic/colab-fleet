@@ -26,17 +26,25 @@ import (
 // pre-answer. RemoteControl is likewise a no-op — every opencode session
 // is reachable over this driver's HTTP API, so there is no "local-only"
 // mode either to grant or to refuse.
-func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
+func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.Session, error) {
 	if key == "" {
-		return fleet.SessionRef{}, &fleet.Error{
+		return fleet.Session{}, &fleet.Error{
 			Kind: fleet.ErrorInvalid, Message: "create: idempotency key is required (§10)", Machine: d.machine,
 		}
 	}
 	if ref, ok := d.idemLookup(key); ok {
-		return ref, nil
+		// A repeat of an already-completed create: report the same applied
+		// facts the original create observed and cached (markSeen), not a
+		// fresh echo of this call's own spec — colab-fleet #84 is exactly
+		// the failure of reporting a request as if it were a fact.
+		info, _ := d.wasSeen(ref.ID)
+		return fleet.Session{
+			SessionRef: ref, Cwd: spec.Cwd, Agent: fleet.AgentId(info.agent),
+			Pins: pinOutcomeForAgent(spec, info.agent),
+		}, nil
 	}
 	if spec.Cwd == "" {
-		return fleet.SessionRef{}, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "create: cwd is required", Machine: d.machine}
+		return fleet.Session{}, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "create: cwd is required", Machine: d.machine}
 	}
 	for name, set := range map[string]bool{
 		"effort":         spec.Effort != "",
@@ -47,7 +55,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		"resume":         spec.Resume != "",
 	} {
 		if set {
-			return fleet.SessionRef{}, &fleet.Error{
+			return fleet.Session{}, &fleet.Error{
 				Kind:    fleet.ErrorUnsupported,
 				Message: fmt.Sprintf("create: this driver has no honest way to honour %q (§2.1: refuse rather than drop a hint silently)", name),
 				Machine: d.machine,
@@ -68,7 +76,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if spec.Model != "" {
 		providerID, modelID, ok := strings.Cut(spec.Model, "/")
 		if !ok || providerID == "" || modelID == "" {
-			return fleet.SessionRef{}, &fleet.Error{
+			return fleet.Session{}, &fleet.Error{
 				Kind:    fleet.ErrorInvalid,
 				Message: `create: model must be "provider/model" (opencode's own -m flag convention)`,
 				Machine: d.machine,
@@ -80,7 +88,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	var sess wireSession
 	path := "/session?directory=" + url.QueryEscape(string(spec.Cwd))
 	if err := d.do(ctx, "POST", path, body, &sess); err != nil {
-		return fleet.SessionRef{}, err
+		return fleet.Session{}, err
 	}
 	startedAt := time.UnixMilli(sess.Time.Created)
 	ref := fleet.SessionRef{Machine: d.machine, ID: sess.ID, Name: sess.Title}
@@ -97,11 +105,40 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 			// idempotency key gets the session back (see below) and may
 			// resend the prompt via Send.
 			d.idemStore(key, ref)
-			return fleet.SessionRef{}, fmt.Errorf("create: session %s was started but its opening prompt failed: %w", sess.ID, err)
+			return fleet.Session{}, fmt.Errorf("create: session %s was started but its opening prompt failed: %w", sess.ID, err)
 		}
 	}
 	d.idemStore(key, ref)
-	return ref, nil
+	return fleet.Session{
+		SessionRef: ref, Cwd: spec.Cwd, Agent: fleet.AgentId(sess.Agent),
+		Pins: pinOutcomeForAgent(spec, sess.Agent),
+	}, nil
+}
+
+// pinOutcomeForAgent reports what this driver actually knows about the two
+// pins it accepts (colab-fleet #84): agent is genuinely observable, because
+// opencode's own create response — and the cache markSeen keeps of it —
+// names the agent the runtime started with, so a request that reached this
+// point (a rejected model shape refuses before ever calling the runtime;
+// see Create) either matches or does not, and this driver can say which.
+// Model has no such echo anywhere in this substrate's responses, so a
+// requested model is reported unresolved rather than asserting a match this
+// driver never actually confirmed. Effort refuses at Create rather than
+// reaching here at all (§2.1), so it never appears.
+func pinOutcomeForAgent(spec fleet.SessionSpec, appliedAgent string) *fleet.PinOutcome {
+	out := &fleet.PinOutcome{}
+	if spec.Agent != "" {
+		out.Agent = fleet.PinResolved(string(spec.Agent), appliedAgent, string(spec.Agent) == appliedAgent,
+			fleet.PinObserved, "opencode's own create response names the agent it started with")
+	}
+	if spec.Model != "" {
+		out.Model = fleet.PinUnresolved(spec.Model,
+			"this driver's create response does not name which model the runtime is using")
+	}
+	if out.Agent == nil && out.Model == nil {
+		return nil
+	}
+	return out
 }
 
 // sendPrompt is the shared body of Create's optional opening message and

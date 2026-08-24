@@ -20,8 +20,8 @@ func (fakeDriver) Capabilities() fleet.DriverCapabilities {
 	return fleet.DriverCapabilities{DeadlineMs: 1000}
 }
 
-func (fakeDriver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
-	return fleet.SessionRef{}, ErrUnsupported
+func (fakeDriver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.Session, error) {
+	return fleet.Session{}, ErrUnsupported
 }
 
 func (fakeDriver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts SendOptions) (fleet.DeliveryReceipt, error) {

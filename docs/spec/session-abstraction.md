@@ -571,6 +571,14 @@ and the quoting bug that follows.
 as the same button will corrupt somebody's session by leaning on a keyboard.
 A client that cannot tell the two apart offers the dangerous one.
 
+**This is the local answer to "how do I reach this session"; it is not the
+only one.** A session can also be reachable on a surface the RUNTIME
+operates — see §2.13 `RuntimeSurfaceRef` — which is a different question
+(identity on a remote surface, not a local terminal invocation) with a
+different answer shape. §2.3's `controlChannel` is a third, narrower
+question again: not where the surface is, but whether it is healthy right
+now.
+
 ### 2.9 ConversationRef
 
 ```
@@ -661,12 +669,160 @@ asked for" are different questions — a session that never requested a
 resume still answers the first one every time it is listed, and carries no
 `ResumeOutcome` at all.
 
+### 2.11 PromptDelivery
+
+```
+PromptDelivery {
+  outcome? : string    // "submitted" | "queued" | "refused" | "unknown"; nil until resolved
+  evidence : string    // prose for humans, present either way; never parse it
+}
+```
+
+Optional on `Session`, and present only when the session's `create` carried a
+`prompt`. Three states, the same shape §2.9 and §2.10 already take:
+
+| shape | means |
+|---|---|
+| field absent | this create carried no prompt — never a claim that one was carried and delivered |
+| `outcome` absent + `evidence` | a prompt WAS accepted at creation and delivery has not resolved yet — `idle` is not evidence of loss while this holds, and a caller must not re-send |
+| `outcome` + `evidence` | resolved, in the same closed set `send`'s `DeliveryReceipt` answers with |
+
+**Why this exists (colab-fleet #86).** `create`'s `prompt` is delivered AFTER
+the process starts and after the runtime has painted a composer to receive
+it, so the 201 response is written before delivery can be known — unlike
+`send`, which answers only once delivery has finished. Measured: a session
+created with a prompt, polled ~12s later, read `status: idle, evidence:
+"interface painted, composer empty, no turn yet"` — the correct
+classification for "up and waiting with nothing sent", and indistinguishable
+from "up and waiting, and an accepted prompt has not been delivered yet".
+The caller concluded the prompt was lost and re-sent it four times. The
+natural client loop — create, then poll until `idle` or `waiting_input` —
+returns on exactly this window by construction.
+
+**Why not a `SessionState.waitingOn` value instead.** `waitingOn` is
+documented as populated only when the session is `waiting_input`; the
+measured harm above is a session correctly reading `idle`. Reusing
+`waitingOn` there would mean either lying about the present status or
+breaking the field's own stated contract — the same reasoning already
+applied to `SessionState.LastTurn` in the Go doc comment: a fact about a past
+event that no status member carries without lying about the present gets its
+own field.
+
+**A caller reading this after a create that carried a prompt should wait for
+`outcome` to resolve, not treat `idle` as the signal** — see the client
+guide's polling section, which used to advise the opposite.
+
+### 2.12 PinOutcome
+
+```
+PinOutcome {
+  agent?  : PinResult
+  model?  : PinResult
+  effort? : PinResult
+}
+PinResult {
+  requested : string      // the value `create` asked to pin
+  honoured? : boolean     // nil until this driver can compare requested against applied
+  applied?  : string      // what the runtime is actually using, when it can be named
+  source?   : string      // "observed" | "declared"; required when honoured is known
+  evidence  : string      // prose for humans, present either way; never parse it
+}
+```
+
+Optional on `Session`, one field per pin `create` asked for. Three states per
+pin, the same shape §2.9-§2.11 already take:
+
+| shape | means |
+|---|---|
+| the field absent | this pin was not requested at creation — never a claim that one was requested and honoured |
+| `honoured` absent + `evidence` | requested, and this driver cannot say what the runtime applied — not yet, or not ever |
+| `honoured: true`/`false` + `evidence` | resolved: `source` says how, `applied` names what the runtime is actually using when it can be named |
+
+**Why this exists (colab-fleet #84).** `agent`, `model` and `effort` are
+already documented as hints a driver must refuse rather than silently drop
+(§2.1). Measured: a value beginning with `-` failed an argv-injection guard
+before that rule existed, the flag was never appended, and the create
+response echoed the REQUESTED value back on `Session.agent`/`.model` — the
+one caller in a position to notice was told the pin had been applied. An echo
+is not a weak answer; it is a fabricated one.
+
+Two changes follow from this, not one: a value that would be misread as a
+flag is now refused outright at creation (`invalid`, naming the field) rather
+than silently dropped — closing the *detectable* case. But a value that
+reaches the runtime intact can still be defaulted or ignored there with
+nothing to refuse, which is what `pins` exists to make answerable: a driver
+that passes a pin on a command line and has no channel back from the runtime
+reports `honoured` unresolved rather than asserting success it never
+confirmed.
+
+**`Session.agent`/`.model` are the APPLIED values now**, reported only when
+the driver observed them — the same real-answer rule `startedAt` already
+follows — never an echo of what was requested. What was requested lives in
+`pins.*.requested` instead, correctly labelled as a request rather than a
+fact.
+
+### 2.13 RuntimeSurfaceRef
+
+```
+RuntimeSurfaceRef {
+  known?   : boolean     // nil = requested, unresolved; false = settled none; true = the address below is real
+  kind?    : string      // the mechanism, in the abstract; required when known — "control-channel" today
+  target?  : string      // opaque identifier on that surface; required when known
+  source?  : string      // "observed" | "derived"; required when known
+  evidence : string      // prose for humans, present in every state; never parse it
+}
+```
+
+Optional on `Session`. **Four** states — one more than §2.9-§2.12 — because
+here "not yet" and "never" are opposite facts rather than the same
+operational one:
+
+| shape | means |
+|---|---|
+| the field absent | nobody looked: this driver does not report a runtime surface, or its runtime operates none — see `reportsRuntimeSurface` (§4.3) |
+| `known` absent + `evidence` | a surface WAS requested at creation and has not resolved yet. The runtime registers asynchronously, after the process starts. Never read as "no" |
+| `known: false` + `evidence` | settled: this session has no such surface — the create opted out, or the runtime declined. A caller polling for one may stop |
+| `known: true` + `kind` + `target` + `source` | the address, and `source` says how it was learned |
+
+**Why this exists, and why not folded into `attach` or `conversation`
+(colab-fleet #85).** A session created with the default remote-control
+setting really does register with the runtime's own hosted surface, moments
+after the process starts — measured on a live fleet. Nothing in any response
+said so, and nothing said how to reach it. `attach` (§2.8) answers a
+different question: a human's terminal, already on this session's own
+machine. `conversation` (§2.9) names the transcript record, a different
+identifier with a different lifetime — conflating the two is a recorded
+source of false negatives elsewhere in this model. What remained was an
+identity question with nowhere to live, so this takes `conversation`'s own
+three-state shape, extended to four for the reason above.
+
+**No vendor or product name appears in this section, in `kind`'s values, or
+in any evidence string produced for it** — deliberately. The field is
+addressed at "a surface the runtime operates", vendor-neutral, so a driver
+whose runtime hosts nothing can still speak the vocabulary honestly (`false`
++ `reportsRuntimeSurface: false`, or `known: false` naming the opt-out) and
+a future driver over a different runtime is not left lying or leaving the
+field permanently empty for a mechanism it does have, under a different name.
+
+**`known: true` requires corroboration, not just a dictated identifier.** The
+identifier a create supplies is a value THIS SERVICE chose; publishing it as
+`target` before the runtime has confirmed the surface came up under it would
+be colab-fleet #84's defect arriving in a second field — a request reported
+as a fact. A driver must observe the runtime's own report of the surface
+before setting `known: true`.
+
+**Identity, latched, not liveness, polled.** Once corroborated, `known` stays
+true for the life of the record even if the surface later goes quiet — that
+is `state.controlChannel`'s question (§2.3), which already distinguishes
+`failed`/`reconnecting`/`active`. Unresolving `runtimeSurface` on every
+dropped connection would make an identity field flicker with a health signal.
+
 ---
 
 ## 3. Operations
 
 ```
-create(req, spec)              -> SessionRef
+create(req, spec)              -> Session
 send(req, ref, text, opts?)    -> DeliveryReceipt
 respond(req, ref, response)    -> DeliveryReceipt
 state(req, ref)                -> SessionState
@@ -832,6 +988,7 @@ DriverCapabilities {
   observesState   : boolean   // can report status without inference
   deliversRawKeys : boolean   // can deliver a raw key event to a screen (§3 `keys`) and populate `screenDigest` (§2.3)
   observesControlChannel: boolean // can report `controlChannel` (§2.3); absent state is answerable only against this
+  reportsRuntimeSurface: boolean // can say anything about `runtimeSurface` (§2.13); absent state is answerable only against this
   confirmsDelivery: boolean   // can distinguish submitted from queued
   supportsResume  : boolean   // sessions survive a service restart
   supportsPin     : { model: boolean, effort: boolean, agent: boolean }

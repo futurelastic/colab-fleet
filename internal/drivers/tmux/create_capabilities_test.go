@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -158,19 +159,43 @@ func TestResumeAndPermissionModeReachTheAgentArgv(t *testing.T) {
 // real flags, so a value beginning with "-" is read as a flag. A create grant
 // would otherwise mean "run the agent with arguments of my choosing" — most
 // pointedly, the very permission mode that is gated behind a second grant.
-func TestAFlagShapedPinIsNotPassedThroughAsAFlag(t *testing.T) {
-	f := twoSessions()
-	_, argv := createWith(t, f, fleet.SessionSpec{
-		Name: "sneaky", Cwd: "/work/x",
-		Model:  "--dangerously-skip-permissions",
-		Agent:  "-n",
-		Effort: "--resume",
-	})
-	for _, a := range agentArgv(argv) {
-		switch a {
-		case "--dangerously-skip-permissions", "--resume":
-			t.Fatalf("a pin was passed through as a flag: %v", agentArgv(argv))
-		}
+//
+// colab-fleet #84: this guard used to silently drop the flag and let the
+// create succeed, with the response echoing the pin back as if it had been
+// applied — a caller had no way to notice the substitution. Now the whole
+// create is refused before any argv is built, the same as an equally
+// flag-shaped resume id already is (TestFlagShapedResumeIsRefusedRatherThanDropped).
+func TestFlagShapedPinIsRefusedRatherThanDropped(t *testing.T) {
+	for _, tc := range []struct {
+		field string
+		spec  fleet.SessionSpec
+		value string
+	}{
+		{"agent", fleet.SessionSpec{Name: "sneaky-a", Cwd: "/work/x", Agent: "-n"}, "-n"},
+		{"model", fleet.SessionSpec{Name: "sneaky-m", Cwd: "/work/x", Model: "--dangerously-skip-permissions"}, "--dangerously-skip-permissions"},
+		{"effort", fleet.SessionSpec{Name: "sneaky-e", Cwd: "/work/x", Effort: "--resume"}, "--resume"},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			f := twoSessions()
+			d := newTestDriver(f)
+			_, err := d.Create(context.Background(), testCaller, "key-"+tc.field, tc.spec)
+			if err == nil {
+				t.Fatalf("a %s pin that is really a flag was accepted", tc.field)
+			}
+			var ferr *fleet.Error
+			if !errors.As(err, &ferr) {
+				t.Fatalf("error is not a *fleet.Error: %v", err)
+			}
+			if ferr.Kind != fleet.ErrorInvalid {
+				t.Errorf("Kind = %q, want %q", ferr.Kind, fleet.ErrorInvalid)
+			}
+			if !strings.Contains(ferr.Message, tc.field) || !strings.Contains(ferr.Message, tc.value) {
+				t.Errorf("message %q does not name the field/value", ferr.Message)
+			}
+			if newSessionArgv(f) != nil {
+				t.Error("the session was started anyway; the refusal must happen before the spawn")
+			}
+		})
 	}
 }
 

@@ -749,12 +749,12 @@ type createBody struct {
 // proxy that minted its own key per attempt would defeat the mechanism
 // precisely when it is needed, since the retry would arrive carrying a
 // different key and read as a different request.
-func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
+func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.Session, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	if key == "" {
-		return fleet.SessionRef{}, &fleet.Error{
+		return fleet.Session{}, &fleet.Error{
 			Kind:    fleet.ErrorInvalid,
 			Message: "create: idempotency key is required (§10)",
 			Machine: d.machine,
@@ -772,9 +772,15 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	var out fleet.Session
 	path := "/v1/machines/" + url.PathEscape(string(d.machine)) + "/sessions"
 	if err := d.doWithKey(ctx, req, http.MethodPost, path, body, key, &out); err != nil {
-		return fleet.SessionRef{}, err
+		return fleet.Session{}, err
 	}
-	return out.SessionRef, nil
+	// colab-fleet #84/#85/#86: adopt the peer's own answer whole, the same
+	// §13.2 rule List already follows for a relayed read — this machine never
+	// learns anything about the create beyond what the peer reports, and
+	// discarding everything but SessionRef here to let the HTTP handler
+	// rebuild a Session from the caller's own request is #84's defect
+	// travelling across a federation hop.
+	return out, nil
 }
 
 // doWithKey is do() plus the Idempotency-Key header.

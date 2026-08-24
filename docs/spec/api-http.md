@@ -177,6 +177,8 @@ Idempotency-Key: <caller-supplied, required>
   "mcpConfig": ["/abs/servers.json"] }
 
 → 201 { "machine": "...", "id": "...", "name": "...", "runtime": "...",
+        "runtimeSurface": {"known": null, "evidence": "..."},
+        "promptDelivery": {"outcome": null, "evidence": "..."},
         "state": {...} }
 → 200 (same body) if the key was already seen — the existing session
 → 409 if the key was seen with a different body
@@ -187,11 +189,42 @@ rejected with `invalid`. The rationale is §10: a timed-out federated create
 that gets retried produces two agents writing to the same working directory,
 and the caller cannot detect it afterwards.
 
+**The driver that served the create builds this response, not the service
+layer relaying the caller's own request back at it** (colab-fleet #84, #85,
+#86) — `agent`/`model` on it are what the runtime is actually using, when the
+driver can tell, never an echo of what was requested; the requested values
+live in `pins` alongside whether they were honoured. The three paragraphs
+below are one recurring shape, not three unrelated notes: a 201 is a receipt
+for the CREATE call succeeding, never proof that everything the create asked
+for was applied.
+
 **A 201 for a `resume` create is not proof the resume was honoured** — a
 concurrent burst can have the runtime silently start a fresh conversation
 instead, with no refusal and no degraded status (colab-fleet #72). Poll the
 session afterward and read `resumeOutcome` (§2.10) once its `conversation`
 resolves; do not infer success from the create response alone.
+
+**A 201 for a create that asked to pin `agent`/`model`/`effort` is not proof
+the pin was applied** — a value this driver cannot pass through safely is
+refused outright (`invalid`, naming the field), but a value that *reaches*
+the runtime intact can still be defaulted or ignored there with nothing
+reported back except by reading `pins` (colab-fleet #84).
+
+**A 201 for a create that requested remote control is not proof a
+runtime-hosted surface exists yet** — the runtime registers it, if it does at
+all, asynchronously after the process starts, so `runtimeSurface` (§2.13) is
+legitimately `known: null` on the create response and may take a read or two
+to resolve. `known: false` is different and final: the create opted out
+(`remoteControl: false`), or the runtime declined, and a caller polling for
+one may stop (colab-fleet #85).
+
+**A 201 for a create that carried a `prompt` is not a delivery receipt for
+it** — the prompt is sent after the process starts, so the 201 is written
+before delivery can be known. Read `promptDelivery` (session-abstraction.md
+§2.11): `outcome: null` means still in flight, and is never evidence the
+prompt was lost — a session polled moments later reading `idle` with
+"composer empty, no turn yet" looks identical to one that never had a prompt
+at all (colab-fleet #86). Do not re-send through `input` while it holds.
 
 **`runtime` on the response is the runtime that actually served this
 create** — not an echo of the request body's own `runtime`, which is

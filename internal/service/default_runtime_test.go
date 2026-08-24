@@ -41,14 +41,14 @@ func (d *idDriver) State(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	return fleet.SessionState{}, fmt.Errorf("%w: %q", fleet.ErrNoSuchSession, ref.ID)
 }
 
-func (d *idDriver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
+func (d *idDriver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.Session, error) {
 	d.created++
 	id := fmt.Sprintf("created-%d", d.created)
 	if d.held == nil {
 		d.held = map[string]bool{}
 	}
 	d.held[id] = true
-	return fleet.SessionRef{Machine: spec.Machine, ID: id}, nil
+	return fleet.Session{SessionRef: fleet.SessionRef{Machine: spec.Machine, ID: id}}, nil
 }
 
 // --- guardrail 1: a default naming an unregistered runtime fails at

@@ -217,6 +217,11 @@ type Driver struct {
 	dial         ctlDialer
 	now          func() time.Time
 	nonce        func() string
+	// promptWindow overrides promptDeliveryWindow. Test-only seam (see
+	// withPromptDeliveryWindow): the real value is generous on purpose
+	// (starting an agent is slow), which makes it the one bound in this
+	// file that is impractical to exercise end-to-end at its real duration.
+	promptWindow time.Duration
 
 	store   *state.Store
 	idemErr error
@@ -268,6 +273,13 @@ type Driver struct {
 	// a state store is configured, in memory otherwise, keyed on session
 	// id with cwd carried for corroboration (§5.4). See resumeintent.go.
 	resumeIntents map[string]resumeIntentRecord
+
+	// createRecords remembers, per session, what a create asked to pin, ask
+	// for a runtime surface, and carry as a prompt — the durable notes #84,
+	// #85 and #86 need to answer what was APPLIED rather than only what was
+	// REQUESTED, once each of those can be told. Same shape as
+	// resumeIntents, for the same reasons. See createrecord.go.
+	createRecords map[string]createRecord
 
 	// environments remembers what each created session's process received
 	// (see environment.go). In memory only, for the reason stated on
@@ -507,6 +519,13 @@ func withExec(f execFunc) Option { return func(d *Driver) { d.run = f } }
 func withClock(f func() time.Time) func(*Driver) { return func(d *Driver) { d.now = f } }
 func withNonce(f func() string) func(*Driver)    { return func(d *Driver) { d.nonce = f } }
 
+// withPromptDeliveryWindow shortens the real 90s window so a test can
+// exercise the "the window closed before the session was ready" exit
+// without waiting for it in real time.
+func withPromptDeliveryWindow(dur time.Duration) Option {
+	return func(d *Driver) { d.promptWindow = dur }
+}
+
 // New builds a Driver for one machine.
 func New(machine fleet.MachineId, opts ...Option) *Driver {
 	d := &Driver{
@@ -522,6 +541,7 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 		nonce:        randomNonce,
 		observed:     map[string]observation{},
 		retention:    defaultIdempotencyRetention,
+		promptWindow: promptDeliveryWindow,
 	}
 	for _, o := range opts {
 		o(d)
@@ -539,6 +559,7 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 	d.loadQuota()
 	d.loadStranded()
 	d.loadResumeIntents()
+	d.loadCreateRecords()
 	return d
 }
 
@@ -606,8 +627,12 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 		// assumed, so a nil ControlChannel is answerable: on this driver it
 		// means the runtime rendered no label, not that nobody looked.
 		ObservesControlChannel: true,
-		ConfirmsDelivery:       false,
-		SupportsResume:         true,
+		// #85: this driver latches Session.RuntimeSurface off the same
+		// footer label ObservesControlChannel already reads, once
+		// corroborated — see surface.go's runtimeSurfaceFor.
+		ReportsRuntimeSurface: true,
+		ConfirmsDelivery:      false,
+		SupportsResume:        true,
 		SupportsPin: fleet.PinSupport{
 			Model:  true,
 			Effort: true,
@@ -892,6 +917,29 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			Cwd:        fleet.AbsolutePath(r.cwd),
 			Attach:     d.attachHint(r.session),
 			State:      st,
+		}
+		// #84/#85/#86: this session's own create record, if one is still on
+		// file — see createrecord.go. Absent means either nothing was
+		// requested that this record would carry, or the record already
+		// expired; pinOutcomeFor/promptDeliveryFor/runtimeSurfaceFor tell
+		// those apart from their own carried/requested flags, never the
+		// presence of the record itself.
+		if cr, ok := d.createRecordForLocked(r.session, r.cwd); ok {
+			s.Pins = pinOutcomeFor(cr)
+			s.PromptDelivery = promptDeliveryFor(cr)
+			// #85: the runtime's own footer, already classified into st a
+			// few lines up, is the corroboration a dictated identifier
+			// needs before RuntimeSurface may claim Known: true (§5.7 —
+			// publishing an uncorroborated identifier as a fact is #84's
+			// defect in a second field). Latched, never unset: identity,
+			// not liveness — a channel that later reads Failed keeps its
+			// address and reports the failure through state.controlChannel,
+			// which is the field for it.
+			if st.ControlChannel != nil && st.ControlChannel.State == fleet.ControlChannelActive && !cr.SurfaceSeen {
+				d.noteSurfaceSeenLocked(r.session)
+				cr.SurfaceSeen = true
+			}
+			s.RuntimeSurface = runtimeSurfaceFor(cr, r.session)
 		}
 		if !matchesFilter(s, filter) {
 			continue
@@ -2089,22 +2137,32 @@ func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fl
 // `idle` and `unknown` already were. See quotaBlockedState for the shared
 // rule and Driver.State for where it is applied to the read Create's own
 // HTTP handler makes to build a 201 response.
-func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
+func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.Session, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	if key == "" {
-		return fleet.SessionRef{}, errors.New("create: idempotency key is required (§10)")
+		return fleet.Session{}, errors.New("create: idempotency key is required (§10)")
 	}
 	// A completed key returns what it produced; a pending one means this
 	// driver was interrupted mid-create and must find out what happened
 	// before doing anything (§10, see idempotency.go).
 	if ref, rec, found := d.idem.lookup(key); found {
 		if rec.Phase == idemComplete {
-			return ref, nil
+			cr, ok := d.createRecordFor(ref.ID, string(spec.Cwd))
+			pins, surface, prompt := sessionFactsFor(cr, ok, ref.ID)
+			return fleet.Session{
+				SessionRef: ref, Cwd: spec.Cwd,
+				Pins: pins, RuntimeSurface: surface, PromptDelivery: prompt,
+			}, nil
 		}
 		if adopted, ok := d.resolvePending(ctx, key, rec); ok {
-			return adopted, nil
+			cr, found := d.createRecordFor(adopted.ID, string(spec.Cwd))
+			pins, surface, prompt := sessionFactsFor(cr, found, adopted.ID)
+			return fleet.Session{
+				SessionRef: adopted, Cwd: spec.Cwd,
+				Pins: pins, RuntimeSurface: surface, PromptDelivery: prompt,
+			}, nil
 		}
 		// Nothing was started, or nothing survives. Safe to proceed.
 		_ = d.idem.release(key)
@@ -2124,17 +2182,17 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	}
 	name, ok := d.resolveName(ctx, requested, spec.Marker)
 	if !ok {
-		return fleet.SessionRef{}, fmt.Errorf(
+		return fleet.Session{}, fmt.Errorf(
 			"create: could not derive a free session name from %q; either it sanitizes "+
 				"to nothing, or too many sessions already carry it", requested)
 	}
 	if spec.Cwd == "" {
-		return fleet.SessionRef{}, errors.New("create: cwd is required")
+		return fleet.Session{}, errors.New("create: cwd is required")
 	}
 
 	contextFile := string(spec.ContextRef)
 	if contextFile != "" && !filepath.IsAbs(contextFile) {
-		return fleet.SessionRef{}, fmt.Errorf("create: contextRef must be absolute, got %q", contextFile)
+		return fleet.Session{}, fmt.Errorf("create: contextRef must be absolute, got %q", contextFile)
 	}
 	// colab-fleet issue #94: fold this machine's declared identity into the
 	// caller's env BEFORE any of the validation below, so a configured value
@@ -2146,11 +2204,11 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// files (see sessionenv.go's package doc for why).
 	mergedEnv, err := d.provisionSessionEnv(spec)
 	if err != nil {
-		return fleet.SessionRef{}, err
+		return fleet.Session{}, err
 	}
 	spec.Env = mergedEnv
 	if err := validateEnv(spec.Env); err != nil {
-		return fleet.SessionRef{}, fmt.Errorf("create: %w", err)
+		return fleet.Session{}, fmt.Errorf("create: %w", err)
 	}
 	// Refuse rather than start a session missing what the caller asked for. The
 	// bare-exec shape has no shell to apply an environment file in, so a create
@@ -2160,26 +2218,50 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// keeps producing. This also catches a value sessionEnv contributed above:
 	// bareExec has no out-of-band channel for it either.
 	if len(spec.Env) > 0 && d.bareExec {
-		return fleet.SessionRef{}, errors.New(
+		return fleet.Session{}, errors.New(
 			"create: this driver is configured without the login-shell wrap, so it has " +
 				"no out-of-band channel for env; refusing rather than starting a session without it")
 	}
 	if spec.PermissionMode != "" && spec.PermissionMode != fleet.PermissionModeBypass {
-		return fleet.SessionRef{}, fmt.Errorf(
+		return fleet.Session{}, fmt.Errorf(
 			"create: unknown permissionMode %q (this runtime has one: %q)",
 			spec.PermissionMode, fleet.PermissionModeBypass)
 	}
 	if err := validateMcpConfig(spec.McpConfig); err != nil {
-		return fleet.SessionRef{}, fmt.Errorf("create: %w", err)
+		return fleet.Session{}, fmt.Errorf("create: %w", err)
 	}
 	if spec.Resume != "" && !safeArgvValue(spec.Resume) {
-		return fleet.SessionRef{}, fmt.Errorf(
+		return fleet.Session{}, fmt.Errorf(
 			"create: resume %q would be read as a flag by the agent, not as a conversation id",
 			spec.Resume)
 	}
+	// colab-fleet #84: Agent/Model/Effort get the same guard Resume already has,
+	// four lines above. Before this, a value beginning with "-" silently failed
+	// safeArgvValue inside claudeCodeCommand, the flag was never appended, and
+	// the create response still echoed the REQUESTED value back — telling a
+	// caller a pin was applied when the session was running whatever the
+	// runtime defaults to. Refusing here, before any argv is built, is §2.1's
+	// own rule: "a driver that cannot honour [a hint] must say so at creation
+	// ... rather than silently substituting a default."
+	for _, pin := range []struct{ name, value string }{
+		{"agent", string(spec.Agent)},
+		{"model", spec.Model},
+		{"effort", spec.Effort},
+	} {
+		if pin.value != "" && !safeArgvValue(pin.value) {
+			return fleet.Session{}, &fleet.Error{
+				Kind: fleet.ErrorInvalid,
+				Message: fmt.Sprintf(
+					"create: %s %q would be read as a flag by the agent, not as a value; "+
+						"refusing rather than starting a session with the pin silently dropped (§2.1)",
+					pin.name, pin.value),
+				Machine: d.machine,
+			}
+		}
+	}
 	for _, k := range spec.Consents {
 		if _, ok := consentableKinds[k]; !ok {
-			return fleet.SessionRef{}, fmt.Errorf(
+			return fleet.Session{}, fmt.Errorf(
 				"create: %q is not a consentable question — see the driver's note on "+
 					"why some boot questions have no safe affirmative option", k)
 		}
@@ -2189,7 +2271,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// pending record, which the next attempt resolves by looking rather
 	// than guessing.
 	if err := d.idem.reserve(key, name, string(spec.Cwd)); err != nil {
-		return fleet.SessionRef{}, fmt.Errorf("create: recording intent: %w", err)
+		return fleet.Session{}, fmt.Errorf("create: recording intent: %w", err)
 	}
 
 	// The builder sees the RESOLVED name, not the requested one — see above.
@@ -2204,7 +2286,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	envPath, err := d.stageEnv(spec.Env)
 	if err != nil {
 		_ = d.idem.release(key)
-		return fleet.SessionRef{}, fmt.Errorf("create: staging env: %w", err)
+		return fleet.Session{}, fmt.Errorf("create: staging env: %w", err)
 	}
 	recordPath := ""
 	if !d.bareExec {
@@ -2237,7 +2319,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		if envPath != "" {
 			_ = os.Remove(envPath)
 		}
-		return fleet.SessionRef{}, fmt.Errorf("create: %w", err)
+		return fleet.Session{}, fmt.Errorf("create: %w", err)
 	}
 	if envPath != "" {
 		// The wrapper unlinks it the moment it has read it. This is the case
@@ -2248,13 +2330,19 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 
 	ref := fleet.SessionRef{Machine: d.machine, ID: name, Name: name}
 	if err := d.idem.complete(key, ref); err != nil {
-		return fleet.SessionRef{}, fmt.Errorf("create: recording result: %w", err)
+		return fleet.Session{}, fmt.Errorf("create: recording result: %w", err)
 	}
 	if spec.Resume != "" {
 		// #72: recorded now, before there is any way yet to tell whether
 		// the runtime actually honoured it — see resumeintent.go.
 		d.noteResumeIntent(name, string(spec.Cwd), string(spec.Resume))
 	}
+	// #84/#85/#86: recorded now, before there is any way yet to tell what
+	// became of the pin, the surface, or the prompt — see createrecord.go.
+	// The same record List reads back on every later listing, so the 201
+	// body built below and the first 200 body are computed from one fact,
+	// never two that can drift apart.
+	d.noteCreateRecord(name, string(spec.Cwd), spec)
 
 	if recordPath != "" {
 		go d.captureEnvironment(name, recordPath)
@@ -2262,7 +2350,12 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if spec.Prompt != "" || spec.TrustCwd {
 		go d.settleNewSession(req, ref, built)
 	}
-	return ref, nil
+	rec, found := d.createRecordFor(name, string(spec.Cwd))
+	pins, surface, prompt := sessionFactsFor(rec, found, name)
+	return fleet.Session{
+		SessionRef: ref, Cwd: spec.Cwd,
+		Pins: pins, RuntimeSurface: surface, PromptDelivery: prompt,
+	}, nil
 }
 
 // claudeCodeCommand is the default CommandBuilder.
@@ -2594,7 +2687,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // So a prompt this routine may not answer is now a reason to keep waiting for
 // the rest of the window, not a reason to stop.
 func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec fleet.SessionSpec) {
-	ctx, cancel := context.WithTimeout(context.Background(), promptDeliveryWindow)
+	ctx, cancel := context.WithTimeout(context.Background(), d.promptWindow)
 	defer cancel()
 
 	// One consent, spent once — per kind, because a session can meet more than
@@ -2604,6 +2697,18 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 	answered := map[fleet.PromptKind]bool{}
 	for {
 		if ctx.Err() != nil {
+			// #86: the window closed before the session ever became ready to
+			// receive the prompt this create carried. A pending record left
+			// unresolved forever is a worse false negative than the one this
+			// whole record exists to close, so every exit that reaches this
+			// point without having called deliverInitialPrompt must resolve
+			// it here — Outcome unknown, never refused: nothing DECLINED
+			// this delivery, the window simply ran out first.
+			if spec.Prompt != "" {
+				d.notePromptDelivered(ref.ID, fleet.OutcomeUnknown, fmt.Sprintf(
+					"the session never became ready to accept the prompt within %s; "+
+						"the prompt was not delivered", d.promptWindow))
+			}
 			return
 		}
 		ready, blocking := d.promptReadiness(ctx, ref.ID)
@@ -2636,6 +2741,14 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 		}
 		select {
 		case <-ctx.Done():
+			// Same close as the ctx.Err() check at the top of this loop —
+			// duplicated rather than left to the next iteration because the
+			// next iteration never comes.
+			if spec.Prompt != "" {
+				d.notePromptDelivered(ref.ID, fleet.OutcomeUnknown, fmt.Sprintf(
+					"the session never became ready to accept the prompt within %s; "+
+						"the prompt was not delivered", d.promptWindow))
+			}
 			return
 		case <-time.After(promptPollInterval):
 		}
@@ -2708,17 +2821,34 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 // describes wanting and not having.
 func (d *Driver) deliverInitialPrompt(ctx context.Context, req fleet.Request, ref fleet.SessionRef, prompt string) {
 	receipt, err := d.Send(ctx, req, ref, prompt, driver.SendOptions{Submit: true})
-	if err != nil || receipt.Outcome != fleet.OutcomeUnknown {
-		// Delivered and confirmed, refused outright (not this call's
-		// problem to retry into), or a transport-level error Send itself
-		// already wraps and named — none of those are the race this retry
-		// exists for.
+	if err != nil {
+		// A transport-level error Send itself already wraps and named. #86:
+		// resolved as unknown, not refused — nothing declined this delivery,
+		// the attempt itself failed.
+		d.notePromptDelivered(ref.ID, fleet.OutcomeUnknown, err.Error())
+		return
+	}
+	if receipt.Outcome != fleet.OutcomeUnknown {
+		// Delivered and confirmed, or refused outright — not this call's
+		// problem to retry into. #86: resolved with the receipt's own
+		// outcome and reason, the same pair send() itself would have
+		// answered with had anyone been waiting on this specific call.
+		evidence := receipt.Reason
+		if evidence == "" {
+			evidence = "the driver confirmed the agent received the create-time prompt"
+		}
+		d.notePromptDelivered(ref.ID, receipt.Outcome, evidence)
 		return
 	}
 
 	d.counters.incr(counterInitialPromptRetried)
 	retry, err := d.Send(ctx, req, ref, prompt, driver.SendOptions{Submit: true, ResumeIfStranded: true})
 	if err == nil && retry.Outcome == fleet.OutcomeSubmitted {
+		// #86: delivered on the retry — a different fact from an ordinary
+		// first-attempt submission, worth saying so in the evidence rather
+		// than reporting it identically.
+		d.notePromptDelivered(ref.ID, fleet.OutcomeSubmitted,
+			"delivered on the second attempt; the first could not be confirmed in time")
 		return
 	}
 
@@ -2729,6 +2859,13 @@ func (d *Driver) deliverInitialPrompt(ctx context.Context, req fleet.Request, re
 	d.counters.incr(counterInitialPromptStranded)
 	log.Printf("tmux: initial prompt still unsent after one retry session=%s machine=%s",
 		ref.ID, d.machine)
+	// #86: resolved as unknown — the text reached the composer and could
+	// not be confirmed submitted after one retry; it is sitting there
+	// unsent, exactly as the log line above and d.stranded already record,
+	// now also readable from the create response without a log to grep.
+	d.notePromptDelivered(ref.ID, fleet.OutcomeUnknown,
+		"the text reached the composer and could not be confirmed submitted after one "+
+			"retry; it is sitting there unsent — see resumeIfStranded")
 }
 
 // consentableKinds maps each boot question a caller may consent to onto the

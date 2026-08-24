@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -771,7 +772,11 @@ func TestCreateIsIdempotentPerKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first != second {
+	// DeepEqual, not !=: Pins/RuntimeSurface/PromptDelivery (colab-fleet
+	// #84/#85/#86) are freshly allocated pointers on every call even for
+	// identical content — struct-identity != spuriously fails on two
+	// independently-built Sessions describing the same thing.
+	if !reflect.DeepEqual(first, second) {
 		t.Errorf("same key must return the same ref: %+v vs %+v", first, second)
 	}
 	if countCalls(f, "new-session") != before {
@@ -2472,7 +2477,7 @@ func TestCreateOnARefusingAccountReportsTheBlockRatherThanSwallowingIt(t *testin
 	f.captures["%3"] = "  loading...\n"
 	f.mu.Unlock()
 
-	st, err := d.State(ctx, testCaller, ref)
+	st, err := d.State(ctx, testCaller, ref.SessionRef)
 	if err != nil {
 		t.Fatal(err)
 	}

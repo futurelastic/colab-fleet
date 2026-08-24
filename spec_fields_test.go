@@ -83,6 +83,10 @@ var specFieldTypes = map[string]any{
 	"ConversationRef":    ConversationRef{},
 	"DriverCapabilities": DriverCapabilities{},
 	"SourceStatus":       SourceStatus{},
+	"PromptDelivery":     PromptDelivery{},
+	"PinOutcome":         PinOutcome{},
+	"PinResult":          PinResult{},
+	"RuntimeSurfaceRef":  RuntimeSurfaceRef{},
 }
 
 // specFieldExceptions records a Go field that a normative type block

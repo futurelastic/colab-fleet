@@ -197,8 +197,29 @@ type Driver interface {
 	// Create starts a session (§3). key is the caller-supplied idempotency
 	// key (§10, api-http.md §3.3: "Idempotency-Key is required, not
 	// optional") — a repeat key within the retention window must return
-	// the existing SessionRef rather than creating a second session.
-	Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error)
+	// the existing Session rather than creating a second session.
+	//
+	// # Why this returns fleet.Session, not fleet.SessionRef (colab-fleet
+	// # #84, #85, #86)
+	//
+	// The driver is the only party in this service that knows what a create
+	// actually did — which pin the runtime substituted or refused, whether a
+	// surface it operates came up under this session, whether a create-time
+	// prompt was delivered. A caller of Create that received only a
+	// SessionRef had nothing to build the create response from except the
+	// SessionSpec it was handed back, which is the caller's own request
+	// wearing this service's voice: three separate, measured defects, all
+	// the same shape — a response reporting what was REQUESTED because the
+	// only other party in a position to report what was APPLIED had no
+	// channel to say so.
+	//
+	// A driver that cannot fill a field of the returned Session leaves it at
+	// its zero value — §5.7, the same discipline every other field on this
+	// type already holds itself to. This is deliberately the same shape
+	// List already returns per session, not a second, poorer shape: a
+	// caller reading the 201 body and the first 200 body of the same
+	// session should never be able to tell they came from different code.
+	Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.Session, error)
 
 	// Send delivers input (§3). Unlike Create, Send is not idempotent and
 	// must not pretend to be (§10) — repeat delivery is a legitimate

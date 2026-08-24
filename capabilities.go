@@ -102,6 +102,19 @@ type DriverCapabilities struct {
 	// peer, so a temporarily unreachable machine can never report a bare false
 	// and become permanently incapable in a caller's cache (§4.3, D3).
 	ObservesControlChannel bool `json:"observesControlChannel"`
+	// ReportsRuntimeSurface reports whether this driver can say anything
+	// about a session's runtime-operated surface (Session.RuntimeSurface,
+	// colab-fleet #85).
+	//
+	// It exists so a nil RuntimeSurface is answerable rather than
+	// ambiguous. Without it, "this runtime operates no such surface",
+	// "this driver never looks" and "it looked and there is none" are one
+	// indistinguishable absence — §5.7 at the capability level, the same
+	// argument ObservesControlChannel settled one field above. Like every
+	// flag here it inherits `source: assumed` from an unreached peer, so a
+	// temporarily unreachable machine can never report a bare false and
+	// become permanently incapable in a caller's cache (§4.3, D3).
+	ReportsRuntimeSurface bool `json:"reportsRuntimeSurface"`
 	// ConfirmsDelivery reports whether the driver can distinguish
 	// "submitted" from "queued".
 	ConfirmsDelivery bool `json:"confirmsDelivery"`

@@ -48,8 +48,8 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 	}
 }
 
-func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.SessionRef, error) {
-	return fleet.SessionRef{}, driver.ErrUnsupported
+func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.Session, error) {
+	return fleet.Session{}, driver.ErrUnsupported
 }
 
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {

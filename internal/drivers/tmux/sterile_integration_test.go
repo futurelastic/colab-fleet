@@ -121,7 +121,7 @@ func TestCreatedSessionGetsStartupEnvironmentEvenOnASterileServer(t *testing.T) 
 	var rec fleet.SessionEnvironment
 	deadline := time.Now().Add(45 * time.Second)
 	for time.Now().Before(deadline) {
-		rec, _ = d.Environment(ctx, testCaller, ref)
+		rec, _ = d.Environment(ctx, testCaller, ref.SessionRef)
 		if rec.Known {
 			break
 		}

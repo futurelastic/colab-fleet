@@ -851,33 +851,46 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		ref, err := d.Create(ctx, requestFrom(r), key, spec)
+		sess, err := d.Create(ctx, requestFrom(r), key, spec)
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return
 		}
 
-		// Runtime on the response names the driver that ACTUALLY served
-		// this on THIS machine — resolvedRuntime, not spec.Runtime/
-		// body.Runtime, which is empty on precisely the request this
-		// resolution exists for: a caller that supplied no hint and got
-		// the default. Echoing the (possibly empty) caller hint back here
-		// would silently discard the one piece of information guardrail 2
-		// asks this response to carry.
+		// colab-fleet #84/#85/#86: the driver builds the response now — it is
+		// the only party that knows what a create actually did — so this
+		// handler no longer synthesizes a Session from the caller's own
+		// request. Two fields still need a fallback here, both for reasons
+		// that predate this change and still apply unchanged:
 		//
-		// resolvedRuntime is itself empty only for a relayed create
-		// (resolvedPeer) — this machine never learns which runtime the
-		// PEER used, so the caller's own hint is the best available answer
-		// there, same as before this resolution existed.
-		runtimeForResponse := resolvedRuntime
-		if runtimeForResponse == "" {
-			runtimeForResponse = spec.Runtime
+		// Runtime on the response names the driver that ACTUALLY served this
+		// on THIS machine — resolvedRuntime, not spec.Runtime/body.Runtime,
+		// which is empty on precisely the request this resolution exists
+		// for: a caller that supplied no hint and got the default. Echoing
+		// the (possibly empty) caller hint back here would silently discard
+		// the one piece of information guardrail 2 asks this response to
+		// carry. resolvedRuntime is itself empty only for a relayed create
+		// (resolvedPeer) — this machine never learns which runtime the PEER
+		// used, so the caller's own hint is the best available answer there,
+		// same as before this resolution existed. A driver that already
+		// filled Runtime itself (a relayed create adopting the peer's own
+		// answer, §13.2) is left alone.
+		if sess.Runtime == "" {
+			sess.Runtime = resolvedRuntime
 		}
-		state, _ := d.State(ctx, requestFrom(r), ref)
-		writeJSON(w, http.StatusCreated, fleet.Session{
-			SessionRef: ref, Runtime: runtimeForResponse, Cwd: spec.Cwd,
-			Agent: spec.Agent, Model: spec.Model, State: state,
-		})
+		if sess.Runtime == "" {
+			sess.Runtime = spec.Runtime
+		}
+		// State: most drivers do not read it back inside Create (a fresh
+		// session's state is knowable the moment it is asked for, not
+		// necessarily cheaper to compute inline), so this is the ordinary
+		// path, not a fallback for a driver that forgot. A driver that DID
+		// resolve its own State inside Create (a relayed create adopting the
+		// peer's) is left alone.
+		if sess.State.Status == "" {
+			sess.State, _ = d.State(ctx, requestFrom(r), sess.SessionRef)
+		}
+		writeJSON(w, http.StatusCreated, sess)
 	}
 }
 

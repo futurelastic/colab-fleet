@@ -316,8 +316,25 @@ type Session struct {
 
 	Runtime RuntimeId    `json:"runtime"`
 	Cwd     AbsolutePath `json:"cwd"`
-	Agent   AgentId      `json:"agent,omitempty"`
-	Model   string       `json:"model,omitempty"`
+
+	// Agent and Model are the APPLIED values — what the runtime is actually
+	// using — reported only when the driver observed them, never an echo of
+	// what SessionSpec requested (colab-fleet #84). Empty means the driver
+	// does not know, the same real-answer rule StartedAt and Attach already
+	// follow below; it is not a claim that no pin was requested. What was
+	// REQUESTED, and whether it was honoured, is Pins — the two must not be
+	// collapsed: a caller that read a request back here would be reading a
+	// fabricated success, exactly the failure #84 measured.
+	Agent AgentId `json:"agent,omitempty"`
+	Model string  `json:"model,omitempty"`
+
+	// Pins states what this session's create asked to pin — Agent, Model,
+	// Effort — and, once it can be told, what the runtime actually applied
+	// (colab-fleet #84; see PinOutcome). Nil means none of the three was
+	// requested at creation. A field being nil inside a non-nil PinOutcome
+	// means that particular pin was not requested; the other two follow the
+	// same rule independently.
+	Pins *PinOutcome `json:"pins,omitempty"`
 
 	// StartedAt is when this session began, as observed by the machine
 	// running it. It is what a caller sends back in Request.Expect to make
@@ -336,6 +353,16 @@ type Session struct {
 	// this is a capability: two sessions with the same shape of id may be
 	// attachable by entirely different means.
 	Attach *AttachHint `json:"attach,omitempty"`
+
+	// RuntimeSurface names where this session is reachable on a surface the
+	// RUNTIME operates, distinct from Attach's local terminal and from
+	// Conversation's transcript record (colab-fleet #85; see
+	// RuntimeSurfaceRef). Nil means nobody looked — a substrate with no such
+	// surface, or a driver that does not report one; ask
+	// DriverCapabilities.ReportsRuntimeSurface to tell those apart. Non-nil
+	// is always a fact this machine established, for the same reason as
+	// Attach and Conversation.
+	RuntimeSurface *RuntimeSurfaceRef `json:"runtimeSurface,omitempty"`
 
 	// Conversation points at the runtime's own record of this session's
 	// conversation — the first source in this service that is not the process
@@ -366,6 +393,12 @@ type Session struct {
 	// (§5.7), for the same reason Conversation's own nil does not mean
 	// "no record".
 	ResumeOutcome *ResumeOutcome `json:"resumeOutcome,omitempty"`
+
+	// PromptDelivery is what became of a prompt this session's create carried
+	// (colab-fleet #86; see PromptDelivery). Nil means this create carried no
+	// prompt — never a claim that one was carried and delivered, the same
+	// rule ResumeOutcome's own nil follows for resume.
+	PromptDelivery *PromptDelivery `json:"promptDelivery,omitempty"`
 
 	State SessionState `json:"state"`
 }

@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -44,7 +45,12 @@ func TestIdempotencyKeysSurviveARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again != ref {
+	// DeepEqual, not !=: colab-fleet #84/#85/#86 added pointer-typed fields
+	// (Pins, RuntimeSurface, PromptDelivery) that are freshly allocated on
+	// every call even for identical content — a struct-identity != would
+	// spuriously fail on two independently-built Sessions describing the
+	// same thing.
+	if !reflect.DeepEqual(again, ref) {
 		t.Errorf("after restart the key returned %+v, want the original %+v", again, ref)
 	}
 	if countCalls(f, "new-session") != before {
@@ -179,7 +185,7 @@ func TestNoStoreStillEnforcesIdempotencyWithinTheProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a != b || countCalls(f, "new-session") != before {
+	if !reflect.DeepEqual(a, b) || countCalls(f, "new-session") != before {
 		t.Error("in-process idempotency broke")
 	}
 }
