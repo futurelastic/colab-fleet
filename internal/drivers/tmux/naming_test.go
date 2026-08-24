@@ -51,19 +51,68 @@ func TestApplyMarker(t *testing.T) {
 		name   string
 		inName string
 		marker string
+		known  markerState
 		want   string
 	}{
-		{name: "marker already present (both body)", inName: "alpha-1", marker: "alpha-1", want: "alpha-1"},
-		{name: "marker already present after stacking", inName: "alpha-1alpha-1", marker: "alpha-1", want: "alpha-1alpha-1"},
-		{name: "non-body marker not yet present", inName: "alpha", marker: "§", want: "alpha§"},
-		{name: "non-body marker already present", inName: "alpha§", marker: "§", want: "alpha§"},
-		{name: "empty marker leaves name", inName: "alpha", marker: "", want: "alpha"},
-		{name: "existing decoration prevents appending a different marker", inName: "alpha§", marker: "alpha-1", want: "alpha§"},
+		{name: "marker already present (both body)", inName: "alpha-1", marker: "alpha-1", known: markerUnknown, want: "alpha-1"},
+		{name: "marker already present after stacking", inName: "alpha-1alpha-1", marker: "alpha-1", known: markerUnknown, want: "alpha-1alpha-1"},
+		{name: "non-body marker not yet present", inName: "alpha", marker: "§", known: markerUnknown, want: "alpha§"},
+		{name: "non-body marker already present", inName: "alpha§", marker: "§", known: markerUnknown, want: "alpha§"},
+		{name: "empty marker leaves name", inName: "alpha", marker: "", known: markerUnknown, want: "alpha"},
+		{name: "existing decoration prevents appending a different marker", inName: "alpha§", marker: "alpha-1", known: markerUnknown, want: "alpha§"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := applyMarker(tc.inName, tc.marker); got != tc.want {
-				t.Errorf("applyMarker(%q, %q) = %q, want %q", tc.inName, tc.marker, got, tc.want)
+			if got := applyMarker(tc.inName, tc.marker, tc.known); got != tc.want {
+				t.Errorf("applyMarker(%q, %q, %v) = %q, want %q", tc.inName, tc.marker, tc.known, got, tc.want)
+			}
+		})
+	}
+}
+
+// colab-fleet #96: once a session record answers the question, applyMarker
+// stops guessing from the string — including in the exact case the old
+// heuristic could not tell apart, a marker drawn from the same alphabet as
+// the name body that coincidentally matches the name's own trailing
+// characters.
+func TestApplyMarkerIsExactWhenTheRecordKnows(t *testing.T) {
+	cases := []struct {
+		name   string
+		inName string
+		marker string
+		known  markerState
+		want   string
+	}{
+		{
+			name:   "record says absent: append even though the string coincidentally ends in the marker",
+			inName: "append", marker: "end", known: markerAbsent,
+			want: "appendend",
+		},
+		{
+			name:   "record says applied: leave it, no string comparison needed",
+			inName: "alpha-1", marker: "alpha-1", known: markerApplied,
+			want: "alpha-1",
+		},
+		{
+			name:   "record says applied, non-body marker: still exact",
+			inName: "alpha§", marker: "§", known: markerApplied,
+			want: "alpha§",
+		},
+		{
+			name:   "record says absent, non-body marker: still appends",
+			inName: "alpha", marker: "§", known: markerAbsent,
+			want: "alpha§",
+		},
+		{
+			name:   "empty marker leaves name regardless of known state",
+			inName: "alpha", marker: "", known: markerApplied,
+			want: "alpha",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := applyMarker(tc.inName, tc.marker, tc.known); got != tc.want {
+				t.Errorf("applyMarker(%q, %q, %v) = %q, want %q", tc.inName, tc.marker, tc.known, got, tc.want)
 			}
 		})
 	}
@@ -95,11 +144,11 @@ func TestResolveNameIdempotent(t *testing.T) {
 
 	t.Run("ASCII marker", func(t *testing.T) {
 		d := newTestDriver(&fakeMux{})
-		first, ok := d.resolveName(ctx, "alpha-1", "alpha-1")
+		first, _, ok := d.resolveName(ctx, "alpha-1", "alpha-1")
 		if !ok || first != "alpha-1" {
 			t.Fatalf("first = %q, ok=%v, want %q", first, ok, "alpha-1")
 		}
-		second, ok := d.resolveName(ctx, first, "alpha-1")
+		second, _, ok := d.resolveName(ctx, first, "alpha-1")
 		if !ok || second != first {
 			t.Fatalf("second = %q, ok=%v, want same %q", second, ok, first)
 		}
@@ -107,11 +156,11 @@ func TestResolveNameIdempotent(t *testing.T) {
 
 	t.Run("non-nameBody marker", func(t *testing.T) {
 		d := newTestDriver(&fakeMux{})
-		first, ok := d.resolveName(ctx, "alpha", "§")
+		first, _, ok := d.resolveName(ctx, "alpha", "§")
 		if !ok || first != "alpha§" {
 			t.Fatalf("first = %q, ok=%v, want %q", first, ok, "alpha§")
 		}
-		second, ok := d.resolveName(ctx, first, "§")
+		second, _, ok := d.resolveName(ctx, first, "§")
 		if !ok || second != first {
 			t.Fatalf("second = %q, ok=%v, want same %q", second, ok, first)
 		}

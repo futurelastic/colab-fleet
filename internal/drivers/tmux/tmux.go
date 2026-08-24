@@ -867,7 +867,22 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		}
 	}
 
-	d.noteSessionSet(rows)
+	// Loaded once and shared by noteSessionSet and identityDrift both
+	// (colab-fleet #96/#97), rather than reading the store twice per
+	// listing. Nil when unconfigured — every reader downstream already
+	// treats a nil/empty map as "nothing asserted", the same honest default
+	// every other durable record in this driver uses.
+	var priorRecords map[string]sessionRecord
+	if d.store != nil {
+		priorRecords = d.loadRecords()
+	}
+	drift := identityDrift(rows, priorRecords)
+	driftBySession := make(map[string]nameDrift, len(drift))
+	for _, nd := range drift {
+		driftBySession[nd.live.session] = nd
+	}
+
+	d.noteSessionSet(rows, priorRecords)
 
 	sessions := make([]fleet.Session, 0, len(rows))
 
@@ -904,6 +919,16 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		// capture failed, which correctly leaves that session unkeyable rather
 		// than keyable against a screen nobody read.
 		st.ScreenDigest = digest
+		// colab-fleet #97: this read agreed with a rename that did not
+		// hold. Say so in the read itself, not only in the repair
+		// attempted below (after the lock) — a caller reading THIS
+		// response must not see it agree silently the way #97's own
+		// measurement found it doing.
+		if nd, ok := driftBySession[r.session]; ok {
+			st.Evidence += fmt.Sprintf(
+				"; this machine last asserted %q for this session and the runtime now carries %q",
+				nd.want, r.session)
+		}
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since, digest: digest,
@@ -964,6 +989,15 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	}
 	d.mu.Unlock()
 	d.noteStatuses(obs)
+
+	// colab-fleet #97: put back every name this driver asserted and the
+	// runtime no longer carries — whether the rename never reached the
+	// runtime, or reached it and a second actor on the machine later undid
+	// it; either way the record, not the last read, is what this driver
+	// trusts. After the lock, like the conversation lookups below: each
+	// repair is a real multiplexer call, and nothing here may run under the
+	// lock that guards every session's observed state.
+	d.reassertNames(ctx, rows, drift)
 
 	// Locate each session's record in the runtime's own store. This is the
 	// only source on this path that is not the runtime describing itself
@@ -1198,6 +1232,74 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			missed, len(rows))
 	}
 	return fleet.NewCollection(sessions, []fleet.SourceStatus{src})
+}
+
+// maxNameReasserts bounds how many times reassertNames will put an asserted
+// name back after finding the runtime disagreeing with it (colab-fleet
+// #97). A repair already proven not to hold twice is not attempted a third
+// time — discardProvenFutile's rule (this file, the composer-clear case)
+// applied to identity: an unbounded loop against a second actor on the
+// machine that keeps reverting a name is a rename war, not a fix.
+const maxNameReasserts = 2
+
+// Counter names for identity repair (colab-fleet #96/#97) — see counterSet's
+// own doc comment on why these are a registry entry rather than a new field.
+const (
+	// counterIdentityReasserted counts every time List successfully put an
+	// asserted name back after finding the runtime disagreeing with it.
+	counterIdentityReasserted = "identity.reasserted"
+	// counterIdentityReassertFailed counts a reassert attempt whose own
+	// rename-session call failed.
+	counterIdentityReassertFailed = "identity.reassert_failed"
+	// counterIdentityContested counts a drift entry List declined to
+	// repair: the wanted name is itself live under a different session, or
+	// maxNameReasserts is already spent.
+	counterIdentityContested = "identity.contested"
+)
+
+// reassertNames puts back every name in drift — colab-fleet #97: a rename
+// this driver recorded and the runtime no longer carries, whether because
+// it never reached the runtime or reached it and was later undone by a
+// second actor on the machine. Called from List, after its own
+// d.mu.Unlock(): each repair is a real multiplexer call, and none of them
+// may run under the lock that guards every session's observed state.
+func (d *Driver) reassertNames(ctx context.Context, rows []paneRow, drift []nameDrift) {
+	if len(drift) == 0 {
+		return
+	}
+	liveNames := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		liveNames[r.session] = true
+	}
+	for _, nd := range drift {
+		if liveNames[nd.want] {
+			// Another live session already carries the name this driver
+			// wants to restore. Refuse rather than let the multiplexer
+			// decide — the same rule Rename itself applies at request
+			// time (§ above) — and stop trying: a name genuinely taken by
+			// someone else does not become free by retrying.
+			d.recordContested(nd.live.session, nd.rec)
+			d.counters.incr(counterIdentityContested)
+			continue
+		}
+		if nd.rec.Reasserts >= maxNameReasserts {
+			d.counters.incr(counterIdentityContested)
+			continue
+		}
+		if _, err := d.run(ctx, d.bin, "rename-session", "-t", "="+nd.live.session, nd.want); err != nil {
+			d.recordReassertAttempt(nd.live.session, nd.rec, false)
+			d.counters.incr(counterIdentityReassertFailed)
+			continue
+		}
+		d.mu.Lock()
+		if o, ok := d.observed[nd.live.session]; ok {
+			d.observed[nd.want] = o
+			delete(d.observed, nd.live.session)
+		}
+		d.mu.Unlock()
+		d.recordReassertAttempt(nd.live.session, nd.rec, true)
+		d.counters.incr(counterIdentityReasserted)
+	}
 }
 
 func matchesFilter(s fleet.Session, f driver.ListFilter) bool {
@@ -2088,6 +2190,14 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 	}
 	d.mu.Unlock()
 
+	// colab-fleet #97: write the durable half. The multiplexer call above
+	// just demonstrated the rename reaches the runtime — that has never
+	// been in question — but nothing until now recorded that this driver
+	// EXPECTS the session to be named `to`, so nothing has ever put it back
+	// if a second actor on the machine undoes it later. This is what
+	// List's identityDrift/reassertNames read.
+	d.noteRenamed(ref.ID, to, live.cwd, live.paneID, live.created)
+
 	return fleet.Ack{Accepted: true}, nil
 }
 
@@ -2180,7 +2290,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if requested == "" {
 		requested = "fleet-" + d.nonce()
 	}
-	name, ok := d.resolveName(ctx, requested, spec.Marker)
+	name, markerApplied, ok := d.resolveName(ctx, requested, spec.Marker)
 	if !ok {
 		return fleet.Session{}, fmt.Errorf(
 			"create: could not derive a free session name from %q; either it sanitizes "+
@@ -2343,6 +2453,14 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// body built below and the first 200 body are computed from one fact,
 	// never two that can drift apart.
 	d.noteCreateRecord(name, string(spec.Cwd), spec)
+	// colab-fleet #96/#97: recorded now too, for the same "before there is
+	// any way to tell what became of it" reason as the create record just
+	// above — the marker fact #96 needs, and the identity #97's List/
+	// reassertNames will have something to put back if the runtime ever
+	// disagrees with it. Cwd/Pane/Created are filled in by noteSessionSet
+	// on this session's first List (see its own "stub" branch); this call
+	// only knows the name and the marker decision.
+	d.noteAssertedName(name, string(spec.Cwd), name, sanitizeName(spec.Marker), markerApplied)
 
 	if recordPath != "" {
 		go d.captureEnvironment(name, recordPath)

@@ -214,6 +214,74 @@ func TestSinceSurvivesARestart(t *testing.T) {
 	}
 }
 
+// A rename must not reset what a restart reads as `since` (colab-fleet
+// #96/#97). The old implementation kept the durable session record keyed
+// ONLY by name, so the moment a rename changed the key, the record's own
+// history — FirstSeen, Status, StatusSince — had nothing to attach to and a
+// fresh one was minted instead: the exact §8 defect
+// TestSinceSurvivesARestart guards against, reached through a rename
+// instead of a restart.
+func TestRenamePreservesPersistedSince(t *testing.T) {
+	dir := t.TempDir()
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent // beta holds unsent operator text
+
+	early := time.Unix(1785600100, 0)
+	d1 := New("testbox", withExec(f.exec), WithState(store),
+		withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return early }))
+	if _, err := d1.List(context.Background(), testCaller, listAll()); err != nil {
+		t.Fatal(err)
+	}
+
+	req := testCaller
+	started := time.Unix(1785600001, 0) // beta's own created time, from twoSessions
+	req.Expect.StartedAt = &started
+	if _, err := d1.Rename(context.Background(), req,
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, "beta-x"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	// A NEW instance — same store, no in-memory history — reconciles much
+	// later, exactly TestSinceSurvivesARestart's own shape.
+	late := early.Add(14 * time.Hour)
+	d2 := New("testbox", withExec(f.exec), WithState(store),
+		withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return late }))
+	got, err := d2.Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, s := range got.Orphaned {
+		if s.ID == "beta-x" {
+			t.Fatal("beta-x was orphaned rather than adopted — the rename broke reconciliation's own match against its persisted record")
+		}
+	}
+	var found bool
+	for _, s := range got.Adopted {
+		if s.ID != "beta-x" {
+			continue
+		}
+		found = true
+		if s.State.Since == nil {
+			t.Fatal("no since at all")
+		}
+		age := late.Sub(*s.State.Since)
+		if age < 13*time.Hour {
+			t.Errorf("age = %s, want ~14h — the rename reset it, which is the bug", age)
+		}
+	}
+	if !found {
+		t.Fatal("beta-x missing from Adopted")
+	}
+}
+
 // The provenance must survive being cached, not just the first read. It was
 // computed correctly and then dropped on the floor: the observation did not
 // carry it, so every read after the first presented a second-hand age as one

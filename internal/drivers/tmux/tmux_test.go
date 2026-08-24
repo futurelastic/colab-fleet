@@ -70,6 +70,19 @@ type fakeMux struct {
 	// so a pane without this models the opposite case — a screen that
 	// swallowed the key — and both need to be reachable from a test.
 	keyRepaint map[string]bool
+	// renameNoop models a rename-session call that reports success without
+	// actually moving anything — colab-fleet #97's "never reached the
+	// runtime at all" hypothesis, as distinct from a real rename that later
+	// gets reverted by mutating f.sessions directly (see
+	// TestRenameSurvivesARuntimeRevert). Off by default: every rename this
+	// fake receives moves the name, exactly as the real multiplexer does.
+	renameNoop bool
+}
+
+func (f *fakeMux) setRenameNoop(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renameNoop = v
 }
 
 // composerHolding renders a frame whose composer holds text — the shape of a
@@ -294,6 +307,11 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 					to = args[i+2]
 				}
 			}
+		}
+		if f.renameNoop {
+			// Reports success and moves nothing — see renameNoop's own doc
+			// comment on the field.
+			return nil, nil
 		}
 		for i := range f.sessions {
 			if f.sessions[i].name == from {
@@ -1671,6 +1689,243 @@ func TestRenameCarriesTheDriversMemory(t *testing.T) {
 	if !newKept {
 		t.Error("the driver forgot the session it just renamed — since would reset and §12 would call it adopted")
 	}
+}
+
+// colab-fleet #97: a rename that is accepted, reads back correct, and then
+// — with no request asking for it — no longer holds. List must notice and
+// put it back, whichever of the two ways it did not hold: it reached the
+// runtime and was later undone by a second actor on the machine, or it
+// never reached the runtime at all.
+func TestRenameSurvivesARuntimeRevert(t *testing.T) {
+	ctx := context.Background()
+	started := time.Unix(1785600001, 0) // beta's own created time, from twoSessions
+	renameBetaTo := func(t *testing.T, d *Driver, to string) {
+		t.Helper()
+		req := testCaller
+		req.Expect.StartedAt = &started
+		if _, err := d.Rename(ctx, req, fleet.SessionRef{Machine: "testbox", ID: "beta"}, to); err != nil {
+			t.Fatalf("rename: %v", err)
+		}
+	}
+	revertBeta := func(f *fakeMux, from string) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for i := range f.sessions {
+			if f.sessions[i].name == from {
+				f.sessions[i].name = "beta"
+			}
+		}
+	}
+
+	t.Run("reached the runtime, then a second actor reverted it", func(t *testing.T) {
+		dir := t.TempDir()
+		f := twoSessions()
+		d := stateDriver(t, f, dir)
+
+		if _, err := d.List(ctx, testCaller, listAll()); err != nil {
+			t.Fatal(err)
+		}
+		renameBetaTo(t, d, "beta-x")
+		col, err := d.List(ctx, testCaller, listAll())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasSessionID(col, "beta-x") {
+			t.Fatalf("rename did not read back: %v", idsOf(col))
+		}
+
+		// A second actor on the machine reverts it — entirely outside this
+		// driver, directly against the fake, the way something this
+		// service does not own would touch the real multiplexer.
+		revertBeta(f, "beta-x")
+
+		baseline := len(f.callsSnapshot())
+		// The read that first observes the revert reports the runtime
+		// truthfully (it is genuinely "beta" again at this instant) but
+		// must say so rather than agree silently — #97's own defect — and
+		// repairs it as a side effect, for the NEXT read to find converged.
+		firstAfterRevert, err := d.List(ctx, testCaller, listAll())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !evidenceMentionsDrift(firstAfterRevert, "beta", "beta-x") {
+			t.Errorf("the first read after the revert did not say the runtime disagreed with what this machine asserted")
+		}
+		var sawRepair bool
+		for _, c := range f.callsSnapshot()[baseline:] {
+			if len(c) > 2 && c[0] == "rename-session" && c[1] == "-t" && c[2] == "=beta" {
+				sawRepair = true
+			}
+		}
+		if !sawRepair {
+			t.Fatal("no rename-session call was issued to put the name back")
+		}
+
+		col, err = d.List(ctx, testCaller, listAll())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasSessionID(col, "beta-x") || hasSessionID(col, "beta") {
+			t.Fatalf("the next read did not converge onto the asserted name: %v", idsOf(col))
+		}
+	})
+
+	t.Run("never reached the runtime at all", func(t *testing.T) {
+		dir := t.TempDir()
+		f := twoSessions()
+		d := stateDriver(t, f, dir)
+
+		if _, err := d.List(ctx, testCaller, listAll()); err != nil {
+			t.Fatal(err)
+		}
+		f.setRenameNoop(true)
+		renameBetaTo(t, d, "beta-x") // "succeeds" (nil error); nothing moved
+		f.setRenameNoop(false)
+
+		// Same shape as the other hypothesis: the first read after the
+		// rename reports what is genuinely live (still "beta") and repairs
+		// it as a side effect.
+		if _, err := d.List(ctx, testCaller, listAll()); err != nil {
+			t.Fatal(err)
+		}
+		col, err := d.List(ctx, testCaller, listAll())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasSessionID(col, "beta-x") {
+			t.Fatalf("the record did not converge the runtime onto the asserted name: %v", idsOf(col))
+		}
+	})
+}
+
+func evidenceMentionsDrift(col fleet.Collection[fleet.Session], liveID, want string) bool {
+	for _, s := range col.Items() {
+		if s.ID == liveID && strings.Contains(s.State.Evidence, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// A repair already proven not to hold is not attempted forever —
+// discardProvenFutile's rule (this file, the composer-clear case) applied
+// to identity: an unbounded loop against a second actor that keeps
+// reverting a name is a rename war, not a fix.
+func TestIdentityReassertStopsOnceContested(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	f := twoSessions()
+	d := stateDriver(t, f, dir)
+
+	if _, err := d.List(ctx, testCaller, listAll()); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Unix(1785600001, 0)
+	req := testCaller
+	req.Expect.StartedAt = &started
+	if _, err := d.Rename(ctx, req, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "beta-x"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	baseline := len(f.callsSnapshot())
+
+	revert := func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for i := range f.sessions {
+			if f.sessions[i].name == "beta-x" {
+				f.sessions[i].name = "beta"
+			}
+		}
+	}
+
+	for i := 0; i < 5; i++ {
+		revert()
+		if _, err := d.List(ctx, testCaller, listAll()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var reasserts int
+	for _, c := range f.callsSnapshot()[baseline:] {
+		if len(c) > 2 && c[0] == "rename-session" && c[1] == "-t" && c[2] == "=beta" {
+			reasserts++
+		}
+	}
+	if reasserts != maxNameReasserts {
+		t.Errorf("issued %d rename-session repairs across 5 reverts, want exactly %d (bounded)",
+			reasserts, maxNameReasserts)
+	}
+	if got := d.counters.Snapshot()[counterIdentityContested]; got < 1 {
+		t.Errorf("contested counter = %d, want at least 1", got)
+	}
+}
+
+// Two live sessions cannot share a name — reassertNames must refuse a
+// collision rather than let the multiplexer decide, the same rule Rename
+// itself already applies at request time.
+func TestReassertRefusesWhenTheNameIsTaken(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	f := twoSessions()
+	d := stateDriver(t, f, dir)
+
+	if _, err := d.List(ctx, testCaller, listAll()); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Unix(1785600001, 0)
+	req := testCaller
+	req.Expect.StartedAt = &started
+	if _, err := d.Rename(ctx, req, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "beta-x"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	baseline := len(f.callsSnapshot())
+
+	// A second actor reverts it, AND — independently — some other session
+	// now occupies the very name this driver wants back.
+	f.mu.Lock()
+	for i := range f.sessions {
+		if f.sessions[i].name == "beta-x" {
+			f.sessions[i].name = "beta"
+		}
+	}
+	f.mu.Unlock()
+	f.addSession(fakeSession{name: "beta-x", paneID: "%99", cwd: "/work/other", pid: 999, created: 1785600555},
+		idleFixtureFor("other"))
+
+	col, err := d.List(ctx, testCaller, listAll())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f.callsSnapshot()[baseline:] {
+		if len(c) > 0 && c[0] == "rename-session" {
+			t.Fatalf("a rename-session call was issued even though the wanted name is live under another session: %v", c)
+		}
+	}
+	if got := d.counters.Snapshot()[counterIdentityContested]; got < 1 {
+		t.Errorf("contested counter = %d, want at least 1", got)
+	}
+	// beta stays "beta" — reported as drifted, never silently merged into
+	// the other session's name.
+	if !hasSessionID(col, "beta") {
+		t.Fatalf("beta went missing rather than staying put while contested: %v", idsOf(col))
+	}
+}
+
+func hasSessionID(col fleet.Collection[fleet.Session], id string) bool {
+	for _, s := range col.Items() {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func idsOf(col fleet.Collection[fleet.Session]) []string {
+	var out []string
+	for _, s := range col.Items() {
+		out = append(out, s.ID)
+	}
+	return out
 }
 
 func slicesContains(hay []string, needle string) bool {

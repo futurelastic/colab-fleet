@@ -98,17 +98,65 @@ func decoration(name string) string {
 	return string(runes[i:])
 }
 
-// applyMarker appends the caller's session-type marker unless the name already
-// ends in that marker OR already carries any trailing decoration from an
-// earlier type. Both conditions are "carry, never stack": the first catches a
-// marker drawn only from the same alphabet as the name body, which
-// decoration() alone cannot see; the second preserves the older rule that a
-// name already outside the nameBody alphabet is left alone.
-func applyMarker(name, marker string) string {
-	if marker == "" || decoration(name) != "" || strings.HasSuffix(name, marker) {
+// markerState is colab-fleet #96's answer to "does name already carry
+// marker" — exact when a session record is available to answer from,
+// honest about not knowing when one is not.
+//
+// # Why a tri-state, not a bool
+//
+// The question has three real answers, not two. applyMarker used to
+// collapse "confirmed absent" and "no idea, guess from the string" into one
+// path, because a string is all it had. A session record (reconcile.go's
+// sessionRecord) can now say which of the two it actually is, for any
+// session THIS driver resolved a name for — and for one it did not (an
+// adopted session, a foreign one, a cold store), markerUnknown falls back
+// to exactly the string heuristic this driver already had.
+type markerState int
+
+const (
+	// markerUnknown means no record answers the question: fall back to the
+	// suffix heuristic (decoration/HasSuffix) — today's behaviour,
+	// unchanged, for a name this driver has no record of having resolved
+	// itself.
+	markerUnknown markerState = iota
+	// markerApplied means a session record says THIS driver already
+	// appended marker to name. Exact for any alphabet — no string
+	// comparison needed or made.
+	markerApplied
+	// markerAbsent means a session record says THIS driver resolved name
+	// WITHOUT appending marker. Also exact: append unconditionally, even
+	// if name happens to end in the same characters as marker — the
+	// record, not the string, is what answers "already applied" now.
+	markerAbsent
+)
+
+// applyMarker appends the caller's session-type marker, deciding whether it
+// is already there the way known says to.
+//
+// known == markerUnknown reproduces the original heuristic byte-for-byte:
+// unless the name already ends in that marker OR already carries any
+// trailing decoration from an earlier type. Both conditions are "carry,
+// never stack": the first catches a marker drawn only from the same
+// alphabet as the name body, which decoration() alone cannot see; the
+// second preserves the older rule that a name already outside the nameBody
+// alphabet is left alone. This is the ambiguous case #90 could not close
+// from the string alone (see numberedName's own comment) — a record
+// resolves it exactly instead; see markerState.
+func applyMarker(name, marker string, known markerState) string {
+	if marker == "" {
 		return name
 	}
-	return name + marker
+	switch known {
+	case markerApplied:
+		return name
+	case markerAbsent:
+		return name + marker
+	default: // markerUnknown
+		if decoration(name) != "" || strings.HasSuffix(name, marker) {
+			return name
+		}
+		return name + marker
+	}
 }
 
 // numberedName produces the n-th candidate for a colliding name, inserting the
@@ -171,21 +219,29 @@ const maxNameAttempts = 64
 // number applied before the marker would be swallowed by the marker guard, and
 // a marker applied after numbering would sit behind the counter where nothing
 // keying on a trailing marker can see it.
-func (d *Driver) resolveName(ctx context.Context, requested, marker string) (string, bool) {
+//
+// The second return, applied, reports whether THIS call appended marker —
+// colab-fleet #96/#97's fact for the caller (Create) to hand to
+// noteAssertedName, so the NEXT resolveName for this same string can answer
+// markerStateFor exactly instead of guessing again.
+func (d *Driver) resolveName(ctx context.Context, requested, marker string) (name string, applied bool, ok bool) {
 	marker = sanitizeName(marker)
-	name := applyMarker(sanitizeName(requested), marker)
+	sanitized := sanitizeName(requested)
+	known := d.markerStateFor(sanitized, marker)
+	name = applyMarker(sanitized, marker, known)
+	applied = marker != "" && name != sanitized
 	if name == "" {
-		return "", false
+		return "", false, false
 	}
 	taken := d.liveNames(ctx)
 	if taken == nil {
-		return name, true
+		return name, applied, true
 	}
 	for n := 1; n <= maxNameAttempts; n++ {
 		candidate := numberedName(name, n)
 		if !taken[candidate] {
-			return candidate, true
+			return candidate, applied, true
 		}
 	}
-	return "", false
+	return "", false, false
 }

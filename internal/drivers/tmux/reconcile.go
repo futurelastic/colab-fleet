@@ -62,6 +62,51 @@ type sessionRecord struct {
 	// the state says where the number came from.
 	Status      string    `json:"status,omitempty"`
 	StatusSince time.Time `json:"statusSince,omitempty"`
+
+	// Pane is the id of this session's active pane at the last read.
+	// Together with Created (above) it identifies a session RUN rather than
+	// a session NAME — the same pairing conversationKey already uses
+	// (conversation.go), for the same reason: a rename changes the name and
+	// the map key that goes with it, but not the pane the session actually
+	// runs in. Empty for a record this driver has not yet corroborated
+	// against a live read (e.g. the stub Create writes before the session
+	// has ever been enumerated) — every reader below treats an empty Pane
+	// as "cannot corroborate", never as a match against another blank one.
+	Pane string `json:"pane,omitempty"`
+
+	// Name is the name THIS DRIVER last asserted for this session — set at
+	// Create and at Rename, never re-derived from a read. The map key this
+	// record sits under is whatever the runtime carried at the last read;
+	// Name is what this driver believes it should carry. The two agreeing
+	// is the ordinary case; identityDrift is what runs when they do not
+	// (colab-fleet #97: a rename that is accepted and then, with no request
+	// asking for it, no longer holds).
+	Name string `json:"name,omitempty"`
+
+	// Marker and MarkerApplied are colab-fleet #96's fact: whether THIS
+	// driver appended marker to Name, recorded at the instant it decided
+	// so rather than guessed afterwards from the string. Both empty/false
+	// together means either no marker was ever asked for, or this record
+	// predates the field — markerStateFor treats that the same as no
+	// record at all (markerUnknown), never as a claim of "confirmed
+	// absent".
+	Marker        string `json:"marker,omitempty"`
+	MarkerApplied bool   `json:"markerApplied,omitempty"`
+
+	// Reasserts counts how many times a List has already put Name back
+	// after finding the runtime disagreeing with it (colab-fleet #97).
+	// Durable, unlike the in-memory futile map Discard uses for a similar
+	// bound (tmux.go) — a second actor on the machine that keeps reverting
+	// a name is not a fact this service's own restart should forget, so the
+	// count that stops the retries must survive one. Bounded by
+	// maxNameReasserts (tmux.go): a repair already proven not to hold is
+	// not attempted forever.
+	Reasserts int `json:"reasserts,omitempty"`
+
+	// NameAssertedAt is when Name was last SET — at a Create or a Rename,
+	// never bumped by a reassert attempt. Evidence prose only; nothing in
+	// this package branches on it.
+	NameAssertedAt time.Time `json:"nameAssertedAt,omitempty"`
 }
 
 type sessionsFile struct {
@@ -188,19 +233,60 @@ func (d *Driver) saveRecords(recs map[string]sessionRecord) {
 
 // noteSessionSet records the live set when it CHANGES, so reconciliation has
 // something to compare against without turning every read into a write.
-func (d *Driver) noteSessionSet(rows []paneRow) {
+//
+// prior is the caller's own already-loaded snapshot (List loads it once, for
+// this and for identityDrift both — colab-fleet #96/#97 — rather than
+// reading the store twice per listing).
+func (d *Driver) noteSessionSet(rows []paneRow, prior map[string]sessionRecord) {
 	if d.store == nil {
 		return
 	}
-	prior := d.loadRecords()
 	now := d.now()
 	next := make(map[string]sessionRecord, len(rows))
 	changed := len(prior) != len(rows)
+	// Indexed once, for the case below where a row's own key carries no
+	// record: the record for its RUN may still exist, filed under a
+	// different key (colab-fleet #97 — a rename, or the runtime undoing
+	// one, moves what name a session answers to without starting a new
+	// run).
+	byPaneCreated := indexByPaneCreated(prior)
 	for _, r := range rows {
 		rec, had := prior[r.session]
-		if !had || !rec.Created.Equal(r.created) {
+		switch {
+		case had && rec.Created.IsZero():
+			// A stub a Create wrote before this session was ever
+			// enumerated (colab-fleet #96/#97: Name/Marker/MarkerApplied
+			// were already known then; Created/Pane were not). Fill in
+			// what only a live read can supply; keep what Create already
+			// asserted.
+			rec.Created = r.created
+			rec.Cwd = r.cwd
+			rec.Pane = r.paneID
 			changed = true
-			rec = sessionRecord{Created: r.created, Cwd: r.cwd, FirstSeen: now}
+		case had && rec.Created.Equal(r.created):
+			// Same id, same start time: this is the session we remembered.
+			if rec.Pane != r.paneID {
+				rec.Pane = r.paneID
+				changed = true
+			}
+		case had:
+			// The id is remembered but now holds something that started at
+			// a different time: a recycled name (§5.4). Nothing about the
+			// old occupant — including any asserted-name fact — describes
+			// this one.
+			changed = true
+			rec = sessionRecord{Created: r.created, Cwd: r.cwd, Pane: r.paneID, FirstSeen: now}
+		default:
+			// No record under this exact key. Before minting a fresh one,
+			// look for the SAME RUN under a DIFFERENT key — see
+			// byPaneCreated's own comment.
+			if carried, ok := byPaneCreated[paneCreatedOf(r.paneID, r.created)]; ok {
+				rec = carried
+				rec.Cwd = r.cwd
+			} else {
+				rec = sessionRecord{Created: r.created, Cwd: r.cwd, Pane: r.paneID, FirstSeen: now}
+			}
+			changed = true
 		}
 		rec.LastSeen = now
 		next[r.session] = rec
@@ -209,6 +295,197 @@ func (d *Driver) noteSessionSet(rows []paneRow) {
 		return
 	}
 	d.saveRecords(next)
+}
+
+// paneCreated identifies a session RUN rather than a session NAME — the
+// same pairing conversationKey already uses (conversation.go), and for the
+// identical reason: it survives a rename, where a map keyed by name does
+// not. Created is reduced to Unix seconds so it can be a map key; every
+// Created this package compares is already parsed from the runtime's own
+// integer timestamp (parseRows), so this loses no precision anything here
+// relies on.
+type paneCreated struct {
+	pane    string
+	created int64
+}
+
+func paneCreatedOf(pane string, created time.Time) paneCreated {
+	return paneCreated{pane: pane, created: created.Unix()}
+}
+
+// indexByPaneCreated builds a (pane, created) → record lookup over records
+// that carry enough to be found this way. A record with an empty Pane
+// (written before this field existed, or a stub Create wrote that no List
+// has corroborated yet) is omitted rather than indexed under a zero key,
+// which would let two unrelated blank records collide.
+func indexByPaneCreated(recs map[string]sessionRecord) map[paneCreated]sessionRecord {
+	out := make(map[paneCreated]sessionRecord, len(recs))
+	for _, rec := range recs {
+		if rec.Pane == "" {
+			continue
+		}
+		out[paneCreatedOf(rec.Pane, rec.Created)] = rec
+	}
+	return out
+}
+
+// nameDrift is one live session whose name right now disagrees with the
+// name this driver last asserted for it — colab-fleet #97's defect, made
+// detectable rather than only measurable after the fact.
+type nameDrift struct {
+	live paneRow
+	want string // the name this driver asserted; always != live.session
+	rec  sessionRecord
+}
+
+// identityDrift compares what enumerate() just found against what this
+// driver last asserted, matching by (pane, created) rather than by name so
+// a rename — or a second actor on the machine undoing one — does not make
+// the record unfindable (colab-fleet #96/#97). A row with no asserted-name
+// record, or one whose asserted name already agrees with what is live, is
+// not drift.
+func identityDrift(rows []paneRow, prior map[string]sessionRecord) []nameDrift {
+	if len(prior) == 0 {
+		return nil
+	}
+	idx := indexByPaneCreated(prior)
+	var out []nameDrift
+	for _, r := range rows {
+		rec, ok := idx[paneCreatedOf(r.paneID, r.created)]
+		if !ok || rec.Name == "" || rec.Name == r.session {
+			continue
+		}
+		out = append(out, nameDrift{live: r, want: rec.Name, rec: rec})
+	}
+	return out
+}
+
+// markerStateFor answers colab-fleet #96 exactly, when this driver has a
+// record to answer from: whether the marker resolveName would apply to
+// name is already there because THIS driver put it there — never guessed
+// from the string. markerUnknown (naming.go's zero value) is the honest
+// answer whenever there is nothing to go on: no state store, no marker
+// asked for, no record under this exact string, or a record made for a
+// different marker.
+func (d *Driver) markerStateFor(name, marker string) markerState {
+	if d.store == nil || marker == "" {
+		return markerUnknown
+	}
+	rec, ok := d.loadRecords()[name]
+	if !ok || rec.Marker != marker {
+		return markerUnknown
+	}
+	if rec.MarkerApplied {
+		return markerApplied
+	}
+	return markerAbsent
+}
+
+// noteAssertedName records the identity a Create just resolved — colab-fleet
+// #96's marker fact, and the first half of #97's durable record (the second
+// half is a Rename actually changing it; see noteRenamed). Merged into
+// whatever the store already holds under key, so a later List's own
+// Created/Pane/LastSeen fields (noteSessionSet, above) never race this and
+// clobber it, or vice versa.
+func (d *Driver) noteAssertedName(key, cwd, name, marker string, applied bool) {
+	if d.store == nil {
+		return
+	}
+	recs := d.loadRecords()
+	rec := recs[key] // zero value if this is the session's first record
+	now := d.now()
+	rec.Cwd = cwd
+	rec.Name = name
+	rec.Marker = marker
+	rec.MarkerApplied = applied
+	rec.Reasserts = 0
+	rec.NameAssertedAt = now
+	if rec.FirstSeen.IsZero() {
+		rec.FirstSeen = now
+	}
+	rec.LastSeen = now
+	recs[key] = rec
+	d.saveRecords(recs)
+}
+
+// noteRenamed writes colab-fleet #97's durable half: a Rename this driver
+// just issued, moved from the record's old key to the new one so the next
+// read finds it either way — under the new key if the rename held, or via
+// identityDrift's (pane, created) match if a second actor on the machine
+// put the old name back.
+//
+// Marker/MarkerApplied are cleared rather than carried across: the caller
+// dictated the whole new string, so whatever this driver knew about the OLD
+// name's marker is not a fact about this one.
+func (d *Driver) noteRenamed(from, to, cwd, pane string, created time.Time) {
+	if d.store == nil {
+		return
+	}
+	recs := d.loadRecords()
+	rec := recs[from]
+	delete(recs, from)
+	now := d.now()
+	rec.Cwd = cwd
+	rec.Pane = pane
+	rec.Created = created
+	rec.Name = to
+	rec.Marker = ""
+	rec.MarkerApplied = false
+	rec.Reasserts = 0
+	rec.NameAssertedAt = now
+	if rec.FirstSeen.IsZero() {
+		rec.FirstSeen = now
+	}
+	rec.LastSeen = now
+	recs[to] = rec
+	d.saveRecords(recs)
+}
+
+// recordReassertAttempt persists what reassertNames just did for one drift
+// entry — durable, because a second actor that keeps reverting a name must
+// not get a fresh budget of attempts every time this service restarts.
+// fromKey is the live name the drift was detected against; on success the
+// record moves to the name that is now live (cur.Name), the same shape
+// noteRenamed already uses.
+func (d *Driver) recordReassertAttempt(fromKey string, fallback sessionRecord, succeeded bool) {
+	if d.store == nil {
+		return
+	}
+	recs := d.loadRecords()
+	cur, ok := recs[fromKey]
+	if !ok {
+		cur = fallback
+	}
+	cur.Reasserts++
+	cur.LastSeen = d.now()
+	if succeeded {
+		delete(recs, fromKey)
+		recs[cur.Name] = cur
+	} else {
+		recs[fromKey] = cur
+	}
+	d.saveRecords(recs)
+}
+
+// recordContested persists that reassertNames will not try again for this
+// record: either the wanted name is itself live under a different session
+// right now, or maxNameReasserts is already spent. Setting Reasserts to the
+// bound — not merely leaving its last value — means a restart does not
+// re-earn attempts already proven futile, same durability reasoning as
+// recordReassertAttempt.
+func (d *Driver) recordContested(key string, fallback sessionRecord) {
+	if d.store == nil {
+		return
+	}
+	recs := d.loadRecords()
+	cur, ok := recs[key]
+	if !ok {
+		cur = fallback
+	}
+	cur.Reasserts = maxNameReasserts
+	cur.LastSeen = d.now()
+	recs[key] = cur
+	d.saveRecords(recs)
 }
 
 // noteStatuses persists each session's status and the time it was first seen
