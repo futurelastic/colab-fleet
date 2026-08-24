@@ -12,6 +12,10 @@ const (
 	// session that is still very much alive — which is why a rename cannot be
 	// a quiet mutation. Without the event, a rename is indistinguishable from
 	// a disappearance, and that is the one thing it must not be mistaken for.
+	//
+	// One rename produces more than one of these (colab-fleet #103): an
+	// accept-time event, always, and a later follow-up once this service has
+	// something to say about whether it held — see SessionRenamed.Corroboration.
 	EventSessionRenamed EventKind = "session.renamed"
 	EventSourceStatus   EventKind = "source.status"
 	// EventMachineQuota reports that this machine's ACCOUNT started or

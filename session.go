@@ -299,12 +299,63 @@ type SessionRef struct {
 // identity and must never be acted on alone. A rename is that rule with a
 // sharper edge — the id can now change under a caller who was already
 // forbidden from trusting it.
+//
+// Corroboration is why a given (From, To) pair can appear MORE than once on
+// the stream (colab-fleet #103). A rename that is accepted and then reverts —
+// #97's own measured scenario, a `202`, a correct read for roughly half an
+// hour, then silently undone — used to emit exactly one of these, at accept
+// time, and never revisit it: a subscriber that re-keyed on it, as §3.3 tells
+// it to, held a name that had already stopped being true, with nothing on the
+// stream saying so. See RenameCorroboration for what each value means and for
+// the guarantee that one of its three non-accepted values always follows.
 type SessionRenamed struct {
-	Machine   MachineId  `json:"machine"`
-	From      string     `json:"from"`
-	To        string     `json:"to"`
-	StartedAt *Timestamp `json:"startedAt,omitempty"`
+	Machine       MachineId           `json:"machine"`
+	From          string              `json:"from"`
+	To            string              `json:"to"`
+	StartedAt     *Timestamp          `json:"startedAt,omitempty"`
+	Corroboration RenameCorroboration `json:"corroboration"`
 }
+
+// RenameCorroboration is session.renamed's own truthfulness (colab-fleet
+// #103): whether From/To is still just what the handler ACCEPTED, or has
+// since been checked against an independent, later observation.
+//
+// A subscriber sees exactly one RenameAccepted for a given rename, at accept
+// time, followed — always, never silently omitted — by exactly one of the
+// other three once this service has something to say about whether it held.
+// That is the fix for #97's actual gap: a `202`, a correct read for a while,
+// then a silent revert with nothing on the stream saying so. It is closed by
+// guaranteeing the "nothing" case cannot happen on the event plane, not by
+// making the accept-time event wait for a confirmation that may be half an
+// hour away.
+type RenameCorroboration string
+
+const (
+	// RenameAccepted is the first session.renamed for a rename: the request
+	// succeeded, at the moment it succeeded. This is the same fact the old,
+	// single accept-time event carried — named honestly now as provisional,
+	// rather than left to be read as a durability claim it never was.
+	RenameAccepted RenameCorroboration = "accepted"
+	// RenameCorroborated is a later session.renamed for the same rename: an
+	// independent, later read found the new id still resolving, with no sign
+	// of a revert, through the corroboration window.
+	RenameCorroborated RenameCorroboration = "corroborated"
+	// RenameContested is a later session.renamed reporting that the new id
+	// stopped resolving AND the old id's identity came back — matched by
+	// StartedAt, never by name alone (SessionRef's own rule, §5.4) — the
+	// exact shape #97 measured: id, name and attach target all reverted.
+	RenameContested RenameCorroboration = "contested"
+	// RenameUnconfirmed is a later session.renamed reporting that this
+	// service cannot say either way: the new id stopped resolving without the
+	// old id's identity reappearing to corroborate a revert — as consistent
+	// with an ordinary DELETE of the renamed session as with a revert this
+	// service could not attribute — or the observation itself had a gap (a
+	// feed disconnect, a resync) somewhere in the corroboration window. §5.7's
+	// "known false, with evidence" applied to a rename: not a claim that it
+	// held, and not a claim that it reverted, said plainly instead of by
+	// omission.
+	RenameUnconfirmed RenameCorroboration = "unconfirmed"
+)
 
 // Session is a SessionRef plus its current details and state — the shape
 // GET /v1/machines/{machine}/sessions/{id} returns (api-http.md §3.3), and

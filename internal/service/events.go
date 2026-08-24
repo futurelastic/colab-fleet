@@ -100,6 +100,12 @@ type hub struct {
 	streamOn     bool
 	linger       time.Duration
 	lingerTimer  *time.Timer
+
+	// rename is colab-fleet #103's own bookkeeping — see
+	// rename_corroboration.go. A separate lock from mu above, deliberately:
+	// resolving a pending rename recurses into publish (to announce the
+	// follow-up), and mu is not reentrant.
+	rename renamePlane
 }
 
 type subscriber struct {
@@ -124,6 +130,7 @@ func newHub(self fleet.MachineId, epoch string) *hub {
 		retention: defaultRetention,
 		linger:    defaultLinger,
 		subs:      map[int]*subscriber{},
+		rename:    newRenamePlane(),
 	}
 }
 
@@ -131,7 +138,6 @@ func newHub(self fleet.MachineId, epoch string) *hub {
 // driver's stream.
 func (h *hub) publish(ev fleet.Event) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	h.cursor++
 	ev.Cursor = h.cursor
@@ -166,6 +172,17 @@ func (h *hub) publish(ev fleet.Event) {
 			// way to notice.
 			s.dropped = true
 		}
+	}
+
+	h.mu.Unlock()
+
+	// Deliberately unlocked above rather than deferred: colab-fleet #103's
+	// corroboration bookkeeping lives under its own lock (h.rename, never
+	// h.mu — see renamePlane's doc), and a rename that just resolved
+	// recurses into publish to announce the follow-up. h.mu is not
+	// reentrant, so that recursion must happen with it already released.
+	for _, followUp := range h.observeRenameCorroboration(ev) {
+		h.publish(followUp)
 	}
 }
 

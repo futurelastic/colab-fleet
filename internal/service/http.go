@@ -1195,13 +1195,12 @@ func handleRename(svc *Service) http.HandlerFunc {
 		// Announce it. A subscriber filtering by id would otherwise see the old
 		// id go quiet and a stranger appear — indistinguishable from a session
 		// dying and another being created, which is exactly the wrong reading.
-		svc.events.publish(fleet.Event{
-			Kind:    fleet.EventSessionRenamed,
-			Machine: machine,
-			Payload: fleet.SessionRenamed{
-				Machine: machine, From: id, To: body.Name, StartedAt: req.Expect.StartedAt,
-			},
-		})
+		//
+		// This is the accept-time half only (RenameAccepted). colab-fleet #103:
+		// a rename that reverts still needs a later, honest word on the stream
+		// about it, which publishRename's own corroboration watch supplies —
+		// see rename_corroboration.go.
+		svc.publishRename(machine, id, body.Name, req.Expect.StartedAt)
 		writeJSON(w, http.StatusAccepted, ack)
 	}
 }

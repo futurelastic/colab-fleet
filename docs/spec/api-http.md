@@ -471,7 +471,10 @@ and leaves it wearing somebody else's name.
 
 Subscribers receive `session.renamed` carrying `from` and `to`. A client
 filtering by id **must** re-key on it, or it stops matching a session that is
-still alive — and cannot tell that from the session having died.
+still alive — and cannot tell that from the session having died. **This event
+fires more than once per rename** — §4's event-plane section covers what the
+`corroboration` field on each one means, and why waiting for the second is
+worth doing before treating a rename as durable.
 
 `runtime` is an **optional** query parameter on every single-session endpoint
 (`GET`, `input`, `respond`, `discard`, `rename`, `keys`, `interrupt`,
@@ -784,7 +787,7 @@ resumption needs no client code. The server honours that header when no
 | `session.created` | full session |
 | `session.state` | ref + `SessionState` — fired on any **material** change, not only a change of `status` |
 | `session.closed` | ref + final state |
-| `session.renamed` | `{ "machine", "from", "to", "startedAt"? }` — a session's **id** changed (session-abstraction.md §3's `rename`); a subscriber filtering by id must re-key on `to` or it silently stops matching a session that is still alive |
+| `session.renamed` | `{ "machine", "from", "to", "startedAt"?, "corroboration" }` — a session's **id** changed (session-abstraction.md §3's `rename`); a subscriber filtering by id must re-key on `to` or it silently stops matching a session that is still alive |
 | `source.status` | a machine's reachability changed |
 | `machine.quota` | `{ "machine", "blocked": bool, "quota"? }` — this machine's **account** started or stopped refusing work |
 | `machine.account` | `{ "machine", "generation" }` — this machine's local **credential material** changed |
@@ -810,6 +813,34 @@ keystroke while saying nothing anyone may act on. `since` on its own is a
 driver re-stamping when it first observed a status, not the session doing
 something different. So a mirror's `evidence` is as fresh as the last material
 change; re-read the session when you want the current prose.
+
+**`session.renamed` fires more than once for the same rename** (colab-fleet
+#103). The first is always `"corroboration": "accepted"`, published the
+instant `POST …/rename` returns `202` — the same fact this event always
+carried, named honestly now as provisional rather than left to be read as a
+durability claim it never was. A rename that reverts (§3.3's own measured
+case: a `202`, a correct read for roughly half an hour, then a silent revert,
+with nothing on the stream saying so for that whole window) used to leave a
+subscriber holding a name that had stopped being true with no way to learn it.
+It cannot anymore: exactly one further `session.renamed`, for the same `from`
+and `to`, always follows — never silently omitted — carrying one of:
+
+- **`"corroborated"`** — a later, independent observation found the new id
+  still resolving, with no sign of a revert.
+- **`"contested"`** — the new id stopped resolving **and** the old id's
+  identity came back, matched by `startedAt` rather than by name alone
+  (§5.4) — the exact shape #97 measured.
+- **`"unconfirmed"`** — this service cannot say either way: the new id
+  stopped resolving without the old id's identity reappearing to corroborate
+  a revert (as consistent with an ordinary `DELETE` of the freshly-renamed
+  session as with an unattributable revert), or the stream watching for it had
+  a gap of its own (a `source.status` degradation, a `control.resync`)
+  somewhere in the window. Not a claim the rename held, and not a claim it
+  reverted — said plainly rather than by omission.
+
+A client that only ever acts on the first `session.renamed` it sees for a
+given `to` gets exactly today's behaviour. One that wants to know whether a
+rename actually held waits for the second.
 
 `machine.quota` is the only event whose subject is not a session, and the only
 one a scheduler should act on by **not** doing something. It fires once at the
