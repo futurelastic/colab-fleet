@@ -72,9 +72,13 @@ exist):
 - `FLEET_VERIFY_INTERVAL` — seconds between polls. Default **2**.
 - `FLEET_HEALTH_TOKEN` — the literal bearer token to verify with. Takes
   precedence when set.
-- `FLEET_HEALTH_TOKEN_FILE` — a path, read on the host via `cat`. Defaults to
-  `~/.config/colab-fleet/token`, the script's original hardcoded path — so a
-  caller who sets neither of the last two sees no change at all.
+- `FLEET_HEALTH_TOKEN_FILE` — a path, read on the host via `cat`.
+
+One of the last two is **required** whenever `FLEET_HEALTH_URL` is set
+(colab-fleet #108) — see the trap below for why there is no longer a
+hardcoded fallback. If your convention is a token file at
+`~/.config/colab-fleet/token`, set `FLEET_HEALTH_TOKEN_FILE` to that path
+explicitly; it is no longer assumed on your behalf.
 
 ## Traps, measured running this
 
@@ -133,9 +137,28 @@ completely fine; verification simply asked with the wrong credential and got a
 from the deploy having actually failed, and landing on exactly the step that
 talks you out of finishing a two-machine deploy. `FLEET_HEALTH_TOKEN` (a
 literal token) and `FLEET_HEALTH_TOKEN_FILE` (an alternate path, still read on
-the host) make the credential configuration instead of an assumption; neither
-is required, so a caller who sets neither sees the prior hardcoded path and no
-change in behaviour.
+the host) make the credential configuration instead of an assumption. At the
+time, neither was required — a caller who set neither still fell back to a
+hardcoded path. Colab-fleet #108, below, is what closed that gap.
+
+**A deploy can succeed at every step, verification can reach the service and
+authenticate cleanly, and the deploy can STILL report FAILED — because the
+credential that authenticated was never going to be accepted (colab-fleet
+#108).** The hardcoded fallback the previous paragraph describes
+(`~/.config/colab-fleet/token`, read on the host) is correct for a
+single-token deployment, where that file conventionally holds the same value
+as the service's own token. It is silently wrong for a deployment configured
+with a principal table: that value is never one of the table's principals,
+every principal in the table authenticates fine, and the one credential a
+table-mode deployment cannot accept is exactly the one nobody told this
+script to use anything else. `FLEET_HEALTH_TOKEN` and `FLEET_HEALTH_TOKEN_FILE`
+are now **required** whenever `FLEET_HEALTH_URL` is set — the script refuses
+before making a network call rather than guess, the same call already made
+for `REMOTE_PATH` (#66). This is the second instance of one pattern: the
+service's own peer credential was empty in table-only mode until the table
+was given a way to name the service's own identity (#98); here the default
+credential a *caller* presents needed the identical fix — stop assuming a
+value that only ever meant something in single-token mode.
 
 **An untracked file the committed ignore rules do not cover makes the build
 report itself modified, and a modified build compares equal to nothing.**

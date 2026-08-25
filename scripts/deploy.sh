@@ -60,11 +60,18 @@
 #                             Takes precedence over FLEET_HEALTH_TOKEN_FILE
 #                             below when set (colab-fleet #93 — see the verify
 #                             section for why this exists).
-#   FLEET_HEALTH_TOKEN_FILE  path to a token file, read ON THE HOST via `cat`,
-#                             same as this script's behaviour before #93.
-#                             Defaults to ~/.config/colab-fleet/token, so a
-#                             caller who sets neither of these two sees no
-#                             change at all.
+#   FLEET_HEALTH_TOKEN_FILE  path to a token file, read ON THE HOST via `cat`.
+#                             One of FLEET_HEALTH_TOKEN or this is REQUIRED
+#                             whenever FLEET_HEALTH_URL is set (colab-fleet
+#                             #108) — the script no longer falls back to a
+#                             hardcoded path. It has no way to tell a
+#                             single-token deployment from a principal-table
+#                             one before asking, and the two need different
+#                             credentials, so a silent default is right for
+#                             one and silently wrong for the other. If this
+#                             host's operator convention is a token file at
+#                             ~/.config/colab-fleet/token, set it explicitly:
+#                             that path is no longer assumed on your behalf.
 #   FLEET_VERIFY_TIMEOUT      seconds to poll the health URL before giving up.
 #                             Default 180 — colab-fleet #93 measured a real,
 #                             successful startup taking 98s under load, so the
@@ -196,11 +203,41 @@ fi
 # credential that answers for a peer can be one only the machine running THIS
 # script holds, so the host's own file answered 401 for a perfectly healthy
 # service. Take the credential as configuration instead of assuming it.
+#
+# colab-fleet #108: #93 stopped short of that for whoever set NEITHER
+# variable, keeping a hardcoded fallback (~/.config/colab-fleet/token, still
+# read ON THE HOST — the fallback was never the "wrong machine" bug, that was
+# already fixed). That fallback is correct for a single-token deployment,
+# where the file conventionally holds the same value as the service's own
+# token, and silently wrong for a principal-table deployment, where that
+# value is never one of the table's principals — this script has no way to
+# tell which kind of host it is about to talk to before it asks.
+#
+# Two other defaults were considered and both lose to asking: reading a
+# principal out of the host's table needs a path this script is never given
+# (FLEET_CONFIG is the daemon's own env var, not threaded through here) and
+# then a choice of WHICH principal if the table holds more than one — a
+# second guess, not a smaller one. Reusing the service's own outbound peer
+# identity (colab-fleet #98's "system:"+machine) has the same access problem,
+# plus nothing establishes that identity also carries a local read grant on
+# THIS host's table — #98 only required the *peer's* table to grant it one,
+# for a different purpose than health-checking this host. Neither trades the
+# guess away; both just move where it happens. So: refuse to guess, and fail
+# before the network call, the same "not a smarter guess, refusing to guess
+# at all" call this script already made for REMOTE_PATH (#66).
 if [ -n "${FLEET_HEALTH_TOKEN:-}" ]; then
 	AUTH_HEADER="Authorization: Bearer ${FLEET_HEALTH_TOKEN}"
+elif [ -n "${FLEET_HEALTH_TOKEN_FILE:-}" ]; then
+	AUTH_HEADER="Authorization: Bearer \$(cat ${FLEET_HEALTH_TOKEN_FILE})"
 else
-	TOKEN_FILE=${FLEET_HEALTH_TOKEN_FILE:-~/.config/colab-fleet/token}
-	AUTH_HEADER="Authorization: Bearer \$(cat ${TOKEN_FILE})"
+	echo "deploy: FLEET_HEALTH_URL is set but no verification credential was given." >&2
+	echo "        Set FLEET_HEALTH_TOKEN (a literal bearer token) or" >&2
+	echo "        FLEET_HEALTH_TOKEN_FILE (a path, read on the host via cat) to" >&2
+	echo "        the credential THIS deployment's service actually accepts." >&2
+	echo "        A single-token deployment and a principal-table deployment" >&2
+	echo "        need different credentials, and this script cannot tell" >&2
+	echo "        which one it is about to talk to — see colab-fleet #108." >&2
+	exit 2
 fi
 
 # colab-fleet #93: a single probe cannot tell "not up yet" from "not coming
