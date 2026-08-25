@@ -1559,12 +1559,18 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// are exactly the long ones.
 		if opts.ResumeIfStranded && d.strandedMatches(ref.ID, target.cwd, text) {
 			// #101: this branch only ever runs when the composer is already
-			// holding OUR OWN pending delivery (strandedMatches, just above)
-			// — there is nothing left to land, only to submit. opts.Submit is
-			// therefore not re-checked here: resume is a completion of a
+			// holding OUR OWN pending delivery (strandedMatches, just above).
+			// opts.Submit is not re-checked here: resume is a completion of a
 			// submit already requested by the call that stranded this text,
 			// not a fresh request that could reasonably ask to land-without-
-			// submitting a delivery that is already landed.
+			// submitting.
+			//
+			// #109 corrects the rest of this paragraph as it used to read: it
+			// claimed "there is nothing left to land, only to submit", treating
+			// strandedMatches as proof the paste had already FINISHED landing.
+			// It has not — strandedMatches corroborates WHOSE delivery this is,
+			// never whether it settled. See the `landed` check a few lines down
+			// for what replaced that claim.
 			//
 			// Wake key before the newline, the same shape as the other two
 			// submit sites (#21). This pane is idle BY DEFINITION — the branch
@@ -1586,13 +1592,40 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			// fresh paste here to distinguish it from, the paste already
 			// happened on the attempt that stranded it. This is the same
 			// attribution confirmLanded already performs for a fresh paste;
-			// reused here for a paste that landed earlier. `landed` is not
-			// checked: composerText already established the text is pending,
-			// above, and a failed re-match here only degrades atCount to 0,
-			// which confirmSubmitted already treats as "fall back to the
-			// composer-empty check alone" — never a reason to skip
-			// confirmation.
-			key, atCount, _ := d.confirmLanded(ctx, target.paneID, text, map[pasteKey]int{})
+			// reused here for a paste that landed earlier.
+			//
+			// #109: `landed` IS now checked, and this reverses #101's own
+			// reasoning for ignoring it. composerText (above) proves the
+			// composer holds SOMETHING, not that it holds a SETTLED, complete
+			// copy of our text — a very large multi-line paste can still be
+			// mid-collapse, or the composer can hold two ambiguous markers
+			// (an unrelated stranding alongside ours), and #101's comment
+			// waved both off as "a failed re-match here only degrades atCount
+			// to 0, which confirmSubmitted already treats as fall back to the
+			// composer-empty check alone" — true of the OUTCOME confirmSubmitted
+			// reports, but that reasoning only covers whether the SUBMIT is
+			// confirmed, not whether what gets submitted is complete. Pressing
+			// the wake key regardless of `landed` submits whatever is
+			// currently sitting in the composer even when this driver has NO
+			// attributable evidence it is our full delivery — measured live as
+			// a truncated, tail-only fragment reaching the agent (#109): the
+			// resume path was completing an unconfirmed, possibly-partial
+			// landing instead of redoing it. `landed=false` now refuses to
+			// press submit at all, the same discipline the first-attempt path
+			// (below) already applies to identical evidence — the record is
+			// kept either way, so a later resume gets another chance once the
+			// paste has actually settled.
+			key, atCount, landed := d.confirmLanded(ctx, target.paneID, text, map[pasteKey]int{})
+			if !landed {
+				return fleet.DeliveryReceipt{
+					Outcome: fleet.OutcomeUnknown,
+					Reason: "resumed a delivery this driver had stranded earlier, but the " +
+						"composer could not be confirmed to hold a complete, attributable " +
+						"copy of it this time either — pressing submit now risks completing " +
+						"a partial paste instead of the full one; the record is kept — retry " +
+						"the same send with resumeIfStranded again",
+				}, nil
+			}
 			if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "Space", "C-m"); err != nil {
 				return fleet.DeliveryReceipt{}, fmt.Errorf("send: submitting stranded text: %w", err)
 			}

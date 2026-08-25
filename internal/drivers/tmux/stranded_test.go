@@ -42,9 +42,12 @@ func TestStrandedRecordSurvivesARestart(t *testing.T) {
 
 	// A new process, same state directory — this is the restart. Nothing
 	// about the composer changed: the text this driver placed is still
-	// sitting there, unsubmitted, exactly as a restart leaves it.
+	// sitting there, unsubmitted, exactly as a restart leaves it. #109: the
+	// capture must echo OUR OWN text so confirmLanded's resume-time gate can
+	// attribute it — an unrelated composer fixture would now (correctly)
+	// refuse to submit blind.
 	second := stateDriver(t, f, dir)
-	f.setCapture("%1", fixtureUnsent)
+	f.setCapture("%1", "transcript\n✻ Brewed for 1m 0s\n"+rule+"\n❯ "+text+"\n"+rule+"\n")
 
 	resumed, err := second.Send(context.Background(), testCaller, ref, text,
 		driver.SendOptions{Submit: true, ResumeIfStranded: true})

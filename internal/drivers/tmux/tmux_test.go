@@ -3117,8 +3117,11 @@ func TestResumingAStrandedSendAlsoWakesThePane(t *testing.T) {
 	}
 
 	// The composer now holds unsent text, which is the state the resume branch
-	// requires before it will act.
-	f.setCapture("%1", fixtureUnsent)
+	// requires before it will act. #109: this must be OUR OWN text (or an
+	// attributable marker for it), not any unrelated non-empty composer —
+	// confirmLanded now gates the resume submit (below), and a fixture that
+	// does not echo the stranded text would never satisfy it.
+	f.setCapture("%1", "transcript\n✻ Brewed for 1m 0s\n"+rule+"\n❯ "+text+"\n"+rule+"\n")
 
 	got, err := d.Send(context.Background(), testCaller, ref, text,
 		driver.SendOptions{Submit: true, ResumeIfStranded: true})
@@ -3178,8 +3181,11 @@ func TestSendReportsUnknownWhenTheSubmitDoesNotRegisterOnResume(t *testing.T) {
 	}
 
 	// The composer now holds the stranded text, and THIS time the resume's
-	// own wake-key submit is the one that gets swallowed too.
-	f.setCapture("%1", fixtureUnsent)
+	// own wake-key submit is the one that gets swallowed too. #109: this must
+	// be OUR OWN text so confirmLanded's new gate (below) is satisfied and the
+	// submit is actually attempted — this test is about the SUBMIT keystroke
+	// being swallowed, not about attribution failing.
+	f.setCapture("%1", "transcript\n✻ Brewed for 1m 0s\n"+rule+"\n❯ "+text+"\n"+rule+"\n")
 	f.noEcho = false
 	f.swallowSubmit = true
 
@@ -3198,6 +3204,73 @@ func TestSendReportsUnknownWhenTheSubmitDoesNotRegisterOnResume(t *testing.T) {
 	if !d.strandedMatches(ref.ID, "/work/alpha", text) {
 		t.Fatal("the stranded record was discarded on a submit that was never confirmed; " +
 			"a third attempt now has nothing left to resume")
+	}
+}
+
+// #109: a live regression measured within minutes of #101 shipping — a long
+// multi-line create-time prompt reaching the agent truncated, tail only. The
+// resume branch pressed the wake key and submit UNCONDITIONALLY, discarding
+// confirmLanded's own `landed` result (`key, atCount, _ := d.confirmLanded(...)`)
+// on the reasoning that composerText already proved something was pending, so
+// there was "nothing left to land, only to submit". That reasoning has a gap:
+// composerText proves the composer is non-empty, not that it holds a SETTLED,
+// attributable copy of this delivery's text — a still-collapsing multi-line
+// paste, or an ambiguous composer holding more than one collapsed-paste
+// marker (this driver's own residue from an unrelated stranding, per #37),
+// both leave confirmLanded unable to attribute anything, and the old code
+// pressed Enter anyway.
+//
+// Confirmed to fail against the pre-fix code (reverting the `if !landed`
+// early return makes this test fail on both assertions below: a send-keys
+// call appears in the snapshot, and the resume reports something other than
+// unknown).
+func TestResumeRefusesToSubmitWhenTheComposerCannotBeAttributed(t *testing.T) {
+	f := twoSessions()
+	f.noEcho = true // the first attempt never renders the paste, so confirm times out
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const text = "a long multi-line prompt that stranded on the first attempt"
+
+	first, err := d.Send(context.Background(), testCaller, ref, text, driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("setup: first send outcome = %q, want unknown so the text is recorded as stranded",
+			first.Outcome)
+	}
+	f.noEcho = false
+
+	// The composer is non-empty (composerText's own gate is satisfied — this
+	// resume branch is reached at all), but it holds TWO ambiguous
+	// collapsed-paste markers rather than a single one this delivery can be
+	// pinned to: unrelated residue (#10) alongside a marker that could be
+	// ours (#11). `gained` against confirmLanded's empty baseline sees both
+	// counts rise from zero and refuses to pick one (hits != 1) — this is
+	// deliberately NOT the single-marker shape "resume completes our own
+	// stranded delivery" (above) exercises.
+	f.setCapture("%1", "transcript\n"+rule+
+		"\n❯ [Pasted text #10 +12 lines][Pasted text #11 +30 lines]\n"+rule)
+
+	got, err := d.Send(context.Background(), testCaller, ref, text,
+		driver.SendOptions{Submit: true, ResumeIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("outcome = %q (%s), want unknown — nothing here can be attributed to our "+
+			"delivery, so submitting would risk sending an incomplete or wrong composer",
+			got.Outcome, got.Reason)
+	}
+	for _, c := range f.callsSnapshot() {
+		if c[0] == "send-keys" {
+			t.Fatalf("send-keys was called (%v) — the resume must not press the composer "+
+				"blind when it cannot confirm what is actually sitting in it", c)
+		}
+	}
+	if !d.strandedMatches(ref.ID, "/work/alpha", text) {
+		t.Fatal("the stranded record was discarded even though nothing was ever confirmed " +
+			"or submitted; a later resume now has nothing left to finish")
 	}
 }
 
