@@ -155,7 +155,10 @@ func (d *Driver) sendPrompt(ctx context.Context, id, text string) error {
 // session working immediately — there is no staged "composer" this
 // substrate holds text in ahead of submission, unlike the tmux driver's
 // pane. So Submit:false has nothing honest to do: ErrUnsupported rather
-// than silently submitting anyway (§5.6).
+// than silently submitting anyway (§5.6). The same absence of a composer
+// means ResumeIfStranded and ReplaceIfStranded (colab-fleet #112) are both
+// silently no-ops here rather than errors: there is nothing for either to
+// act on, and neither opt-in changes this method's behaviour.
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
 	if !opts.Submit {
 		return fleet.DeliveryReceipt{}, driver.ErrUnsupported

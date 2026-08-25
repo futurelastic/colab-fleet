@@ -163,6 +163,7 @@ SessionState {
   screenDigest?   : string        // fingerprint of the screen read — corroborates `keys` (§3); only from a driver declaring deliversRawKeys (§4.3)
   quota?          : QuotaBlock    // set when status is quota_blocked
   lastTurn?       : TurnEnd       // how the most recent turn ended, if the driver knows
+  turns?          : integer       // agent turns completed since the most recent prompt delivery (#111); 0 is a finding, absent means the driver could not count
   credentialGeneration?: Timestamp // this machine's local credential generation at read time (#12)
   controlChannel?: ControlChannel  // what the RUNTIME says about its own remote-control channel (#48)
 }
@@ -284,6 +285,37 @@ TurnEnd {
 > falls back to the time this driver first observed the notice — a real
 > fact, just not the one the field name promises — and `evidence` says so
 > explicitly rather than presenting one as the other.
+
+> **`turns` is the liveness fact colab-fleet #111 asked for, and it answers
+> a question no other field here can.** A caller that dispatched a worker
+> session and later reads `status: idle`, no `screenDigest`/`composerDigest`,
+> no pending prompt, cannot tell "the agent ran and decided nothing was
+> warranted" from "the agent never took a turn at all" — both produce that
+> exact reading. `turns: 0` alongside `idle` is the first case reachable only
+> by the second: a delivery was made into this session and zero turns have
+> completed since. This is also what resolves §2.11's `PromptDelivery`, whose
+> `outcome` can otherwise rest permanently at `queued`/`unknown` on a
+> substrate where receipt is not directly observable — a turn taken after
+> delivery **is** observable receipt.
+>
+> The denominator is **the most recent delivery this driver made into this
+> session's composer**, not the session's lifetime. It resets when a new
+> delivery lands and does **not** move when `resumeIfStranded` (§3.3's
+> `input`) finishes an earlier, already-counted delivery — that is the same
+> delivery, not a new one. Absent means this driver holds no delivery mark
+> for the session, or could not read far enough back into the runtime's own
+> record to answer honestly; `0` is a positive finding and must never stand
+> in for "could not tell" (§5.7).
+>
+> **Why this does not reopen colab-fleet #82 or #107's ruling on it.** §5.8,
+> immediately below, states the provenance test this field is held to; the
+> short version is that `turns` is counted from the same unprompted,
+> runtime-written record §2.9's `ConversationRef` already treats as safe to
+> name, and it carries strictly less information than `screenDigest`, a
+> field already in this block. See
+> `docs/adr/111-turns-is-a-liveness-fact-not-a-result-channel.md` for the
+> full argument — this note is deliberately short because that ADR is where
+> a future reopening must engage, not here.
 
 Six fields above (`prompt` through `credentialGeneration`) were undocumented
 in this block until colab-fleet issue #57, which found the drift: the Go
@@ -1339,6 +1371,18 @@ session-authored. It does not become the runtime's own account of itself by
 being written to a field or a slot instead of a screen, so this API does not
 carry one. See `docs/adr/82-session-result-belongs-above-this-layer.md` for
 the alternatives this ruled out and why.
+
+**`SessionState.turns` (§2.3, colab-fleet #111) was measured against this
+rule before being added, not after.** It is a count of runtime-written
+turn-boundary markers in the same unprompted record §2.9's `ConversationRef`
+already names — provenance identical to a field this rule already permits —
+and it carries strictly less information than `screenDigest`, which is
+already in this block. It answers *whether* the session ran, never *what* it
+produced, so it does not reopen colab-fleet #107's ruling (kept: this section
+stays a derived §5 rule, and a reopening must name which of this section's
+three underlying premises it is challenging) — this addition challenges none
+of them. Full argument:
+`docs/adr/111-turns-is-a-liveness-fact-not-a-result-channel.md`.
 
 ---
 

@@ -83,6 +83,19 @@ func serverErrorEntry(id string, at time.Time) map[string]any {
 	}
 }
 
+// turnDurationEntry is the runtime's own, unasked, structural turn-boundary
+// marker — colab-fleet #111's whole provenance argument rests on this being
+// a DIFFERENT kind of entry from every one of the api-error/clean-turn
+// entries above: none of them carries anything the agent chose to say.
+func turnDurationEntry(id string, at time.Time) map[string]any {
+	return map[string]any{
+		"type":      "system",
+		"subtype":   "turn_duration",
+		"sessionId": id,
+		"timestamp": at.UTC().Format(time.RFC3339Nano),
+	}
+}
+
 func cleanTurnEntry(id string, at time.Time) map[string]any {
 	return map[string]any{
 		"type":      "assistant",
@@ -436,5 +449,146 @@ func TestOldFlatQuotaFileStillLoads(t *testing.T) {
 		if !strings.Contains(s.State.Evidence, "could not confirm it") {
 			t.Errorf("%s: an old block with no sinceObserved bit must read as unconfirmed, got %q", s.ID, s.State.Evidence)
 		}
+	}
+}
+
+// End-to-end coverage for #111: `turns`, counted from the runtime's own
+// record and published through List/State exactly as #56's LastTurn
+// upgrade already is — deliveryMark_test.go covers the mark itself in
+// isolation; this exercises the full pipeline a real caller reads.
+
+// The headline case: two completed turns after the delivery this driver
+// itself made, surviving a restart (delivery mark AND record both resolve
+// from a second driver instance, same state store, same record root).
+func TestTurnsCountsCompletedTurnsSinceTheDelivery(t *testing.T) {
+	ctx := context.Background()
+	f := twoSessions()
+	dir := t.TempDir()
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliveredAt := sessionStart.Add(1 * time.Hour)
+
+	d1 := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return deliveredAt }), WithState(store))
+	got, err := d1.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+		"do the thing", driver.SendOptions{Submit: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome == fleet.OutcomeRefused {
+		t.Fatalf("setup: send was refused: %s", got.Reason)
+	}
+
+	root := t.TempDir()
+	writeConversationWithAPIError(t, root, "/work/alpha", "conv-alpha", "alpha💬", sessionStart,
+		turnDurationEntry("conv-alpha", deliveredAt.Add(-1*time.Minute))) // before delivery: not counted
+	appendRecordLine(t, root, "/work/alpha", "conv-alpha", turnDurationEntry("conv-alpha", deliveredAt.Add(1*time.Minute)))
+	appendRecordLine(t, root, "/work/alpha", "conv-alpha", turnDurationEntry("conv-alpha", deliveredAt.Add(2*time.Minute)))
+
+	d2 := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return deliveredAt.Add(1 * time.Hour) }),
+		WithState(store), WithRecordRoot(root))
+
+	col, err := d2.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := sessionOf(t, col, "alpha💬")
+	if alpha.State.Turns == nil {
+		t.Fatal("turns absent after two turns completed since the delivery")
+	}
+	if *alpha.State.Turns != 2 {
+		t.Fatalf("turns = %d, want 2", *alpha.State.Turns)
+	}
+}
+
+// #111's whole reason to exist: `turns: 0` alongside `status: idle` is what
+// a session whose prompt never ran looks like, reachable and distinguishable
+// from a session that was never dispatched at all (which reports `turns`
+// absent — the next test).
+func TestTurnsZeroAlongsideIdleIsThePromptNeverRanSignal(t *testing.T) {
+	ctx := context.Background()
+	f := twoSessions()
+	deliveredAt := sessionStart.Add(1 * time.Hour)
+	root := t.TempDir()
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return deliveredAt }), WithRecordRoot(root))
+	if _, err := d.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+		"do the thing", driver.SendOptions{Submit: false}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The record exists and resolves, but nothing in it happened AFTER the
+	// delivery — the window still reaches back far enough to answer
+	// honestly (the user/title lines land at/after sessionStart, well
+	// before `deliveredAt`), so this must read 0, not absent.
+	writeConversationWithAPIError(t, root, "/work/alpha", "conv-alpha", "alpha💬", sessionStart,
+		cleanTurnEntry("conv-alpha", sessionStart.Add(1*time.Second)))
+
+	col, err := d.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := sessionOf(t, col, "alpha💬")
+	if alpha.State.Turns == nil {
+		t.Fatal("turns absent — want 0, a positive finding, not an unresolved absence")
+	}
+	if *alpha.State.Turns != 0 {
+		t.Fatalf("turns = %d, want 0", *alpha.State.Turns)
+	}
+	if alpha.State.Status != fleet.StatusIdle {
+		t.Fatalf("status = %s, want idle — turns:0 alongside idle is the signal this field exists to make readable", alpha.State.Status)
+	}
+}
+
+// No delivery mark at all — this driver never sent anything into this
+// session — must report `turns` absent, never a guessed 0. A session this
+// driver has simply never touched costs nothing extra here either: no
+// delivery mark means no record is even opened.
+func TestTurnsAbsentWhenThisDriverNeverDelivered(t *testing.T) {
+	ctx := context.Background()
+	f := twoSessions()
+	d := newTestDriver(f)
+
+	col, err := d.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := sessionOf(t, col, "alpha💬")
+	if alpha.State.Turns != nil {
+		t.Fatalf("turns = %v, want absent — no delivery mark exists for this session", *alpha.State.Turns)
+	}
+}
+
+// State (the single-session, targeted read) applies the same #111 upgrade
+// as List — mirrors TestStateAppliesTheSameLastTurnUpgradeAsList.
+func TestStateAppliesTheSameTurnsUpgradeAsList(t *testing.T) {
+	ctx := context.Background()
+	f := twoSessions()
+	deliveredAt := sessionStart.Add(1 * time.Hour)
+	root := t.TempDir()
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return deliveredAt }), WithRecordRoot(root))
+	if _, err := d.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+		"do the thing", driver.SendOptions{Submit: false}); err != nil {
+		t.Fatal(err)
+	}
+
+	writeConversationWithAPIError(t, root, "/work/alpha", "conv-alpha", "alpha💬", sessionStart,
+		turnDurationEntry("conv-alpha", deliveredAt.Add(1*time.Minute)))
+
+	st, err := d.State(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Turns == nil {
+		t.Fatal("State did not apply the #111 upgrade")
+	}
+	if *st.Turns != 1 {
+		t.Fatalf("turns = %d, want 1", *st.Turns)
 	}
 }

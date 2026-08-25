@@ -329,6 +329,39 @@ type SessionState struct {
 	// NOT that the turn succeeded (§5.7: absence is not a finding).
 	LastTurn *TurnEnd `json:"lastTurn,omitempty"`
 
+	// Turns is how many agent turns have completed since this session's most
+	// recent prompt delivery (colab-fleet #111) — the fact that tells "the
+	// agent ran and produced nothing" apart from "the agent never ran at
+	// all", which look identical through every other field: both read
+	// `status: idle`, `screenDigest`/`composerDigest` empty, no pending
+	// prompt. `turns: 0` alongside `idle` is that distinction, in one
+	// comparison.
+	//
+	// # Why this is a liveness fact, not #82's result channel
+	//
+	// §5.8 permits "the runtime's own structured account of its own
+	// condition" and forbids "content the session produced". This is the
+	// first, not the second, on the same grounds `screenDigest` already
+	// stands on: it is a count of runtime-written turn-boundary markers, not
+	// a function of what was said — strictly less revealing than a
+	// fingerprint of the whole screen, which §5.8 already permits. See
+	// docs/adr/111-turns-is-a-liveness-fact-not-a-result-channel.md for the
+	// full argument; do not re-derive it here.
+	//
+	// Pointer, not a bare int, and that is load-bearing (§5.7): `0` is a
+	// POSITIVE finding — a delivery was made and nothing has completed since
+	// — and absence is a DIFFERENT fact — this driver has no delivery mark
+	// for this session, or could not read far back enough in the runtime's
+	// own record to count honestly. A bare int would collapse those two
+	// answers into one, which is the exact confusion §5.7 forbids. A driver
+	// must never report 0 merely because it could not resolve a count.
+	//
+	// The denominator is "since the most recent delivery THIS DRIVER made
+	// into this session's composer" — not the session's lifetime, and not
+	// reset by resumeIfStranded finishing an earlier delivery (that
+	// completes the SAME delivery, not a new one).
+	Turns *int `json:"turns,omitempty"`
+
 	// CredentialGeneration is the local credential store's own modification
 	// time, as read at the moment this state was produced (#12).
 	//
@@ -450,7 +483,23 @@ func (s SessionState) MateriallyDiffers(other SessionState) bool {
 	if !sameControlChannel(s.ControlChannel, other.ControlChannel) {
 		return true
 	}
+	if !sameTurns(s.Turns, other.Turns) {
+		return true
+	}
 	return !sameStamp(s.CredentialGeneration, other.CredentialGeneration)
+}
+
+// sameTurns compares #111's liveness count. A caller branches on it (that is
+// the entire point of the field), and it changes at most once per completed
+// turn — the driver's own memoising latch (see tmux's deliveryMark) is what
+// keeps a flaky record read from turning this into a per-poll storm, the same
+// discipline ScreenDigest's exclusion from this function protects against for
+// a different, per-keystroke reason.
+func sameTurns(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // samePrompt compares the parts of a prompt a caller answers by.

@@ -159,25 +159,33 @@ type apiErrorRecordEntry struct {
 // apart on it. ok is false whenever the file could not be opened or stat'd;
 // an empty record (ok true, zero lines) is a different, legitimate fact from
 // that.
-func recordTail(path string) (lines []string, ok bool) {
+//
+// torn is true whenever the file was larger than this window and the read
+// therefore started mid-file — colab-fleet #111's turnsSince is the first
+// caller that needs this itself (its own honesty rule depends on knowing
+// whether the window could possibly have reached back far enough); every
+// other caller here answers "what does the MOST RECENT entry say" and does
+// not care whether earlier history was cut off, so torn is a plain second
+// return value rather than a new sibling function they would all have had
+// to switch to.
+func recordTail(path string) (lines []string, torn bool, ok bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, false
+		return nil, false, false
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return nil, false
+		return nil, false, false
 	}
 	start := int64(0)
-	torn := false
 	if info.Size() > recordTailBytes {
 		start = info.Size() - recordTailBytes
 		torn = true
 	}
 	if _, err := f.Seek(start, io.SeekStart); err != nil {
-		return nil, false
+		return nil, false, false
 	}
 
 	sc := bufio.NewScanner(f)
@@ -193,11 +201,11 @@ func recordTail(path string) (lines []string, ok bool) {
 		// (closer to EOF), never this one.
 		lines = lines[1:]
 	}
-	return lines, true
+	return lines, torn, true
 }
 
 func latestAPIError(path string) (apiErrorFact, recordVerdict) {
-	lines, ok := recordTail(path)
+	lines, _, ok := recordTail(path)
 	if !ok {
 		return apiErrorFact{}, recordUnavailable
 	}
@@ -249,6 +257,142 @@ func latestAPIError(path string) (apiErrorFact, recordVerdict) {
 func (f apiErrorFact) resetHintText() string {
 	h, _ := resetHintIn(strings.ToLower(f.text))
 	return h
+}
+
+// turnRecordEntry is the subset of one JSONL line turnsSince decodes: just
+// enough to recognise a turn-boundary marker and its timestamp, nothing
+// about what the turn said or produced (colab-fleet #111). The runtime
+// writes this entry unasked, as an ordinary structural marker between
+// turns — never something an agent authors — which is the provenance
+// docs/adr/111-turns-is-a-liveness-fact-not-a-result-channel.md rests the
+// whole field on.
+type turnRecordEntry struct {
+	Type      string `json:"type"`
+	Subtype   string `json:"subtype"`
+	Timestamp string `json:"timestamp"`
+}
+
+// turnsSince counts turn_duration markers in one runtime record that landed
+// strictly after `since` — the timestamp of the delivery a caller wants the
+// count relative to.
+//
+// ok is false whenever this driver cannot answer HONESTLY, not merely
+// whenever the count comes out zero (§5.7): the record could not be opened,
+// or the tail window this driver is willing to read does not demonstrably
+// reach back past `since`. Reporting 0 in either of those cases would
+// manufacture "the prompt never landed" out of a read failure — worse than
+// the gap #111 exists to close, because it would look like a positive
+// answer instead of an honest absence.
+//
+// Deliberately does NOT apply recordTailCandidates: that ceiling exists for
+// "find the newest matching line and stop looking", the shape
+// latestAPIError needs. This needs the whole window, because a turn that
+// happened five turns ago is exactly as countable as the most recent one.
+func turnsSince(path string, since time.Time) (count int, ok bool) {
+	lines, torn, readOK := recordTail(path)
+	if !readOK {
+		return 0, false
+	}
+
+	reachesBack := !torn
+	for _, line := range lines {
+		var entry turnRecordEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			// A torn or half-written line: skip it, the same allowance
+			// latestAPIError makes for the same reason (the runtime
+			// appends; a reader may arrive mid-write). Neither confirms
+			// nor denies reaching back past `since`.
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
+		if err != nil {
+			continue
+		}
+		if !ts.After(since) {
+			// A decodable line at or before the delivery mark: proof this
+			// window reaches back far enough to answer honestly, whether
+			// or not the file was torn at the byte level.
+			reachesBack = true
+			continue
+		}
+		if entry.Type == "system" && entry.Subtype == "turn_duration" {
+			count++
+		}
+	}
+	if !reachesBack {
+		return 0, false
+	}
+	return count, true
+}
+
+// turnsFor answers colab-fleet #111's liveness fact for one session, given
+// its already-resolved conversation record — List resolves that in its own
+// pending-conversation pass before this runs; State's own call site resolves
+// it itself, the same split upgradeLastTurnFromRecord already uses between
+// those two callers.
+//
+// nil is the honest answer whenever this driver cannot count: no delivery
+// mark for this session (nothing has been delivered into it that this
+// driver remembers), no conversation resolved, or the record's window could
+// not be shown to reach back far enough — never a guessed 0 (§5.7).
+func (d *Driver) turnsFor(id, cwd string, conv *fleet.ConversationRef) *int {
+	if d.conversations == nil || conv == nil || !conv.Known {
+		return nil
+	}
+	mark, ok := d.deliveryMarkFor(id, cwd)
+	if !ok {
+		return nil
+	}
+	path := d.conversations.recordPath(cwd, conv.ID)
+
+	// The memo-and-latch: an unchanged file size since the last successful
+	// count is a cache read, not a reason to re-parse up to 256KiB on every
+	// poll of a quiet session.
+	if info, err := os.Stat(path); err == nil && mark.Size > 0 && info.Size() == mark.Size {
+		n := mark.Count
+		return &n
+	}
+
+	n, ok := turnsSince(path, mark.At)
+	if !ok {
+		if mark.Size > 0 {
+			// A flaky read this time does not erase a real count already
+			// established — report the latch rather than flapping to
+			// absent for a reason unrelated to whether the session is
+			// alive.
+			cached := mark.Count
+			return &cached
+		}
+		return nil
+	}
+	var size int64
+	if info, err := os.Stat(path); err == nil {
+		size = info.Size()
+	}
+	d.updateDeliveryMarkCount(id, cwd, mark.At, n, size)
+	return &n
+}
+
+// upgradeTurnsFromRecord applies #111's turns count to a bare SessionState
+// that has no pre-resolved Conversation to reuse — State's own shape, unlike
+// List's Session (the same split upgradeLastTurnFromRecord already uses
+// between these two callers).
+//
+// The delivery-mark check runs FIRST, before any conversation lookup, as its
+// own cost gate: a session this driver has never delivered into has nothing
+// for this to report, so it costs one map read and nothing more — the same
+// "only a flagged/marked session ever opens a record" discipline List's own
+// turns loop and #56's LastTurn upgrade both already follow.
+func (d *Driver) upgradeTurnsFromRecord(st fleet.SessionState, cwd, name string, created time.Time, paneID string) fleet.SessionState {
+	if d.conversations == nil {
+		return st
+	}
+	if _, ok := d.deliveryMarkFor(name, cwd); !ok {
+		return st
+	}
+	ref := d.conversations.lookup(conversationKey{pane: paneID, created: created}, cwd, name, created)
+	st.Turns = d.turnsFor(name, cwd, ref)
+	return st
 }
 
 // recordFactFor asks the runtime's own record about one session already

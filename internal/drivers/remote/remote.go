@@ -851,15 +851,21 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 // exactly the path it was given from. This field is easy to forget again:
 // it is not part of the wire body's zero-cost fields, it exists solely to
 // be turned on, so a caller who never sets it produces no symptom at all.
+//
+// ReplaceIfStranded (colab-fleet #112) is exactly the same trap, one field
+// over: it also has no effect unless forwarded, and a caller who never sets
+// it sees no symptom at all — the owning daemon just falls back to the same
+// §2.4 refusal ResumeIfStranded's own paragraph above describes.
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	body := struct {
-		Text             string `json:"text"`
-		Submit           bool   `json:"submit"`
-		ResumeIfStranded bool   `json:"resumeIfStranded,omitempty"`
-	}{Text: text, Submit: opts.Submit, ResumeIfStranded: opts.ResumeIfStranded}
+		Text              string `json:"text"`
+		Submit            bool   `json:"submit"`
+		ResumeIfStranded  bool   `json:"resumeIfStranded,omitempty"`
+		ReplaceIfStranded bool   `json:"replaceIfStranded,omitempty"`
+	}{Text: text, Submit: opts.Submit, ResumeIfStranded: opts.ResumeIfStranded, ReplaceIfStranded: opts.ReplaceIfStranded}
 
 	var out fleet.DeliveryReceipt
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/input",

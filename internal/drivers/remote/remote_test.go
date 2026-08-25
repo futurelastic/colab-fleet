@@ -339,6 +339,31 @@ func TestSendForwardsResumeIfStranded(t *testing.T) {
 	}
 }
 
+// colab-fleet #112: ReplaceIfStranded is exactly the same #33 trap one field
+// over — this driver's Send body is hand-built, so a caller setting the
+// flag on driver.SendOptions has no effect at all unless this test's own
+// assertion holds.
+func TestSendForwardsReplaceIfStranded(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+	d := New("peerbox", srv.URL)
+
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "the replacement text",
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	var body struct {
+		ReplaceIfStranded bool `json:"replaceIfStranded"`
+	}
+	if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+		t.Fatalf("body = %q: %v", rec.body, err)
+	}
+	if !body.ReplaceIfStranded {
+		t.Fatalf("body = %q, want replaceIfStranded:true carried through to the owning daemon (#112)", rec.body)
+	}
+}
+
 // #45: createBody is, like Send's body before #33, a hand-maintained mirror
 // of the struct it represents rather than a marshal of it — and Marker and
 // RemoteControl were the two fields that mirror never grew. A session

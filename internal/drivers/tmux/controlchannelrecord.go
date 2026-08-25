@@ -112,7 +112,7 @@ func (f controlDisconnectFact) reasonText() string {
 // deciding a session's CURRENT state (controlChannelOf's footer read already
 // did that), only explaining a state already decided.
 func latestControlDisconnect(path string) (controlDisconnectFact, bool) {
-	lines, ok := recordTail(path)
+	lines, _, ok := recordTail(path)
 	if !ok {
 		return controlDisconnectFact{}, false
 	}

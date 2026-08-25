@@ -240,8 +240,12 @@ it** — the prompt is sent after the process starts, so the 201 is written
 before delivery can be known. Read `promptDelivery` (session-abstraction.md
 §2.11): `outcome: null` means still in flight, and is never evidence the
 prompt was lost — a session polled moments later reading `idle` with
-"composer empty, no turn yet" looks identical to one that never had a prompt
-at all (colab-fleet #86). Do not re-send through `input` while it holds.
+"composer empty, no turn yet" looked identical, before colab-fleet #111, to
+one that never had a prompt at all (colab-fleet #86). Read `state.turns`
+alongside it now: `turns: 0` is what a session that never took a turn looks
+like, and a nonzero count is proof of the opposite — the prompt was received
+and at least one turn against it has already completed. Do not re-send
+through `input` while `promptDelivery` still holds.
 
 **A 201's `name` is what this machine asserted, not proof the runtime still
 carries it.** Nothing has read the session back yet, so `identityAssertion`
@@ -436,7 +440,7 @@ attempts one, lands on the *next* read, not this one — a single
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/input
-{ "text": "...", "submit": true, "resumeIfStranded": false }
+{ "text": "...", "submit": true, "resumeIfStranded": false, "replaceIfStranded": false }
 ```
 
 `resumeIfStranded` completes a delivery that returned `unknown` — the text
@@ -444,6 +448,37 @@ reached the composer and could not be confirmed. The service submits it only if
 its own record says that text is what it delivered there; text it did not place
 is never submitted. Send the same text: this finishes one delivery rather than
 starting another.
+
+**`replaceIfStranded` (colab-fleet #112) is the door out when the caller wants
+DIFFERENT text instead of finishing the old delivery.** `resumeIfStranded`
+only ever completes the delivery already sitting in the composer — a caller
+that wants to send something else has no use for it, and until #112 had no
+other way in either: the busy-composer refusal below applied even though the
+service's own record showed the "human typed" attribution was wrong. With
+`replaceIfStranded` set, and only when the service's own record shows the
+composer holds a delivery **this service itself placed** there (never on the
+strength of any other evidence — a human may have attached and typed since,
+and the service cannot compare pasted bytes to rule that out), it clears that
+text and delivers the new text in its place. Both flags set at once is a
+contradiction — asking to finish the old delivery and replace it in the same
+call — and is refused outright rather than picking one silently.
+
+A refusal that reaches this path distinguishes three cases a caller could not
+tell apart before #112, all previously collapsed into one message asserting a
+human was typing:
+
+- **the service's own record shows this composer holds a delivery it placed,
+  and the new text is identical to it** — resend with `resumeIfStranded` to
+  finish that same delivery, not `replaceIfStranded`.
+- **the service's own record shows this composer holds a delivery it placed,
+  and the new text is different** — this is the case that used to have no
+  answer. `resumeIfStranded` would finish the OLD delivery; `replaceIfStranded`
+  discards it and delivers the new text; `discard` (below) clears it without
+  delivering anything.
+- **no matching record exists** — the original, unchanged answer: the
+  composer may hold a person's own unsent draft, and this service will not
+  guess otherwise. Neither flag helps here; read the session and `discard`
+  with the composer's digest, or wait.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&startedAt=
@@ -844,7 +879,7 @@ from silence is the failure mode this whole specification is organised against.
 **`session.state` fires on any material change**, which is every structured
 field a caller branches on: `status`, `confidence`, `waitingOn`,
 `composerDigest`, the prompt (its options, highlight and **nonce**), `quota`,
-`lastTurn`, `credentialGeneration`. It began firing on `status` alone, and
+`lastTurn`, `turns`, `credentialGeneration`. It began firing on `status` alone, and
 everything else then moved underneath a silent feed — including the nonce,
 whose entire job is to make an answer submitted against a replaced question
 refusable. A feed that under-reports does not merely go stale; it manufactures

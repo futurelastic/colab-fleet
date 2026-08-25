@@ -103,7 +103,11 @@ type DeliveryReceipt struct {
 //	Outcome nil + Evidence a prompt was accepted at creation and its delivery
 //	                       has not resolved. A real, temporary answer — while
 //	                       this state holds, `idle` is not evidence of loss
-//	                       and a caller must not re-send.
+//	                       and a caller must not re-send. See SessionState.Turns
+//	                       (colab-fleet #111): a turn observed to complete
+//	                       AFTER this delivery is independent, driver-side
+//	                       corroboration that it was received, on a substrate
+//	                       where Outcome would otherwise sit here forever.
 //	Outcome set + Evidence resolved, in the same closed set send() answers
 //	                       with.
 //

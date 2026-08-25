@@ -52,6 +52,9 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	return fleet.Session{}, driver.ErrUnsupported
 }
 
+// Neither ResumeIfStranded nor ReplaceIfStranded (colab-fleet #112) is
+// applicable here: this driver supports no operation at all, so there is
+// never a stranded delivery of its own to resume or replace.
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
 	return fleet.DeliveryReceipt{}, driver.ErrUnsupported
 }

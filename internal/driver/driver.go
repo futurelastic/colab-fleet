@@ -64,6 +64,27 @@ type SendOptions struct {
 	// last submitted message as a placeholder, and a human's half-typed line
 	// looks the same to a screen reader as a finished one.
 	ResumeIfStranded bool
+
+	// ReplaceIfStranded (colab-fleet #112) clears a composer holding a
+	// delivery this driver made and could not confirm, then delivers THIS
+	// call's text in its place — the door out for a caller that wants
+	// DIFFERENT text, not to finish the stranded one. ResumeIfStranded only
+	// ever completes the SAME delivery; a caller that has decided it wants
+	// something else has no use for it and, before this flag existed, no
+	// other way in either.
+	//
+	// A driver may act on this ONLY when its own record — never a reading of
+	// the composer, and never an inference from this flag alone — shows the
+	// text currently there is the SAME text it placed and has not been
+	// disturbed since (a corroborating digest, not merely "a record exists
+	// for this session"). A human may have attached and typed something new
+	// in the gap between the strand and this call, and a driver cannot
+	// compare pasted bytes to rule that out (F49) — so this must never be
+	// inferred from ResumeIfStranded being false, or from a record merely
+	// existing; it is always an explicit, separate opt-in, and both flags
+	// set together is a contradiction a driver refuses outright rather than
+	// resolves by picking one.
+	ReplaceIfStranded bool
 }
 
 // ListFilter narrows List to a subset of sessions (the query parameters of

@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,7 +81,7 @@ func TestStrandedRecordExpiresOnReload(t *testing.T) {
 
 	first := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
 		withClock(func() time.Time { return old }), WithState(st))
-	first.noteStranded("alpha💬", "/work/alpha", "text nobody came back for")
+	first.noteStranded("alpha💬", "/work/alpha", "text nobody came back for", "")
 
 	// Reload well past strandedRetention.
 	second := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
@@ -98,7 +99,7 @@ func TestStrandedRecordExpiresOnReload(t *testing.T) {
 func TestStrandedMatchRequiresTheSameCwd(t *testing.T) {
 	f := twoSessions()
 	d := newTestDriver(f)
-	d.noteStranded("alpha💬", "/work/alpha", "the original delivery")
+	d.noteStranded("alpha💬", "/work/alpha", "the original delivery", "")
 
 	if d.strandedMatches("alpha💬", "/somewhere/else", "the original delivery") {
 		t.Error("matched a stranded record against a different cwd — the exact " +
@@ -117,7 +118,7 @@ func TestStrandedMatchRequiresTheSameCwd(t *testing.T) {
 func TestCloseForgetsAStrandedRecord(t *testing.T) {
 	f := twoSessions()
 	d := newTestDriver(f)
-	d.noteStranded("alpha💬", "/work/alpha", "never resumed")
+	d.noteStranded("alpha💬", "/work/alpha", "never resumed", "")
 
 	if _, err := d.Close(context.Background(), expectStarted(1785600000),
 		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}); err != nil {
@@ -126,5 +127,250 @@ func TestCloseForgetsAStrandedRecord(t *testing.T) {
 
 	if d.strandedMatches("alpha💬", "/work/alpha", "never resumed") {
 		t.Error("a stranded record survived Close of the session it was made for")
+	}
+}
+
+// colab-fleet #112: the three-case refusal replacing the single "text a
+// human typed" answer, and the ReplaceIfStranded door out of it.
+
+// Case 3: the composer holds THIS driver's own stranded delivery, the new
+// text is identical, but ResumeIfStranded was not set. The refusal must
+// name the record and point at resumeIfStranded — never claim a human
+// typed it, which is simply false here.
+func TestSendRefusesOwnStrandedSameTextWithoutResumeFlagAccurately(t *testing.T) {
+	f := twoSessions()
+	f.swallowSubmit = true // lands and renders, submit swallowed — strands with the record's ComposerDigest populated
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const text = "the instruction"
+
+	strand, err := d.Send(context.Background(), testCaller, ref, text, driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strand.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("setup: outcome = %s, want unknown so the text strands", strand.Outcome)
+	}
+
+	got, err := d.Send(context.Background(), testCaller, ref, text, driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %s, want refused — no resumeIfStranded was set", got.Outcome)
+	}
+	if strings.Contains(got.Reason, "a human typed") {
+		t.Errorf("reason = %q; this driver's OWN record shows this is its own text, not a human's", got.Reason)
+	}
+	if !strings.Contains(got.Reason, "resumeIfStranded") {
+		t.Errorf("reason = %q; must name the way back in", got.Reason)
+	}
+}
+
+// Case 4, the third case #112 asks for and the one that used to have no
+// distinct answer at all: the composer holds THIS driver's own stranded
+// delivery, but the new text is DIFFERENT and neither flag was set. The
+// refusal must say so, and must name BOTH resumeIfStranded (finishes the
+// old delivery) and replaceIfStranded (replaces it) — not the "a human
+// typed" wording, which is what this exact case used to get.
+func TestSendRefusesOwnStrandedDifferentTextNamingBothDoors(t *testing.T) {
+	f := twoSessions()
+	f.swallowSubmit = true
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+
+	strand, err := d.Send(context.Background(), testCaller, ref, "the original", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strand.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("setup: outcome = %s, want unknown so the text strands", strand.Outcome)
+	}
+	f.swallowSubmit = false
+
+	got, err := d.Send(context.Background(), testCaller, ref, "something else entirely", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %s, want refused — no flag was set", got.Outcome)
+	}
+	if strings.Contains(got.Reason, "a human typed") {
+		t.Errorf("reason = %q; this driver's OWN record shows this is its own text, not a human's — "+
+			"the exact misattribution #112 exists to fix", got.Reason)
+	}
+	if !strings.Contains(got.Reason, "resumeIfStranded") || !strings.Contains(got.Reason, "replaceIfStranded") {
+		t.Errorf("reason = %q; must name BOTH doors — finish the old delivery, or replace it", got.Reason)
+	}
+}
+
+// Case 5, unchanged: no stranded record exists at all, so the composer
+// really might be a person's own unsent draft. This is the one case that
+// keeps the original wording — regression guard against #112 diluting the
+// genuinely-unknown-provenance answer.
+func TestSendStillRefusesGenuineThirdPartyTextWithOriginalWording(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f) // beta's fixture (fixtureUnsent) is a human's typing, nothing to do with this driver
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, "hello", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %s, want refused", got.Outcome)
+	}
+	if !strings.Contains(got.Reason, "a human typed") {
+		t.Errorf("reason = %q; with no stranded record at all, this is still the honest "+
+			"answer — a human MAY have typed this, and this driver cannot rule it out", got.Reason)
+	}
+}
+
+// resumeIfStranded and replaceIfStranded together is a contradiction —
+// finish the old delivery, or throw it away, not both — and is refused
+// before anything else runs, the same way #53's runtime-syntax guard is
+// checked before session state.
+func TestSendRefusesContradictoryResumeAndReplaceFlags(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello",
+		driver.SendOptions{Submit: true, ResumeIfStranded: true, ReplaceIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %s, want refused — both flags set is a contradiction", got.Outcome)
+	}
+	if len(f.callsSnapshot()) != 0 {
+		t.Errorf("the contradiction check must run BEFORE touching the substrate at all; "+
+			"got %d subprocess calls", len(f.callsSnapshot()))
+	}
+}
+
+// The headline fix: a session whose creation prompt (or any delivery)
+// strands is no longer a dead end for a caller that has decided it wants
+// DIFFERENT text. Before #112 the only escape was destroy-and-recreate;
+// this delivers the replacement and leaves the session alive, no DELETE
+// involved.
+func TestReplaceIfStrandedDeliversDifferentTextBreakingTheDeadlock(t *testing.T) {
+	f := twoSessions()
+	f.swallowSubmit = true // lands and renders, submit swallowed — strands with a real ComposerDigest
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const original = "the original instruction"
+	const replacement = "actually, do this instead"
+
+	strand, err := d.Send(context.Background(), testCaller, ref, original, driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strand.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("setup: outcome = %s, want unknown so the text strands", strand.Outcome)
+	}
+	f.swallowSubmit = false // the replacement's own submit must be allowed to register
+
+	got, err := d.Send(context.Background(), testCaller, ref, replacement,
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeQueued {
+		t.Fatalf("outcome = %s (%s), want queued — the replacement text was delivered and "+
+			"submitted successfully", got.Outcome, got.Reason)
+	}
+
+	// No DELETE was needed: the session is still alive.
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alive := false
+	for _, s := range col.Items() {
+		if s.ID == "alpha💬" {
+			alive = true
+		}
+	}
+	if !alive {
+		t.Fatal("session no longer listed after replaceIfStranded — it must not require destroying the session")
+	}
+
+	// The stranded record for the ORIGINAL text is gone: a resume against
+	// it now would find nothing to resume.
+	if d.strandedMatches("alpha💬", "/work/alpha", original) {
+		t.Error("the original stranded record survived a successful replace")
+	}
+}
+
+// Safety rail: a residue already proven (#87) not to move must refuse the
+// replace attempt outright, the same discipline Discard already applies,
+// rather than pressing C-u into a composer known not to respond.
+func TestReplaceIfStrandedRefusesWhenAPriorClearProvenFutile(t *testing.T) {
+	f := twoSessions()
+	f.swallowSubmit = true
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const original = "the original instruction"
+
+	if _, err := d.Send(context.Background(), testCaller, ref, original, driver.SendOptions{Submit: true}); err != nil {
+		t.Fatal(err)
+	}
+	f.swallowSubmit = false
+
+	// A prior clear pass already spent a full window against this EXACT
+	// residue and made no progress — recorded directly, the same way
+	// Discard's own futility tests set this up.
+	digest := screenDigest(original)
+	d.noteFutile(ref.ID, "/work/alpha", digest)
+
+	got, err := d.Send(context.Background(), testCaller, ref, "something else",
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %s, want refused — this residue is already proven futile", got.Outcome)
+	}
+	if countClears(f.callsSnapshot()) != 0 {
+		t.Errorf("a residue already proven futile must be refused BEFORE pressing C-u, "+
+			"got %d clear keystrokes", countClears(f.callsSnapshot()))
+	}
+}
+
+// Safety rail: the record's ComposerDigest not matching the composer's
+// CURRENT content means something changed since the strand was recorded —
+// possibly a human typing — and this driver must refuse to guess rather
+// than clear text it cannot corroborate is still only its own.
+func TestReplaceIfStrandedRefusesWhenComposerDigestNoLongerMatches(t *testing.T) {
+	f := twoSessions()
+	f.swallowSubmit = true
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const original = "the original instruction"
+
+	if _, err := d.Send(context.Background(), testCaller, ref, original, driver.SendOptions{Submit: true}); err != nil {
+		t.Fatal(err)
+	}
+	f.swallowSubmit = false
+
+	// Something changed the composer since the strand was recorded — a
+	// human attaching and typing over it, modelled directly on the fake.
+	f.setCapture("%1", "transcript\n"+rule+"\n❯ somebody else's half-typed line\n"+rule+"\n")
+	f.pasted["%1"] = ""
+
+	got, err := d.Send(context.Background(), testCaller, ref, "something else",
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %s, want refused — the composer's content changed since the strand", got.Outcome)
+	}
+	if !strings.Contains(got.Reason, "discard") {
+		t.Errorf("reason = %q; must point at discard as the safe way to clear text this "+
+			"driver cannot corroborate is still only its own", got.Reason)
+	}
+	if countClears(f.callsSnapshot()) != 0 {
+		t.Errorf("a digest mismatch must be refused BEFORE pressing C-u, got %d clear keystrokes",
+			countClears(f.callsSnapshot()))
 	}
 }

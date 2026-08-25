@@ -171,6 +171,16 @@ const (
 	// kept forever it stops being evidence about a composer the caller can
 	// still see, since anything could have happened to the pane by then.
 	futileClearRetention = 30 * time.Minute
+
+	// deliveryMarkRetention is how long a delivery mark (#111) is trusted as
+	// the denominator for `turns`. Deliberately much longer than
+	// strandedRetention: a stranded-delivery record stops being useful once
+	// the delivery it describes could no longer plausibly still be pending,
+	// but `turns` is useful for the ENTIRE life of a dispatched worker — a
+	// caller may reasonably check back hours later. Swept the same way, on
+	// the same "kept forever it stops being evidence about anything in
+	// particular" reasoning, just on a longer clock.
+	deliveryMarkRetention = 24 * time.Hour
 )
 
 // ErrAmbiguousTarget is returned by a destructive operation whose target
@@ -265,6 +275,21 @@ type Driver struct {
 	// for the lifetime a durable record needs that an in-memory one never
 	// did.
 	stranded map[string]strandedRecord
+
+	// delivered remembers, per session, the most recent delivery THIS DRIVER
+	// made into that session's composer — the denominator colab-fleet #111's
+	// `turns` is counted relative to. Written once, at the moment Send's own
+	// paste-buffer call succeeds (before Submit is even checked), so every
+	// downstream outcome of that delivery — queued, stranded, confirmed —
+	// shares one mark. A resume (opts.ResumeIfStranded) does NOT write a new
+	// one: it finishes the SAME delivery, so the denominator must not move.
+	//
+	// Durable when a state store is configured, same reasoning as stranded:
+	// a dispatched worker is meant to be checked on across a service
+	// restart, and `turns` going silently absent on every session the moment
+	// this machine redeploys would defeat the field's own purpose. See
+	// noteDelivery/deliveryMarkFor and deliveryMarkRetention.
+	delivered map[string]deliveryMark
 
 	// resumeIntents remembers, per session, the conversation id a create
 	// asked the runtime to resume — the durable note #72 needs to say
@@ -558,6 +583,7 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 	d.idem = idem
 	d.loadQuota()
 	d.loadStranded()
+	d.loadDelivery()
 	d.loadResumeIntents()
 	d.loadCreateRecords()
 	return d
@@ -1027,6 +1053,18 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		}
 	}
 
+	// #111: publish `turns` for every session carrying a live delivery
+	// mark — independent of the quota/lastTurn gate just below, because
+	// "did the agent run at all" is exactly the answer a QUIET session
+	// needs most, unlike LastTurn/Quota which only ever upgrade something
+	// the screen already flagged. Gated on a delivery mark existing, not on
+	// anything the screen flagged: only a session this driver has actually
+	// delivered into ever opens its record for this, so a fleet with
+	// nothing dispatched through Send pays nothing extra here.
+	for i := range sessions {
+		sessions[i].State.Turns = d.turnsFor(sessions[i].ID, string(sessions[i].Cwd), sessions[i].Conversation)
+	}
+
 	// Ask the runtime's own record about whatever the screen already
 	// flagged this cycle (#56) — a usage-limit notice, or a last turn the
 	// screen read as failed. Only sessions the screen already flagged pay
@@ -1367,6 +1405,10 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		// same reason State does its own lookup rather than reusing a
 		// resolved Conversation.
 		st = d.upgradeControlChannelFromRecord(st, r.cwd, r.session, r.created, r.paneID)
+		// #111: same split as the two upgrades just above — List resolves
+		// `turns` from its own pre-resolved Conversation, State does its own
+		// lookup.
+		st = d.upgradeTurnsFromRecord(st, r.cwd, r.session, r.created, r.paneID)
 		// Same rewrite List applies, generalised to a one-session read (#10)
 		// — see quotaBlockedState's own comment for why a session's own
 		// state must not be reported as an unqualified "starting"/"idle"/
@@ -1433,6 +1475,21 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// inputguard.go for the pattern list and why it belongs to this driver.
 	if reason, refused := refuseAsRuntimeSyntax(text); refused {
 		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
+	}
+
+	// colab-fleet #112: ResumeIfStranded asks to finish the delivery already
+	// sitting in the composer; ReplaceIfStranded asks to throw it away and
+	// deliver this call's text instead. Both at once is a contradiction, not
+	// an ambiguity to resolve by picking one silently — refused before
+	// anything else runs, the same way #53's guard above decides on the
+	// bytes alone before looking at session state.
+	if opts.ResumeIfStranded && opts.ReplaceIfStranded {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "resumeIfStranded and replaceIfStranded were both set — the first asks " +
+				"to finish the delivery already in the composer, the second asks to " +
+				"discard it and deliver this text instead; set at most one",
+		}, nil
 	}
 
 	ctx, cancel := d.bounded(ctx)
@@ -1670,11 +1727,53 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 					"registered this time; agent receipt is not observable on this substrate",
 			}, nil
 		}
-		return fleet.DeliveryReceipt{
-			Outcome: fleet.OutcomeRefused,
-			Reason: "composer holds unsent input; delivering would concatenate " +
-				"with text a human typed and has not submitted (§2.4)",
-		}, nil
+
+		// colab-fleet #112: the resume branch just above only ever fires for
+		// an EXACT match (strandedMatches) with ResumeIfStranded set. Every
+		// other shape used to fall straight through to one refusal claiming
+		// "text a human typed" — even when this driver's OWN record said
+		// otherwise. Consult that record now, for the three cases that
+		// refusal was collapsing into one.
+		if record, hasRecord := d.strandedRecordFor(ref.ID, target.cwd); hasRecord {
+			if opts.ReplaceIfStranded {
+				receipt, cleared, err := d.tryReplaceStranded(ctx, ref, target, record, pending)
+				if err != nil {
+					return fleet.DeliveryReceipt{}, err
+				}
+				if !cleared {
+					return receipt, nil
+				}
+				// Cleared: the stranded record is already forgotten inside
+				// tryReplaceStranded. Fall through — deliberately NOT a
+				// return — to the ordinary delivery path below, which pastes
+				// and confirms THIS call's text exactly as it would for a
+				// composer that was never busy, and writes a fresh delivery
+				// mark for #111 in the process.
+			} else if record.Text == text {
+				return fleet.DeliveryReceipt{
+					Outcome: fleet.OutcomeRefused,
+					Reason: "composer holds a delivery this driver made into this session and " +
+						"could not confirm submitted; it is this service's own text, not a " +
+						"person's draft. Resend the same text with resumeIfStranded to finish it",
+				}, nil
+			} else {
+				return fleet.DeliveryReceipt{
+					Outcome: fleet.OutcomeRefused,
+					Reason: "composer holds a delivery this driver made into this session and " +
+						"could not confirm submitted — this driver's own record says the text " +
+						"there is its own, not a person's draft — but the text being sent now " +
+						"is different. resumeIfStranded finishes the ORIGINAL delivery; " +
+						"replaceIfStranded discards it and delivers this text instead; or " +
+						"read the session and discard the composer first",
+				}, nil
+			}
+		} else {
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason: "composer holds unsent input; delivering would concatenate " +
+					"with text a human typed and has not submitted (§2.4)",
+			}, nil
+		}
 	}
 
 	// load-buffer reads from stdin when given "-"; this driver writes to a
@@ -1707,6 +1806,13 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	if _, err := d.run(ctx, d.bin, args...); err != nil {
 		return fleet.DeliveryReceipt{}, fmt.Errorf("send: delivering: %w", err)
 	}
+
+	// colab-fleet #111: this is the single write site for a delivery mark —
+	// the moment "a delivery was made into this composer" becomes true.
+	// Every outcome below (queued unsubmitted, stranded-unknown, confirmed)
+	// shares this one mark, and a resume completing an EARLIER delivery
+	// never reaches this line at all, so `turns` never resets under it.
+	d.noteDelivery(ref.ID, target.cwd)
 
 	if !opts.Submit {
 		return fleet.DeliveryReceipt{
@@ -1746,7 +1852,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// the same as before.
 		// Record what we left behind, so the caller has a way to finish this
 		// rather than being told where the text is and left there.
-		d.noteStranded(ref.ID, target.cwd, text)
+		d.noteStranded(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID))
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: "text was delivered to the composer but did not render in time " +
@@ -1799,7 +1905,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// nowhere left nothing behind, the resume was refused for lack of a
 	// record, and every later send was refused for a busy composer.
 	if !d.confirmSubmitted(ctx, target.paneID, key, atCount) {
-		d.noteStranded(ref.ID, target.cwd, text)
+		d.noteStranded(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID))
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: "the text landed and was attributed to this delivery, and a submit was " +
@@ -2020,48 +2126,70 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		return fleet.Ack{}, discardProvenFutile(attempts)
 	}
 
-	// C-u clears the line the cursor sits on. Measured on a live session
-	// rather than assumed: C-a C-k and Escape were tried too, and C-u alone
-	// is enough — for a single line.
-	//
-	// It is readline's unix-line-discard, which kills from the cursor back
-	// to the start of the CURRENT line, not the whole buffer. A composer
-	// holding one short line empties in one press, which is what the
-	// original measurement above confirmed and all this code's tests
-	// against it were exercising. A composer spanning several lines does
-	// not: one press clears the line the cursor is on and leaves every
-	// line above it standing, so a single un-repeated press against a
-	// multi-line paste (issue #32: ~6.6 KB, roughly four visual lines) can
-	// only ever get partway there.
-	//
-	// So this presses the same key again on every iteration the composer
-	// is still non-empty — the same thing an operator clearing a stuck
-	// multi-line prompt by hand would do — walking it backward one line at
-	// a time until nothing is left or the window runs out. Verification
-	// stays in the loop for the reason it was already there: a keypress
-	// that did not register looks exactly like one that did, the same
-	// reason send confirms before submitting.
-	//
-	// #87 added the early exit below: once movement has actually been
-	// observed, `stallPresses` further presses that change nothing are no
-	// longer "still walking it backward" — they are new evidence the pass
-	// has stopped working, and pressing MORE just makes a bigger dent for
-	// no further gain. An UNMOVED composer still gets the whole window,
-	// because a pane that has not redrawn even once is not yet evidence of
-	// anything — see discardIncomplete/moved below.
+	left, _, cleared, err := d.clearComposer(ctx, live.paneID, ref.ID, live.cwd, pending)
+	if err != nil {
+		return fleet.Ack{}, fmt.Errorf("discard: %w", err)
+	}
+	if cleared {
+		return fleet.Ack{Accepted: true}, nil
+	}
+	return fleet.Ack{}, discardIncomplete(pending, left)
+}
+
+// clearComposer walks a composer's unsent text backward with repeated C-u
+// presses until it empties or the pass proves futile — the mechanism both
+// Discard and colab-fleet #112's replace-stranded path need, extracted here
+// so the two callers cannot drift apart on #87's stall/futility semantics.
+// Discard is the ORIGINAL of this code; nothing about the loop's own
+// behaviour changed in the extraction, only its callers.
+//
+// pending is the composer text the CALLER has already corroborated —
+// Discard's digest check, or #112's ComposerDigest match — BEFORE calling
+// this. It presses keys unconditionally and trusts that corroboration
+// already happened; it does not repeat it.
+//
+// C-u clears the line the cursor sits on: readline's unix-line-discard,
+// killing from the cursor back to the start of the CURRENT line, not the
+// whole buffer. A composer holding one short line empties in one press,
+// measured directly (C-a C-k and Escape were tried too; C-u alone was
+// enough for a single line). A composer spanning several lines does not —
+// one press clears the line the cursor is on and leaves every line above it
+// standing, so a single un-repeated press against a multi-line paste (issue
+// #32: ~6.6 KB, roughly four visual lines) can only ever get partway there.
+// So this presses the same key again on every iteration the composer is
+// still non-empty, walking it backward one line at a time until nothing is
+// left or the window runs out — the same thing an operator clearing a stuck
+// multi-line prompt by hand would do. Verification stays in the loop: a
+// keypress that did not register looks exactly like one that did, the same
+// reason Send confirms before submitting.
+//
+// #87's early exit: once movement has actually been observed, stallPresses
+// further presses that change nothing are no longer "still walking it
+// backward" — they are new evidence the pass has stopped working, and
+// pressing MORE just makes a bigger dent for no further gain. An UNMOVED
+// composer still gets the whole window, because a pane that has not
+// redrawn even once is not yet evidence of anything.
+//
+// left is what remains (empty on success). moved reports whether the pass
+// observed ANY movement at all — the caller's own signal for
+// noteFutile/its own message, exactly as Discard used it before extraction.
+// cleared is true only once the composer read back genuinely empty. err is
+// non-nil only for a failed keystroke or capture call — "ran out of time
+// without emptying" is a normal outcome (cleared=false, err=nil), reported
+// differently by each of the two callers.
+func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending string) (left string, moved, cleared bool, err error) {
 	deadline := d.now().Add(promptClearWindow)
-	left := pending
-	moved := false
+	left = pending
 	stall := 0
 	for {
-		if _, err := d.run(ctx, d.bin, "send-keys", "-t", live.paneID, "C-u"); err != nil {
-			return fleet.Ack{}, fmt.Errorf("discard: %w", err)
+		if _, runErr := d.run(ctx, d.bin, "send-keys", "-t", paneID, "C-u"); runErr != nil {
+			return left, moved, false, runErr
 		}
-		if sc, ok := d.captureForClassify(ctx, live.paneID); ok {
+		if sc, ok := d.captureForClassify(ctx, paneID); ok {
 			got, _ := composerText(sc)
 			if got == "" {
-				d.forgetFutile(ref.ID)
-				return fleet.Ack{Accepted: true}, nil
+				d.forgetFutile(id)
+				return "", moved, true, nil
 			}
 			if got != left {
 				moved = true
@@ -2079,19 +2207,18 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		}
 		select {
 		case <-ctx.Done():
-			return fleet.Ack{}, ctx.Err()
+			return left, moved, false, ctx.Err()
 		case <-time.After(promptClearInterval):
 		}
 	}
 
 	if !moved {
 		// First time this exact residue has been seen not to move — record
-		// it so a caller that retries with the SAME digest, exactly as the
-		// message below tells it to, is refused before spending another
-		// full pass on it (see the futileClearAttempts check above).
-		d.noteFutile(ref.ID, live.cwd, expectDigest)
+		// it so a caller that retries against the SAME residue is refused
+		// (futileClearAttempts) before spending another full pass on it.
+		d.noteFutile(id, cwd, screenDigest(pending))
 	}
-	return fleet.Ack{}, discardIncomplete(pending, left)
+	return left, moved, false, nil
 }
 
 // discardIncomplete reports a clear that ran out of time without ever
@@ -2316,6 +2443,10 @@ func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fl
 	// explicit Close, but there is no reason to leave this one waiting out
 	// its window when Close already knows it is dead.
 	d.forgetStranded(ref.ID)
+	// #111: a destroyed session's `turns` denominator describes a delivery
+	// into a composer that no longer exists — forget it the same way and
+	// for the same reason as the stranded record just above.
+	d.forgetDelivery(ref.ID)
 	return fleet.Ack{Accepted: true}, nil
 }
 
@@ -3694,6 +3825,21 @@ type strandedRecord struct {
 	Text string    `json:"text"`
 	Cwd  string    `json:"cwd"`
 	At   time.Time `json:"at"`
+
+	// ComposerDigest (colab-fleet #112) fingerprints the composer's own
+	// content at the moment this record was made — screenDigest of the SAME
+	// text composerText() would read back, not of Text itself, because a
+	// multi-line paste renders as a collapsed marker rather than the literal
+	// bytes (F49) and Text/the rendered composer can legitimately differ.
+	//
+	// This is what makes the #112 replace path safe: a later attempt to
+	// clear this composer and deliver something else may proceed ONLY when
+	// the composer's CURRENT digest still matches this one, which proves
+	// nothing has been typed there since this driver made this record. A
+	// mismatch — or an empty digest, from a record made before this field
+	// existed — degrades to the honest refusal naming `discard`, never a
+	// guess. Empty on a record from before colab-fleet #112.
+	ComposerDigest string `json:"composerDigest,omitempty"`
 }
 
 // strandedFile is the durable document, one entry per session with a
@@ -3716,14 +3862,126 @@ const strandedFileName = "stranded"
 // cwd travels with it (#11): once this record survives a restart, an id
 // match alone is the exact thing §5.4 forbids trusting for a
 // resuming-or-destructive operation, and this is both.
-func (d *Driver) noteStranded(id, cwd, text string) {
+//
+// composerDigest is screenDigest of the composer's CURRENT rendered content
+// at the moment of this call — see strandedRecord.ComposerDigest for why
+// this is not simply screenDigest(text).
+func (d *Driver) noteStranded(id, cwd, text, composerDigest string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stranded == nil {
 		d.stranded = map[string]strandedRecord{}
 	}
-	d.stranded[id] = strandedRecord{Text: text, Cwd: cwd, At: d.now()}
+	d.stranded[id] = strandedRecord{Text: text, Cwd: cwd, At: d.now(), ComposerDigest: composerDigest}
 	d.saveStrandedLocked()
+}
+
+// strandedRecordFor reports the stranded record for this session, if a live
+// one exists — the same corroboration and retention discipline
+// strandedMatches applies (§5.4: id + cwd, not id alone; strandedRetention),
+// without requiring the text to match. strandedMatches itself is kept
+// exactly as it was for the resume path (colab-fleet #112's plan: reuse the
+// existing exact-match call there rather than re-deriving its equality from
+// this accessor); this is for the three cases the resume path does not
+// cover — same text without ResumeIfStranded, different text, and (from the
+// replace path) whatever text is there now.
+func (d *Driver) strandedRecordFor(id, cwd string) (strandedRecord, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.sweepStrandedLocked()
+	prior, ok := d.stranded[id]
+	if !ok || prior.Cwd != cwd {
+		return strandedRecord{}, false
+	}
+	return prior, true
+}
+
+// currentComposerDigest re-captures one pane and fingerprints whatever its
+// composer currently holds — screenDigest of the same text composerText()
+// would read back, the digest strandedRecord.ComposerDigest and #112's
+// replace path both compare against. Empty when the capture fails or the
+// composer reads empty; a caller treats that the same way an absent
+// ComposerDigest is already treated elsewhere — degrade to the honest
+// answer, never guess.
+func (d *Driver) currentComposerDigest(ctx context.Context, paneID string) string {
+	sc, ok := d.captureForClassify(ctx, paneID)
+	if !ok {
+		return ""
+	}
+	pending, ok := composerText(sc)
+	if !ok || pending == "" {
+		return ""
+	}
+	return screenDigest(pending)
+}
+
+// tryReplaceStranded is colab-fleet #112's opt-in door out of the busy-
+// composer refusal: clear a composer this driver's own record says IT
+// stranded, then let the caller's ORIGINAL Send fall through to deliver
+// different text in its place.
+//
+// Safety rests entirely on record.ComposerDigest matching the composer's
+// CURRENT content (pending, already read by the caller before this is
+// called) — proof that nothing has been typed there since this driver made
+// the record. A record with no digest (predates colab-fleet #112) or a
+// digest that no longer matches is degraded to an honest refusal naming
+// `discard`, never guessed past; see driver.SendOptions.ReplaceIfStranded
+// for why this can never be inferred from anything less.
+//
+// cleared=true means the composer is now empty and the stranded record has
+// already been forgotten — the caller falls through to the ordinary
+// delivery path with the NEW text. cleared=false means the returned receipt
+// IS Send's answer, unchanged. err is non-nil only for a failed multiplexer
+// call, never for an honest "did not clear" (that is receipt, not err).
+func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, target *paneRow, record strandedRecord, pending string) (receipt fleet.DeliveryReceipt, cleared bool, err error) {
+	digest := screenDigest(pending)
+
+	// #87: refuse outright, before pressing anything, if a full pass
+	// against this EXACT residue already proved it will not move — the
+	// same discipline Discard itself applies before ever touching the pane.
+	if attempts := d.futileClearAttempts(ref.ID, target.cwd, digest); attempts > 0 {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "a previous attempt to clear this exact composer residue made no " +
+				"progress at all (#87); refusing to press the same keys into a composer " +
+				"already proven not to move. Read the session and discard it directly " +
+				"instead, or wait for the residue to change",
+		}, false, nil
+	}
+
+	if record.ComposerDigest == "" || record.ComposerDigest != digest {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "composer holds a delivery this driver made into this session, but its " +
+				"content has changed since that delivery was recorded (or the record " +
+				"predates this check) and this driver cannot confirm it is still only its " +
+				"own text — refusing to guess. Read the session and discard the composer " +
+				"(discard?expect=<composerDigest>) before sending again",
+		}, false, nil
+	}
+
+	left, moved, didClear, err := d.clearComposer(ctx, target.paneID, ref.ID, target.cwd, pending)
+	if err != nil {
+		return fleet.DeliveryReceipt{}, false, err
+	}
+	if !didClear {
+		reason := "attempted to clear this driver's own stranded delivery to make room " +
+			"for the replacement text, but the composer did not fully empty"
+		if !moved {
+			reason += " and made no progress at all — a further replaceIfStranded attempt " +
+				"is refused (#87) until the residue changes; discard the session directly " +
+				"instead"
+		} else {
+			reason += fmt.Sprintf("; %d character(s) remain. The stranded record is kept, "+
+				"but its digest no longer matches this composer, so a retry will be told to "+
+				"discard first rather than clear again — read the session and discard the "+
+				"composer directly", len(left))
+		}
+		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, false, nil
+	}
+
+	d.forgetStranded(ref.ID)
+	return fleet.DeliveryReceipt{}, true, nil
 }
 
 // strandedMatches reports whether text is exactly what this driver left in
@@ -3875,6 +4133,139 @@ func (d *Driver) loadStranded() {
 	d.stranded = f.Records
 	d.sweepStrandedLocked()
 	d.saveStrandedLocked()
+}
+
+// deliveryMark is what noteDelivery persists: the moment of this driver's
+// most recent delivery into one session's composer, and a memo of the last
+// turn count successfully computed from it (colab-fleet #111).
+type deliveryMark struct {
+	// Cwd corroborates the same way every other durable record here does
+	// (§5.4) — an id alone is recyclable.
+	Cwd string `json:"cwd"`
+	// At is the delivery this mark's count is "since". Never moved by a
+	// resume finishing the SAME delivery — only a fresh paste starts a new
+	// mark.
+	At time.Time `json:"at"`
+
+	// Count and Size are a memo-and-latch pair, not raw state: Count is the
+	// last successfully computed turn count, Size is the runtime record's
+	// file size at the moment that count was computed. A later read whose
+	// record size is UNCHANGED reuses Count instead of re-parsing up to
+	// 256KiB; a later read that cannot resolve the record at all (a
+	// transient stat/open failure) reports this Count rather than flapping
+	// `turns` to absent for a reason that has nothing to do with whether the
+	// session is alive. Zero Size means no count has ever been computed for
+	// this mark yet — the honest starting state, not "zero turns".
+	Count int   `json:"count"`
+	Size  int64 `json:"size"`
+}
+
+// deliveryFile is the durable document — one entry per session with a
+// remembered delivery. Its own file, same reasoning strandedFile already
+// gives: a create key, a stranded delivery and a delivery mark are three
+// different concerns with three different shapes and three different
+// lifetimes.
+type deliveryFile struct {
+	Records map[string]deliveryMark `json:"records"`
+}
+
+const deliveryFileName = "delivery-mark"
+
+// noteDelivery records that this driver just pasted text into a session's
+// composer — see the field's own doc comment on Driver.delivered for why
+// this is the single write site every downstream outcome shares, and why a
+// resume must never call this.
+func (d *Driver) noteDelivery(id, cwd string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.delivered == nil {
+		d.delivered = map[string]deliveryMark{}
+	}
+	d.delivered[id] = deliveryMark{Cwd: cwd, At: d.now()}
+	d.saveDeliveryLocked()
+}
+
+// deliveryMarkFor reports the live delivery mark for a session, if any —
+// the same id+cwd corroboration and retention discipline as
+// strandedRecordFor, on deliveryMarkRetention's longer clock.
+func (d *Driver) deliveryMarkFor(id, cwd string) (deliveryMark, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.sweepDeliveryLocked()
+	prior, ok := d.delivered[id]
+	if !ok || prior.Cwd != cwd {
+		return deliveryMark{}, false
+	}
+	return prior, true
+}
+
+// updateDeliveryMarkCount refreshes a mark's memoised count after a
+// successful turnsSince read — see deliveryMark.Count/Size. A no-op if the
+// mark has since been forgotten or replaced by a new delivery (its Cwd or At
+// would then no longer match what the caller resolved the count against);
+// silently doing nothing in that case is correct, not a bug swallowed — the
+// caller's OWN read already has its answer, this only refreshes the cache
+// for the NEXT one.
+func (d *Driver) updateDeliveryMarkCount(id, cwd string, at time.Time, count int, size int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	prior, ok := d.delivered[id]
+	if !ok || prior.Cwd != cwd || !prior.At.Equal(at) {
+		return
+	}
+	prior.Count = count
+	prior.Size = size
+	d.delivered[id] = prior
+	d.saveDeliveryLocked()
+}
+
+// forgetDelivery drops a session's delivery mark. Called from Close (#111,
+// mirroring forgetStranded): a destroyed session's `turns` denominator is
+// gone with it, the same way its composer is.
+func (d *Driver) forgetDelivery(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.delivered, id)
+	d.saveDeliveryLocked()
+}
+
+// sweepDeliveryLocked drops marks older than deliveryMarkRetention. Caller
+// holds d.mu. Same shape as sweepStrandedLocked, longer clock.
+func (d *Driver) sweepDeliveryLocked() {
+	if len(d.delivered) == 0 {
+		return
+	}
+	now := d.now()
+	for id, rec := range d.delivered {
+		if now.Sub(rec.At) > deliveryMarkRetention {
+			delete(d.delivered, id)
+		}
+	}
+}
+
+func (d *Driver) saveDeliveryLocked() {
+	if d.store == nil {
+		return
+	}
+	_ = d.store.Save(deliveryFileName, deliveryFile{Records: d.delivered})
+}
+
+// loadDelivery restores delivery marks at startup, sweeping anything already
+// past deliveryMarkRetention — same "sweep on load" shape as loadStranded.
+func (d *Driver) loadDelivery() {
+	if d.store == nil {
+		return
+	}
+	var f deliveryFile
+	found, err := d.store.Load(deliveryFileName, &f)
+	if err != nil || !found || len(f.Records) == 0 {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.delivered = f.Records
+	d.sweepDeliveryLocked()
+	d.saveDeliveryLocked()
 }
 
 // stampSinceLocked fills §2.3's Since: when this status was FIRST observed to

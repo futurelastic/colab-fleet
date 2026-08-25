@@ -1014,6 +1014,13 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			// and could not confirm. It never submits text the service did not
 			// place there — see driver.SendOptions.
 			ResumeIfStranded bool `json:"resumeIfStranded,omitempty"`
+			// ReplaceIfStranded (colab-fleet #112) clears a composer this
+			// service's own record shows it stranded, and delivers THIS
+			// call's DIFFERENT text in its place — see driver.SendOptions.
+			// Easy to forget forwarding, the same way #33 already warned
+			// ResumeIfStranded is: it has no effect unless explicitly set,
+			// so a caller that never sets it sees no symptom at all.
+			ReplaceIfStranded bool `json:"replaceIfStranded,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "malformed JSON body", Machine: machine})
@@ -1032,7 +1039,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded})
+		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded})
 		if err != nil {
 			// A refusal from the driver is not this branch — Send returns
 			// it as a DeliveryReceipt value, not an error. Only a

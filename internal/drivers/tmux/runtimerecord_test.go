@@ -142,3 +142,84 @@ func TestLatestAPIError_BeyondTailWindowIsUnavailable(t *testing.T) {
 		t.Fatalf("verdict = %v, want recordUnavailable", verdict)
 	}
 }
+
+// turnLine builds a turn_duration marker line for turnsSince tests — the
+// same shape adminLine already uses above, parameterised on timestamp.
+func turnLine(ts string) string {
+	return `{"type":"system","subtype":"turn_duration","timestamp":"` + ts + `"}`
+}
+
+// colab-fleet #111: turnsSince counts turn_duration markers strictly after
+// `since`, ignoring anything at or before it.
+func TestTurnsSince_CountsOnlyMarkersAfterTheDelivery(t *testing.T) {
+	since := time.Date(2026, 8, 19, 13, 40, 0, 0, time.UTC)
+	path := writeAPIErrorFixture(t, []string{
+		turnLine("2026-08-19T13:39:00.000Z"), // before `since`: not counted
+		turnLine("2026-08-19T13:40:00.000Z"), // AT `since`: not counted (After, not AtOrAfter)
+		turnLine("2026-08-19T13:41:00.000Z"), // after: counted
+		turnLine("2026-08-19T13:42:00.000Z"), // after: counted
+		rateLimitLine,                        // not a turn_duration entry: ignored either way
+	})
+	n, ok := turnsSince(path, since)
+	if !ok {
+		t.Fatal("expected ok=true: the window reaches a line at `since`")
+	}
+	if n != 2 {
+		t.Fatalf("count = %d, want 2", n)
+	}
+}
+
+// Zero completed turns since delivery is a POSITIVE finding (§5.7) — the
+// exact "prompt never landed" smoking gun #111 exists to make visible — and
+// must come back ok=true, not be confused with "could not tell".
+func TestTurnsSince_ZeroIsAPositiveFinding(t *testing.T) {
+	since := time.Date(2026, 8, 19, 13, 40, 0, 0, time.UTC)
+	path := writeAPIErrorFixture(t, []string{
+		turnLine("2026-08-19T13:39:00.000Z"), // only evidence is BEFORE since
+	})
+	n, ok := turnsSince(path, since)
+	if !ok {
+		t.Fatal("expected ok=true: a line at/before `since` proves the window reaches back far enough")
+	}
+	if n != 0 {
+		t.Fatalf("count = %d, want 0", n)
+	}
+}
+
+// The honest-absence rule this field's whole safety argument rests on: a
+// window that cannot be SHOWN to reach back past `since` must answer
+// ok=false, never a guessed 0 — reporting 0 here would manufacture "the
+// prompt never landed" out of a read failure instead of an honest unknown.
+func TestTurnsSince_TornWindowNotReachingSinceIsHonestlyUnresolvable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "record.jsonl")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// A delivery long before anything in the padded tail.
+	since := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC)
+	// Pad well past recordTailBytes with turn_duration markers dated AFTER
+	// `since` — so if this bug regressed to counting them anyway, the
+	// count would come back nonzero instead of ok=false, making the
+	// regression loud rather than silent.
+	padLine := turnLine("2026-08-19T23:00:00.000Z") + "\n"
+	for i := 0; i < (recordTailBytes/len(padLine))+10; i++ {
+		if _, err := f.WriteString(padLine); err != nil {
+			t.Fatalf("write pad: %v", err)
+		}
+	}
+	f.Close()
+
+	n, ok := turnsSince(path, since)
+	if ok {
+		t.Fatalf("expected ok=false: the tail window cannot be shown to reach back to %v, got count=%d", since, n)
+	}
+}
+
+func TestTurnsSince_MissingFileIsUnresolvable(t *testing.T) {
+	_, ok := turnsSince(filepath.Join(t.TempDir(), "does-not-exist.jsonl"), time.Now())
+	if ok {
+		t.Fatal("expected ok=false for a record that does not exist")
+	}
+}
