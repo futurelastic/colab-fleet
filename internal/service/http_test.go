@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -211,6 +212,35 @@ func TestCreateSession_MissingIdempotencyKeyIs400(t *testing.T) {
 	}
 }
 
+// colab-fleet #114: an over-long prompt must be rejected outright, not
+// accepted and left to strand in the composer.
+func TestCreateSession_OverLongPromptIs400(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]string{
+		"runtime": "stub", "cwd": "/tmp",
+		"prompt": strings.Repeat("x", maxInputBytes+1),
+	})
+	req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions", body)
+	req.Header.Set("Idempotency-Key", "key-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (#114: prompt over %d bytes must be rejected outright)", resp.StatusCode, maxInputBytes)
+	}
+	env := decodeError(t, resp)
+	if env.Error.Kind != fleet.ErrorInvalid {
+		t.Fatalf("error kind = %q, want %q", env.Error.Kind, fleet.ErrorInvalid)
+	}
+	if !strings.Contains(env.Error.Message, "prompt") || !strings.Contains(env.Error.Message, strconv.Itoa(maxInputBytes)) {
+		t.Fatalf("message = %q, want it to name the field and the %d-byte limit", env.Error.Message, maxInputBytes)
+	}
+}
+
 func TestCreateSession_StubReturnsUnsupported501(t *testing.T) {
 	_, srv := newTestServer(t)
 
@@ -362,6 +392,34 @@ func TestSendInput_RefusalIsNotAnHTTPError(t *testing.T) {
 	// refused} at all, which does not exist yet in this repo. Documented
 	// here as a known gap, not silently skipped.
 	t.Skip("no driver in this skeleton can produce a refused DeliveryReceipt; see comment")
+}
+
+// colab-fleet #114: an over-long `text` must be rejected outright, before
+// any driver is even resolved — this needs no driver support to prove,
+// unlike TestSendInput_RefusalIsNotAnHTTPError just above.
+func TestSendInput_OverLongTextIs400(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"text": strings.Repeat("x", maxInputBytes+1),
+	})
+	req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions/some-id/input", body)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (#114: text over %d bytes must be rejected outright)", resp.StatusCode, maxInputBytes)
+	}
+	env := decodeError(t, resp)
+	if env.Error.Kind != fleet.ErrorInvalid {
+		t.Fatalf("error kind = %q, want %q", env.Error.Kind, fleet.ErrorInvalid)
+	}
+	if !strings.Contains(env.Error.Message, "text") || !strings.Contains(env.Error.Message, strconv.Itoa(maxInputBytes)) {
+		t.Fatalf("message = %q, want it to name the field and the %d-byte limit", env.Error.Message, maxInputBytes)
+	}
 }
 
 // §6 requirement 3: mutations are opt-in. The default must be closed, because

@@ -206,6 +206,16 @@ rejected with `invalid`. The rationale is §10: a timed-out federated create
 that gets retried produces two agents writing to the same working directory,
 and the caller cannot detect it afterwards.
 
+**`prompt` is capped at 1024 bytes.** Over that, the create is rejected
+outright — `invalid` (400) naming the limit and the caller's actual size —
+instead of being accepted and left to strand in the composer with no
+delivery receipt to explain why (colab-fleet #114, #110, #112: the creation
+path measurably strands even shorter prompts than `input` does). This is a
+conservative default, not the bisected true failure boundary, which #114
+leaves as open work. A caller with more to send should write it somewhere
+the agent can read deliberately and pass only a short pointer here — the
+same workaround #112 already adopted ad hoc.
+
 **The driver that served the create builds this response, not the service
 layer relaying the caller's own request back at it** (colab-fleet #84, #85,
 #86) — `agent`/`model` on it are what the runtime is actually using, when the
@@ -611,6 +621,14 @@ POST /v1/machines/{machine}/sessions/{id}/input?runtime=
 → 200 { "outcome": "submitted" | "queued" | "refused" | "unknown",
         "reason": "prompt holds unsent input" }
 ```
+
+**`text` is capped at 1024 bytes, the same limit `prompt` carries on
+create** (colab-fleet #114). Over that, the call is rejected outright —
+`invalid` (400) naming the limit and the caller's actual size — before any
+driver is even resolved, rather than reaching the composer and stranding
+there with no exit but `resumeIfStranded` or destroying the session. Chunk
+longer content instead: several calls, each comfortably under the limit —
+the mitigation #112 already verified end to end.
 
 `submitted` is genuinely part of this type — it is what a driver reporting
 `confirmsDelivery: true` on `/v1/runtimes` would return here — but no driver
