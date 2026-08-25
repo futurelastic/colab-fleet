@@ -360,6 +360,16 @@ type Driver struct {
 	// merely because it was constructed. See WithSessionEnv and
 	// sessionenv.go's provisionSessionEnv.
 	sessionEnv []SessionEnvEntry
+
+	// psBin and psRun are colab-fleet #116's own exec seam, deliberately
+	// separate from bin/run rather than reusing them. Those name and run the
+	// multiplexer specifically (execFunc's own doc comment); psRun queries
+	// the OS process table for a PID this driver already resolved from the
+	// multiplexer, an unrelated external program with its own argv shape. A
+	// shared field would make a test double built for one silently answer
+	// for the other. See processidentity.go.
+	psBin string
+	psRun execFunc
 }
 
 type observation struct {
@@ -540,6 +550,26 @@ func (d *Driver) SeedTrustRoots() (TrustSeedResult, error) {
 // withExec injects a fake multiplexer. Unexported: tests only.
 func withExec(f execFunc) Option { return func(d *Driver) { d.run = f } }
 
+// WithPSBinary sets the process-table query executable colab-fleet #116's
+// process-identity resolution shells out to. Default "/bin/ps" — an
+// absolute path, not a bare name, for the reason session-identity.md's
+// "Two traps this feature inherits" section documents for this driver's own
+// shell-outs: a created session's login-shell wrap gives it a real PATH, but
+// this call runs outside that wrap, on the same clean four-entry search path
+// as everything else this daemon shells out on directly.
+func WithPSBinary(path string) Option {
+	return func(d *Driver) {
+		if path != "" {
+			d.psBin = path
+		}
+	}
+}
+
+// withPSExec injects a fake process-table query. Unexported: tests only —
+// the same shape as withExec, and deliberately not the same field (see
+// Driver.psRun's own doc comment).
+func withPSExec(f execFunc) Option { return func(d *Driver) { d.psRun = f } }
+
 // withClock and withNonce make tests deterministic.
 func withClock(f func() time.Time) func(*Driver) { return func(d *Driver) { d.now = f } }
 func withNonce(f func() string) func(*Driver)    { return func(d *Driver) { d.nonce = f } }
@@ -562,6 +592,8 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 		build:        claudeCodeCommand,
 		run:          runReal,
 		dial:         dialReal,
+		psBin:        "/bin/ps",
+		psRun:        runReal,
 		now:          time.Now,
 		nonce:        randomNonce,
 		observed:     map[string]observation{},
