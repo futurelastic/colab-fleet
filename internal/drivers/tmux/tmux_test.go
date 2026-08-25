@@ -2314,6 +2314,48 @@ func TestDiscardReportsAnUntouchedComposerDistinctlyAndSafely(t *testing.T) {
 	}
 }
 
+// Issue #113: discardIncomplete's first-occurrence ("unchanged") message must
+// not read as an unconditional promise, because the very next identical call
+// can land on discardProvenFutile and say the opposite. The fix is wording
+// only — this test pins the bounded phrasing so it cannot regress back to an
+// unqualified "safe".
+func TestDiscardIncompleteFirstMessageBoundsItsOwnSafetyPromise(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent
+	f.freezeComposer("%2")
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("setup: no composerDigest published")
+	}
+
+	_, err = d.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err == nil {
+		t.Fatal("a frozen pane must not report success")
+	}
+	if !strings.Contains(err.Error(), "retrying once more") {
+		t.Errorf("message = %q; the first-occurrence message must bound the safety "+
+			"claim to a single retry, not read as an unconditional promise", err.Error())
+	}
+	if !strings.Contains(err.Error(), "if it is still unchanged after that retry") {
+		t.Errorf("message = %q; the first-occurrence message must say what to do if "+
+			"the bounded retry also fails, since the next identical call can land on "+
+			"discardProvenFutile and contradict an unqualified promise", err.Error())
+	}
+}
+
 // Issue #32, the branch's other half, and the worse of the two: the
 // keystroke ran and did SOMETHING, but the composer that is left is neither
 // what the caller saw nor empty. A caller told only "not cleared" cannot

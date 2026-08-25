@@ -2315,7 +2315,9 @@ func discardIncomplete(before, after string) error {
 	if after == before {
 		return fmt.Errorf(
 			"%w: discard: the clear keystroke did not register; the composer is "+
-				"unchanged from what was read, so retrying with the same digest is safe",
+				"unchanged from what was read, so retrying once more with the same "+
+				"digest is safe — if it is still unchanged after that retry, stop and "+
+				"re-read rather than retrying again",
 			ErrAmbiguousTarget)
 	}
 	return fmt.Errorf(
