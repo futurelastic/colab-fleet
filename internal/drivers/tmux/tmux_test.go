@@ -169,6 +169,24 @@ func (f *fakeMux) dropLastSession() {
 	delete(f.captures, last.paneID)
 }
 
+// dropSession removes ONE named session, wherever it sits in the slice —
+// dropLastSession only ever removes whichever fixture happened to be added
+// last, which is `beta` in twoSessions(), not the `alpha💬` most settle tests
+// target. Used to simulate a session vanishing out from under an in-flight
+// settleNewSession poll (colab-fleet #125).
+func (f *fakeMux) dropSession(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, s := range f.sessions {
+		if s.name != name {
+			continue
+		}
+		f.sessions = append(f.sessions[:i], f.sessions[i+1:]...)
+		delete(f.captures, s.paneID)
+		return
+	}
+}
+
 func (f *fakeMux) setFailList(v bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -3661,6 +3679,99 @@ func TestABlockingQuestionIsWaitedThroughRatherThanGivenUpOn(t *testing.T) {
 	})
 	<-done
 
+	if got := h.keysPressed(); len(got) != 0 {
+		t.Errorf("the driver answered a question nobody consented to: %v", got)
+	}
+}
+
+// colab-fleet #124/#125: the field measurement was of the CREATE RECORD a
+// real caller reads back through List/Create's own response — not of
+// settleNewSession's internal delivery log, which TestABlockingQuestionIs-
+// WaitedThroughRatherThanGivenUpOn above already covers. Two machines in the
+// identical situation diverged there: one resolved to `unknown` with
+// evidence, the other stayed `null` forever. This proves the record itself
+// converges to a real, non-`unknown` outcome when the dialog clears well
+// inside the deadline — the success half of the same fix; the timeout half
+// is TestPromptDeliveryAlwaysResolves's "the window closes before the
+// session is ever ready" in createrecord_test.go.
+func TestABlockingQuestionAnsweredEventuallyResolvesTheCreateRecord(t *testing.T) {
+	h, d := newSettleHarness(t, fixtureTrustPrompt, false)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const cwd = "/work/alpha"
+	const text = "the work it was created for"
+	// Mimics what Create itself does (noteCreateRecord) before starting the
+	// settle goroutine — see createrecord_test.go's seedRecord for the same
+	// technique and its own reasoning.
+	d.noteCreateRecord(ref.ID, cwd, fleet.SessionSpec{Cwd: cwd, Prompt: text})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.settleNewSession(testCaller, ref, fleet.SessionSpec{Cwd: cwd, Prompt: text})
+	}()
+
+	// A human answers, some time after the create returned — same shape as
+	// TestABlockingQuestionIsWaitedThroughRatherThanGivenUpOn, but this test
+	// reads the outcome the way a real caller does: through the create
+	// record, not through the test harness's own delivery log.
+	time.Sleep(100 * time.Millisecond)
+	h.mux.setCapture("%1", idleFixtureFor("alpha"))
+
+	waitFor(t, "the create record to resolve", func() bool {
+		rec, ok := d.createRecordFor(ref.ID, cwd)
+		return ok && rec.PromptOutcome != ""
+	})
+	<-done
+
+	rec, ok := d.createRecordFor(ref.ID, cwd)
+	if !ok {
+		t.Fatal("create record vanished")
+	}
+	if rec.PromptOutcome == string(fleet.OutcomeUnknown) {
+		t.Errorf("PromptOutcome = unknown; the dialog cleared and the session was still "+
+			"there, this should have delivered normally — got evidence %q", rec.PromptEvidence)
+	}
+	if rec.PromptEvidence == "" {
+		t.Error("a resolved delivery must still carry evidence")
+	}
+	if got := h.keysPressed(); len(got) != 0 {
+		t.Errorf("the driver answered a question nobody consented to: %v", got)
+	}
+}
+
+// colab-fleet #125's own load-bearing requirement: a caller must be able to
+// say WHY a prompt has not landed WHILE it is still waiting, not only once
+// the wait ends. This reads the create record DURING the wait — before the
+// dialog ever clears — and requires the live evidence to name the actual
+// blocking dialog, not the generic "accepted at creation" placeholder
+// promptDeliveryFor falls back to only in the instant before any diagnosis
+// exists.
+func TestPendingCreateRecordExplainsWhyWhileStillWaiting(t *testing.T) {
+	h, d := newSettleHarness(t, fixtureTrustPrompt, false) // screen never moves on its own
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+	const cwd = "/work/alpha"
+	const text = "the work it was created for"
+	d.noteCreateRecord(ref.ID, cwd, fleet.SessionSpec{Cwd: cwd, Prompt: text})
+
+	go d.settleNewSession(testCaller, ref, fleet.SessionSpec{Cwd: cwd, Prompt: text})
+
+	waitFor(t, "the pending evidence to name the dialog", func() bool {
+		rec, ok := d.createRecordFor(ref.ID, cwd)
+		return ok && strings.Contains(rec.PromptEvidence, "folder-trust")
+	})
+
+	rec, ok := d.createRecordFor(ref.ID, cwd)
+	if !ok {
+		t.Fatal("create record vanished")
+	}
+	if rec.PromptOutcome != "" {
+		t.Fatalf("PromptOutcome = %q, want still empty — the dialog never cleared in this "+
+			"test, so this must still be a live diagnosis, not a verdict", rec.PromptOutcome)
+	}
+	if rec.PromptEvidence == "the prompt was accepted at creation and has not been "+
+		"delivered yet; the session has not finished painting a composer to receive it" {
+		t.Error("evidence is still the generic placeholder; the live diagnosis never landed")
+	}
 	if got := h.keysPressed(); len(got) != 0 {
 		t.Errorf("the driver answered a question nobody consented to: %v", got)
 	}

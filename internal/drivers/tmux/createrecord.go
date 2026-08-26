@@ -62,6 +62,15 @@ type createRecord struct {
 	// something (see notePromptDelivered) — a permanently-empty Outcome
 	// alongside PromptCarried true is a worse false negative than the one
 	// this record exists to close, because it never clears.
+	//
+	// #125: while Outcome is still empty, PromptEvidence is no longer a
+	// single static sentence written once — settleNewSession's poll loop
+	// updates it (via notePromptPending) every time the reason the prompt
+	// has not landed yet actually changes, so a caller reading this record
+	// MID-WAIT sees a live diagnosis ("parked on a dialog awaiting a
+	// keypress"), not just the fact that it is still pending. The field is
+	// overwritten again, with different meaning, the moment Outcome is set —
+	// promptDeliveryFor tells the two eras apart by Outcome alone.
 	PromptCarried  bool   `json:"promptCarried,omitempty"`
 	PromptOutcome  string `json:"promptOutcome,omitempty"`
 	PromptEvidence string `json:"promptEvidence,omitempty"`
@@ -142,6 +151,29 @@ func (d *Driver) notePromptDelivered(id string, outcome fleet.Outcome, evidence 
 	d.saveCreateRecordsLocked()
 }
 
+// notePromptPending updates the LIVE reason a still-undelivered prompt has
+// not landed yet (colab-fleet #125) — called from settleNewSession's poll
+// loop every time that reason changes, never when delivery has resolved.
+//
+// Refuses to write once PromptOutcome is set: a stale poll iteration racing
+// behind deliverInitialPrompt/the session-gone exit must never overwrite a
+// terminal evidence string with a pending one — the two eras of this field
+// (documented on createRecord.PromptEvidence) must not blend.
+func (d *Driver) notePromptPending(id string, evidence string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rec, ok := d.createRecords[id]
+	if !ok || rec.PromptOutcome != "" {
+		// Either the record already expired/was never made (same "nothing to
+		// resolve" case notePromptDelivered documents), or delivery already
+		// reached a terminal outcome and this write is racing behind it.
+		return
+	}
+	rec.PromptEvidence = evidence
+	d.createRecords[id] = rec
+	d.saveCreateRecordsLocked()
+}
+
 // noteSurfaceSeenLocked latches SurfaceSeen. Caller holds d.mu. Never unset
 // once true — identity, not liveness (see runtimeSurfaceFor's own doc).
 func (d *Driver) noteSurfaceSeenLocked(id string) {
@@ -216,13 +248,23 @@ func sessionFactsFor(cr createRecord, found bool, name string) (pins *fleet.PinO
 // promptDeliveryFor turns a create record into a fleet.PromptDelivery, or
 // nil when this create carried no prompt at all — the absent-field state
 // §5.7 asks for, never a claim that a prompt was carried and delivered.
+//
+// #125: while pending, PromptEvidence is preferred over the generic sentence
+// below whenever notePromptPending has written a live diagnosis — the
+// generic sentence only fires in the brief window between noteCreateRecord
+// and this session's very first readiness poll, before any diagnosis exists
+// yet to report.
 func promptDeliveryFor(rec createRecord) *fleet.PromptDelivery {
 	if !rec.PromptCarried {
 		return nil
 	}
 	if rec.PromptOutcome == "" {
-		return fleet.PromptPending("the prompt was accepted at creation and has not been " +
-			"delivered yet; the session has not finished painting a composer to receive it")
+		evidence := rec.PromptEvidence
+		if evidence == "" {
+			evidence = "the prompt was accepted at creation and has not been " +
+				"delivered yet; the session has not finished painting a composer to receive it"
+		}
+		return fleet.PromptPending(evidence)
 	}
 	return fleet.PromptDelivered(fleet.Outcome(rec.PromptOutcome), rec.PromptEvidence)
 }

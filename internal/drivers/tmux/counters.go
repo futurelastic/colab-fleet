@@ -66,6 +66,13 @@ const (
 	// enough and the prompt was still unsent when deliverInitialPrompt gave
 	// up on it — the case that used to reach nobody at all.
 	counterInitialPromptStranded = "initial_prompt.delivery_stranded"
+	// counterInitialPromptSessionGone counts every time settleNewSession gave
+	// up because the session itself was confirmed gone (colab-fleet #125),
+	// never because a timer expired — there is no timer any more. A nonzero
+	// rate here says sessions are dying before their initial prompt lands,
+	// which is a different signal from delivery_stranded and worth telling
+	// apart from it.
+	counterInitialPromptSessionGone = "initial_prompt.delivery_session_gone"
 
 	// colab-fleet #104: confirmSubmitted's own doc comment already names two
 	// INDEPENDENT confirming signals — the composer reading fully empty, or

@@ -41,8 +41,7 @@ func TestCreate_PromptDeliveryPendingWhenNotYetDelivered(t *testing.T) {
 	f := twoSessions()
 	f.captures["%1"] = "  loading...\n" // no composer painted — never "ready"
 	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
-		withClock(func() time.Time { return time.Unix(1785760000, 0) }),
-		withPromptDeliveryWindow(3*time.Second))
+		withClock(func() time.Time { return time.Unix(1785760000, 0) }))
 
 	sess, err := d.Create(context.Background(), testCaller, "key-1",
 		fleet.SessionSpec{Name: "alpha", Cwd: "/work/alpha", Prompt: "do the thing"})
@@ -194,15 +193,15 @@ func TestPromptDeliveryAlwaysResolves(t *testing.T) {
 		}
 	})
 
-	// The window-expiry exit lives in settleNewSession, not
-	// deliverInitialPrompt — the session never becomes ready, so
-	// deliverInitialPrompt is never even reached.
-	t.Run("the window closes before the session is ever ready", func(t *testing.T) {
+	// #125: there is no timer any more — settleNewSession tries as hard as
+	// possible, bounded by the session's own lifetime. This exercises that
+	// bound directly: the session never becomes ready AND is then confirmed
+	// gone, which is the only way this exit is reached now.
+	t.Run("the session is confirmed gone before it was ever ready", func(t *testing.T) {
 		f := twoSessions()
 		f.captures["%1"] = "  loading...\n" // no composer ever paints
 		d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
-			withClock(func() time.Time { return time.Unix(1785760000, 0) }),
-			withPromptDeliveryWindow(300*time.Millisecond))
+			withClock(func() time.Time { return time.Unix(1785760000, 0) }))
 		const text = "never delivered"
 		seedRecord(d, text)
 
@@ -211,18 +210,24 @@ func TestPromptDeliveryAlwaysResolves(t *testing.T) {
 			defer close(done)
 			d.settleNewSession(testCaller, ref, fleet.SessionSpec{Cwd: cwd, Prompt: text})
 		}()
+		// Give the loop at least one poll against the still-starting session
+		// before pulling it out from under itself — proving this exit is
+		// reached by absence, not by racing the very first check.
+		time.Sleep(2 * promptPollInterval)
+		f.dropSession(ref.ID)
+
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(15 * time.Second):
 			t.Fatal("settleNewSession never returned")
 		}
 
 		rec, ok := d.createRecordFor(ref.ID, cwd)
 		if !ok || rec.PromptOutcome != string(fleet.OutcomeUnknown) {
-			t.Errorf("record = %+v (found=%v), want resolved unknown (window expired)", rec, ok)
+			t.Errorf("record = %+v (found=%v), want resolved unknown (session gone)", rec, ok)
 		}
-		if !strings.Contains(rec.PromptEvidence, "never became ready") {
-			t.Errorf("evidence = %q, does not explain the window expired before readiness", rec.PromptEvidence)
+		if !strings.Contains(rec.PromptEvidence, "no longer exists") {
+			t.Errorf("evidence = %q, does not explain the session is gone", rec.PromptEvidence)
 		}
 	})
 }

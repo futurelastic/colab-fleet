@@ -753,6 +753,17 @@ The caller concluded the prompt was lost and re-sent it four times. The
 natural client loop — create, then poll until `idle` or `waiting_input` —
 returns on exactly this window by construction.
 
+**The pending `evidence` is LIVE, not a static placeholder (colab-fleet
+#125).** While `outcome` is still absent, a driver trying as hard as possible
+to deliver — holding the prompt and retrying rather than racing a fixed
+timer and dropping it — must keep `evidence` current: it names WHY the
+prompt has not landed yet ("still starting", "parked on a folder-trust
+dialog awaiting a keypress"), updated as that reason changes, not only a
+generic "accepted at creation" sentence that never moves. A caller polling
+mid-wait sees a diagnosis, not a mystery. This does not add a fourth state —
+`outcome` absent + `evidence` is still the one pending state — it says what
+a driver owes the `evidence` string while it holds.
+
 **Why not a `SessionState.waitingOn` value instead.** `waitingOn` is
 documented as populated only when the session is `waiting_input`; the
 measured harm above is a session correctly reading `idle`. Reusing

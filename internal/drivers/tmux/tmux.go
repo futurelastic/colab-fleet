@@ -140,15 +140,18 @@ const (
 	sendReceptiveWindow   = 2 * time.Second
 	sendReceptiveInterval = 200 * time.Millisecond
 
-	// promptDeliveryWindow bounds how long §2.1's initial prompt waits for
-	// the runtime to become ready. Generous, because starting an agent is
-	// slow and a prompt arriving late is better than one arriving into a
-	// terminal that is not listening.
-	promptDeliveryWindow = 90 * time.Second
 	// promptPollInterval is how often readiness is checked. This is not the
 	// polling §5.5 forbids: that rule is about callers learning of state
 	// changes, and this is one driver waiting for a process it just started.
 	promptPollInterval = 1500 * time.Millisecond
+	// sessionGoneConfirmations is how many CONSECUTIVE polls must find a
+	// session absent from the enumeration before settleNewSession treats it
+	// as gone rather than as a listing race. A single miss is not enough
+	// evidence on its own — "a pane can vanish between listing and capture"
+	// is already a documented, transient shape elsewhere in this file — so
+	// this asks for two in a row (colab-fleet #125's own bound: the session's
+	// own lifetime, not a guessed duration) before giving up on delivery.
+	sessionGoneConfirmations = 2
 
 	// defaultIdempotencyRetention is how long a create key is honoured
 	// (§10: "retention must outlive the caller's retry window").
@@ -227,11 +230,6 @@ type Driver struct {
 	dial         ctlDialer
 	now          func() time.Time
 	nonce        func() string
-	// promptWindow overrides promptDeliveryWindow. Test-only seam (see
-	// withPromptDeliveryWindow): the real value is generous on purpose
-	// (starting an agent is slow), which makes it the one bound in this
-	// file that is impractical to exercise end-to-end at its real duration.
-	promptWindow time.Duration
 
 	store   *state.Store
 	idemErr error
@@ -583,13 +581,6 @@ func withPSExec(f execFunc) Option { return func(d *Driver) { d.psRun = f } }
 func withClock(f func() time.Time) func(*Driver) { return func(d *Driver) { d.now = f } }
 func withNonce(f func() string) func(*Driver)    { return func(d *Driver) { d.nonce = f } }
 
-// withPromptDeliveryWindow shortens the real 90s window so a test can
-// exercise the "the window closed before the session was ready" exit
-// without waiting for it in real time.
-func withPromptDeliveryWindow(dur time.Duration) Option {
-	return func(d *Driver) { d.promptWindow = dur }
-}
-
 // New builds a Driver for one machine.
 func New(machine fleet.MachineId, opts ...Option) *Driver {
 	d := &Driver{
@@ -608,7 +599,6 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 		nonce:        randomNonce,
 		observed:     map[string]observation{},
 		retention:    defaultIdempotencyRetention,
-		promptWindow: promptDeliveryWindow,
 	}
 	for _, o := range opts {
 		o(d)
@@ -3102,9 +3092,9 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // to protect text the session had put there itself. Create manufactured
 // exactly the stuck session this driver exists to avoid.
 //
-// So delivery happens after Create returns, bounded, and only once the
-// interface is ready to receive. Failure is not silent: the prompt is simply
-// absent, and the session's state says what it is doing instead.
+// So delivery happens after Create returns, and only once the interface is
+// ready to receive. Failure is not silent: the prompt is simply absent, and
+// the session's state says what it is doing instead.
 //
 // # A blocking question is waited THROUGH, not given up on
 //
@@ -3117,34 +3107,75 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // existed. Measured on a live fleet: a session parked on that question for two
 // days, and the work it was spawned for nowhere.
 //
-// So a prompt this routine may not answer is now a reason to keep waiting for
-// the rest of the window, not a reason to stop.
+// So a prompt this routine may not answer is now a reason to keep waiting, not
+// a reason to stop.
+//
+// # colab-fleet #125: bounded by the session's own lifetime, not a guessed duration
+//
+// This used to give up after a fixed 90s window, on the theory that a session
+// still not ready by then had probably lost its chance. #125 measured the cost
+// of that theory being wrong: a session parked on a dialog is answerable in
+// ninety seconds or in ten minutes, entirely depending on when a human notices
+// it — a duration this service cannot predict and has no business guessing at.
+// Racing an arbitrary timer against an unknown human response time discards the
+// caller's entire instruction on exactly the sessions most likely to still be
+// alive and worth delivering to.
+//
+// So there is no timer here at all. This loop tries as hard as possible: it
+// keeps polling for as long as the session itself exists, and stops only on
+// one of three real events — delivered, refused, or the session itself is
+// gone (promptReadiness's own `present` signal, confirmed over
+// sessionGoneConfirmations consecutive polls so a single listing race is not
+// mistaken for a closed session). "The session's own lifetime" is the bound;
+// nothing here waits longer than the thing it is waiting on.
+//
+// # colab-fleet #125: an answer to WHY, available DURING the wait
+//
+// A design that merely retries harder while staying silent trades one
+// invisible failure for another — a session that quietly did nothing becomes a
+// service that quietly waits, and a human staring at either gets the same
+// nothing. So every poll that finds the session still not ready records ITS
+// OWN reason on the create record (notePromptPending, below the switch) —
+// "still starting", "parked on a folder-trust dialog awaiting a keypress",
+// "the composer already holds other text" — not only a static "pending" flag.
+// A caller reading the session mid-wait sees a diagnosis, not a mystery; #86's
+// terminal-outcome guarantee (never `null`, always a real value once delivery
+// is abandoned) is unchanged and sits alongside it, not instead of it.
 func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec fleet.SessionSpec) {
-	ctx, cancel := context.WithTimeout(context.Background(), d.promptWindow)
-	defer cancel()
+	ctx := context.Background()
 
 	// One consent, spent once — per kind, because a session can meet more than
 	// one boot question on the way up. A question re-read on the next poll,
 	// because the keypress has not repainted yet, must not be answered twice:
 	// the second digit lands in whatever screen replaced it.
 	answered := map[fleet.PromptKind]bool{}
+	consecutiveGone := 0
+	lastEvidence := ""
 	for {
-		if ctx.Err() != nil {
-			// #86: the window closed before the session ever became ready to
-			// receive the prompt this create carried. A pending record left
-			// unresolved forever is a worse false negative than the one this
-			// whole record exists to close, so every exit that reaches this
-			// point without having called deliverInitialPrompt must resolve
-			// it here — Outcome unknown, never refused: nothing DECLINED
-			// this delivery, the window simply ran out first.
+		check := d.promptReadiness(ctx, ref.ID)
+
+		if check.checked && !check.present {
+			consecutiveGone++
+		} else {
+			consecutiveGone = 0
+		}
+		if consecutiveGone >= sessionGoneConfirmations {
+			// #125: the session this delivery targeted is gone, so nothing
+			// will ever become ready to receive it — that is a real, terminal
+			// answer, not a reason to keep polling a session that no longer
+			// exists. #86's own rule still applies: resolved as unknown, never
+			// left unresolved, because nothing DECLINED this delivery, the
+			// target simply stopped existing first.
 			if spec.Prompt != "" {
-				d.notePromptDelivered(ref.ID, fleet.OutcomeUnknown, fmt.Sprintf(
-					"the session never became ready to accept the prompt within %s; "+
-						"the prompt was not delivered", d.promptWindow))
+				d.counters.incr(counterInitialPromptSessionGone)
+				d.notePromptDelivered(ref.ID, fleet.OutcomeUnknown,
+					"the session no longer exists; it ended before this driver "+
+						"could deliver the prompt it was created with")
 			}
 			return
 		}
-		ready, blocking := d.promptReadiness(ctx, ref.ID)
+
+		blocking := check.blocking
 		// An unclassified screen may still be one this driver can identify —
 		// not from what it says, but from what this driver did to produce it.
 		// See acceptanceScreen.
@@ -3166,25 +3197,21 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 					Choice: choice, Nonce: blocking.Nonce,
 				})
 			}
-		case ready:
+		case check.ready:
 			if spec.Prompt != "" {
 				d.deliverInitialPrompt(ctx, req, ref, spec.Prompt)
 			}
 			return
-		}
-		select {
-		case <-ctx.Done():
-			// Same close as the ctx.Err() check at the top of this loop —
-			// duplicated rather than left to the next iteration because the
-			// next iteration never comes.
-			if spec.Prompt != "" {
-				d.notePromptDelivered(ref.ID, fleet.OutcomeUnknown, fmt.Sprintf(
-					"the session never became ready to accept the prompt within %s; "+
-						"the prompt was not delivered", d.promptWindow))
+		default:
+			// Still waiting. #125's live half: record WHY, not only THAT —
+			// only on change, so a long wait costs one write per state
+			// transition, not one every promptPollInterval.
+			if spec.Prompt != "" && check.reason != "" && check.reason != lastEvidence {
+				d.notePromptPending(ref.ID, check.reason)
+				lastEvidence = check.reason
 			}
-			return
-		case <-time.After(promptPollInterval):
 		}
+		time.Sleep(promptPollInterval)
 	}
 }
 
@@ -3449,35 +3476,81 @@ func affirmativeOption(p *fleet.SessionPrompt) (int, bool) {
 	return found, found != 0
 }
 
-// promptReadiness reports whether the session can receive input, and the prompt
-// it is blocked on instead when it cannot.
-//
-// The prompt is returned rather than a bare "blocked" boolean because the two
-// callers of that fact need different things from it: one only has to keep
-// waiting, and one has to decide whether this is the question its caller
-// consented to answer. A boolean can only carry the first.
-func (d *Driver) promptReadiness(ctx context.Context, id string) (ready bool, blocking *fleet.SessionPrompt) {
+// readinessCheck is promptReadiness's full answer. #125 asks for two things a
+// bare (ready, blocking) pair cannot carry: whether the session is even still
+// there to wait on, and a live, human-readable reason for whatever state was
+// found — settleNewSession's own diagnosis of "still starting" vs "parked on
+// a dialog" vs "the composer holds something else" comes from here, not from
+// re-deriving it against the raw screen a second time.
+type readinessCheck struct {
+	// ready means the composer exists and is empty: the interface has
+	// painted, and nothing is already sitting in it.
+	ready bool
+	// blocking is the question the session is parked on, when one is on
+	// screen — nil otherwise. Returned as a value rather than folded into
+	// `reason` because settleNewSession's own consent logic needs the
+	// structured Kind/Options/Nonce, not prose.
+	blocking *fleet.SessionPrompt
+	// present reports whether this session was found at all in the
+	// enumeration this check ran, INCLUDING a pane whose process has already
+	// exited (tmux's own dead flag) — both mean nothing will ever become
+	// ready here. Only meaningful when checked is true.
+	present bool
+	// checked reports whether the enumeration itself succeeded. False means
+	// this check learned nothing — a transient listing failure, not evidence
+	// the session is gone (see the "pane can vanish between listing and
+	// capture" caution elsewhere in this file) — and present must not be
+	// read in that case.
+	checked bool
+	// reason is prose for a human, populated whenever checked is true. Never
+	// parsed (§2.3) — the same discipline every other Evidence field in this
+	// package holds itself to.
+	reason string
+}
+
+func (d *Driver) promptReadiness(ctx context.Context, id string) readinessCheck {
 	callCtx, cancel := d.bounded(ctx)
 	defer cancel()
 	rows, captures, err := d.enumerate(callCtx)
 	if err != nil {
-		return false, nil
+		return readinessCheck{}
 	}
 	for _, r := range rows {
 		if r.session != id {
 			continue
 		}
+		if r.dead {
+			return readinessCheck{checked: true,
+				reason: "the session's process has already exited"}
+		}
 		sc := newScreen(captures[r.paneID])
 		if p := parsePrompt(sc); p != nil {
 			p.Kind = classifyPromptKind(p)
-			return false, p
+			reason := "parked on a prompt this driver does not recognise; " +
+				"a human may need to look at the session directly"
+			if p.Kind != "" {
+				reason = fmt.Sprintf("parked on a %q dialog awaiting a keypress", string(p.Kind))
+			}
+			if p.Question != "" {
+				reason += fmt.Sprintf(" (%q)", p.Question)
+			}
+			return readinessCheck{checked: true, present: true, blocking: p, reason: reason}
 		}
 		text, found := composerText(sc)
-		// Ready means the composer exists and is empty: the interface has
-		// painted, and nothing is already sitting in it.
-		return found && text == "", nil
+		if !found {
+			return readinessCheck{checked: true, present: true,
+				reason: "still starting: the interface has not painted a composer yet"}
+		}
+		if text != "" {
+			return readinessCheck{checked: true, present: true,
+				reason: "the composer already holds other text; waiting for it to " +
+					"clear before this prompt can be placed"}
+		}
+		return readinessCheck{checked: true, present: true, ready: true,
+			reason: "the composer is empty and ready"}
 	}
-	return false, nil
+	return readinessCheck{checked: true,
+		reason: "the session is not visible to this driver right now"}
 }
 
 // confirmLanded waits until the composer actually shows the delivered text,
