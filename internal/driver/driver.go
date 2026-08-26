@@ -398,3 +398,23 @@ type CounterReporter interface {
 type BuildReporter interface {
 	Build() fleet.Build
 }
+
+// MaxInputBytesReporter is another OPTIONAL capability, same shape as
+// BuildReporter: a driver fronting a PEER machine that has learned, by
+// probing that peer's own /v1/health, the effective limit that peer
+// enforces on `prompt` (create) and `text` (input) — colab-fleet #130.
+//
+// Optional for the same reason BuildReporter is: a LOCAL driver's limit is
+// this service's own (Service.MaxInputBytes, already known without a
+// probe), so forcing every driver to implement a method that would only
+// ever repeat that same self-evident value is a stub written for no
+// reader. Only a driver fronting a peer ever has something worth saying
+// here, and only the remote driver implements it today.
+//
+// A driver that does not implement this interface must read as unknown (the
+// zero value, 0) to its caller — fleet.MachineInfo.MaxInputBytes documents
+// why zero alone is enough here, unlike Build's separate Known flag: a real
+// effective limit is always positive, so it can never be mistaken for one.
+type MaxInputBytesReporter interface {
+	MaxInputBytes() int
+}

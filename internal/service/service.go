@@ -115,6 +115,16 @@ type Service struct {
 	// not_found on every bare-id call that looks exactly like sessions
 	// having disappeared.
 	defaultRuntime fleet.RuntimeId
+
+	// maxInputBytes is the effective limit this machine enforces on
+	// `prompt` (create) and `text` (input) — colab-fleet #130. Initialized
+	// to defaultMaxInputBytes (http.go) in newService and therefore never
+	// zero: an "unconfigured" instance still has an effective limit, it is
+	// simply the shipped default, exactly the behaviour #130 requires an
+	// unconfigured deployment to keep. Changed only through
+	// SetMaxInputBytes, meant to be called at most once, at startup, the
+	// same one-shot-config rule defaultRuntime above follows.
+	maxInputBytes int
 }
 
 // New constructs a Service without durable state. See NewWithState.
@@ -173,6 +183,10 @@ func newService(self fleet.MachineId) *Service {
 		local:     make(map[fleet.RuntimeId]driver.Driver),
 		peers:     make(map[fleet.MachineId]driver.Driver),
 		events:    newHub(self, now.UTC().Format(time.RFC3339Nano)),
+		// #130: every instance starts with the shipped default in force,
+		// not a zero value a caller could mistake for "no limit" — see the
+		// field's own doc comment.
+		maxInputBytes: defaultMaxInputBytes,
 	}
 }
 
@@ -305,6 +319,54 @@ func (s *Service) DefaultRuntime() fleet.RuntimeId {
 	return s.defaultRuntime
 }
 
+// maxInputBytesCeiling bounds a configured limit from above — colab-fleet
+// #130: "a value large enough to be meaningless should be refused with a
+// clear reason rather than silently honoured." A composer is for a prompt,
+// not a document; #128 already established that detailed briefing material
+// belongs in a file the agent reads deliberately, and #114's own rationale
+// names that same case as far below any value this cap should ever need to
+// allow. 1 MiB is comfortably past any legitimate prompt while still small
+// enough to catch the likely mistake this validation exists for — a byte
+// count where a kilobyte or megabyte count was meant.
+const maxInputBytesCeiling = 1 << 20 // 1 MiB
+
+// SetMaxInputBytes configures this machine's limit on `prompt` (create) and
+// `text` (input) — colab-fleet #130. Meant to be called at most once, at
+// startup, before this instance serves any request — the same one-shot rule
+// SetDefaultRuntime documents above: an invalid value is a message an
+// operator reads once at boot, never a refusal manufactured per request.
+//
+// n must be strictly positive and strictly below maxInputBytesCeiling;
+// anything else is refused with a reason naming both the value and the
+// bound it broke, following this repo's posture of refusing loudly rather
+// than substituting a default (#114's own rationale for the limit itself).
+func (s *Service) SetMaxInputBytes(n int) error {
+	if n <= 0 {
+		return fmt.Errorf("service: maxInputBytes must be positive, got %d (#130)", n)
+	}
+	if n >= maxInputBytesCeiling {
+		return fmt.Errorf(
+			"service: maxInputBytes %d is at or above the %d-byte ceiling (#130): "+
+				"detailed content belongs in a file the agent reads deliberately (#128), not a composer",
+			n, maxInputBytesCeiling)
+	}
+	s.mu.Lock()
+	s.maxInputBytes = n
+	s.mu.Unlock()
+	return nil
+}
+
+// MaxInputBytes reports this machine's effective limit on `prompt` (create)
+// and `text` (input) — colab-fleet #130. Always positive: constructed with
+// defaultMaxInputBytes in force, and only ever replaced by SetMaxInputBytes
+// with another positive value, so there is no unset state a caller could
+// read as "no limit."
+func (s *Service) MaxInputBytes() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.maxInputBytes
+}
+
 func (s *Service) localDrivers() []driver.Driver {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -432,7 +494,10 @@ func (s *Service) callList(ctx context.Context, req fleet.Request, machine fleet
 // the first. See the root package's doc comment findings list.
 func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDeadline time.Duration) (fleet.Collection[fleet.MachineInfo], error) {
 	now := time.Now()
-	items := []fleet.MachineInfo{{Machine: s.self, Self: true, Status: fleet.SourceOK, ObservedAt: now, Build: s.build}}
+	items := []fleet.MachineInfo{{
+		Machine: s.self, Self: true, Status: fleet.SourceOK, ObservedAt: now,
+		Build: s.build, MaxInputBytes: s.MaxInputBytes(),
+	}}
 	sources := []fleet.SourceStatus{{Machine: s.self, Status: fleet.SourceOK, ObservedAt: now}}
 
 	for machine, d := range s.peerDrivers() {
@@ -459,7 +524,20 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 		if reporter, ok := d.(driver.BuildReporter); ok {
 			build = reporter.Build()
 		}
-		items = append(items, fleet.MachineInfo{Machine: machine, Self: false, Status: status, ObservedAt: observed, Build: build})
+		// A peer's effective input limit, learned the same way and stale in
+		// the same manner as its build (colab-fleet #130): a driver that
+		// has never implemented or never probed this reports the zero
+		// value, which — unlike Build's Known flag — needs no separate
+		// marker, because a real effective limit is never zero (see
+		// MachineInfo.MaxInputBytes).
+		var maxInputBytes int
+		if reporter, ok := d.(driver.MaxInputBytesReporter); ok {
+			maxInputBytes = reporter.MaxInputBytes()
+		}
+		items = append(items, fleet.MachineInfo{
+			Machine: machine, Self: false, Status: status, ObservedAt: observed,
+			Build: build, MaxInputBytes: maxInputBytes,
+		})
 		sources = append(sources, fleet.SourceStatus{Machine: machine, Status: status, Error: errText, ObservedAt: observed})
 	}
 

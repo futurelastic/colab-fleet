@@ -63,6 +63,7 @@ GET /v1/health
 → 200 { "epoch": "...", "cursor": 12904, "startedAt": "...",
         "build": { "known": true, "revision": "...", "modified": false,
                    "time": "...", "go": "go1.26.5" },
+        "maxInputBytes": 1024,
         "drivers": [...] }
 
 GET /v1/machines
@@ -70,7 +71,8 @@ GET /v1/machines
                      "observedAt": "...",
                      "build": { "known": true, "revision": "...",
                                 "modified": false, "time": "...",
-                                "go": "go1.26.5" } } ],
+                                "go": "go1.26.5" },
+                     "maxInputBytes": 1024 } ],
         "sources": [...], "complete": true }
 
 GET /v1/runtimes
@@ -139,6 +141,19 @@ rejected. Before a peer has ever been reached, or for a peer driver that
 cannot report one, its entry carries the zero value (`known: false`) — that
 means "not yet observed", the same meaning `assumed` carries elsewhere on
 this page, not "running old code."
+
+**`maxInputBytes` is this machine's effective limit on `prompt` (create) and
+`text` (input)** (colab-fleet #130) — the same ask-do-not-infer move #121
+made for `build`, applied to the length cap §3.3 documents below: a caller
+sizing a dispatch brief can ask rather than discover the boundary by
+exceeding it. It matters more once the value is machine-local (§3.3 again)
+and can differ across the fleet — a caller talking to two machines cannot
+assume one number. `GET /v1/health` reports this machine's own value
+directly; `/v1/machines` carries it per entry the same way it carries
+`build`: self is always known and positive, a peer is whatever the last
+successful probe learned. Unlike `build`, an unanswered peer's entry needs
+no separate `known` flag — a real effective limit is never zero, so the
+zero value is unambiguous on its own as "not yet observed."
 
 ### 3.2 Sessions
 
@@ -231,15 +246,22 @@ rejected with `invalid`. The rationale is §10: a timed-out federated create
 that gets retried produces two agents writing to the same working directory,
 and the caller cannot detect it afterwards.
 
-**`prompt` is capped at 1024 bytes.** Over that, the create is rejected
-outright — `invalid` (400) naming the limit and the caller's actual size —
-instead of being accepted and left to strand in the composer with no
-delivery receipt to explain why (colab-fleet #114, #110, #112: the creation
-path measurably strands even shorter prompts than `input` does). This is a
-conservative default, not the bisected true failure boundary, which #114
-leaves as open work. A caller with more to send should write it somewhere
-the agent can read deliberately and pass only a short pointer here — the
-same workaround #112 already adopted ad hoc.
+**`prompt` is capped by this machine's effective limit** — 1024 bytes by
+default, and a machine setting rather than a compiled-in constant since
+colab-fleet #130 (see `maxInputBytes` in §3.1 for how to read it without
+triggering it). Over that, the create is rejected outright — `invalid`
+(400) naming the limit and the caller's actual size — instead of being
+accepted and left to strand in the composer with no delivery receipt to
+explain why (colab-fleet #114, #110, #112: the creation path measurably
+strands even shorter prompts than `input` does). 1024 is a conservative
+default, not the bisected true failure boundary, which #114 leaves as open
+work; #130 argues the mechanism behind that boundary may be startup timing
+rather than size at all, and deliberately keeps the default unchanged while
+making the limit configurable — raising it is a separate decision that
+follows a bisect (#129), on evidence, per machine. A caller with more to
+send should write it somewhere the agent can read deliberately and pass
+only a short pointer here — the same workaround #112 already adopted ad
+hoc.
 
 **The driver that served the create builds this response, not the service
 layer relaying the caller's own request back at it** (colab-fleet #84, #85,
@@ -659,8 +681,8 @@ This is capability-detected per target, never a caller choice: the same call
 shape, the same endpoint, a richer answer only when that surface was actually
 used for this delivery.
 
-**`text` is capped at 1024 bytes, the same limit `prompt` carries on
-create** (colab-fleet #114). Over that, the call is rejected outright —
+**`text` is capped by the same effective limit `prompt` carries on create**
+(colab-fleet #114, #130). Over that, the call is rejected outright —
 `invalid` (400) naming the limit and the caller's actual size — before any
 driver is even resolved, rather than reaching the composer and stranding
 there with no exit but `resumeIfStranded` or destroying the session. Chunk

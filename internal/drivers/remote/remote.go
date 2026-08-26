@@ -168,6 +168,11 @@ type Driver struct {
 	// is stale in the same manner: a peer that has restarted onto new code
 	// has not told us, and will not until something asks again.
 	build fleet.Build
+	// maxInputBytes is the peer's own effective input-length limit
+	// (colab-fleet #130), learned on the same /v1/health probe as build
+	// and cached the same way: zero until the peer has answered at least
+	// once, which is honest — see driver.MaxInputBytesReporter.
+	maxInputBytes int
 }
 
 // Option configures a Driver.
@@ -371,15 +376,17 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 		d.runtime = ri.Runtime
 		d.mu.Unlock()
 
-		// Learn which code the peer is running, on the same probe rather
-		// than a second one. Failure here is deliberately not propagated:
-		// build identity is diagnostic, and a peer that answers /v1/runtimes
-		// but not /v1/health is still a working peer. Losing the deadline we
-		// just learned in order to report a missing diagnostic would trade a
-		// correctness property for an informational one.
-		if b, err := d.peerBuild(ctx, req); err == nil {
+		// Learn which code the peer is running, and its effective input
+		// limit, on the same probe rather than a second one each. Failure
+		// here is deliberately not propagated: both are diagnostic, and a
+		// peer that answers /v1/runtimes but not /v1/health is still a
+		// working peer. Losing the deadline we just learned in order to
+		// report a missing diagnostic would trade a correctness property
+		// for an informational one.
+		if h, err := d.peerHealth(ctx, req); err == nil {
 			d.mu.Lock()
-			d.build = b
+			d.build = h.Build
+			d.maxInputBytes = h.MaxInputBytes
 			d.mu.Unlock()
 		}
 		return nil
@@ -387,15 +394,24 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 	return fmt.Errorf("remote: peer %q reported no runtimes for itself", d.machine)
 }
 
-// peerBuild reads the peer's build identity from its health endpoint.
-func (d *Driver) peerBuild(ctx context.Context, req fleet.Request) (fleet.Build, error) {
-	var body struct {
-		Build fleet.Build `json:"build"`
-	}
+// peerHealthBody is the subset of GET /v1/health this driver reads to learn
+// facts about the peer it fronts — build identity (#121) and, since #130,
+// the peer's own effective input-length limit. One struct and one call for
+// both, rather than a probe per fact, because they are learned the same way
+// and go stale the same way.
+type peerHealthBody struct {
+	Build         fleet.Build `json:"build"`
+	MaxInputBytes int         `json:"maxInputBytes"`
+}
+
+// peerHealth reads the subset of the peer's health endpoint this driver
+// caches.
+func (d *Driver) peerHealth(ctx context.Context, req fleet.Request) (peerHealthBody, error) {
+	var body peerHealthBody
 	if err := d.do(ctx, req, http.MethodGet, "/v1/health", nil, &body); err != nil {
-		return fleet.Build{}, err
+		return peerHealthBody{}, err
 	}
-	return body.Build, nil
+	return body, nil
 }
 
 // noteSuccessfulContact opportunistically re-probes this peer's capabilities
@@ -464,6 +480,19 @@ func (d *Driver) Build() fleet.Build {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.build
+}
+
+// MaxInputBytes reports what the peer said its own effective input-length
+// limit was, if it has ever said. Implements driver.MaxInputBytesReporter
+// (colab-fleet #130), which is how internal/service.ListMachines surfaces
+// it per peer on GET /v1/machines.
+//
+// Zero means "never answered" — see fleet.MachineInfo.MaxInputBytes for why
+// that reading is unambiguous here without a separate Known flag.
+func (d *Driver) MaxInputBytes() int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.maxInputBytes
 }
 
 // CapabilitiesKnown reports whether the peer has ever answered. It is the

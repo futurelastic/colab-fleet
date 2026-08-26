@@ -410,6 +410,22 @@ func main() {
 		log.Printf("colab-fleetd: default runtime %q configured for bare-id resolution (§60)", cfgFile.DefaultRuntime)
 	}
 
+	// The `prompt` (create) / `text` (input) length limit, made a machine
+	// setting by colab-fleet #130 instead of a compiled-in constant.
+	// Config-file-only and validated here for the same reason DefaultRuntime
+	// is just above: a typo or a meaningless value should fail startup once,
+	// not turn into a confusing refusal on the first caller that hits it.
+	// Zero (absent from the file) is left alone deliberately — Service
+	// already starts with the shipped default in force, and #130 requires
+	// an unconfigured deployment to behave exactly as it did before this
+	// setting existed.
+	if cfgFile != nil && cfgFile.MaxInputBytes != 0 {
+		if err := svc.SetMaxInputBytes(cfgFile.MaxInputBytes); err != nil {
+			log.Fatalf("colab-fleetd: %v", err)
+		}
+		log.Printf("colab-fleetd: input length limit %d bytes configured (#130)", cfgFile.MaxInputBytes)
+	}
+
 	// --- peers ---------------------------------------------------------
 	//
 	// A peer that is unreachable right now is still a configured peer:

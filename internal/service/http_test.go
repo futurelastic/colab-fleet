@@ -219,7 +219,7 @@ func TestCreateSession_OverLongPromptIs400(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{
 		"runtime": "stub", "cwd": "/tmp",
-		"prompt": strings.Repeat("x", maxInputBytes+1),
+		"prompt": strings.Repeat("x", defaultMaxInputBytes+1),
 	})
 	req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions", body)
 	req.Header.Set("Idempotency-Key", "key-1")
@@ -230,14 +230,14 @@ func TestCreateSession_OverLongPromptIs400(t *testing.T) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (#114: prompt over %d bytes must be rejected outright)", resp.StatusCode, maxInputBytes)
+		t.Fatalf("status = %d, want 400 (#114: prompt over %d bytes must be rejected outright)", resp.StatusCode, defaultMaxInputBytes)
 	}
 	env := decodeError(t, resp)
 	if env.Error.Kind != fleet.ErrorInvalid {
 		t.Fatalf("error kind = %q, want %q", env.Error.Kind, fleet.ErrorInvalid)
 	}
-	if !strings.Contains(env.Error.Message, "prompt") || !strings.Contains(env.Error.Message, strconv.Itoa(maxInputBytes)) {
-		t.Fatalf("message = %q, want it to name the field and the %d-byte limit", env.Error.Message, maxInputBytes)
+	if !strings.Contains(env.Error.Message, "prompt") || !strings.Contains(env.Error.Message, strconv.Itoa(defaultMaxInputBytes)) {
+		t.Fatalf("message = %q, want it to name the field and the %d-byte limit", env.Error.Message, defaultMaxInputBytes)
 	}
 }
 
@@ -401,7 +401,7 @@ func TestSendInput_OverLongTextIs400(t *testing.T) {
 	_, srv := newTestServer(t)
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"text": strings.Repeat("x", maxInputBytes+1),
+		"text": strings.Repeat("x", defaultMaxInputBytes+1),
 	})
 	req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions/some-id/input", body)
 	resp, err := http.DefaultClient.Do(req)
@@ -411,14 +411,14 @@ func TestSendInput_OverLongTextIs400(t *testing.T) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (#114: text over %d bytes must be rejected outright)", resp.StatusCode, maxInputBytes)
+		t.Fatalf("status = %d, want 400 (#114: text over %d bytes must be rejected outright)", resp.StatusCode, defaultMaxInputBytes)
 	}
 	env := decodeError(t, resp)
 	if env.Error.Kind != fleet.ErrorInvalid {
 		t.Fatalf("error kind = %q, want %q", env.Error.Kind, fleet.ErrorInvalid)
 	}
-	if !strings.Contains(env.Error.Message, "text") || !strings.Contains(env.Error.Message, strconv.Itoa(maxInputBytes)) {
-		t.Fatalf("message = %q, want it to name the field and the %d-byte limit", env.Error.Message, maxInputBytes)
+	if !strings.Contains(env.Error.Message, "text") || !strings.Contains(env.Error.Message, strconv.Itoa(defaultMaxInputBytes)) {
+		t.Fatalf("message = %q, want it to name the field and the %d-byte limit", env.Error.Message, defaultMaxInputBytes)
 	}
 }
 
