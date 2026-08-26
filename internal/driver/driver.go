@@ -379,3 +379,22 @@ type KeySender interface {
 type CounterReporter interface {
 	Counters() map[string]int64
 }
+
+// BuildReporter is another OPTIONAL capability, same shape as
+// CounterReporter: a driver fronting a PEER machine that has learned, by
+// probing that peer's own /v1/health, which code it is running.
+//
+// Optional rather than a Driver method because a LOCAL driver's build is
+// this service's own — already known as fleet.SelfBuild() at construction,
+// with nothing to probe — so forcing every driver to implement a method
+// that would only ever repeat that same self-evident value is a stub
+// written for no reader. Only a driver fronting a peer ever has something
+// worth saying here, and only the remote driver implements it today.
+//
+// A driver that does not implement this interface must read as an unknown
+// build (fleet.Build{}, Known: false) to its caller, never as a zero value
+// that looks like a plausible answer — colab-fleet #121, and the same
+// discipline fleet.Build's own doc comment states for §5.7.
+type BuildReporter interface {
+	Build() fleet.Build
+}

@@ -455,6 +455,8 @@ func (d *Driver) Runtime() fleet.RuntimeId {
 }
 
 // Build reports what the peer said it was running, if it has ever said.
+// Implements driver.BuildReporter (colab-fleet #121), which is how
+// internal/service.ListMachines surfaces it per peer on GET /v1/machines.
 //
 // An unknown build and a matching build must not be conflated — see
 // fleet.Build.SameAs, which refuses to call anything unknown "the same".

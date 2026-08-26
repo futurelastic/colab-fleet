@@ -67,7 +67,10 @@ GET /v1/health
 
 GET /v1/machines
 → 200 { "items": [ { "machine": "...", "self": true, "status": "ok",
-                     "observedAt": "..." } ],
+                     "observedAt": "...",
+                     "build": { "known": true, "revision": "...",
+                                "modified": false, "time": "...",
+                                "go": "go1.26.5" } } ],
         "sources": [...], "complete": true }
 
 GET /v1/runtimes
@@ -114,6 +117,17 @@ comparing builds **must** treat an unstamped or `modified` build as
 *unverifiable* rather than as equal — an unmodified pair of equal revisions is
 the only comparison that means anything, and the failure this field exists to
 catch is precisely a confident conclusion drawn from an absent measurement.
+
+**`/v1/machines` carries the same `build` object per entry** (colab-fleet
+#121) — self is always known (read once at startup), a peer is whatever the
+last successful probe learned. This is the answer to "is a merged guard live
+here": compare `revision` against the commit that added the guard, or two
+peers' `build` objects against each other with `Build.SameAs` — never by
+sending the input the guard exists to reject just to observe whether it is
+rejected. Before a peer has ever been reached, or for a peer driver that
+cannot report one, its entry carries the zero value (`known: false`) — that
+means "not yet observed", the same meaning `assumed` carries elsewhere on
+this page, not "running old code."
 
 ### 3.2 Sessions
 

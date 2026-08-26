@@ -600,6 +600,119 @@ func TestRuntimesIncludesPeersAndMarksUnconfirmedOnes(t *testing.T) {
 	}
 }
 
+// TestMachinesIncludesSelfBuild proves colab-fleet #121's acceptance test:
+// a caller can read what code this service itself is running from the same
+// listing it already polls for peer status, without sending anything that
+// would exercise a guard it wants to confirm is live.
+func TestMachinesIncludesSelfBuild(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	req := authedRequest(t, http.MethodGet, srv.URL+"/v1/machines", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		Items []fleet.MachineInfo `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	var sawSelf bool
+	for _, it := range body.Items {
+		if !it.Self {
+			continue
+		}
+		sawSelf = true
+		if it.Build.Go == "" {
+			t.Error("self entry's build carries no Go toolchain version; the field was never wired to /v1/machines")
+		}
+	}
+	if !sawSelf {
+		t.Fatal("no self entry in /v1/machines")
+	}
+}
+
+// peerBuildDriver is a peer whose Build() is scripted directly — the
+// smallest fake that proves ListMachines reads driver.BuildReporter without
+// standing up a real remote.Driver and HTTP peer.
+type peerBuildDriver struct {
+	stub.Driver
+	build fleet.Build
+}
+
+func (p *peerBuildDriver) Build() fleet.Build { return p.build }
+
+var _ driver.BuildReporter = (*peerBuildDriver)(nil)
+
+// TestMachinesIncludesPeerBuildWhenDriverReportsIt proves colab-fleet #121's
+// core ask: skew between two peers is visible in the same read that already
+// tells a caller each peer's status, not just in this service's own
+// /v1/health.
+func TestMachinesIncludesPeerBuildWhenDriverReportsIt(t *testing.T) {
+	svc := New("testbox")
+	want := fleet.Build{Known: true, Revision: "abc123def456"}
+	if err := svc.RegisterPeerDriver("otherbox", &peerBuildDriver{
+		Driver: stub.Driver{DeadlineMs: 500},
+		build:  want,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	col, err := svc.ListMachines(context.Background(), fleet.Request{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawPeer bool
+	for _, it := range col.Items() {
+		if it.Machine != "otherbox" {
+			continue
+		}
+		sawPeer = true
+		if got := it.Build; got != want {
+			t.Errorf("peer build = %+v, want %+v", got, want)
+		}
+	}
+	if !sawPeer {
+		t.Fatal("no otherbox entry in /v1/machines")
+	}
+}
+
+// TestMachinesReportsUnknownBuildForAPeerThatNeverAnswered proves the other
+// half of #121's constraint: a peer driver that cannot report a build (never
+// probed, or a driver type that has nothing to say) must read as unknown —
+// Known: false — never as a zero value that looks like a plausible answer.
+func TestMachinesReportsUnknownBuildForAPeerThatNeverAnswered(t *testing.T) {
+	svc := New("testbox")
+	if err := svc.RegisterPeerDriver("otherbox", &stub.Driver{DeadlineMs: 500}); err != nil {
+		t.Fatal(err)
+	}
+
+	col, err := svc.ListMachines(context.Background(), fleet.Request{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawPeer bool
+	for _, it := range col.Items() {
+		if it.Machine != "otherbox" {
+			continue
+		}
+		sawPeer = true
+		if it.Build.Known {
+			t.Errorf("peer build reported Known: true with nothing behind it: %+v", it.Build)
+		}
+	}
+	if !sawPeer {
+		t.Fatal("no otherbox entry in /v1/machines")
+	}
+}
+
 // peerCapsDriver is a peer whose Capabilities() and Runtime() are scripted
 // directly, so ListRuntimes's fallback-row decision (colab-fleet #67) can be
 // exercised without standing up a real remote.Driver and HTTP peer.

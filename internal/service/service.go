@@ -432,7 +432,7 @@ func (s *Service) callList(ctx context.Context, req fleet.Request, machine fleet
 // the first. See the root package's doc comment findings list.
 func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDeadline time.Duration) (fleet.Collection[fleet.MachineInfo], error) {
 	now := time.Now()
-	items := []fleet.MachineInfo{{Machine: s.self, Self: true, Status: fleet.SourceOK, ObservedAt: now}}
+	items := []fleet.MachineInfo{{Machine: s.self, Self: true, Status: fleet.SourceOK, ObservedAt: now, Build: s.build}}
 	sources := []fleet.SourceStatus{{Machine: s.self, Status: fleet.SourceOK, ObservedAt: now}}
 
 	for machine, d := range s.peerDrivers() {
@@ -448,7 +448,18 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 			errText = fmt.Sprintf("no answer within %s", deadline)
 		}
 		observed := time.Now()
-		items = append(items, fleet.MachineInfo{Machine: machine, Self: false, Status: status, ObservedAt: observed})
+		// A peer's build is whatever the last successful probe learned —
+		// driver.BuildReporter, not a fresh call on this request's path (the
+		// probe that populates it rides RefreshCapabilities/reconcile, same
+		// as Runtime()). A driver that never implements it — every local
+		// driver, and any peer this service has never reached — reports the
+		// zero value, which is Known: false: colab-fleet #121 requires this
+		// read as unknown, never as a default that looks like an answer.
+		build := fleet.Build{}
+		if reporter, ok := d.(driver.BuildReporter); ok {
+			build = reporter.Build()
+		}
+		items = append(items, fleet.MachineInfo{Machine: machine, Self: false, Status: status, ObservedAt: observed, Build: build})
 		sources = append(sources, fleet.SourceStatus{Machine: machine, Status: status, Error: errText, ObservedAt: observed})
 	}
 
