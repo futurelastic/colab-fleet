@@ -3777,6 +3777,54 @@ func TestPendingCreateRecordExplainsWhyWhileStillWaiting(t *testing.T) {
 	}
 }
 
+// colab-fleet #126: the same live diagnosis #125 proved above must also
+// carry a machine-readable class — a caller must be able to tell needs a
+// human keypress · composer occupied · still starting apart WITHOUT parsing
+// the prose. Three fixtures exercise the three classes this driver can
+// currently name; see fleet.WaitingReason's own doc for why these three.
+func TestPendingCreateRecordCarriesAMachineReadableClass(t *testing.T) {
+	cases := []struct {
+		name    string
+		capture string
+		want    fleet.WaitingReason
+	}{
+		{"parked on a dialog", fixtureTrustPrompt, fleet.WaitingPrompt},
+		{"composer holds unsent text", fixtureUnsent, fleet.WaitingUnsentInput},
+		{"no composer painted yet", "  loading...\n", fleet.WaitingStarting},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h, d := newSettleHarness(t, c.capture, false) // screen never moves on its own
+			ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+			const cwd = "/work/alpha"
+			const text = "the work it was created for"
+			d.noteCreateRecord(ref.ID, cwd, fleet.SessionSpec{Cwd: cwd, Prompt: text})
+
+			go d.settleNewSession(testCaller, ref, fleet.SessionSpec{Cwd: cwd, Prompt: text})
+
+			waitFor(t, "the pending record to carry a class", func() bool {
+				rec, ok := d.createRecordFor(ref.ID, cwd)
+				return ok && rec.PromptWaitingOn != ""
+			})
+
+			rec, ok := d.createRecordFor(ref.ID, cwd)
+			if !ok {
+				t.Fatal("create record vanished")
+			}
+			if got := fleet.WaitingReason(rec.PromptWaitingOn); got != c.want {
+				t.Errorf("PromptWaitingOn = %q, want %q", got, c.want)
+			}
+			if rec.PromptOutcome != "" {
+				t.Fatalf("PromptOutcome = %q, want still empty — this fixture never "+
+					"resolves on its own", rec.PromptOutcome)
+			}
+			if got := h.keysPressed(); len(got) != 0 {
+				t.Errorf("the driver answered a question nobody consented to: %v", got)
+			}
+		})
+	}
+}
+
 // Consent is spent once. A trust question still on screen at the next poll —
 // the keypress has not repainted yet — must not be answered twice: the second
 // digit lands in whatever screen replaced it.

@@ -29,9 +29,13 @@ func TestOutcome_RejectsUnknownValue(t *testing.T) {
 }
 
 // colab-fleet #86: a pending delivery must round-trip with Outcome absent —
-// never asserting an outcome that has not resolved.
+// never asserting an outcome that has not resolved. WaitingOn is left
+// unclassified here on purpose: this test is about Outcome's own null
+// semantics, and an empty WaitingOn keeps the wire shape exactly what #86
+// pinned before #126 added the field — see TestPromptDelivery_WaitingOn-
+// RoundTrips, below, for the class field's own round trip.
 func TestPromptDelivery_PendingRoundTrips(t *testing.T) {
-	out := PromptPending("accepted at creation, not yet delivered")
+	out := PromptPending("", "accepted at creation, not yet delivered")
 	b, err := json.Marshal(out)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -48,6 +52,39 @@ func TestPromptDelivery_PendingRoundTrips(t *testing.T) {
 	}
 	if back.Evidence != out.Evidence {
 		t.Errorf("Evidence = %q, want %q", back.Evidence, out.Evidence)
+	}
+	if back.WaitingOn != "" {
+		t.Errorf("WaitingOn = %q, want empty (unclassified)", back.WaitingOn)
+	}
+}
+
+// colab-fleet #126: WaitingOn round-trips alongside Evidence while a
+// delivery is pending, and the wire carries it under its own name rather
+// than folded into evidence's prose.
+func TestPromptDelivery_WaitingOnRoundTrips(t *testing.T) {
+	for _, want := range []WaitingReason{WaitingPrompt, WaitingUnsentInput, WaitingStarting} {
+		out := PromptPending(want, "diagnosis for "+string(want))
+		b, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("waitingOn=%q: Marshal: %v", want, err)
+		}
+		var back PromptDelivery
+		if err := json.Unmarshal(b, &back); err != nil {
+			t.Fatalf("waitingOn=%q: Unmarshal: %v", want, err)
+		}
+		if back.WaitingOn != want {
+			t.Errorf("waitingOn=%q: round trip gave %q", want, back.WaitingOn)
+		}
+		if back.Outcome != nil {
+			t.Errorf("waitingOn=%q: Outcome = %v, want nil (still pending)", want, back.Outcome)
+		}
+	}
+
+	// Resolved deliveries never carry a class — WaitingOn is meaningful only
+	// while Outcome is nil (this type's own doc).
+	resolved := PromptDelivered(OutcomeSubmitted, "delivered")
+	if resolved.WaitingOn != "" {
+		t.Errorf("a resolved PromptDelivery carries WaitingOn = %q, want empty", resolved.WaitingOn)
 	}
 }
 
@@ -102,7 +139,7 @@ func TestPromptDelivery_RefusesToPresentSomethingItCannotSupport(t *testing.T) {
 		t.Errorf("an unrecognised outcome must not decode, got %+v", back)
 	}
 
-	good := PromptPending("not resolved yet")
+	good := PromptPending(WaitingUnsentInput, "not resolved yet")
 	b, err := json.Marshal(good)
 	if err != nil {
 		t.Fatalf("a well-formed value must encode: %v", err)

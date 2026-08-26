@@ -109,8 +109,17 @@ func (c *Confidence) UnmarshalJSON(b []byte) error {
 // means the driver has no opinion on when the status started; a driver that
 // knows must say so, not synthesize a value it doesn't have (§5.2 again,
 // applied to a single field).
-// WaitingReason says WHY a session is `waiting_input`, when the driver can
-// tell.
+// WaitingReason is the closed vocabulary for WHY a caller is being made to
+// wait, when the driver can tell. It has two homes, gated differently:
+//
+//   - SessionState.WaitingOn, below — populated only when Status is
+//     `waiting_input`; empty for every other status. Unchanged by #126.
+//   - PromptDelivery.WaitingOn (delivery.go, colab-fleet #126) — populated
+//     while a create's initial prompt is still pending, independent of the
+//     session's own Status: a session correctly reading `idle` or `starting`
+//     can still be carrying an undelivered prompt, which is exactly why that
+//     field cannot simply reuse this one (see PromptDelivery's own doc for
+//     the measured harm that would cause).
 //
 // # Why this had to exist the moment there was a second reason
 //
@@ -132,6 +141,42 @@ func (c *Confidence) UnmarshalJSON(b []byte) error {
 // must not be parsed, and this project has already paid twice for matching
 // sentences that later changed.
 //
+// # colab-fleet #126: a third value, for a cause `waiting_input` never covered
+//
+// #126 measured seven distinct things that stop a session doing its work, on
+// a live fleet, all reading identically through this API as "the session did
+// not start". Two of the three classes the issue asked to be told apart at
+// minimum were already this type's job: a dialog on screen is WaitingPrompt,
+// and `SessionPrompt.Kind` already tells a folder-trust dialog from a
+// tool-permission one apart in practice — kept exactly as it was, because
+// #126 explicitly asked for that discipline to continue rather than be
+// replaced. The third — the interface has not painted a composer AT ALL yet
+// — had no equivalent for PromptDelivery.WaitingOn: `StatusStarting` already
+// names the identical fact on SessionState as a whole, but that Status can
+// read anything (a session can be `idle` with a prompt still pending, per
+// PromptDelivery's own doc), so the create-time diagnosis needed its own
+// value. WaitingStarting, below, closes that gap — and only for
+// PromptDelivery.WaitingOn; it is never set on SessionState.WaitingOn, which
+// already has StatusStarting for the same fact and would be redundant with
+// it there.
+//
+// Not claimed to be exhaustive — #126's own issue says so explicitly: seven
+// measured causes is evidence the number is greater than two, not a closed
+// catalogue. Two of the remaining four are already answered by other,
+// existing fields rather than folded in here: a mid-turn runtime failure is a
+// fact about the LAST TURN, not about what a caller is waiting on right now,
+// and already has TurnEnd for exactly that reason; a composer occupied by
+// THIS driver's own earlier stranded delivery is not split out from
+// WaitingUnsentInput on PromptDelivery, because at the point that field is
+// computed — before this driver has ever delivered anything into the
+// brand-new session a create's own prompt is addressed to — text already
+// sitting in the composer cannot yet be this driver's own residue, so the two
+// causes are not yet confusable the way they could be for a session already
+// delivered to. The remaining two (a size-rejected send, and a control
+// surface that never reaches this service at all) are, respectively, already
+// fixed at a different boundary (#114) and a different layer's failure to
+// classify, not this type's.
+//
 // # Absent means unclassified, not "no reason"
 //
 // §5.7 again. A driver that knows why says so; one that does not leaves this
@@ -146,6 +191,14 @@ const (
 	// is the age, and the age is what separates somebody mid-thought from
 	// text nobody is coming back for.
 	WaitingUnsentInput WaitingReason = "unsent-input"
+	// WaitingStarting (colab-fleet #126): the runtime has not painted an
+	// interface capable of receiving input at all yet — no composer, no
+	// dialog, nothing there to be blocked on. Distinct from both values
+	// above: nothing is waiting on a human's answer and no text is sitting
+	// unsent, because there is simply nothing painted yet to hold either.
+	// Used on PromptDelivery.WaitingOn only — see that type's own doc for
+	// why SessionState.WaitingOn does not need it.
+	WaitingStarting WaitingReason = "starting"
 )
 
 // QuotaBlock describes an account-level refusal that outlives the screen that

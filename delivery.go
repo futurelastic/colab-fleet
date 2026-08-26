@@ -152,6 +152,40 @@ type DeliveryReceipt struct {
 // so it carries the family's Evidence instead, and a driver holding a
 // DeliveryReceipt copies that receipt's Reason into it. One prose field, not
 // two.
+//
+// # WaitingOn: colab-fleet #126's machine-readable half of the pending diagnosis
+//
+// Evidence is prose no caller may parse (§2.3). #125 made that prose LIVE —
+// it changes as the reason a prompt has not landed yet changes — and #126 is
+// the finding that prose was, until this field existed, the ONLY answer:
+// seven distinct causes measured on a live fleet all read identically
+// through this API as "the session did not start", tellable apart only by a
+// human reading a dialog, a transcript, or a config file by hand.
+//
+// WaitingOn carries the same closed vocabulary WaitingReason already gives
+// SessionState.WaitingOn: a dialog is on screen (WaitingPrompt — Prompt still
+// carries the specific question, exactly as it already does for an ordinary
+// waiting_input session), the composer already holds text nobody has
+// submitted (WaitingUnsentInput), or the interface has not painted a
+// composer at all yet (WaitingStarting). It is set from the SAME
+// classification that produces Evidence, in the SAME call
+// (notePromptPending on the tmux driver), so the two can never drift into
+// disagreeing about the same wait.
+//
+// Deliberately its OWN field rather than a reuse of SessionState.WaitingOn:
+// that field is documented to mean something only when Status is
+// waiting_input, and the measured harm this type's own doc already states —
+// a session correctly reading `idle` while its prompt is still pending — is
+// exactly the shape where writing SessionState.WaitingOn would misrepresent
+// the present status. The same reasoning gave TurnEnd its own field rather
+// than folding it into Status.
+//
+// Empty means unclassified (§5.7) — before the very first readiness poll has
+// run, or a wait a driver has not taught this field about yet — never a
+// guess. Meaningful only while Outcome is nil; once delivery resolves this
+// driver leaves it at its zero value, the same way Evidence itself changes
+// meaning from live diagnosis to terminal receipt without a separate field
+// marking the switch.
 type PromptDelivery struct {
 	// Outcome is nil until delivery resolves. Once set it is the same value
 	// send() would have returned for the same delivery.
@@ -160,6 +194,10 @@ type PromptDelivery struct {
 	// Evidence is prose for humans, present in every state. Do not parse it
 	// (§2.3); branch on Outcome being nil or set.
 	Evidence string `json:"evidence"`
+
+	// WaitingOn is #126's machine-readable class for Evidence, meaningful
+	// only while Outcome is nil — see this type's own doc above.
+	WaitingOn WaitingReason `json:"waitingOn,omitempty"`
 }
 
 // PromptDelivered states a definite answer: delivery has resolved to
@@ -171,8 +209,10 @@ func PromptDelivered(outcome Outcome, evidence string) *PromptDelivery {
 // PromptPending records that a prompt was accepted at creation and its
 // delivery has not resolved yet — a real, temporary answer, never a
 // stand-in for "no prompt was sent" (the absent field) or for a loss.
-func PromptPending(evidence string) *PromptDelivery {
-	return &PromptDelivery{Evidence: evidence}
+// waitingOn is #126's machine-readable class for evidence; empty is a
+// legitimate "unclassified" (see PromptDelivery.WaitingOn), never a guess.
+func PromptPending(waitingOn WaitingReason, evidence string) *PromptDelivery {
+	return &PromptDelivery{WaitingOn: waitingOn, Evidence: evidence}
 }
 
 // ErrPromptDeliveryIncoherent is returned when a PromptDelivery would state

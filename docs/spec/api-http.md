@@ -280,7 +280,11 @@ one that never had a prompt at all (colab-fleet #86). Read `state.turns`
 alongside it now: `turns: 0` is what a session that never took a turn looks
 like, and a nonzero count is proof of the opposite — the prompt was received
 and at least one turn against it has already completed. Do not re-send
-through `input` while `promptDelivery` still holds.
+through `input` while `promptDelivery` still holds. While it does,
+`waitingOn` (colab-fleet #126) is the machine-readable class for `evidence` —
+`prompt`, `unsent-input`, or `starting` — so a caller can branch on WHY
+without parsing the prose; absent means this driver has not classified this
+particular wait.
 
 **A 201's `name` is what this machine asserted, not proof the runtime still
 carries it.** Nothing has read the session back yet, so `identityAssertion`

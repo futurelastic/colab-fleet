@@ -269,10 +269,26 @@ func TestPromptDeliveryFor(t *testing.T) {
 	if pending == nil || pending.Outcome != nil || pending.Evidence == "" {
 		t.Errorf("prompt carried, not yet resolved: got %+v, want pending with evidence", pending)
 	}
+	if pending.WaitingOn != "" {
+		t.Errorf("colab-fleet #126: no PromptWaitingOn was ever written, want WaitingOn empty "+
+			"(unclassified), got %q", pending.WaitingOn)
+	}
 	resolved := promptDeliveryFor(createRecord{
 		PromptCarried: true, PromptOutcome: string(fleet.OutcomeSubmitted), PromptEvidence: "e",
 	})
 	if resolved == nil || resolved.Outcome == nil || *resolved.Outcome != fleet.OutcomeSubmitted || resolved.Evidence != "e" {
 		t.Errorf("resolved delivery: got %+v, want submitted/e", resolved)
+	}
+	if resolved.WaitingOn != "" {
+		t.Errorf("colab-fleet #126: a resolved delivery must not carry a class, got %q", resolved.WaitingOn)
+	}
+
+	// #126: PromptWaitingOn travels alongside PromptEvidence while pending.
+	pendingClassified := promptDeliveryFor(createRecord{
+		PromptCarried: true, PromptEvidence: "parked on a dialog",
+		PromptWaitingOn: string(fleet.WaitingPrompt),
+	})
+	if pendingClassified == nil || pendingClassified.WaitingOn != fleet.WaitingPrompt {
+		t.Errorf("pending, classified: got %+v, want WaitingOn = %q", pendingClassified, fleet.WaitingPrompt)
 	}
 }

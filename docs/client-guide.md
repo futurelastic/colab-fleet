@@ -583,6 +583,14 @@ same busy-composer rule §7 already describes, but by the time you notice,
 you have already sent the same instruction twice as far as anyone watching
 the transcript can tell.
 
+**While `outcome` is `null`, `promptDelivery.waitingOn` (colab-fleet #126)
+tells you WHY without parsing `evidence`.** `prompt` means a dialog is up —
+`state.prompt` on the same session names the question; `unsent-input` means
+something is already sitting in the composer; `starting` means the runtime
+has not painted an interface at all yet. Absent means this driver has not
+classified this particular wait — not that nothing is wrong, just that
+nothing here has an answer for it yet.
+
 **`trustCwd` is your consent to one question, about the directory you just
 named.** Some runtimes ask, on the first session in a directory, whether you
 trust it — and they ask before the agent can do anything at all. On a fleet

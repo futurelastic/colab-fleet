@@ -3141,6 +3141,16 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // A caller reading the session mid-wait sees a diagnosis, not a mystery; #86's
 // terminal-outcome guarantee (never `null`, always a real value once delivery
 // is abandoned) is unchanged and sits alongside it, not instead of it.
+//
+// # colab-fleet #126: that reason is now a class too, not only prose
+//
+// The prose above is exactly what a human reads; it is not something a caller
+// can branch on. promptReadiness's readinessCheck.waitingOn carries the SAME
+// classification the prose is built from — a dialog is fleet.WaitingPrompt, a
+// composer holding other text is fleet.WaitingUnsentInput, no composer
+// painted at all is fleet.WaitingStarting — and rides along on the identical
+// call to notePromptPending, so PromptDelivery.WaitingOn and Evidence can
+// never disagree about the same wait.
 func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec fleet.SessionSpec) {
 	ctx := context.Background()
 
@@ -3207,7 +3217,7 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 			// only on change, so a long wait costs one write per state
 			// transition, not one every promptPollInterval.
 			if spec.Prompt != "" && check.reason != "" && check.reason != lastEvidence {
-				d.notePromptPending(ref.ID, check.reason)
+				d.notePromptPending(ref.ID, check.waitingOn, check.reason)
 				lastEvidence = check.reason
 			}
 		}
@@ -3506,6 +3516,14 @@ type readinessCheck struct {
 	// parsed (§2.3) — the same discipline every other Evidence field in this
 	// package holds itself to.
 	reason string
+	// waitingOn (colab-fleet #126) is the machine-readable class for reason,
+	// computed by the SAME branch that produces the prose so the two can
+	// never disagree — settleNewSession passes it straight through to
+	// notePromptPending. Empty on `ready` (nothing to wait on any more) and
+	// on a check this driver could not classify further than "checked but
+	// unhelpful" (the session was not visible, or its process had already
+	// exited) — unclassified there, never a guess.
+	waitingOn fleet.WaitingReason
 }
 
 func (d *Driver) promptReadiness(ctx context.Context, id string) readinessCheck {
@@ -3534,17 +3552,20 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) readinessCheck 
 			if p.Question != "" {
 				reason += fmt.Sprintf(" (%q)", p.Question)
 			}
-			return readinessCheck{checked: true, present: true, blocking: p, reason: reason}
+			return readinessCheck{checked: true, present: true, blocking: p, reason: reason,
+				waitingOn: fleet.WaitingPrompt}
 		}
 		text, found := composerText(sc)
 		if !found {
 			return readinessCheck{checked: true, present: true,
-				reason: "still starting: the interface has not painted a composer yet"}
+				reason:    "still starting: the interface has not painted a composer yet",
+				waitingOn: fleet.WaitingStarting}
 		}
 		if text != "" {
 			return readinessCheck{checked: true, present: true,
 				reason: "the composer already holds other text; waiting for it to " +
-					"clear before this prompt can be placed"}
+					"clear before this prompt can be placed",
+				waitingOn: fleet.WaitingUnsentInput}
 		}
 		return readinessCheck{checked: true, present: true, ready: true,
 			reason: "the composer is empty and ready"}

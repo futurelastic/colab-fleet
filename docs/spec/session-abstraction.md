@@ -185,6 +185,7 @@ Status =
 WaitingReason =
   | "prompt"          // a question is on screen; `prompt` carries it
   | "unsent-input"    // the composer holds text nobody submitted
+  | "starting"        // colab-fleet #126: no composer painted at all yet — PromptDelivery.waitingOn only
 
 QuotaBlock {
   since     : Timestamp   // when the refusal happened, per a driver able to say so; otherwise when this driver first saw the notice — evidence states which (#56)
@@ -727,8 +728,9 @@ resume still answers the first one every time it is listed, and carries no
 
 ```
 PromptDelivery {
-  outcome? : string    // "submitted" | "queued" | "refused" | "unknown"; nil until resolved
-  evidence : string    // prose for humans, present either way; never parse it
+  outcome?   : string        // "submitted" | "queued" | "refused" | "unknown"; nil until resolved
+  evidence   : string        // prose for humans, present either way; never parse it
+  waitingOn? : WaitingReason // colab-fleet #126: machine-readable class for `evidence`, while pending
 }
 ```
 
@@ -764,14 +766,33 @@ mid-wait sees a diagnosis, not a mystery. This does not add a fourth state —
 `outcome` absent + `evidence` is still the one pending state — it says what
 a driver owes the `evidence` string while it holds.
 
-**Why not a `SessionState.waitingOn` value instead.** `waitingOn` is
-documented as populated only when the session is `waiting_input`; the
-measured harm above is a session correctly reading `idle`. Reusing
-`waitingOn` there would mean either lying about the present status or
-breaking the field's own stated contract — the same reasoning already
-applied to `SessionState.LastTurn` in the Go doc comment: a fact about a past
-event that no status member carries without lying about the present gets its
-own field.
+**`waitingOn` is that same diagnosis, machine-readable (colab-fleet #126).**
+#125 fixed the case where nothing at all told a caller why a prompt was
+pending; #126 is the finding that "why" as prose only helps a human. Seven
+distinct causes measured on one fleet in one day all read identically through
+this API as "the session did not start" — a dialog on screen, a composer
+already occupied, a runtime not yet ready — and a control surface could not
+branch on any of them without parsing English a driver is free to reword.
+`waitingOn` carries `WaitingReason`'s same closed vocabulary — `prompt` for a
+dialog (`prompt` itself, §2.7, still names the specific question, exactly as
+it already does for an ordinary `waiting_input` session), `unsent-input` for
+an occupied composer, or `starting` for no composer painted at all yet — set
+from the SAME observation that produced `evidence` in the same write, so the
+two can never disagree about one wait. Absent means unclassified (§5.7): a
+driver that has not resolved the initial "which of these" question, or a
+cause outside the three above, leaves it out rather than guessing. Always
+absent once `outcome` resolves — it answers a question that only exists while
+pending.
+
+**Why this needed its own field rather than reusing `SessionState.waitingOn`.**
+`waitingOn` on `SessionState` is documented as populated only when the
+session is `waiting_input`; the measured harm above is a session correctly
+reading `idle`. Writing that field here would mean either lying about the
+present status or breaking its own stated contract — the same reasoning
+already applied to `SessionState.LastTurn` in the Go doc comment: a fact that
+no status member carries without lying about the present gets its own field.
+`PromptDelivery.waitingOn` is that field: same vocabulary, deliberately not
+the same slot on the session.
 
 **A caller reading this after a create that carried a prompt should wait for
 `outcome` to resolve, not treat `idle` as the signal** — see the client

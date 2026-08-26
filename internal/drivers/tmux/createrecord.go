@@ -74,6 +74,17 @@ type createRecord struct {
 	PromptCarried  bool   `json:"promptCarried,omitempty"`
 	PromptOutcome  string `json:"promptOutcome,omitempty"`
 	PromptEvidence string `json:"promptEvidence,omitempty"`
+
+	// PromptWaitingOn (colab-fleet #126) is the machine-readable class
+	// alongside PromptEvidence's prose, written by the SAME call
+	// (notePromptPending) that writes the evidence, so the two answers to
+	// "why is this prompt still pending" cannot disagree. Same two-era rule
+	// as PromptEvidence: meaningful while PromptOutcome is empty, and never
+	// written once it is set. Stored as plain string, the same choice
+	// PromptOutcome above makes and for the same reason — fleet.WaitingReason
+	// carries no round-trip risk either way (it validates nothing), so this
+	// is for pattern consistency with its sibling field, not necessity.
+	PromptWaitingOn string `json:"promptWaitingOn,omitempty"`
 }
 
 // createRecordFile is the durable document, one entry per session with a
@@ -154,12 +165,16 @@ func (d *Driver) notePromptDelivered(id string, outcome fleet.Outcome, evidence 
 // notePromptPending updates the LIVE reason a still-undelivered prompt has
 // not landed yet (colab-fleet #125) — called from settleNewSession's poll
 // loop every time that reason changes, never when delivery has resolved.
+// waitingOn is #126's machine-readable class for the same wait evidence
+// describes, computed by the same caller from the same observation; empty is
+// a legitimate "unclassified" (see fleet.WaitingReason's own doc), never a
+// guess.
 //
 // Refuses to write once PromptOutcome is set: a stale poll iteration racing
 // behind deliverInitialPrompt/the session-gone exit must never overwrite a
 // terminal evidence string with a pending one — the two eras of this field
 // (documented on createRecord.PromptEvidence) must not blend.
-func (d *Driver) notePromptPending(id string, evidence string) {
+func (d *Driver) notePromptPending(id string, waitingOn fleet.WaitingReason, evidence string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	rec, ok := d.createRecords[id]
@@ -170,6 +185,7 @@ func (d *Driver) notePromptPending(id string, evidence string) {
 		return
 	}
 	rec.PromptEvidence = evidence
+	rec.PromptWaitingOn = string(waitingOn)
 	d.createRecords[id] = rec
 	d.saveCreateRecordsLocked()
 }
@@ -253,7 +269,9 @@ func sessionFactsFor(cr createRecord, found bool, name string) (pins *fleet.PinO
 // below whenever notePromptPending has written a live diagnosis — the
 // generic sentence only fires in the brief window between noteCreateRecord
 // and this session's very first readiness poll, before any diagnosis exists
-// yet to report.
+// yet to report. #126: PromptWaitingOn travels alongside it unconditionally
+// — it is empty ("unclassified") in that same brief window, which is the
+// honest answer there too, not a special case to guard.
 func promptDeliveryFor(rec createRecord) *fleet.PromptDelivery {
 	if !rec.PromptCarried {
 		return nil
@@ -264,7 +282,7 @@ func promptDeliveryFor(rec createRecord) *fleet.PromptDelivery {
 			evidence = "the prompt was accepted at creation and has not been " +
 				"delivered yet; the session has not finished painting a composer to receive it"
 		}
-		return fleet.PromptPending(evidence)
+		return fleet.PromptPending(fleet.WaitingReason(rec.PromptWaitingOn), evidence)
 	}
 	return fleet.PromptDelivered(fleet.Outcome(rec.PromptOutcome), rec.PromptEvidence)
 }
