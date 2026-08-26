@@ -26,11 +26,44 @@ const (
 	// OutcomeUnknown means the input was sent but the outcome is
 	// unverifiable.
 	OutcomeUnknown Outcome = "unknown"
+
+	// The five values below are colab-fleet #119's own: a target's own
+	// inbox — reached only when a driver capability-detects one and
+	// delivers over it instead of the terminal surface (§2.4's four values
+	// above are the terminal-surface vocabulary; these are distinct rather
+	// than reused, because #119 was explicit that a richer vocabulary must
+	// not be mapped down onto the existing three just because current
+	// callers expect three values). OutcomeRefused above IS reused for an
+	// inbox refusal — same word, same shape (Reason explains why, the
+	// decision was made rather than left unresolved) — only these five
+	// have no honest existing analogue.
+
+	// OutcomeDelivered means the target's own inbox confirmed the message
+	// reached the session as a genuine turn.
+	OutcomeDelivered Outcome = "delivered"
+	// OutcomeHeld means the target's own inbox is holding the message for
+	// a human-approval step before it reaches the session. This is that
+	// runtime's own last human checkpoint in the delivery path; a caller
+	// must see it as held, never as a flattened success.
+	OutcomeHeld Outcome = "held"
+	// OutcomeDenied means the target's own inbox rejected the message
+	// outright. Distinct from OutcomeRefused: a refusal is this driver's
+	// own pre-write guard, decided before anything was sent; a denial is
+	// the remote side's decision, reached after this driver already
+	// attempted delivery.
+	OutcomeDenied Outcome = "denied"
+	// OutcomeExpired means the target's own inbox accepted the message and
+	// it aged out unconsumed.
+	OutcomeExpired Outcome = "expired"
+	// OutcomeDropped means the target's own inbox discarded the message
+	// for a reason it attributed to neither denial nor expiry.
+	OutcomeDropped Outcome = "dropped"
 )
 
 func (o Outcome) valid() bool {
 	switch o {
-	case OutcomeSubmitted, OutcomeQueued, OutcomeRefused, OutcomeUnknown:
+	case OutcomeSubmitted, OutcomeQueued, OutcomeRefused, OutcomeUnknown,
+		OutcomeDelivered, OutcomeHeld, OutcomeDenied, OutcomeExpired, OutcomeDropped:
 		return true
 	default:
 		return false

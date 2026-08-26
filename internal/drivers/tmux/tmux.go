@@ -370,6 +370,15 @@ type Driver struct {
 	// for the other. See processidentity.go.
 	psBin string
 	psRun execFunc
+
+	// inboxResolver and inboxDial are colab-fleet #119's own seam. Nil
+	// means unconfigured — the same off-by-default contract as
+	// credentialPath and trustSeed: a driver built for a test never
+	// attempts an inbox delivery merely because it was constructed, and
+	// Send behaves exactly as it did before #119 until a composition root
+	// opts in. See inbox.go.
+	inboxResolver InboxResolver
+	inboxDial     inboxDialFunc
 }
 
 type observation struct {
@@ -594,6 +603,7 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 		dial:         dialReal,
 		psBin:        "/bin/ps",
 		psRun:        runReal,
+		inboxDial:    dialInboxReal,
 		now:          time.Now,
 		nonce:        randomNonce,
 		observed:     map[string]observation{},
@@ -1522,6 +1532,26 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 				"to finish the delivery already in the composer, the second asks to " +
 				"discard it and deliver this text instead; set at most one",
 		}, nil
+	}
+
+	// colab-fleet #119: capability-detected fast path over a target
+	// session's own inbox, tried before anything below touches the pane.
+	// inboxEligible excludes every shape (!Submit, ResumeIfStranded,
+	// ReplaceIfStranded) that names a pane-composer concept the inbox path
+	// has none of — those calls fall straight through to the pane path
+	// unchanged, same as ever. sendViaInbox manages its own bounded
+	// context internally (mirroring ResolveProcessIdentity/
+	// VerifyProcessIdentity, which it calls); it does not use the `ctx`
+	// this function bounds just below, because it must run — and
+	// possibly return — before that bound exists.
+	if inboxEligible(opts) {
+		if receipt, ok, err := d.sendViaInbox(ctx, ref, text); err != nil {
+			return fleet.DeliveryReceipt{}, err
+		} else if ok {
+			return receipt, nil
+		}
+		// ok=false: no inbox capability for this target — fall through to
+		// the pane path below, unchanged.
 	}
 
 	ctx, cancel := d.bounded(ctx)

@@ -366,6 +366,7 @@ for capabilities; it holds field by field.
 ```
 DeliveryReceipt {
   outcome : "submitted" | "queued" | "refused" | "unknown"
+          | "delivered" | "held" | "denied" | "expired" | "dropped"
   reason? : string
 }
 ```
@@ -381,6 +382,27 @@ Input delivery is **not** fire-and-forget, and not a boolean.
 input that would corrupt it — for example, injecting text into a prompt that
 already holds unsent input the human typed. That protection belongs in the
 contract, not in each caller's memory of a past incident.
+
+The five values on the second line are colab-fleet #119's own: a driver that
+delivers over a target session's own inbox instead of the terminal surface,
+when it capability-detects one, reports that surface's own richer vocabulary
+rather than collapsing it onto the four above — `refused` is reused there
+(same word, same shape), but `held`/`denied`/`expired`/`dropped` have no
+honest match among the terminal-surface four and must never be flattened
+into one:
+
+- `delivered` — the target's own inbox confirmed the message reached the
+  session as a genuine turn
+- `held` — the target's own inbox is holding the message for a
+  human-approval step before it reaches the session — that surface's own
+  last human checkpoint in the path; never reported as a success
+- `denied` — the target's own inbox rejected the message outright, a
+  decision made by the remote side after the driver already attempted
+  delivery (unlike `refused`, decided locally before anything was sent)
+- `expired` — the target's own inbox accepted the message and it aged out
+  unconsumed
+- `dropped` — the target's own inbox discarded the message for a reason
+  attributed to neither denial nor expiry
 
 ### 2.5 Ack
 

@@ -622,6 +622,14 @@ POST /v1/machines/{machine}/sessions/{id}/input?runtime=
         "reason": "prompt holds unsent input" }
 ```
 
+**A driver that delivers over a target session's own inbox instead of the
+terminal surface (colab-fleet #119) can additionally answer `delivered` |
+`held` | `denied` | `expired` | `dropped`** — session-abstraction.md §2.4 has
+the full vocabulary and why those five are not folded into the four above.
+This is capability-detected per target, never a caller choice: the same call
+shape, the same endpoint, a richer answer only when that surface was actually
+used for this delivery.
+
 **`text` is capped at 1024 bytes, the same limit `prompt` carries on
 create** (colab-fleet #114). Over that, the call is rejected outright —
 `invalid` (400) naming the limit and the caller's actual size — before any
