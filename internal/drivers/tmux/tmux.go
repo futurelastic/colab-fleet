@@ -4570,26 +4570,48 @@ func (d *Driver) awaitReceptive(ctx context.Context, paneID string) (ready, bloc
 // counts do not go negative. That degrades to exactly the old "composer
 // emptied" check, which was always right for that case: a literal delivery
 // leaves nothing else on the composer line to be confused with.
+//
+// colab-fleet #104: which branch fired, and how long this call waited before
+// it did, are both recorded on the way out — see counters.go's
+// counterSubmitConfirmed* / counterSubmitConfirmLatency* doc comments for why.
+// Recorded here, at the one place both are known, rather than pushed onto
+// the callers: there are two of them (an ordinary send and the
+// resumeIfStranded path), and duplicating this at each would risk exactly
+// the drift #104 is trying to make observable.
 func (d *Driver) confirmSubmitted(ctx context.Context, paneID string, key pasteKey, atCount int) bool {
-	deadline := d.now().Add(submitConfirmWindow)
+	start := d.now()
+	deadline := start.Add(submitConfirmWindow)
 	for {
 		if sc, ok := d.captureForClassify(ctx, paneID); ok {
 			if text, found := composerText(sc); found && text == "" {
+				d.recordConfirmed(counterSubmitConfirmedByComposerEmpty, d.now().Sub(start))
 				return true
 			}
 		}
 		if atCount > 0 && d.paintedMarkers(ctx, paneID)[key] < atCount {
+			d.recordConfirmed(counterSubmitConfirmedByMarkerCleared, d.now().Sub(start))
 			return true
 		}
 		if d.now().After(deadline) || ctx.Err() != nil {
+			d.counters.incr(counterSubmitConfirmTimeout)
 			return false
 		}
 		select {
 		case <-ctx.Done():
+			d.counters.incr(counterSubmitConfirmTimeout)
 			return false
 		case <-time.After(submitConfirmInterval):
 		}
 	}
+}
+
+// recordConfirmed increments the counter naming which signal decided a
+// confirmSubmitted call, plus the latency bucket it took to decide it.
+// Factored out only because confirmSubmitted now has two call-site returns
+// that both need it; it carries no logic of its own beyond confirmLatencyBucket.
+func (d *Driver) recordConfirmed(bySignal string, elapsed time.Duration) {
+	d.counters.incr(bySignal)
+	d.counters.incr(confirmLatencyBucket(elapsed))
 }
 
 // paintedMarkers captures a pane in the shape confirmLanded's own capture

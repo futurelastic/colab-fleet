@@ -1,6 +1,9 @@
 package tmux
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // counterSet is a tiny, generalisable named-counter registry.
 //
@@ -63,4 +66,68 @@ const (
 	// enough and the prompt was still unsent when deliverInitialPrompt gave
 	// up on it — the case that used to reach nobody at all.
 	counterInitialPromptStranded = "initial_prompt.delivery_stranded"
+
+	// colab-fleet #104: confirmSubmitted's own doc comment already names two
+	// INDEPENDENT confirming signals — the composer reading fully empty, or
+	// this delivery's own attributed marker count falling below what it was
+	// pasted at — added in that order because the second one was found
+	// necessary AFTER the first shipped (residue on the composer line can
+	// keep it non-empty forever). #104's suspicion is that this history could
+	// repeat in the other direction: nothing proves both branches still fire
+	// in practice, so "confirmation rests on two signals" could quietly be
+	// "confirmation rests on one, and the other is dead code nobody removed."
+	// A live capture can't answer that — an agent session is refused from
+	// driving the multiplexer directly, by design (#104's own text) — but
+	// which branch decided a given confirmation is knowable at the moment it
+	// is decided, inside this driver's own call. Counting it here turns an
+	// unobservable question into a rate anyone can read afterwards: if
+	// counterSubmitConfirmedByMarkerCleared stays at zero across real
+	// traffic, that is the dead branch #104 suspects, found without a single
+	// capture — the
+	// same idiom #116 used for counterIdentityContested's sibling question.
+	counterSubmitConfirmedByComposerEmpty = "submit_confirm.by_composer_empty"
+	counterSubmitConfirmedByMarkerCleared = "submit_confirm.by_marker_cleared"
+	// counterSubmitConfirmTimeout counts a confirmSubmitted call that never
+	// saw either signal inside submitConfirmWindow. This is not new
+	// information — the caller already turns this into an `unknown` receipt
+	// and a stranded record — but it gives the timeout itself a rate,
+	// independent of what the caller went on to do with it.
+	counterSubmitConfirmTimeout = "submit_confirm.timeout"
+
+	// #104's second question: submitConfirmWindow (4s) was inherited, never
+	// derived from how long a real submit actually takes to show. A live
+	// capture would answer that by watching one pane; this answers it the
+	// same way as the branch question above — by having the service notice,
+	// on every call it already makes, how long confirmation actually took.
+	// Bucketed rather than summed/averaged: this repo takes no third-party
+	// dependency (no histogram library), and a mean would hide exactly the
+	// tail this question is about — a window near the tail bucket is a
+	// budget worth revisiting even if the mean looks comfortable. Buckets
+	// are exclusive (each confirmation lands in exactly one), the top one
+	// capped at submitConfirmWindow itself since nothing here confirms past
+	// it — a call that reaches the window without either signal firing is
+	// counterSubmitConfirmTimeout instead, not a "latency" of any length.
+	counterSubmitConfirmLatencyUnder250ms = "submit_confirm.latency_under_250ms"
+	counterSubmitConfirmLatencyUnder500ms = "submit_confirm.latency_under_500ms"
+	counterSubmitConfirmLatencyUnder1s    = "submit_confirm.latency_under_1s"
+	counterSubmitConfirmLatencyUnder2s    = "submit_confirm.latency_under_2s"
+	counterSubmitConfirmLatencyUnder4s    = "submit_confirm.latency_under_4s"
 )
+
+// confirmLatencyBucket maps an observed confirm latency onto one of the five
+// exclusive buckets declared above. See their doc comment for why buckets,
+// and why the top one is capped at submitConfirmWindow rather than open-ended.
+func confirmLatencyBucket(elapsed time.Duration) string {
+	switch {
+	case elapsed < 250*time.Millisecond:
+		return counterSubmitConfirmLatencyUnder250ms
+	case elapsed < 500*time.Millisecond:
+		return counterSubmitConfirmLatencyUnder500ms
+	case elapsed < time.Second:
+		return counterSubmitConfirmLatencyUnder1s
+	case elapsed < 2*time.Second:
+		return counterSubmitConfirmLatencyUnder2s
+	default:
+		return counterSubmitConfirmLatencyUnder4s
+	}
+}
