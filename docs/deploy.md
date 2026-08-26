@@ -14,6 +14,18 @@ below, why each step exists and what it refuses to do silently.
 
 ## The procedure
 
+0. **Back up what you are about to replace, before anything else.**
+   `scripts/fleet-backup.sh` captures the installed binary (checksum-verified
+   against its source right after copying), the state directory, and the
+   revision the running service currently reports — refusing rather than
+   backing up a service it cannot identify if health does not answer with a
+   build. This is not optional housekeeping: a build stamped `modified: true`
+   has no commit that reproduces it, and the only way back from a bad deploy
+   of one is a copy of the binary itself. See `docs/adr/123-backup-stays-separate-from-deploy.md`
+   for why this is a separate command rather than something `deploy.sh`
+   refuses to run without — the short version is that "no backup" is a policy
+   this script would have to invent a default for, not a fact it can check the
+   way a dirty tree is a fact.
 1. **Build with the version-control stamp intact.** A binary built from a
    modified tree has no identity and can never be compared against a peer or
    against itself. The script refuses a dirty tree by default; do not override
@@ -29,6 +41,18 @@ below, why each step exists and what it refuses to do silently.
    deploy rather than a copy.
 5. **Then the peer, and only then.** One machine deployed is a fleet at two
    revisions, not a finished deploy.
+
+**If a deploy needs undoing, `scripts/fleet-revert.sh` is the other half of
+step 0.** It checks the backup against its own manifest before touching
+anything — a corrupt backup discovered during a rollback is the worst possible
+moment to discover it — installs atomically, re-checksums, restarts, and polls
+health the same way step 4 does, refusing to report success until the running
+service reports the revision the backup recorded. It restores the **binary**
+by default; the **state directory** only behind an explicit `--with-state`,
+because state is forward-compatible far more often than not and rolling it
+back can discard real session records the new binary wrote correctly. Rolling
+back code and rolling back data are different decisions and are not spelled
+the same way here.
 
 **A verified deploy is not yet a usable one, for `keys` specifically
 (colab-fleet #68).** `deliversRawKeys: true` on a runtime is a statement about
@@ -91,6 +115,39 @@ One of the last two is **required** whenever `FLEET_HEALTH_URL` is set
 hardcoded fallback. If your convention is a token file at
 `~/.config/colab-fleet/token`, set `FLEET_HEALTH_TOKEN_FILE` to that path
 explicitly; it is no longer assumed on your behalf.
+
+## Running the backup and the revert
+
+```sh
+scripts/fleet-backup.sh HOST     # captures a peer's binary + state, over ssh
+scripts/fleet-backup.sh local    # captures this machine's own
+```
+
+Four variables are required, no defaults (colab-fleet #123 — the same
+discipline as `deploy.sh`, for the same reason): `FLEET_BIN` (the installed
+binary path on the target), `FLEET_STATE_DIR` (the state directory on the
+target), `FLEET_HEALTH_URL` (curled ON THE TARGET), and one of
+`FLEET_HEALTH_TOKEN` / `FLEET_HEALTH_TOKEN_FILE` — the same credential pair
+`deploy.sh` uses for verification (#93, #108), for the same federation reason:
+the credential that answers for a peer is not guaranteed to be one the peer's
+own on-host token file holds. The backup refuses rather than proceeds if
+health does not answer with a build, and refuses rather than trusts itself if
+the copy it just made does not checksum-match the source. On success it prints
+the exact `fleet-revert.sh` command that undoes it.
+
+```sh
+scripts/fleet-revert.sh HOST <backup-dir>                # binary only
+scripts/fleet-revert.sh HOST <backup-dir> --with-state    # binary + state, explicit
+```
+
+Required: `FLEET_BIN`, `FLEET_RESTART`, `FLEET_HEALTH_URL`, and one of
+`FLEET_HEALTH_TOKEN` / `FLEET_HEALTH_TOKEN_FILE` — `FLEET_STATE_DIR` joins that
+list only when `--with-state` is passed. It re-verifies the backup's own
+checksum against its own manifest before touching anything, installs
+atomically, and polls health afterward exactly like `deploy.sh` step 4 does,
+refusing to call it done until the reported revision matches what the backup
+recorded. `--with-state` is never implied — see the design note under "The
+procedure" above for why.
 
 ## Traps, measured running this
 
