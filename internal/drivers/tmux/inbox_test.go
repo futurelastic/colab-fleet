@@ -77,6 +77,29 @@ func respondWithOutcome(outcome, reason string) func(net.Conn) {
 	}
 }
 
+// TestCapabilities_DeliversToInbox_ReflectsWhetherAResolverIsConfigured is
+// colab-fleet #122's own acceptance surface: an operator must be able to
+// tell whether #119's path is wired without inferring it from a receipt's
+// wording. This proves the declared capability actually tracks the one
+// thing that decides sendViaInbox's first branch — d.inboxResolver == nil —
+// rather than defaulting true, defaulting false regardless of wiring, or
+// drifting from that check some other way a receipt-reading test would not
+// catch.
+func TestCapabilities_DeliversToInbox_ReflectsWhetherAResolverIsConfigured(t *testing.T) {
+	withoutResolver := newInboxTestDriver(twoSessions(), &fakePS{}, nil, nil)
+	if withoutResolver.Capabilities().DeliversToInbox {
+		t.Error("DeliversToInbox = true with no WithInboxResolver call — #119's path cannot be live")
+	}
+
+	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
+		return InboxAddress{}, false, nil
+	}
+	withResolver := newInboxTestDriver(twoSessions(), &fakePS{}, resolver, nil)
+	if !withResolver.Capabilities().DeliversToInbox {
+		t.Error("DeliversToInbox = false with WithInboxResolver configured — an operator would wrongly conclude the path is unreachable")
+	}
+}
+
 func TestSend_NoInboxResolverConfigured_BehavesExactlyAsBeforeIssue119(t *testing.T) {
 	// #119's own contract: a Driver that never calls WithInboxResolver must
 	// behave exactly as it did before this file existed. This is the same

@@ -153,6 +153,21 @@ already names as the reason the pane path stays a fallback.
   configuration; nothing in `cmd/colab-fleetd` does this yet as of this
   change (out of scope for #119's own issue, which asked for the delivery
   change itself, not composition-root wiring).
+
+  **Addendum, colab-fleet #122:** that gap was not hypothetical — it shipped
+  and deployed exactly as described, and stayed unreachable because nothing
+  outside this file's own tests ever called `WithInboxResolver`. #122 closed
+  it with `cmd/colab-fleetd/inboxresolver.go`: a resolver reading one JSON
+  file per pid from an operator-supplied directory (`FLEET_INBOX_INDEX`),
+  and `DriverCapabilities.deliversToInbox` (`capabilities.go`, surfaced on
+  `GET /v1/runtimes`) so an operator can confirm the wiring is live without
+  reading a receipt's wording — the same "a caller should be able to ask"
+  argument #121 already made for `build`. Neither addition weakens this
+  ADR's own "no socket/credential discovery code in this repository" line
+  above: the resolver never lists a directory or guesses a name from a
+  pid, it performs one keyed lookup against an index whose location an
+  operator supplies and whose shape this repository invents for itself,
+  not the real runtime's own convention.
 - `fleet.Outcome`'s wire vocabulary grew from four values to nine;
   `docs/spec/session-abstraction.md` §2.4 and `docs/spec/api-http.md`'s
   `input` example are both updated to state the five new values and why

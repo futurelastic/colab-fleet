@@ -701,6 +701,14 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 		ReportsRuntimeSurface: true,
 		ConfirmsDelivery:      false,
 		SupportsResume:        true,
+		// #122: true only once a composition root has actually wired
+		// WithInboxResolver — set once at construction, never mutated
+		// after, so reading it here needs no lock, the same as
+		// d.deadline just below. A nil resolver (every test in this
+		// package that does not pass one, and any consumer that has not
+		// wired one) reports false, matching sendViaInbox's own
+		// first-line check (inbox.go) exactly rather than approximating it.
+		DeliversToInbox: d.inboxResolver != nil,
 		SupportsPin: fleet.PinSupport{
 			Model:  true,
 			Effort: true,

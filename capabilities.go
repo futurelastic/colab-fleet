@@ -120,6 +120,22 @@ type DriverCapabilities struct {
 	ConfirmsDelivery bool `json:"confirmsDelivery"`
 	// SupportsResume reports whether sessions survive a service restart.
 	SupportsResume bool `json:"supportsResume"`
+	// DeliversToInbox reports whether this driver has an inbox delivery
+	// path wired and reachable for at least some targets (colab-fleet
+	// #119, #122) — never whether any one call will actually take it,
+	// which stays capability-detected per target regardless of this flag.
+	//
+	// #122 filed the gap this closes: #119 shipped and deployed with this
+	// path unreachable, and the only way an operator could tell was
+	// reading a receipt's wording and recognising which surface it named.
+	// Same argument #121 made for `build` — "a caller should be able to
+	// ask" — applied to a different question. True means an
+	// InboxResolver is configured; false means every delivery falls
+	// through to the pane path unconditionally, the same as before #119
+	// existed. Like every flag in this block it is covered by `source`:
+	// an unreached peer reports it under `source: assumed`, never as the
+	// peer's confirmed answer.
+	DeliversToInbox bool `json:"deliversToInbox"`
 
 	SupportsPin PinSupport `json:"supportsPin"`
 

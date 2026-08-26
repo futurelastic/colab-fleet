@@ -1119,6 +1119,7 @@ DriverCapabilities {
   reportsRuntimeSurface: boolean // can say anything about `runtimeSurface` (§2.13); absent state is answerable only against this
   confirmsDelivery: boolean   // can distinguish submitted from queued
   supportsResume  : boolean   // sessions survive a service restart
+  deliversToInbox : boolean   // has an inbox delivery path wired for at least some targets
   supportsPin     : { model: boolean, effort: boolean, agent: boolean }
   deadlineMs      : number    // declared upper bound on any single call
   source          : "observed" | "assumed"
@@ -1153,6 +1154,20 @@ capability that silently read `false` on an unreachable peer, with nothing
 to mark the value as unconfirmed, is precisely the defect `source` exists to
 prevent (see below), and adding a flag is not a license to re-introduce it
 by accident.
+
+**`deliversToInbox` answers "is the inbox path even wired here", never "will
+this call use it"** (colab-fleet #119, #122). Send's own per-target capability
+detection (`InboxResolver`, unchanged by this field) still decides that,
+target by target, on every call. This field exists because #119 shipped and
+deployed with no resolver ever configured, and the only way anyone could tell
+was reading a delivery receipt's wording and recognising which surface it
+named — every test passed, every constraint held, and the new path never
+engaged. `false` means every delivery on this driver falls through to the
+pane path unconditionally, the same as before #119 existed. `true` means a
+resolver is configured, and at least some targets can take the inbox path;
+it says nothing about which ones. Same argument as `build` (#121) — "a
+caller should be able to ask" — applied to a different question, and
+answered the same way: extend an existing read instead of adding a route.
 
 **A declaration carries its own provenance.** `observed` means the driver these
 describe reported them — a local driver is always this, since it is describing

@@ -42,6 +42,18 @@ the far end that runs the key, `relay` at the near end that forwards the
 request there — see api-http.md §3 for why fixing the first refusal does not
 fix the call.
 
+**A verified deploy is not yet a usable inbox delivery path either
+(colab-fleet #122).** `deliversToInbox: true` on `GET /v1/runtimes` is
+contingent on `FLEET_INBOX_INDEX` being set on that machine — a deploy that
+verifies clean but never sets that variable runs with #119's resolver nil,
+and every delivery keeps falling through to the pane path exactly as #122
+found it doing in production. Setting it is an operator step this script
+does not perform and cannot: the directory it names, and what populates it,
+are machine-local facts this repository never commits (`cmd/colab-fleetd`'s
+own doc comment names the variable; it does not name a value). Check
+`deliversToInbox` after any deploy you expect this path to be live on,
+rather than assuming a clean verify implies it.
+
 ## Running it
 
 ```sh

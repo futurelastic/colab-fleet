@@ -79,6 +79,7 @@ GET /v1/runtimes
                                        "deliversRawKeys": true,
                                        "confirmsDelivery": true,
                                        "supportsResume": false,
+                                       "deliversToInbox": false,
                                        "supportsPin": { "model": true,
                                                         "effort": false,
                                                         "agent": true },
@@ -105,6 +106,16 @@ and cached), so a peer's real answer must be read from that machine directly.
 
 Clients **must** consult `/v1/runtimes` before relying on a capability, and
 degrade rather than assume. A driver never emulates (§5.6).
+
+**`deliversToInbox` is how an operator confirms colab-fleet #119's inbox
+delivery path is actually live on a machine, without inferring it from a
+delivery receipt's wording** (colab-fleet #122). `false` means every send on
+that runtime falls through to the pane path unconditionally; `true` means a
+resolver is configured, and *some* targets may take the inbox path — which
+ones is still decided per call and is not this field's job to say. A merged-
+but-unconfigured deployment reads `false` here exactly like a machine that
+never adopted #119 at all — the honest answer, since from a caller's side
+those two states behave identically.
 
 They must also consult `source`. `assumed` means nobody has confirmed these
 values and they are a conservative floor — reading them as the runtime's answer

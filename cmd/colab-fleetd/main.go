@@ -112,6 +112,20 @@
 //	                       how often the above re-scans for a worktree
 //	                       created since the last pass. Defaults to 2m;
 //	                       Go duration syntax.
+//	FLEET_INBOX_INDEX      directory an operator points at colab-fleet #119's
+//	                       delivery path (tmux.WithInboxResolver). Absent
+//	                       means the feature does nothing — #122 found it
+//	                       shipped and deployed with nothing ever calling
+//	                       this option, so every delivery fell through to
+//	                       the pane path silently. The directory holds one
+//	                       JSON file per numeric process id
+//	                       ("<pid>.json": network, socket, token) — a shape
+//	                       this repository defines for itself, never the
+//	                       real third-party address convention (see
+//	                       cmd/colab-fleetd/inboxresolver.go). GET
+//	                       /v1/runtimes reports whether this wiring is live
+//	                       as deliversToInbox, so an operator never has to
+//	                       infer it from a receipt's wording.
 package main
 
 import (
@@ -306,6 +320,21 @@ func main() {
 			}
 			opts = append(opts, tmux.WithSessionEnv(entries))
 			log.Printf("colab-fleetd: sessionEnv configured for %d entry(ies) (#94)", len(entries))
+		}
+		// colab-fleet #122: #119's inbox delivery path only engages once a
+		// resolver is actually wired — verified live after #119's own
+		// deploy that nothing did this. Off by default like every option
+		// above it: an absent FLEET_INBOX_INDEX means WithInboxResolver is
+		// never called and this driver behaves exactly as it did before
+		// #119 existed. See inboxresolver.go for what the directory holds
+		// and why its shape is not the real runtime's own convention.
+		if dir := os.Getenv("FLEET_INBOX_INDEX"); dir != "" {
+			opts = append(opts, tmux.WithInboxResolver(newFileInboxResolver(dir)))
+			// The path itself is not logged — same discipline FLEET_TRUST_ROOTS
+			// and FLEET_CREDENTIAL_PATH already follow above: this process's
+			// own stdout is not the place machine-local filesystem layout
+			// belongs, committed repo or not.
+			log.Print("colab-fleetd: inbox delivery configured (#119, #122)")
 		}
 		d := tmux.New(self, opts...)
 		// An unreadable key table is surfaced, never absorbed: continuing
