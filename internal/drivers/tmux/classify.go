@@ -301,8 +301,13 @@ func isRule(line string) bool {
 	return rules >= 3
 }
 
-// composerText returns the text a human has typed into the input box but
-// not submitted, and whether a composer was found at all.
+// composerSpan locates a composer's structural boundaries in s: prompt is
+// the index of its ❯-marked line, last is the index of its closing rule.
+// Both are meaningless and ok is false whenever composerText itself would
+// report no composer — this walks the identical rule/marker search
+// composerText always has, extracted so a caller that needs the composer's
+// SHAPE (composerVisualLines) is not forced to re-implement the search
+// rather than just its result.
 //
 // The composer is identified structurally: a line beginning with the prompt
 // marker that sits between two horizontal rules. Finding it by structure
@@ -310,9 +315,9 @@ func isRule(line string) bool {
 // above also contains ❯-prefixed lines — they are how the TUI echoes
 // commands the human already ran (see the /remote-control fixture). Those
 // are history. Only the fenced one is live input.
-func composerText(s screen) (string, bool) {
+func composerSpan(s screen) (prompt, last int, ok bool) {
 	// Walk back to the closing rule.
-	last := -1
+	last = -1
 	for i := len(s.lines) - 1; i >= 0; i-- {
 		if isRule(s.lines[i]) {
 			last = i
@@ -320,14 +325,14 @@ func composerText(s screen) (string, bool) {
 		}
 	}
 	if last <= 0 {
-		return "", false
+		return 0, 0, false
 	}
 
 	// Find a prompt-marked line above it, stopping at another rule.
-	prompt := -1
+	prompt = -1
 	for i := last - 1; i >= 0; i-- {
 		if isRule(s.lines[i]) {
-			return "", false // opening rule reached with no composer between
+			return 0, 0, false // opening rule reached with no composer between
 		}
 		if strings.HasPrefix(strings.TrimSpace(s.lines[i]), composerRuneMarker) {
 			prompt = i
@@ -335,7 +340,7 @@ func composerText(s screen) (string, bool) {
 		}
 	}
 	if prompt < 0 {
-		return "", false
+		return 0, 0, false
 	}
 
 	// THE COMPOSER MUST BE FENCED, and this check is the whole reason this
@@ -363,6 +368,16 @@ func composerText(s screen) (string, bool) {
 		break
 	}
 	if !fenced {
+		return 0, 0, false
+	}
+	return prompt, last, true
+}
+
+// composerText returns the text a human has typed into the input box but
+// not submitted, and whether a composer was found at all.
+func composerText(s screen) (string, bool) {
+	prompt, last, ok := composerSpan(s)
+	if !ok {
 		return "", false
 	}
 
@@ -387,6 +402,48 @@ func composerText(s screen) (string, bool) {
 		}
 	}
 	return strings.TrimSpace(text), true
+}
+
+// composerVisualLines reports how many rows a composer's fenced box
+// occupies on screen right now — prompt through last-1, one row for its
+// first line plus one per continuation row below it — which is exactly how
+// many C-u presses a clear pass should expect to need (colab-fleet#129):
+// C-u (unix-line-discard) empties the ONE row the cursor sits on and leaves
+// every row above it standing, and it is the on-screen row that matters,
+// not the underlying logical line.
+//
+// # Why visual, not logical — measured, not assumed (#129's own instruction)
+//
+// composerText already collapses every continuation row into pending with a
+// single joining space (see above), so pending's own text carries no line
+// boundary a caller could count even if it wanted to. This counts the
+// SCREEN's rows directly instead — which settles "visual vs logical" as a
+// side effect, because a captured pane's rows are already wrapped at
+// whatever width tmux rendered them at; there is no separate "logical" view
+// to recover from a capture even in principle.
+//
+// That this is the right quantity, not merely the available one, has a real
+// field measurement behind it: colab-fleet#32 recorded a composer holding
+// 209 characters — continuous typed text, no line break the human put there
+// — that rendered as four on-screen rows and needed four C-u presses to
+// empty, corrupting on the third when the un-repeated fix of the day only
+// sent one. A LOGICAL count would have read that same 209 characters as one
+// line and predicted a single press was enough, which #32 is the record of
+// disproving. #129's own sizing case (roughly 6.6 KB pasted, on the order of
+// eighty rows at a typical pane width) is consistent with the same reading:
+// a paste that size has few if any real line breaks in it, so eighty
+// presses is a wrap count, not a paragraph count.
+//
+// ok is false in exactly the cases composerText itself reports no composer
+// — both walk composerSpan's identical structure, so a caller already
+// holding a true composerText result for this same screen can treat this as
+// reporting the same "found" answer without a separate check.
+func composerVisualLines(s screen) (int, bool) {
+	prompt, last, ok := composerSpan(s)
+	if !ok {
+		return 0, false
+	}
+	return last - prompt, true
 }
 
 // awaitingSelection reports whether the TUI is showing a menu that blocks

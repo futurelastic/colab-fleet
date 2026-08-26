@@ -128,7 +128,7 @@ rather than assume when one is missing:
 "capabilities": { "observesState": true, "deliversRawKeys": true,
                   "confirmsDelivery": true, "supportsResume": true,
                   "supportsPin": { "model": true, "effort": true, "agent": true },
-                  "source": "observed", "deadlineMs": 5000 }
+                  "source": "observed", "deadlineMs": 30000 }
 ```
 
 Read `source` too. `assumed` means **nobody has confirmed these** — they are a
