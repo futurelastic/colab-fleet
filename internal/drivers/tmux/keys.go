@@ -26,9 +26,14 @@ import (
 // text to name in the receipt. Everything below is what replaces them, and each
 // one is load-bearing rather than defensive:
 //
-//   - the caller quotes back the digest of the screen it read, and a screen
-//     that has moved on is a refusal (§5.4 — a proxy for identity is not
-//     identity, arriving here for the fourth time);
+//   - the caller quotes back a digest of what it read — the composer's text
+//     when the composer holds unsent text, the whole screen otherwise,
+//     because GET publishes exactly those two fields for exactly those two
+//     cases (ComposerDigest, ScreenDigest) — and a mismatch is a refusal
+//     (§5.4 — a proxy for identity is not identity, arriving here for the
+//     fourth time; colab-fleet#127: this used to hash the whole screen
+//     unconditionally, which a caller quoting ComposerDigest back could
+//     never satisfy);
 //   - a composer holding unsent text is refused outright, because `Enter` there
 //     submits a human's half-typed message and `send` already refuses to touch
 //     that composer for exactly this reason;
@@ -111,21 +116,58 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			"keys: could not capture this session's screen, so nothing can be corroborated")
 	}
 
+	// Which digest this call must corroborate against depends on what the
+	// screen holds RIGHT NOW, decided before the expectDigest check so the
+	// error messages below can already name the right field.
+	//
+	// composer holds unsent text -> composer scope, screenDigest(pending).
+	// This is the SAME value GET publishes as ComposerDigest (classify.go),
+	// and the SAME value Discard corroborates against (tmux.go) — chosen
+	// because every key this driver could deliver into that state is refused
+	// below regardless of which key was asked for, so the corroboration only
+	// ever has to prove the caller saw the composer, never the rest of the
+	// screen (colab-fleet#127).
+	//
+	// composer empty (or absent) -> screen scope, screenDigest(text), same as
+	// before this change. A composer-scope digest here would be the constant
+	// hash of "" no matter what a dialog says, which corroborates nothing —
+	// exactly the relaxation this driver must not make. GET publishes this as
+	// ScreenDigest, unconditionally.
+	screen := newScreen(text)
+	pending, _ := composerText(screen)
+	composerHoldsText := strings.TrimSpace(pending) != ""
+
 	if expectDigest == "" {
+		if composerHoldsText {
+			return fleet.DeliveryReceipt{}, fmt.Errorf(
+				"%w: refusing to press %s on a composer the caller has not read; "+
+					"supply the composerDigest from a read as ?expect=<composerDigest> "+
+					"(the same field discard uses)", ErrAmbiguousTarget, key)
+		}
 		return fleet.DeliveryReceipt{}, fmt.Errorf(
 			"%w: refusing to press %s on a screen the caller has not read; supply "+
 				"the screenDigest from a read as ?expect=<screenDigest> (a query "+
 				"parameter, where startedAt goes)", ErrAmbiguousTarget, key)
 	}
-	before := screenDigest(text)
+
+	var before string
+	if composerHoldsText {
+		before = screenDigest(pending)
+	} else {
+		before = screenDigest(text)
+	}
 	if before != expectDigest {
+		if composerHoldsText {
+			return fleet.DeliveryReceipt{}, fmt.Errorf(
+				"%w: the composer changed since the caller read it (expected "+
+					"composerDigest %s, found %s); a key sent now would be acting on "+
+					"unsent text nobody has re-read", ErrAmbiguousTarget, expectDigest, before)
+		}
 		return fleet.DeliveryReceipt{}, fmt.Errorf(
-			"%w: the screen changed since the caller read it (expected digest %s, "+
+			"%w: the screen changed since the caller read it (expected screenDigest %s, "+
 				"found %s); a key sent by position now would be applied to a "+
 				"different screen", ErrAmbiguousTarget, expectDigest, before)
 	}
-
-	screen := newScreen(text)
 
 	// A recognised prompt has a better answer than this one. `respond` checks a
 	// nonce, chooses by index, and names the option it took in the receipt;
@@ -144,7 +186,7 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// caller's to submit — the runtime redraws a composer identically whether a
 	// human typed into it or a delivery stranded text there, so the only safe
 	// reading is that somebody meant it.
-	if pending, _ := composerText(screen); strings.TrimSpace(pending) != "" {
+	if composerHoldsText {
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: "the composer holds unsent text; a key delivered now could submit " +

@@ -40,6 +40,22 @@ func digestOf(t *testing.T, d *Driver, id string) string {
 	return st.ScreenDigest
 }
 
+// composerDigestOf reads the composer-scope digest a caller sees when the
+// composer holds unsent text — the value GET publishes as ComposerDigest,
+// not ScreenDigest, and the one keys.go's composer-holds-text branch now
+// corroborates against (colab-fleet#127).
+func composerDigestOf(t *testing.T, d *Driver, id string) string {
+	t.Helper()
+	st, err := d.State(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: id})
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.ComposerDigest == "" {
+		t.Fatal("a session whose composer holds unsent text must publish a composerDigest to quote back")
+	}
+	return st.ComposerDigest
+}
+
 // The whole point: a key lands on a screen nothing classified, and the driver
 // confirms it landed by watching the dialog redraw.
 func TestKeysDeliversToAnUnrecognisedDialogAndConfirmsTheRedraw(t *testing.T) {
@@ -115,7 +131,10 @@ func TestKeysRefusesWhenTheComposerHoldsUnsentText(t *testing.T) {
 	f := dialogMux()
 	f.captures["%1"] = fixtureUnsent
 	d := newTestDriver(f)
-	want := digestOf(t, d, "alpha💬")
+	// composerDigestOf, not digestOf — this is exactly the value a real
+	// caller reads off GET while the composer holds text (colab-fleet#127:
+	// keys used to reject this and only accept the whole-screen digest).
+	want := composerDigestOf(t, d, "alpha💬")
 
 	got, err := d.Keys(context.Background(), testCaller,
 		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.KeyEnter, want)
@@ -128,6 +147,30 @@ func TestKeysRefusesWhenTheComposerHoldsUnsentText(t *testing.T) {
 	}
 	if !strings.Contains(got.Reason, "unsent text") {
 		t.Errorf("reason = %q; it must name what is in the way", got.Reason)
+	}
+}
+
+// The bug this whole change exists for: GET's ScreenDigest and ComposerDigest
+// are two different values whenever the composer holds text. A caller that
+// quotes the screen-scope digest back at a composer-holds-text session must
+// be refused for a corroboration mismatch that NAMES composerDigest — never
+// silently accepted, and never told to supply "screenDigest" (colab-fleet#127).
+func TestKeysNamesComposerDigestWhenComposerHoldsText(t *testing.T) {
+	f := dialogMux()
+	f.captures["%1"] = fixtureUnsent
+	d := newTestDriver(f)
+	screenScope := digestOf(t, d, "alpha💬") // the whole-screen value, wrong scope here
+
+	_, err := d.Keys(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.KeyEnter, screenScope)
+	if err == nil {
+		t.Fatal("the whole-screen digest must not corroborate a composer-scope check")
+	}
+	if !strings.Contains(err.Error(), "composerDigest") {
+		t.Errorf("error = %v; it must name composerDigest as the field to use here", err)
+	}
+	if !strings.Contains(err.Error(), "composer changed") {
+		t.Errorf("error = %v; it must say what changed (the composer, not the screen)", err)
 	}
 }
 
