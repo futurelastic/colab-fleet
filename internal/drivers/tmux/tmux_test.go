@@ -2578,6 +2578,192 @@ func TestDiscardCrossesSeveralTrailingBlankLines(t *testing.T) {
 	}
 }
 
+// colab-fleet#133: "a single line with no trailing newline at all" — the
+// control case the rest of this matrix is a deviation FROM. No blank row
+// exists anywhere, so this is a plain single-press C-u clear, and Backspace
+// must never be sent — pinned explicitly rather than only implied by the
+// shapes around it.
+func TestDiscardClearsASingleLineWithNoTrailingNewline(t *testing.T) {
+	f := twoSessions()
+	f.setMultilineComposer("%2", []string{"a single line, no trailing newline at all"})
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a single-line composer published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a single line with no trailing newline: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countBackspaces(f.callsSnapshot()); got != 0 {
+		t.Errorf("sent %d Backspace presses against a composer with no blank row at all; "+
+			"none was ever needed", got)
+	}
+	if got := countClears(f.callsSnapshot()); got < 1 {
+		t.Error("no C-u was sent for the one real content row")
+	}
+}
+
+// colab-fleet#133 §1: "a leading blank row ahead of the only remaining
+// content row" — believed safe during #132 ("it collapses into the existing
+// 'blank rows read as already-empty' behaviour before the new blank-row check
+// is ever consulted") but never pinned. composerCursorRowBlank only ever
+// inspects the composer's BOTTOM row (see its own doc comment); a blank row
+// sitting ABOVE the sole remaining content row is never the row being
+// inspected, so an ordinary C-u against the real content below it is what
+// clears this — and once that lands, the composer has shrunk to its own bare
+// ❯-marked line, which composerText already treats as empty (see
+// composerCursorRowBlank's doc comment on that one-row special case) without
+// Backspace ever having to cross anything.
+func TestDiscardCrossesALeadingBlankRowAheadOfTheOnlyRemainingContentRow(t *testing.T) {
+	f := twoSessions()
+	f.setMultilineComposer("%2", []string{"", "the only remaining content"})
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer with a leading blank row published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a composer with a leading blank row: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countBackspaces(f.callsSnapshot()); got != 0 {
+		t.Errorf("sent %d Backspace presses; a leading blank row ahead of the sole content row "+
+			"should clear via an ordinary C-u on the content row, never needing to cross the "+
+			"blank row directly (colab-fleet#133 §1)", got)
+	}
+	if got := countClears(f.callsSnapshot()); got < 1 {
+		t.Error("no C-u was sent for the one real content row")
+	}
+}
+
+// colab-fleet#133 §1: "whitespace-only payload". composerText already trims
+// per line (pinned directly against classify.go by
+// TestWhitespaceOnlyComposerIsEmpty); this exercises the SAME shape through
+// Discard end to end, closing the "believed unaffected, not exercised end to
+// end" gap #132 left open. A composer holding only whitespace reads as
+// already empty, so Discard's own early return fires — success, and not one
+// keystroke is spent proving it.
+func TestDiscardAcceptsAWhitespaceOnlyComposerWithoutTouchingThePane(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = rule + "\n❯      \n" + rule
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Discard's early return fires before expectDigest is ever consulted (an
+	// already-empty composer needs no corroboration to leave alone), so no
+	// real digest is required to prove this path.
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "irrelevant")
+	if err != nil {
+		t.Fatalf("discard of a whitespace-only composer: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a whitespace-only composer, which is already empty content-wise")
+	}
+	// Discard's own enumeration (finding the live session, reading its
+	// screen) still runs — this asserts no CLEAR keystroke was ever sent,
+	// not that the pane was never read at all.
+	if got := countClears(f.callsSnapshot()) + countBackspaces(f.callsSnapshot()); got != 0 {
+		t.Errorf("sent %d clear keystrokes against a composer already read as empty; want 0", got)
+	}
+}
+
+// colab-fleet#133 §1's "three caller paths" ask: clearComposer's row-level
+// key choice (this whole matrix's real subject) is shared code, already
+// exhaustively covered above through Discard — colab-fleet#112's own
+// extraction is what keeps Discard and replaceIfStranded from being able to
+// drift apart on it. What differs PER CALLER, and was untested until now (no
+// test anywhere exercised replaceIfStranded at all, blank row or not), is the
+// plumbing feeding that shared function: whether a blank row inside a
+// composer THIS DRIVER stranded gets crossed the same way when reached
+// through Send's replaceIfStranded path instead of Discard's own endpoint.
+func TestReplaceIfStrandedCrossesATrailingBlankLine(t *testing.T) {
+	f := twoSessions()
+	f.swallowSubmit = true // the first attempt's own submit keystroke never registers
+	// The REAL clock, deliberately not newTestDriver's frozen test constant:
+	// clearComposer's press loop waits out promptClearInterval on a real
+	// time.After between presses (see TestDiscardClearsAComposerBeyondTheOld
+	// ThreeSecondBudget's identical note), and d.bounded's deadline is
+	// computed from d.now() — a frozen historical clock makes that deadline
+	// already past real wall-clock time, so ctx.Err() fires after the very
+	// first press and the pass never gets a second one.
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+
+	first, err := d.Send(context.Background(), testCaller, ref, "original", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("setup: first send outcome = %q, want unknown so the text is recorded as stranded",
+			first.Outcome)
+	}
+
+	// The composer now holds this driver's own stranded delivery, plus a real
+	// trailing blank row — the #132 shape. composerText drops the blank row
+	// from what it joins, so this still corroborates against the record's
+	// digest exactly (screenDigest of the trimmed, joined text).
+	f.setMultilineComposer("%1", []string{"original", ""})
+	f.swallowSubmit = false
+
+	got, err := d.Send(context.Background(), testCaller, ref, "replacement text",
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome == fleet.OutcomeRefused {
+		t.Fatalf("replaceIfStranded refused instead of crossing the blank row: %s", got.Reason)
+	}
+	if n := countBackspaces(f.callsSnapshot()); n < 1 {
+		t.Error("no Backspace was sent to cross the trailing blank row reached via " +
+			"replaceIfStranded (colab-fleet#132/#133) — only Discard's own endpoint was " +
+			"ever proven to do this")
+	}
+}
+
 // Issue #32, the branch that did not exist at all: a clear that runs out of
 // time without emptying the composer covers two situations that demand
 // opposite handling, and nothing told them apart. This is the untouched
