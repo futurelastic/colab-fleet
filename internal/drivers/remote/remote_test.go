@@ -603,6 +603,42 @@ func TestRefreshCapabilitiesAdoptsWhatThePeerReports(t *testing.T) {
 	}
 }
 
+// TestRefreshCapabilitiesAdoptsPeerMaxInputBytes is colab-fleet #130's
+// analog of the build-identity probe (#121): the peer's own effective
+// input-length limit is learned on the same /v1/health round trip as its
+// build, and MaxInputBytes() (driver.MaxInputBytesReporter) reports it
+// afterward.
+func TestRefreshCapabilitiesAdoptsPeerMaxInputBytes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/runtimes":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []fleet.RuntimeInfo{{
+					Machine: "peerbox", Runtime: "claude-code-tmux",
+					Capabilities: fleet.DriverCapabilities{DeadlineMs: 5000, Source: fleet.CapabilitiesObserved},
+				}},
+				"sources":  []fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}},
+				"complete": true,
+			})
+		case "/v1/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"build": fleet.Build{}, "maxInputBytes": 4096})
+		default:
+			_ = json.NewEncoder(w).Encode(collectionJSON(
+				[]fleet.SourceStatus{{Machine: "peerbox", Status: fleet.SourceOK, ObservedAt: time.Now()}}, nil))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	d := New("peerbox", srv.URL)
+	if err := d.RefreshCapabilities(context.Background(), caller); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.MaxInputBytes(); got != 4096 {
+		t.Errorf("MaxInputBytes() = %d, want 4096 (#130 — learned on the same /v1/health probe as build)", got)
+	}
+}
+
 // colab-fleet #67, ask #1 ("the safety half"): a cached `observed` describes
 // the peer as it was the moment it answered. Measured directly — a peer
 // upgraded seconds after being probed kept reading `observed` and wrong for

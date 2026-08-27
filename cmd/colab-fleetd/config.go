@@ -92,6 +92,25 @@ type fileConfig struct {
 			Markers []string `json:"markers,omitempty"`
 		} `json:"appliesTo,omitempty"`
 	} `json:"sessionEnv,omitempty"`
+
+	// MaxInputBytes overrides this machine's limit on `prompt` (create) and
+	// `text` (input) — colab-fleet #130. Absent or zero means the shipped
+	// default applies unchanged (internal/service/http.go's
+	// defaultMaxInputBytes) — the same "absent means the older behaviour"
+	// rule DefaultRuntime documents above, and required by #130 itself: an
+	// unconfigured deployment must behave exactly as it did before this
+	// setting existed.
+	//
+	// Config-file-only, like TrustRoots, DefaultRuntime and SessionEnv
+	// above: how quickly THIS machine's composer becomes ready — the
+	// mechanism #130 argues actually governs this limit — is a fact about
+	// this machine, not the fleet (see the issue's "why per-machine and not
+	// per-fleet"). Validated at startup (main.go, via
+	// service.Service.SetMaxInputBytes) for the same reason every other
+	// setting in this file is: a bad value is a message an operator reads
+	// once at boot, never a refusal manufactured per request. Changing it
+	// needs the same restart those settings do.
+	MaxInputBytes int `json:"maxInputBytes,omitempty"`
 }
 
 func loadConfig(path string) (*fileConfig, error) {

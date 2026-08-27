@@ -85,6 +85,41 @@ func TestLoadConfigWithoutDefaultRuntimeLeavesItEmpty(t *testing.T) {
 	}
 }
 
+// colab-fleet #130: maxInputBytes is a plain, optional field on the same
+// file defaultRuntime already lives on, and round-trips the same way.
+func TestLoadConfigReadsMaxInputBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{
+		"principals": [{"name": "op", "token": "tok", "grants": ["read"]}],
+		"maxInputBytes": 4096
+	}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxInputBytes != 4096 {
+		t.Errorf("MaxInputBytes = %d, want 4096", cfg.MaxInputBytes)
+	}
+}
+
+func TestLoadConfigWithoutMaxInputBytesLeavesItZero(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{"principals": [{"name": "op", "token": "tok"}]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxInputBytes != 0 {
+		t.Errorf("MaxInputBytes = %d, want 0 — absent means the shipped default applies unchanged (#130)", cfg.MaxInputBytes)
+	}
+}
+
 // colab-fleet issue #94: sessionEnv is a plain, optional field on the same
 // file trustRoots and defaultRuntime already live on, and round-trips the
 // same way — including appliesTo, which is itself optional within an entry.

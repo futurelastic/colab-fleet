@@ -439,8 +439,15 @@ func handleHealth(svc *Service) http.HandlerFunc {
 			// added it; the short version is that two services disagreeing
 			// is a different problem from two services being different
 			// vintages, and nothing could previously tell them apart.
-			"build":   svc.build,
-			"drivers": svc.driverSummaries(),
+			"build": svc.build,
+			// This machine's effective limit on `prompt` (create) and
+			// `text` (input) — colab-fleet #130, the ask-do-not-infer
+			// move #121 already made for build above. It is what
+			// GET /v1/machines' per-entry maxInputBytes for self reports,
+			// and what internal/drivers/remote's peerHealth reads to learn
+			// a PEER's own value the same way it already learns build.
+			"maxInputBytes": svc.MaxInputBytes(),
+			"drivers":       svc.driverSummaries(),
 			// counters is the read path #9 asked for onto the registry #44
 			// built (internal/drivers/tmux/counters.go): an integer per
 			// named fact, keyed by runtime. It is deliberately read here
@@ -776,32 +783,52 @@ func createNeedsSend(body createSessionBody) string {
 	return ""
 }
 
-// maxInputBytes bounds `prompt` on create and `text` on input (colab-fleet
-// #114). A caller that pastes something long into either field reaches the
-// composer and then never submits — the session sits at zero turns holding
-// unsent text with no way forward but resumeIfStranded (identical text
-// only) or destroying the session (#110, #112). Rejecting the request
-// outright, before any driver is even resolved, turns that silent failure
-// into an immediate, actionable error.
+// defaultMaxInputBytes bounds `prompt` on create and `text` on input
+// (colab-fleet #114) when no machine-local override is configured
+// (Service.MaxInputBytes, cmd/colab-fleetd/config.go's `maxInputBytes`,
+// colab-fleet #130). A caller that pastes something long into either field
+// reaches the composer and then never submits — the session sits at zero
+// turns holding unsent text with no way forward but resumeIfStranded
+// (identical text only) or destroying the session (#110, #112). Rejecting
+// the request outright, before any driver is even resolved, turns that
+// silent failure into an immediate, actionable error.
 //
 // 1024 is a conservative default, not the bisected failure boundary — #114
-// says a real bisect is still open work. The cleanest data available (#110's
-// one-line, no-newline sweep against the input path) held reliable through
-// 1200 bytes and broke at 1600; #112 separately measured a ~900-byte CREATE
-// prompt stranding twice the same day 3833- and 5139-byte prompts landed
-// fine, so raw size alone is not the whole story — multi-line shape and host
-// load are named confounds there too. 1024 sits inside the one controlled
-// bisect with headroom below it, and is far below the "detailed briefing
-// material" case #114 itself says belongs in a reference the agent reads
-// deliberately, never a pasted composer.
-const maxInputBytes = 1024
+// says a real bisect is still open work, and #130 records that the
+// mechanism behind that boundary may be startup timing rather than size at
+// all, which is exactly why raising this default is deliberately NOT part
+// of making it configurable: #130 keeps this number unchanged and leaves
+// raising it to follow the bisect (#129), on evidence, per machine. The
+// cleanest data available (#110's one-line, no-newline sweep against the
+// input path) held reliable through 1200 bytes and broke at 1600; #112
+// separately measured a ~900-byte CREATE prompt stranding twice the same
+// day 3833- and 5139-byte prompts landed fine, so raw size alone is not the
+// whole story — multi-line shape and host load are named confounds there
+// too. 1024 sits inside the one controlled bisect with headroom below it,
+// and is far below the "detailed briefing material" case #114 itself says
+// belongs in a reference the agent reads deliberately, never a pasted
+// composer.
+const defaultMaxInputBytes = 1024
 
-// rejectOverLength returns a fleet.Error naming field, the limit and the
-// caller's actual size when text exceeds maxInputBytes, or nil when it does
-// not. Shared by handleCreateSession's prompt and handleSendInput's text —
-// see #114.
-func rejectOverLength(field, text string, machine fleet.MachineId) *fleet.Error {
-	if len(text) <= maxInputBytes {
+// rejectOverLength returns a fleet.Error naming field, limit and the
+// caller's actual size when text exceeds limit, or nil when it does not.
+// Shared by handleCreateSession's prompt and handleSendInput's text — see
+// #114. limit is the caller's own effective value (Service.MaxInputBytes,
+// #130) rather than a package constant, so the message always names the
+// bound this machine is actually enforcing, configured or defaulted.
+//
+// Both call sites run this check unconditionally, before resolving whether
+// `machine` is this instance or a peer — the same "before any driver is
+// resolved" property #114 already required, kept unchanged by #130. A
+// relayed create or input is therefore pre-checked against the RELAYING
+// machine's own limit, not the target's; the peer's own handleCreateSession
+// / handleSendInput enforces its own limit again once the call actually
+// reaches it, which is the authoritative check. Divergence between the two
+// is real only once an operator configures different limits on different
+// machines — #130 keeps the shipped default identical everywhere, so this
+// is a known, currently-inert edge rather than an oversight.
+func rejectOverLength(field, text string, machine fleet.MachineId, limit int) *fleet.Error {
+	if len(text) <= limit {
 		return nil
 	}
 	return &fleet.Error{
@@ -810,7 +837,7 @@ func rejectOverLength(field, text string, machine fleet.MachineId) *fleet.Error 
 			"%s is %d bytes, over the %d-byte limit (#114): send shorter "+
 				"text, or put the detail somewhere the agent can read it "+
 				"deliberately and send only a pointer",
-			field, len(text), maxInputBytes),
+			field, len(text), limit),
 		Machine: machine,
 	}
 }
@@ -834,7 +861,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			return
 		}
 
-		if ferr := rejectOverLength("prompt", body.Prompt, machine); ferr != nil {
+		if ferr := rejectOverLength("prompt", body.Prompt, machine, svc.MaxInputBytes()); ferr != nil {
 			writeError(w, ferr)
 			return
 		}
@@ -1071,7 +1098,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			return
 		}
 
-		if ferr := rejectOverLength("text", body.Text, machine); ferr != nil {
+		if ferr := rejectOverLength("text", body.Text, machine, svc.MaxInputBytes()); ferr != nil {
 			writeError(w, ferr)
 			return
 		}
