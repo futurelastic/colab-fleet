@@ -93,6 +93,30 @@ func composerHolding(text string) string {
 		strings.TrimSpace(text) + "\n" + rule + "\n  ⏵⏵ auto mode on"
 }
 
+// composerHoldingRows is composerHolding's row-preserving sibling: lines are
+// rendered one per screen row exactly as given, INCLUDING a blank ("") row
+// at either end. composerHolding's own strings.TrimSpace(text) would erase
+// exactly that shape — a payload ending in one or more real trailing
+// newlines (colab-fleet#132) — so it cannot be used to build this fixture.
+func composerHoldingRows(lines []string) string {
+	var b strings.Builder
+	b.WriteString("  transcript line\n✻ Brewed for 1m 0s\n")
+	b.WriteString(rule)
+	b.WriteString("\n❯ ")
+	for i, l := range lines {
+		if i == 0 {
+			b.WriteString(l)
+			continue
+		}
+		b.WriteString("\n")
+		b.WriteString(l)
+	}
+	b.WriteString("\n")
+	b.WriteString(rule)
+	b.WriteString("\n  ⏵⏵ auto mode on")
+	return b.String()
+}
+
 func (f *fakeMux) setCapture(paneID, text string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -111,7 +135,7 @@ func (f *fakeMux) setMultilineComposer(paneID string, lines []string) {
 	}
 	cp := append([]string(nil), lines...)
 	f.composerLines[paneID] = cp
-	f.captures[paneID] = composerHolding(strings.Join(cp, "\n"))
+	f.captures[paneID] = composerHoldingRows(cp)
 }
 
 // freezeComposer makes C-u a complete no-op against paneID — modelling a
@@ -340,41 +364,70 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		}
 		return nil, errors.New("can't find session")
 	case "send-keys":
-		// Model the one key whose EFFECT a test depends on: C-u clears the
-		// composer. Anything else stays a no-op, as before.
+		// Model the two keys clearComposer's press loop can send: C-u
+		// (unix-line-discard) for an ordinary row, and — colab-fleet#132 —
+		// Backspace for a row that is already blank, which C-u cannot
+		// touch at all (it kills to the start of the CURRENT line and
+		// stops there; a blank line has nothing to kill and never crosses
+		// the boundary above it). Anything else stays a no-op, as before.
 		//
 		// Modelling it here rather than in the test matters: clearing the pane
 		// before calling Discard would have it see an empty composer and
 		// return early, so the test would pass while proving nothing about the
 		// keystroke.
 		var pane string
-		clear := false
+		unixLineDiscard := false
+		backspace := false
 		newline := false
 		for i := 0; i < len(args); i++ {
 			if args[i] == "-t" && i+1 < len(args) {
 				pane = args[i+1]
 			}
 			if args[i] == "C-u" {
-				clear = true
+				unixLineDiscard = true
+			}
+			if args[i] == "BSpace" {
+				backspace = true
 			}
 			if args[i] == "C-m" || args[i] == "Enter" {
 				newline = true
 			}
 		}
-		if clear && pane != "" {
+		if (unixLineDiscard || backspace) && pane != "" {
 			if f.frozen[pane] {
-				// Models a keystroke that goes nowhere: composer untouched.
+				// Models a keystroke that goes nowhere: composer
+				// untouched, whichever of the two keys arrived.
 			} else if lines, armed := f.composerLines[pane]; armed && len(lines) > 0 {
-				if floor, hasFloor := f.composerFloor[pane]; hasFloor && len(lines) <= floor {
+				switch {
+				case func() bool { floor, hasFloor := f.composerFloor[pane]; return hasFloor && len(lines) <= floor }():
 					// #87's "moved, then stalled" shape: real progress was
 					// made getting here, and now this press — like every
 					// press after it — changes nothing. Unlike frozen,
 					// which never moved at all.
-				} else {
+				case lines[len(lines)-1] == "":
+					// The bottom row is blank — the #132 shape a trailing
+					// (or interior) real newline leaves behind. C-u has
+					// nothing to kill on an empty line and is a no-op;
+					// only Backspace, crossing the line boundary above it,
+					// removes the row.
+					if backspace {
+						lines = lines[:len(lines)-1]
+						f.composerLines[pane] = lines
+						if len(lines) == 0 {
+							delete(f.composerLines, pane)
+							delete(f.pasted, pane)
+							f.captures[pane] = idleFixtureFor("cleared")
+						} else {
+							f.captures[pane] = composerHoldingRows(lines)
+						}
+					}
+					// unix-line-discard against a blank row: no-op,
+					// matching real unix-line-discard.
+				case unixLineDiscard:
 					// unix-line-discard kills the line the cursor sits on, not the
-					// whole buffer: one press drops the LAST logical line, leaving
-					// every line above it exactly as it was. A composer with one
-					// line therefore still clears in a single press — same as the
+					// whole buffer: one press drops the LAST row, leaving
+					// every row above it exactly as it was. A composer with one
+					// row therefore still clears in a single press — same as the
 					// plain branch below — and only a composer with several needs
 					// this pressed more than once to go empty.
 					lines = lines[:len(lines)-1]
@@ -384,8 +437,15 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 						delete(f.pasted, pane)
 						f.captures[pane] = idleFixtureFor("cleared")
 					} else {
-						f.captures[pane] = composerHolding(strings.Join(lines, "\n"))
+						f.captures[pane] = composerHoldingRows(lines)
 					}
+				default:
+					// Backspace against a NON-blank row: this fake works
+					// one row at a time, not one character at a time, and
+					// clearComposer only ever sends Backspace against a
+					// row it has itself found blank (composerCursorRowBlank)
+					// — so this case is not reachable from production code
+					// and is deliberately left a no-op here.
 				}
 			} else {
 				delete(f.pasted, pane)
@@ -2217,6 +2277,18 @@ func countClears(calls [][]string) int {
 	return n
 }
 
+// countBackspaces mirrors countClears for the #132 key: Backspace, sent only
+// when clearComposer finds the composer's current bottom row already blank.
+func countBackspaces(calls [][]string) int {
+	n := 0
+	for _, call := range calls {
+		if len(call) >= 4 && call[0] == "send-keys" && call[len(call)-1] == "BSpace" {
+			n++
+		}
+	}
+	return n
+}
+
 // Issue #32, surviving half: the clear is a single un-repeated keystroke,
 // and C-u (unix-line-discard) only ever kills the line the cursor sits on —
 // never the whole buffer. Against a composer holding several logical lines
@@ -2322,6 +2394,187 @@ func TestDiscardClearsAComposerBeyondTheOldThreeSecondBudget(t *testing.T) {
 	if got := countClears(f.callsSnapshot()); got < len(lines) {
 		t.Errorf("sent %d clear keystrokes for a %d-line composer; wanted at least one per "+
 			"row, which the old 3-second window could not have afforded", got, len(lines))
+	}
+}
+
+// colab-fleet#132: a payload ending in real trailing newlines leaves blank
+// rows behind in the composer, and C-u (unix-line-discard) is a guaranteed
+// no-op against a blank row — it kills to the start of the CURRENT line and
+// never crosses the boundary above it. Against the pre-fix clearComposer
+// this composer never moves at all: every C-u press comes back byte-for-byte
+// identical, the pass exhausts its budget having achieved nothing, and the
+// residue is recorded futile (#87) — permanently wedging the composer,
+// exactly the field shape #132 reports.
+func TestDiscardCrossesTrailingBlankLinesWithBackspace(t *testing.T) {
+	f := twoSessions()
+	// The payload's own shape: real content, then two real trailing
+	// newlines — composer#132's own field case.
+	lines := []string{"the payload ends in two real trailing newlines", "", ""}
+	f.setMultilineComposer("%2", lines)
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer ending in blank rows published no composerDigest")
+	}
+
+	// A hang-guard only: an old C-u-only loop would spin its whole budget
+	// without ever moving rather than fail fast, so this is generous next
+	// to the handful of presses a fixed loop needs.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a composer ending in two blank rows: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countBackspaces(f.callsSnapshot()); got < 2 {
+		t.Errorf("sent %d Backspace presses; two blank rows each need one to cross the "+
+			"line boundary C-u cannot (colab-fleet#132), got %d", got, got)
+	}
+	if got := countClears(f.callsSnapshot()); got < 1 {
+		t.Error("no C-u was sent at all; the one real content row still needs it")
+	}
+}
+
+// The single-trailing-newline shape — the minimal case a payload from
+// `echo` or an editor ordinarily produces, as distinct from #132's own
+// two-newline field case above.
+func TestDiscardCrossesASingleTrailingBlankLine(t *testing.T) {
+	f := twoSessions()
+	lines := []string{"one real trailing newline", ""}
+	f.setMultilineComposer("%2", lines)
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer ending in a blank row published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a composer ending in one blank row: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countBackspaces(f.callsSnapshot()); got < 1 {
+		t.Error("no Backspace was sent for a single trailing blank row (colab-fleet#132)")
+	}
+}
+
+// An INTERIOR blank row — not the last row overall, but the row the cursor
+// currently sits on partway through the pass — needs the identical crossing
+// once the pass walks back to it. Three rows, the middle one already blank:
+// the pass clears the real bottom row first (ordinary C-u), then reaches the
+// blank one and must cross it with Backspace before the top row's real
+// content is reachable at all.
+func TestDiscardCrossesAnInteriorBlankLine(t *testing.T) {
+	f := twoSessions()
+	lines := []string{"top row, real content", "", "bottom row, real content"}
+	f.setMultilineComposer("%2", lines)
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer with an interior blank row published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a composer with an interior blank row: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countBackspaces(f.callsSnapshot()); got < 1 {
+		t.Error("no Backspace was sent for an interior blank row (colab-fleet#132)")
+	}
+	if got := countClears(f.callsSnapshot()); got < 2 {
+		t.Errorf("sent %d C-u presses; both real-content rows still need one each", got)
+	}
+}
+
+// "Several" trailing blank rows, not just #132's own two — the test matrix
+// #132 asks for explicitly ("one, two, several"). Each blank row needs its
+// own Backspace; none of them should ever see a C-u.
+func TestDiscardCrossesSeveralTrailingBlankLines(t *testing.T) {
+	f := twoSessions()
+	lines := []string{"real content, then a run of blank rows", "", "", "", ""}
+	f.setMultilineComposer("%2", lines)
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer ending in several blank rows published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a composer ending in several blank rows: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countBackspaces(f.callsSnapshot()); got < 4 {
+		t.Errorf("sent %d Backspace presses; four trailing blank rows each need one "+
+			"(colab-fleet#132), got %d", got, got)
 	}
 }
 
