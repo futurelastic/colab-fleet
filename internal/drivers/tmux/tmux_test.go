@@ -3650,6 +3650,85 @@ func TestSendReportsUnknownWhenTheSubmitDoesNotRegister(t *testing.T) {
 	}
 }
 
+// colab-fleet #131 (item 3): the same restart-correlation fact Discard's own
+// 409s carry since 8ff743a (see TestDiscardNotesWhenTheUnsentInputStatusPredatesTheService)
+// must reach Send's own OutcomeUnknown receipts too — a caller retrying a
+// send that lands on unknown should not have to cross-reference a separate
+// State() read to learn the session's waiting_input status predates this
+// service's current process.
+//
+// Simulated the same way that Discard test is: a first driver's List()
+// persists "beta"'s waiting_input status to a shared state store, standing
+// in for the deploy that restarts this service; a second driver over the
+// same store never calls List itself, so it must fall back to the persisted
+// record the same way restoredWaitingInputSince does for Discard. By the
+// time the second driver's Send runs, "beta"'s composer is idle again (the
+// note fires purely off the PERSISTED record, never off what the composer
+// holds right now — the same evidence restoredWaitingInputSince itself
+// reads, no more).
+func TestSendNotesWhenTheUnsentInputStatusPredatesTheService(t *testing.T) {
+	dir := t.TempDir()
+	f := twoSessions() // "beta" (%2) starts holding unsent input; see twoSessions
+
+	newDriver := func() *Driver {
+		st, err := state.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+			withClock(func() time.Time { return time.Unix(1785760000, 0) }), WithState(st))
+	}
+
+	first := newDriver()
+	if _, err := first.List(context.Background(), testCaller, driver.ListFilter{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The restart. Nothing about the state store or the multiplexer changed —
+	// only the driver process. "beta"'s composer clears (someone's own
+	// business, or an earlier delivery — irrelevant here) before the send
+	// under test, and that send's own paste is never rendered, landing it on
+	// unknown for an unrelated reason. The point under test is that the note
+	// still fires, off the persisted record alone.
+	f.setCapture("%2", idleFixtureFor("beta"))
+	f.noEcho = true
+
+	second := newDriver()
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+	got, err := second.Send(context.Background(), testCaller, ref,
+		"an instruction into a session that just restarted", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("outcome = %q, want unknown", got.Outcome)
+	}
+	if !strings.Contains(got.Reason, "carried from before this service restarted") {
+		t.Errorf("reason = %q; a Send landing on unknown against a session whose "+
+			"waiting_input status predates this service's current process must say so, "+
+			"the same fact Discard's 409s and State/List's own evidence line already carry",
+			got.Reason)
+	}
+
+	// Control: "alpha💬" never held unsent input, so its persisted record
+	// carries no waiting_input status and the note must not appear — proving
+	// this is not unconditionally appended to every unknown outcome.
+	third := newDriver()
+	gotAlpha, err := third.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "an ordinary instruction",
+		driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAlpha.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("setup: control outcome = %q, want unknown (noEcho is still set)", gotAlpha.Outcome)
+	}
+	if strings.Contains(gotAlpha.Reason, "carried from before this service restarted") {
+		t.Errorf("reason = %q; must not append the restart note to a session with no "+
+			"persisted waiting_input history", gotAlpha.Reason)
+	}
+}
+
 // The confirmation must not fire on the composer's own placeholder. The
 // runtime draws a faint hint into an EMPTY composer, and reading that as
 // leftover text would report every healthy send as stranded — the same

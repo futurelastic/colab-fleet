@@ -1779,11 +1779,11 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			if !landed {
 				return fleet.DeliveryReceipt{
 					Outcome: fleet.OutcomeUnknown,
-					Reason: "resumed a delivery this driver had stranded earlier, but the " +
-						"composer could not be confirmed to hold a complete, attributable " +
-						"copy of it this time either — pressing submit now risks completing " +
-						"a partial paste instead of the full one; the record is kept — retry " +
-						"the same send with resumeIfStranded again",
+					Reason: d.withRestartNoteReason(ref.ID, "resumed a delivery this driver had "+
+						"stranded earlier, but the composer could not be confirmed to hold a "+
+						"complete, attributable copy of it this time either — pressing submit now "+
+						"risks completing a partial paste instead of the full one; the record is "+
+						"kept — retry the same send with resumeIfStranded again"),
 				}, nil
 			}
 			if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "Space", "C-m"); err != nil {
@@ -1813,9 +1813,10 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 				// a keystroke nobody checked.
 				return fleet.DeliveryReceipt{
 					Outcome: fleet.OutcomeUnknown,
-					Reason: "resumed a delivery this driver had stranded earlier, but the " +
-						"submit could not be confirmed this time either; the record is " +
-						"kept — retry the same send with resumeIfStranded again",
+					Reason: d.withRestartNoteReason(ref.ID, "resumed a delivery this driver had "+
+						"stranded earlier, but the submit could not be confirmed this time "+
+						"either; the record is kept — retry the same send with "+
+						"resumeIfStranded again"),
 				}, nil
 			}
 			d.forgetStranded(ref.ID)
@@ -1959,10 +1960,10 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		d.noteStranded(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID))
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
-			Reason: "text was delivered to the composer but did not render in time " +
-				"to be confirmed landed, and no single new paste marker could be " +
-				"attributed to this delivery alone; it may be sitting there unsent " +
-				"— retry the same send with resumeIfStranded to submit it",
+			Reason: d.withRestartNoteReason(ref.ID, "text was delivered to the composer but "+
+				"did not render in time to be confirmed landed, and no single new paste "+
+				"marker could be attributed to this delivery alone; it may be sitting there "+
+				"unsent — retry the same send with resumeIfStranded to submit it"),
 		}, nil
 	}
 	// The wake key: `Space` before the newline, in ONE send-keys call.
@@ -2012,10 +2013,11 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		d.noteStranded(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID))
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
-			Reason: "the text landed and was attributed to this delivery, and a submit was " +
-				"issued, but this delivery's own block did not clear and the composer did " +
-				"not empty — the submit did not register for it. It is sitting there " +
-				"unsent; retry the same send with resumeIfStranded to submit it",
+			Reason: d.withRestartNoteReason(ref.ID, "the text landed and was attributed to "+
+				"this delivery, and a submit was issued, but this delivery's own block did "+
+				"not clear and the composer did not empty — the submit did not register for "+
+				"it. It is sitting there unsent; retry the same send with resumeIfStranded "+
+				"to submit it"),
 		}, nil
 	}
 
@@ -4637,30 +4639,65 @@ func (d *Driver) restoredWaitingInputSince(id string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// withRestartNote appends restoredWaitingInputSince's fact to err's message
-// when it applies to id, and returns err unchanged otherwise (including when
-// err is nil). Wrapped with %w so errors.Is(_, ErrAmbiguousTarget) still
-// holds on the result — every caller of Discard's error checks that kind,
-// and appending a note by plain string concatenation instead would silently
-// break that check for exactly the sessions this note is meant to help.
+// restartNote reports restoredWaitingInputSince's fact as a ready-to-append
+// clause, and ok=false when it does not apply to id.
 //
-// The appended phrase deliberately reuses stampSinceLocked's own wording
-// ("carried from before this service restarted") verbatim rather than
-// inventing new prose, so an operator who has already seen that phrase on a
-// State() read recognizes it immediately here.
+// The phrase deliberately reuses stampSinceLocked's own wording ("carried
+// from before this service restarted") verbatim rather than inventing new
+// prose, so an operator who has already seen that phrase on a State() read
+// recognizes it immediately here.
+//
+// Factored out of what used to be withRestartNote's own body so colab-fleet
+// #131 can reuse the fact on Send's OutcomeUnknown receipts (see
+// withRestartNoteReason) without also carrying Discard's remedy clause below
+// — that clause is specific to a stuck composer C-u cannot move; Send's own
+// Reason strings already say how to retry, and appending Discard's advice
+// there would be wrong for what the caller is looking at.
+func (d *Driver) restartNote(id string) (string, bool) {
+	since, restored := d.restoredWaitingInputSince(id)
+	if !restored {
+		return "", false
+	}
+	return fmt.Sprintf("this composer's unsent-input status was already "+
+		"holding before this service's current process started (age carried "+
+		"from before this service restarted, since %s)",
+		since.Format(time.RFC3339)), true
+}
+
+// withRestartNote appends restartNote's fact, plus Discard's own remedy
+// clause, to err's message when it applies to id, and returns err unchanged
+// otherwise (including when err is nil). Wrapped with %w so
+// errors.Is(_, ErrAmbiguousTarget) still holds on the result — every caller
+// of Discard's error checks that kind, and appending a note by plain string
+// concatenation instead would silently break that check for exactly the
+// sessions this note is meant to help.
 func (d *Driver) withRestartNote(id string, err error) error {
 	if err == nil {
 		return err
 	}
-	since, restored := d.restoredWaitingInputSince(id)
-	if !restored {
+	note, ok := d.restartNote(id)
+	if !ok {
 		return err
 	}
-	return fmt.Errorf("%w; this composer's unsent-input status was already "+
-		"holding before this service's current process started (age carried "+
-		"from before this service restarted, since %s) — closing the session "+
-		"is the one remedy known to work against a residue in that condition",
-		err, since.Format(time.RFC3339))
+	return fmt.Errorf("%w; %s — closing the session is the one remedy known "+
+		"to work against a residue in that condition", err, note)
+}
+
+// withRestartNoteReason appends restartNote's fact to reason when it applies
+// to id, and returns reason unchanged otherwise. colab-fleet #131: the same
+// correlation Discard's 409s carry via withRestartNote, reused on Send's own
+// OutcomeUnknown receipts — a caller retrying a swallowed submit or an
+// unconfirmed paste should not have to cross-reference a separate State()
+// read to learn the session's waiting_input status predates this service's
+// current process. Unlike withRestartNote this never wraps an error — every
+// Send call site below already returns (fleet.DeliveryReceipt, nil) on this
+// path, so there is no error kind to preserve.
+func (d *Driver) withRestartNoteReason(id, reason string) string {
+	note, ok := d.restartNote(id)
+	if !ok {
+		return reason
+	}
+	return reason + "; " + note
 }
 
 // Returns the state and whether its `since` was carried from a previous
