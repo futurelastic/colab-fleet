@@ -16,6 +16,7 @@ import (
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/godx-jp/colab-fleet/internal/state"
 	"github.com/godx-jp/colab-fleet/internal/trustseed"
 )
 
@@ -2376,6 +2377,72 @@ func TestDiscardReportsAnUntouchedComposerDistinctlyAndSafely(t *testing.T) {
 	if !strings.Contains(err.Error(), "unchanged") || !strings.Contains(err.Error(), "safe") {
 		t.Errorf("message = %q; an untouched composer must say the text is intact and a "+
 			"same-digest retry is safe, not just that it %q", err.Error(), "did not clear")
+	}
+}
+
+// colab-fleet #124: Discard's own 409 should carry the same restart-
+// correlation fact State/List already surface (stampSinceLocked's "age
+// carried from before this service restarted"), instead of making an
+// operator cross-reference a separate read by hand — which is exactly what
+// #124's field report spent two follow-up comments doing.
+//
+// Simulated the same way TestResumeIntentSurvivesARestart does: a second
+// Driver built over the same on-disk state store stands in for the process
+// this service restarts as part of its own deploy. The first driver's List
+// call is what persists the waiting_input status/record to that store; the
+// second driver never calls List itself before Discard, so its own
+// in-memory d.observed has nothing for this session and it must fall back
+// to the persisted record alone — the exact path restoredWaitingInputSince
+// exists for.
+func TestDiscardNotesWhenTheUnsentInputStatusPredatesTheService(t *testing.T) {
+	dir := t.TempDir()
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent
+	f.freezeComposer("%2") // the clear keystroke never reaches this pane at all
+
+	newDriver := func() *Driver {
+		st, err := state.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Real clock, deliberately: see the sibling untouched/damaged Discard
+		// tests in this file for why — the clear loop's own select waits on a
+		// real timer between presses regardless of d.now().
+		return New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+			withClock(time.Now), WithState(st))
+	}
+
+	first := newDriver()
+	col, err := first.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("setup: no composerDigest published")
+	}
+
+	// The restart. Nothing about the state store or the multiplexer
+	// changed — only the driver process.
+	second := newDriver()
+
+	_, err = second.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err == nil {
+		t.Fatal("a frozen pane must not report success")
+	}
+	if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+		t.Errorf("kind: got %v, want an ErrAmbiguousTarget (conflict, not the caller's "+
+			"fault) — a driver-side execution failure must not be reported as invalid", err)
+	}
+	if !strings.Contains(err.Error(), "carried from before this service restarted") {
+		t.Errorf("message = %q; a Discard failure against a session whose waiting_input "+
+			"status predates this service's current process must say so, the same fact "+
+			"State/List already carry in their own evidence line", err.Error())
 	}
 }
 

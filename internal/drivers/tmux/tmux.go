@@ -2245,7 +2245,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	// spent that pass, would not learn anything new. Refuse outright,
 	// before touching the pane.
 	if attempts := d.futileClearAttempts(ref.ID, live.cwd, expectDigest); attempts > 0 {
-		return fleet.Ack{}, discardProvenFutile(attempts)
+		return fleet.Ack{}, d.withRestartNote(ref.ID, discardProvenFutile(attempts))
 	}
 
 	expectedLines, _ := composerVisualLines(sc)
@@ -2256,7 +2256,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	if cleared {
 		return fleet.Ack{Accepted: true}, nil
 	}
-	return fleet.Ack{}, discardIncomplete(pending, left)
+	return fleet.Ack{}, d.withRestartNote(ref.ID, discardIncomplete(pending, left))
 }
 
 // clearComposer walks a composer's unsent text backward with repeated C-u
@@ -4600,6 +4600,67 @@ func (d *Driver) memoryLocked(id string) paneMemory {
 		return paneMemory{}
 	}
 	return paneMemory{known: true, digest: prior.digest, at: prior.at}
+}
+
+// restoredWaitingInputSince reports whether the CURRENT waiting_input status
+// for id is known — either from this instance's own in-memory observation,
+// or from a record persisted to disk before this instance started — to
+// predate this service's current process, and since when.
+//
+// This is the exact "restored" fact stampSinceLocked already computes for a
+// State/List read's Evidence line (see that function, immediately below):
+// colab-fleet #124's own field report quoted that evidence verbatim —
+// "unchanged for 49m0s (age carried from before this service restarted)".
+// What #124 found missing is that Discard's OWN failure messages
+// (discardIncomplete, discardProvenFutile) never carried this same fact, so
+// an operator seeing a 409 had to separately call State(), notice the
+// phrase, and do the correlation by hand — which is exactly what #124's
+// report spent two follow-up comments doing. This is factored out as its
+// own method (rather than inlined at Discard's call sites) so it reads the
+// SAME two sources stampSinceLocked reads, in the same order, and can never
+// silently drift into a second, slightly different definition of
+// "restored".
+//
+// Locks d.mu itself — unlike stampSinceLocked, which assumes the caller
+// already holds it (it runs inside State/List's own locked section).
+// Discard does not hold d.mu at its call site, so this manages its own.
+func (d *Driver) restoredWaitingInputSince(id string) (time.Time, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if prior, ok := d.observed[id]; ok && prior.status == fleet.StatusWaitingInput {
+		return prior.statusSince, prior.sinceRestored
+	}
+	if rec, ok := d.persistedRecord(id); ok &&
+		rec.Status == string(fleet.StatusWaitingInput) && !rec.StatusSince.IsZero() {
+		return rec.StatusSince, true
+	}
+	return time.Time{}, false
+}
+
+// withRestartNote appends restoredWaitingInputSince's fact to err's message
+// when it applies to id, and returns err unchanged otherwise (including when
+// err is nil). Wrapped with %w so errors.Is(_, ErrAmbiguousTarget) still
+// holds on the result — every caller of Discard's error checks that kind,
+// and appending a note by plain string concatenation instead would silently
+// break that check for exactly the sessions this note is meant to help.
+//
+// The appended phrase deliberately reuses stampSinceLocked's own wording
+// ("carried from before this service restarted") verbatim rather than
+// inventing new prose, so an operator who has already seen that phrase on a
+// State() read recognizes it immediately here.
+func (d *Driver) withRestartNote(id string, err error) error {
+	if err == nil {
+		return err
+	}
+	since, restored := d.restoredWaitingInputSince(id)
+	if !restored {
+		return err
+	}
+	return fmt.Errorf("%w; this composer's unsent-input status was already "+
+		"holding before this service's current process started (age carried "+
+		"from before this service restarted, since %s) — closing the session "+
+		"is the one remedy known to work against a residue in that condition",
+		err, since.Format(time.RFC3339))
 }
 
 // Returns the state and whether its `since` was carried from a previous
