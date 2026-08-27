@@ -2232,12 +2232,11 @@ func TestDiscardRepeatsTheClearForAMultiLineComposer(t *testing.T) {
 	lines := []string{"just a moment,", "this is the second visual line,", "and this is the third."}
 	f.setMultilineComposer("%2", lines)
 
-	// Not newTestDriver's usual frozen clock: this test needs the poll
-	// loop's OWN promptClearWindow deadline (and bounded()'s deadline,
-	// derived from the same d.now()) to sit safely in the future relative
-	// to the real ctx.WithTimeout below, which a frozen constant cannot
-	// guarantee once real time moves past it — see the untouched test's
-	// comment for the failure that produces.
+	// Not newTestDriver's usual frozen clock: bounded()'s deadline is
+	// derived from d.now(), and a frozen constant that has already fallen
+	// behind the real ctx.WithTimeout below would make bounded() hand back
+	// an already-expired context — see the untouched test's comment for the
+	// failure that produces.
 	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
 		withClock(time.Now))
 
@@ -2256,8 +2255,8 @@ func TestDiscardRepeatsTheClearForAMultiLineComposer(t *testing.T) {
 	}
 
 	// A hang-guard only: an un-repeated clear that never reaches empty
-	// would otherwise spin this loop for the full 3s promptClearWindow
-	// rather than fail it quickly. Generous next to the ~600ms three
+	// would otherwise spin this loop for the whole content-derived press
+	// budget rather than fail it quickly. Generous next to the ~600ms three
 	// presses need.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -2273,6 +2272,55 @@ func TestDiscardRepeatsTheClearForAMultiLineComposer(t *testing.T) {
 		t.Errorf("sent %d clear keystrokes for a %d-line composer; a single un-repeated "+
 			"C-u only ever kills the line the cursor is on, so this must press it again "+
 			"for every line still standing", got, len(lines))
+	}
+}
+
+// colab-fleet#129's own acceptance criterion: a multi-line composer well
+// beyond what the retired 3-second promptClearWindow allowed still clears.
+// At one press per promptClearInterval (200ms), 3 seconds bought roughly 15
+// presses at best, before any subprocess overhead — this composer needs 20,
+// which the old flat window could not have delivered at any machine speed.
+// clearComposer's press budget is now sized to the composer's own row count
+// (composerVisualLines) instead, so this succeeds regardless.
+func TestDiscardClearsAComposerBeyondTheOldThreeSecondBudget(t *testing.T) {
+	f := twoSessions()
+	lines := make([]string, 20)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("row %d of a paste the old 3-second window could not finish", i)
+	}
+	f.setMultilineComposer("%2", lines)
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a multi-line composer published no composerDigest")
+	}
+
+	// A hang-guard only, generous next to the ~4s the 20 presses need.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a %d-line composer, beyond the old window's reach: %v", len(lines), err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countClears(f.callsSnapshot()); got < len(lines) {
+		t.Errorf("sent %d clear keystrokes for a %d-line composer; wanted at least one per "+
+			"row, which the old 3-second window could not have afforded", got, len(lines))
 	}
 }
 
@@ -2294,13 +2342,12 @@ func TestDiscardReportsAnUntouchedComposerDistinctlyAndSafely(t *testing.T) {
 	f.freezeComposer("%2") // the clear keystroke never reaches this pane at all
 
 	// The real clock, deliberately not the file's usual frozen test
-	// constant: this test needs Discard's own promptClearWindow deadline to
-	// actually elapse (a frozen d.now() never advances, so that branch
-	// would never fire), and bounded() also computes its outer deadline
-	// from d.now() — mixing a frozen driver clock with a real-time context
-	// there produces an already-expired context the moment the frozen
-	// constant is older than the wall clock, which silently corrupts any
-	// test exercising more than one poll iteration.
+	// constant: the poll loop's own select waits on a REAL time.After
+	// between presses regardless of d.now(), and bounded() computes its
+	// outer deadline from d.now() — mixing a frozen driver clock with a
+	// real-time context there produces an already-expired context the
+	// moment the frozen constant is older than the wall clock, which
+	// silently corrupts any test exercising more than one poll iteration.
 	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
 		withClock(time.Now))
 
@@ -2383,17 +2430,26 @@ func TestDiscardIncompleteFirstMessageBoundsItsOwnSafetyPromise(t *testing.T) {
 // Against the pre-fix Discard this fails the same two ways as the untouched
 // test: unwrapped error (mapped to invalid, not conflict) and a message
 // that never says the composer is now damaged.
+//
+// colab-fleet#129 retargeted HOW this state is reached, not what it asserts.
+// Before #129, "damaged" was reached by outrunning promptClearWindow's flat
+// 3-second clock with a composer long enough that the clock, not the
+// composer, was the limiting factor — a shape #129 explicitly removed:
+// clearComposer's press budget is content-derived now, so a composer merely
+// LONG (as opposed to genuinely stuck) clears in full regardless of line
+// count, up to maxClearPresses. What still legitimately lands a composer in
+// "damaged" is #87's stall — real progress, then none — so this uses the
+// same fixture shape TestDiscardStopsPressingOnceTheComposerStopsMoving
+// does, with different numbers, and pins the MESSAGE this state must
+// produce rather than that test's press-count assertions.
 func TestDiscardReportsADamagedComposerDistinctlyAndUnsafely(t *testing.T) {
 	f := twoSessions()
-	// More lines than promptClearWindow's real time can walk through at one
-	// press per promptClearInterval (3s / 200ms ≈ 15): enough must still be
-	// standing when the window closes to prove "damaged", not "succeeded a
-	// little slowly".
-	lines := make([]string, 40)
+	lines := make([]string, 10)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("line %d of an unsent message that never got resent", i)
 	}
 	f.setMultilineComposer("%2", lines)
+	f.setComposerFloor("%2", 4) // real progress (10 -> 4), then genuinely stops
 
 	// See the sibling untouched test for why this is the real clock and not
 	// the file's usual frozen one.
@@ -2450,8 +2506,8 @@ func TestDiscardStopsPressingOnceTheComposerStopsMoving(t *testing.T) {
 	f.setMultilineComposer("%2", lines)
 	f.setComposerFloor("%2", 3)
 
-	// Real clock: see the sibling untouched/damaged tests for why — this
-	// needs promptClearWindow to actually elapse.
+	// Real clock: see the sibling untouched/damaged tests for why — the
+	// select between presses waits on a real timer regardless of d.now().
 	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
 		withClock(time.Now))
 
@@ -2529,10 +2585,10 @@ func TestDiscardStopsPromisingASafeRetryOnceItHasProvedFutile(t *testing.T) {
 	}
 	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
 
-	// context.Background(), not a short WithTimeout: this call needs the
-	// full promptClearWindow to actually elapse, exactly like the sibling
-	// ReportsAnUntouchedComposer test — a caller-supplied deadline shorter
-	// than that window races the internal ctx.Done() case and returns a
+	// context.Background(), not a short WithTimeout: this call needs its
+	// whole content-derived press budget to run out, exactly like the
+	// sibling ReportsAnUntouchedComposer test — a caller-supplied deadline
+	// shorter than that races the internal ctx.Done() case and returns a
 	// bare "context deadline exceeded" instead of exercising this path.
 	_, err1 := d.Discard(context.Background(), testCaller, ref, digest)
 	if err1 == nil {
@@ -2599,10 +2655,10 @@ func TestDiscardForgetsFutilityWhenTheComposerMoves(t *testing.T) {
 	}
 	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
 
-	// context.Background(): the frozen composer needs the full
-	// promptClearWindow to elapse before reporting "unchanged" — see the
-	// sibling ProvedFutile test's comment on why a short WithTimeout races
-	// the internal ctx.Done() case here.
+	// context.Background(): the frozen composer needs its whole
+	// content-derived press budget to run out before reporting "unchanged"
+	// — see the sibling ProvedFutile test's comment on why a short
+	// WithTimeout races the internal ctx.Done() case here.
 	if _, err := d.Discard(context.Background(), testCaller, ref, digest1); err == nil {
 		t.Fatal("setup: expected the frozen pane to refuse on the first call")
 	}
@@ -2666,10 +2722,10 @@ func TestDiscardFutilityIsCorroboratedByCwd(t *testing.T) {
 	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
 
 	// context.Background(): see the ProvedFutile test's comment — both
-	// calls below need the full promptClearWindow, since the composer stays
-	// frozen throughout and neither is expected to be blocked before
-	// pressing (the second is deliberately NOT proven-futile-blocked here,
-	// that is the property under test).
+	// calls below need their whole content-derived press budget to run,
+	// since the composer stays frozen throughout and neither is expected to
+	// be blocked before pressing (the second is deliberately NOT
+	// proven-futile-blocked here, that is the property under test).
 	if _, err := d.Discard(context.Background(), testCaller, ref, digest); err == nil {
 		t.Fatal("setup: expected the frozen pane to refuse on the first call")
 	}

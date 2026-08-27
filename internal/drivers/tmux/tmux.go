@@ -90,10 +90,23 @@ const (
 	DefaultRuntime = fleet.RuntimeId("claude-code-tmux")
 
 	// defaultDeadlineMs bounds any single call (§4.4). Local subprocess
-	// work measured in single-digit milliseconds; this is three orders of
-	// magnitude of headroom, chosen so that a genuinely wedged multiplexer
-	// surfaces as unreachable in bounded time rather than never.
-	defaultDeadlineMs = 5000
+	// work measured in single-digit milliseconds; the original 5000 was
+	// three orders of magnitude of headroom on that basis, chosen so that a
+	// genuinely wedged multiplexer surfaces as unreachable in bounded time
+	// rather than never.
+	//
+	// Raised to 30000 for colab-fleet#129: Discard's clear loop is now
+	// content-derived (see clearPressMargin, maxClearPresses below) rather
+	// than clock-bound, and a composer sized like #129's own field case
+	// (~80 rows) legitimately needs on the order of maxClearPresses presses
+	// at promptClearInterval apart — arithmetic that no longer fits under
+	// the original bound at all, regardless of what "wedged" means. §4.4
+	// ties the declared deadline to the whole driver, not to one verb, so
+	// this is the one number every operation's "wedged" detection now
+	// shares; a subprocess that is actually hung is still caught, just with
+	// more slack than before, which is the correct trade once one verb's
+	// legitimate worst case is this much larger than the rest.
+	defaultDeadlineMs = 30000
 
 	// defaultCaptureLines is how much scrollback the classifier receives
 	// per session. The classifier reads only the tail, but the tail must
@@ -109,13 +122,43 @@ const (
 	// clear loop tolerates once it has already seen the composer move at
 	// least once (#87). Before any movement, "unchanged" is not yet
 	// evidence of anything — a pane that has simply not redrawn — so the
-	// loop still spends the whole promptClearWindow there. AFTER movement,
-	// an unchanged capture is a press that did nothing, and repeating it
-	// for the rest of the window is not buying more time, it is more
-	// destructive keystrokes aimed at text nobody has re-read. Three is
-	// enough to distinguish "stopped" from "one slow repaint" without
-	// costing the caller most of the window finding out.
+	// loop still spends its whole content-derived press budget there (see
+	// clearPressMargin, maxClearPresses below; colab-fleet#129 replaced
+	// what used to be a flat clock here). AFTER movement, an unchanged
+	// capture is a press that did nothing, and repeating it for the rest of
+	// the budget is not buying more evidence, it is more destructive
+	// keystrokes aimed at text nobody has re-read. Three is enough to
+	// distinguish "stopped" from "one slow repaint" without costing the
+	// caller most of the budget finding out.
 	stallPresses = 3
+
+	// clearPressMargin is how many presses beyond composerVisualLines'
+	// count a clear pass is given before the composer having never moved at
+	// all counts as evidence rather than as "the pane has not repainted
+	// yet" (colab-fleet#129). composerVisualLines is a count of what is
+	// ON SCREEN right now, not a guarantee that C-u maps onto it one for
+	// one — this margin is the acknowledgment that the mapping is measured,
+	// not proven exact (see composerVisualLines' own doc comment), without
+	// being large enough to matter for how long a genuinely stuck composer
+	// takes to be reported as such.
+	clearPressMargin = 5
+
+	// maxClearPresses is the hard ceiling on how many C-u presses one clear
+	// pass will ever spend, regardless of how large composerVisualLines
+	// reports the composer to be. #129 is explicit that a human paste is
+	// not bounded by what the API's own input cap would allow, so an
+	// expectation derived from content has no natural ceiling of its own —
+	// this is the bound this driver still needs regardless (§4.4: "a
+	// driver that can block without a bound is a specification violation").
+	// Sized comfortably above #129's own field case (~80 rows) so that case
+	// is not the thing this limits; a composer that genuinely exceeds it
+	// still gets an honest "made progress, ran out of budget" report
+	// (discardIncomplete's damaged branch) rather than either a silent
+	// truncation or an unbounded loop — the same outcome a composer that
+	// stalls for any other reason already produces, so a caller does not
+	// need to know which of the two happened to react correctly: re-read
+	// and, if there is more to clear, ask again.
+	maxClearPresses = 120
 
 	// startingWindow is how long a session with no visible interface is
 	// given the benefit of the doubt. The runtime takes tens of seconds to
@@ -1796,7 +1839,8 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// refusal was collapsing into one.
 		if record, hasRecord := d.strandedRecordFor(ref.ID, target.cwd); hasRecord {
 			if opts.ReplaceIfStranded {
-				receipt, cleared, err := d.tryReplaceStranded(ctx, ref, target, record, pending)
+				expectedLines, _ := composerVisualLines(screenNow)
+				receipt, cleared, err := d.tryReplaceStranded(ctx, ref, target, record, pending, expectedLines)
 				if err != nil {
 					return fleet.DeliveryReceipt{}, err
 				}
@@ -2155,7 +2199,8 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 			ErrAmbiguousTarget, ref.ID, live.created.Format(time.RFC3339), want.Format(time.RFC3339))
 	}
 
-	pending, _ := composerText(newScreen(captures[live.paneID]))
+	sc := newScreen(captures[live.paneID])
+	pending, _ := composerText(sc)
 	if pending == "" {
 		// Already clear — including the case where what looked like text was
 		// the dim placeholder, which is not text at all and never was.
@@ -2176,17 +2221,35 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 			ErrAmbiguousTarget, expectDigest, got)
 	}
 
-	// #87: this EXACT residue may already be proven to resist a clear pass
-	// — a prior call spent the whole promptClearWindow pressing C-u against
-	// it and it never moved. If so, do not press again: a second identical
-	// pass against text nobody has re-read is not gathering more evidence,
-	// it is destructive keystrokes spent to learn what the first pass
-	// already learned. Refuse outright, before touching the pane.
+	// #87: this EXACT residue may already be proven to resist a clear pass —
+	// a prior call spent a full, content-sized budget (clearComposer's own
+	// expectedLines+clearPressMargin, capped at maxClearPresses) pressing
+	// C-u against it and it never moved. If so, do not press again: a
+	// second identical pass against text nobody has re-read is not
+	// gathering more evidence, it is destructive keystrokes spent to learn
+	// what the first pass already learned.
+	//
+	// #129 asked whether this still holds now that a real human's
+	// persistence was observed clearing a composer this exact refusal had
+	// given up on, and the answer is: refusing here is unchanged, but the
+	// PASS this now guards is not the one that field case indicted. That
+	// pass used to be bounded by a flat 3-second clock regardless of what
+	// the composer held — a paste sized like #129's own field case could
+	// not have finished inside it at any machine speed, which is a
+	// different failure than "pressing again would not help." Now that a
+	// pass is sized to the composer's own row count instead, a residue that
+	// still has not moved after that many presses is evidence a human's
+	// persistence never actually contradicted: nothing here claims a human
+	// pressing MORE than a content-sized pass already did would fail too,
+	// only that this driver pressing the SAME text again, having already
+	// spent that pass, would not learn anything new. Refuse outright,
+	// before touching the pane.
 	if attempts := d.futileClearAttempts(ref.ID, live.cwd, expectDigest); attempts > 0 {
 		return fleet.Ack{}, discardProvenFutile(attempts)
 	}
 
-	left, _, cleared, err := d.clearComposer(ctx, live.paneID, ref.ID, live.cwd, pending)
+	expectedLines, _ := composerVisualLines(sc)
+	left, _, cleared, err := d.clearComposer(ctx, live.paneID, ref.ID, live.cwd, pending, expectedLines)
 	if err != nil {
 		return fleet.Ack{}, fmt.Errorf("discard: %w", err)
 	}
@@ -2200,48 +2263,73 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // presses until it empties or the pass proves futile — the mechanism both
 // Discard and colab-fleet #112's replace-stranded path need, extracted here
 // so the two callers cannot drift apart on #87's stall/futility semantics.
-// Discard is the ORIGINAL of this code; nothing about the loop's own
-// behaviour changed in the extraction, only its callers.
+// Discard is the ORIGINAL of this code.
 //
 // pending is the composer text the CALLER has already corroborated —
 // Discard's digest check, or #112's ComposerDigest match — BEFORE calling
 // this. It presses keys unconditionally and trusts that corroboration
 // already happened; it does not repeat it.
 //
+// expectedLines is composerVisualLines' count for that SAME corroborated
+// screen, computed by the caller because it already has the screen this
+// pending came from — see composerVisualLines for why an on-screen row
+// count, not a duration, is what a press budget should be sized to.
+//
+// # Why a press count now, not colab-fleet#129's retired promptClearWindow
+//
 // C-u clears the line the cursor sits on: readline's unix-line-discard,
 // killing from the cursor back to the start of the CURRENT line, not the
 // whole buffer. A composer holding one short line empties in one press,
 // measured directly (C-a C-k and Escape were tried too; C-u alone was
-// enough for a single line). A composer spanning several lines does not —
-// one press clears the line the cursor is on and leaves every line above it
-// standing, so a single un-repeated press against a multi-line paste (issue
-// #32: ~6.6 KB, roughly four visual lines) can only ever get partway there.
-// So this presses the same key again on every iteration the composer is
-// still non-empty, walking it backward one line at a time until nothing is
-// left or the window runs out — the same thing an operator clearing a stuck
-// multi-line prompt by hand would do. Verification stays in the loop: a
-// keypress that did not register looks exactly like one that did, the same
-// reason Send confirms before submitting.
+// enough for a single line). A composer spanning several rows does not —
+// one press clears the row the cursor is on and leaves every row above it
+// standing, so a single un-repeated press against a multi-row paste can
+// only ever get partway there (issue #32's field case: 209 characters,
+// four on-screen rows, corrupted by the un-repeated fix of the day). So
+// this presses the same key again on every iteration the composer is still
+// non-empty, walking it backward one row at a time — the same thing an
+// operator clearing a stuck multi-line prompt by hand would do.
 //
-// #87's early exit: once movement has actually been observed, stallPresses
-// further presses that change nothing are no longer "still walking it
-// backward" — they are new evidence the pass has stopped working, and
-// pressing MORE just makes a bigger dent for no further gain. An UNMOVED
-// composer still gets the whole window, because a pane that has not
-// redrawn even once is not yet evidence of anything.
+// The bound on how many times to do that used to be a flat 3-second clock
+// (promptClearWindow), sized against #87's stuck-composer case and never
+// checked against the opposite one: #129 measured a real paste (~6.6 KB,
+// on the order of eighty on-screen rows) whose OWN required press count —
+// roughly one per row — could not fit inside that budget regardless of
+// machine speed. A duration is the wrong unit for work that scales with
+// row count; expectedLines+clearPressMargin is presses, the unit the work
+// is actually measured in, capped at maxClearPresses so the pass still
+// terminates for content with no natural size limit (see that constant).
+//
+// #87's early exit is UNCHANGED by any of this: once movement has actually
+// been observed, stallPresses further presses that change nothing are no
+// longer "still walking it backward" — they are evidence the pass has
+// stopped working, and pressing MORE just makes a bigger dent for no
+// further gain. That check still fires before the press budget is
+// necessarily exhausted, exactly as before; only what bounds the case where
+// it never fires has changed.
+//
+// Verification stays in the loop: a keypress that did not register looks
+// exactly like one that did, the same reason Send confirms before
+// submitting.
 //
 // left is what remains (empty on success). moved reports whether the pass
 // observed ANY movement at all — the caller's own signal for
 // noteFutile/its own message, exactly as Discard used it before extraction.
 // cleared is true only once the composer read back genuinely empty. err is
-// non-nil only for a failed keystroke or capture call — "ran out of time
+// non-nil only for a failed keystroke or capture call — "ran out of budget
 // without emptying" is a normal outcome (cleared=false, err=nil), reported
 // differently by each of the two callers.
-func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending string) (left string, moved, cleared bool, err error) {
-	deadline := d.now().Add(promptClearWindow)
+func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending string, expectedLines int) (left string, moved, cleared bool, err error) {
+	presses := expectedLines + clearPressMargin
+	if presses < 1 {
+		presses = 1
+	}
+	if presses > maxClearPresses {
+		presses = maxClearPresses
+	}
 	left = pending
 	stall := 0
-	for {
+	for pressN := 0; pressN < presses; pressN++ {
 		if _, runErr := d.run(ctx, d.bin, "send-keys", "-t", paneID, "C-u"); runErr != nil {
 			return left, moved, false, runErr
 		}
@@ -2262,7 +2350,10 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 		if moved && stall >= stallPresses {
 			break
 		}
-		if d.now().After(deadline) || ctx.Err() != nil {
+		if ctx.Err() != nil {
+			break
+		}
+		if pressN == presses-1 {
 			break
 		}
 		select {
@@ -2358,8 +2449,10 @@ func discardIncomplete(before, after string) error {
 
 // discardProvenFutile reports the state discardIncomplete's "unchanged"
 // branch cannot: this is not the first pass against this residue, it is at
-// least the second, and the prior pass already spent a full
-// promptClearWindow pressing C-u against it without moving it at all (#87).
+// least the second, and the prior pass already spent a full, content-sized
+// press budget (clearComposer's expectedLines+clearPressMargin, capped at
+// maxClearPresses — colab-fleet#129) pressing C-u against it without moving
+// it at all (#87).
 //
 // The Issue this closes described exactly the failure this guards against:
 // a caller that followed "retrying with the same digest is safe" to the
@@ -4099,12 +4192,19 @@ func (d *Driver) currentComposerDigest(ctx context.Context, paneID string) strin
 // delivery path with the NEW text. cleared=false means the returned receipt
 // IS Send's answer, unchanged. err is non-nil only for a failed multiplexer
 // call, never for an honest "did not clear" (that is receipt, not err).
-func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, target *paneRow, record strandedRecord, pending string) (receipt fleet.DeliveryReceipt, cleared bool, err error) {
+//
+// expectedLines is composerVisualLines' count for the same screen pending
+// was read from — the caller already has that screen, see clearComposer's
+// own doc comment for why this is what a press budget is sized to now
+// (colab-fleet#129).
+func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, target *paneRow, record strandedRecord, pending string, expectedLines int) (receipt fleet.DeliveryReceipt, cleared bool, err error) {
 	digest := screenDigest(pending)
 
-	// #87: refuse outright, before pressing anything, if a full pass
-	// against this EXACT residue already proved it will not move — the
-	// same discipline Discard itself applies before ever touching the pane.
+	// #87: refuse outright, before pressing anything, if a full,
+	// content-sized pass against this EXACT residue already proved it will
+	// not move — the same discipline Discard itself applies before ever
+	// touching the pane, and Discard's own doc comment is where the #129
+	// reasoning for why this still holds is recorded.
 	if attempts := d.futileClearAttempts(ref.ID, target.cwd, digest); attempts > 0 {
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
@@ -4126,7 +4226,7 @@ func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, t
 		}, false, nil
 	}
 
-	left, moved, didClear, err := d.clearComposer(ctx, target.paneID, ref.ID, target.cwd, pending)
+	left, moved, didClear, err := d.clearComposer(ctx, target.paneID, ref.ID, target.cwd, pending, expectedLines)
 	if err != nil {
 		return fleet.DeliveryReceipt{}, false, err
 	}

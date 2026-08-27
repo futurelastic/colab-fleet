@@ -246,6 +246,44 @@ func TestWrappedComposerCapturesEveryLine(t *testing.T) {
 	}
 }
 
+// colab-fleet#129: clearComposer sizes its press budget to how many rows a
+// composer occupies on screen, not to a duration — composerVisualLines is
+// where that count comes from, and it must agree with composerText about
+// which screens hold a composer at all (same composerSpan underneath).
+func TestComposerVisualLinesCountsOnScreenRows(t *testing.T) {
+	wrapped := rule + "\n❯ this is a long message that the human\n  wrapped onto a second line and a\n  third\n" + rule
+	cases := []struct {
+		name      string
+		fixture   string
+		wantLines int
+		wantOK    bool
+	}{
+		{"empty composer, one row", fixtureIdle, 1, true},
+		{"one-line unsent text, one row", fixtureUnsent, 1, true},
+		{"prompt plus two continuation rows", wrapped, 3, true},
+		{"no composer at all", fixtureMenu, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := composerVisualLines(newScreen(tc.fixture))
+			if ok != tc.wantOK {
+				t.Fatalf("found = %v, want %v", ok, tc.wantOK)
+			}
+			if ok && got != tc.wantLines {
+				t.Errorf("lines = %d, want %d", got, tc.wantLines)
+			}
+			// composerSpan is shared: whatever composerText finds a composer
+			// in, this must find one in too, and vice versa — a caller that
+			// already has composerText's "found" answer for this screen
+			// relies on that (see this function's own doc comment).
+			if _, textOK := composerText(newScreen(tc.fixture)); textOK != ok {
+				t.Errorf("composerText found=%v but composerVisualLines found=%v for the "+
+					"same screen; the two must agree, they share composerSpan", textOK, ok)
+			}
+		})
+	}
+}
+
 // A labelled opening fence in a narrow pane leaves few rule characters. If
 // that is not recognised as a rule, the composer is not fenced and unsent
 // input goes undetected.
