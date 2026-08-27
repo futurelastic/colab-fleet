@@ -2710,6 +2710,73 @@ func TestDiscardAcceptsAWhitespaceOnlyComposerWithoutTouchingThePane(t *testing.
 	}
 }
 
+// Every shape above models a "content row" as a single line. A real pasted
+// message rarely is: a paragraph of prose wraps onto several visual rows
+// before the next blank-line break, so a multi-paragraph paste — someone
+// pasting an email, or several separate thoughts typed with blank lines
+// between them — leaves MULTIPLE non-blank rows standing between each blank
+// separator, not one. This is the shape none of the single-row fixtures
+// above can stand in for: it asks whether the blank/non-blank key choice
+// keeps alternating correctly across repeated multi-row-then-blank cycles,
+// not just a single blank row bounded by single content rows on each side.
+//
+// Three paragraphs (2, 3, and 1 rows respectively), two separate blank
+// separators between them — deliberately more than #132's own interior-blank
+// case (one blank row, one content row on each side) and more than any
+// trailing-run case (one paragraph, several blanks).
+func TestDiscardCrossesMultipleParagraphBreaksInAMultiRowPaste(t *testing.T) {
+	f := twoSessions()
+	lines := []string{
+		"first paragraph, line one",
+		"first paragraph, line two",
+		"",
+		"second paragraph, line one",
+		"second paragraph, line two",
+		"second paragraph, line three",
+		"",
+		"third paragraph, a single line",
+	}
+	f.setMultilineComposer("%2", lines)
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a multi-paragraph composer published no composerDigest")
+	}
+
+	// A hang-guard only, generous next to the ~8 presses (6 content rows + 2
+	// separators) this needs.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a multi-paragraph composer: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countClears(f.callsSnapshot()); got < 6 {
+		t.Errorf("sent %d C-u presses; six real content rows across three paragraphs each "+
+			"need one, got %d", got, got)
+	}
+	if got := countBackspaces(f.callsSnapshot()); got < 2 {
+		t.Errorf("sent %d Backspace presses; two separate paragraph-break blank rows each "+
+			"need one to cross (colab-fleet#132/#133), got %d", got, got)
+	}
+}
+
 // colab-fleet#133 §1's "three caller paths" ask: clearComposer's row-level
 // key choice (this whole matrix's real subject) is shared code, already
 // exhaustively covered above through Discard — colab-fleet#112's own
