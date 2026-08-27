@@ -63,6 +63,14 @@ type SendOptions struct {
 	// not evidence that anyone meant to send them: the runtime redraws the
 	// last submitted message as a placeholder, and a human's half-typed line
 	// looks the same to a screen reader as a finished one.
+	//
+	// colab-fleet #135: when the driver holds no record at all for this
+	// composer, there is nothing to literally resume — so this converges on
+	// ReplaceIfStranded's own door instead of dead-ending at the busy-composer
+	// refusal: clear whatever is there and deliver THIS call's text. Still
+	// never the foreign text itself; only ever this call's own. See
+	// ReplaceIfStranded's doc for the corroboration this rests on in that
+	// no-record case.
 	ResumeIfStranded bool
 
 	// ReplaceIfStranded (colab-fleet #112) clears a composer holding a
@@ -84,6 +92,19 @@ type SendOptions struct {
 	// existing; it is always an explicit, separate opt-in, and both flags
 	// set together is a contradiction a driver refuses outright rather than
 	// resolves by picking one.
+	//
+	// colab-fleet #135: when no record exists for this composer at all
+	// (the ordinary reason a caller ends up here), a driver may ALSO act —
+	// on a different corroboration, since there is no record to compare a
+	// digest against. It may read the composer's own current content and
+	// clear it using that SAME read as the proof nothing changed between
+	// "look" and "clear" (the same property /discard's own `?expect=`
+	// digest enforces), then deliver this call's text. This is not a
+	// loosening of that property, only its relocation: the opt-in flag on
+	// THIS call is the caller's considered decision to clear whatever is
+	// there, replacing the separate round trip a caller previously had to
+	// make to supply that same proof by hand. A bare Send with neither flag
+	// set must still refuse untouched.
 	ReplaceIfStranded bool
 }
 

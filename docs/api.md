@@ -186,6 +186,15 @@ this table alone.
 confirmation of. It only ever resubmits text the service's own record says it
 placed there — never text a human typed.
 
+`resumeIfStranded` and `replaceIfStranded` also clear a composer the service
+holds **no** record for at all (colab-fleet #135), instead of dead-ending at
+the busy-composer refusal — both flags already declare "deliver this text
+regardless of what's stuck in the composer", so the driver folds `discard`'s
+own read-then-clear corroboration into this one call rather than making the
+caller do it by hand across three round trips (read → discard → resend). It
+never resubmits the foreign text itself — only ever THIS call's own — and a
+bare `input` with neither flag set keeps refusing exactly as before.
+
 > A `POST` to `/input` is not the same thing as an instruction delivered. If you
 > write one client rule from this document, make it: read the outcome.
 

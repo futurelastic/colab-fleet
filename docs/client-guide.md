@@ -446,24 +446,40 @@ it; present with an `outcome` means delivery has resolved, the same vocabulary
 while `promptDelivery.outcome` is still `null`.
 
 One consequence worth planning for: this class of stranding leaves no record, so
-the `resumeIfStranded` retry below does not apply to it, and every later `send`
-to that session is refused for holding unsent input. Re-reading state is how you
-find out.
+a plain retry with `resumeIfStranded`/`replaceIfStranded` used to not apply to it
+at all, and every later `send` to that session was refused for holding unsent
+input with no automated way back in — re-reading state and calling `discard`
+yourself was the only move. Colab-fleet #135 closed that gap: both flags now
+also cover the no-record case, described below.
 
 **If `send` answers `unknown`, retry it with `resumeIfStranded: true`.** That
 outcome means the text reached the composer but could not be confirmed in time,
 so it is sitting there unsent — and a plain retry is refused, correctly, by the
-rule that stops anything appending to a busy composer. The resume submits it
-only if the service can establish from its own record that the text is the text
-it delivered; anything else is refused. Send the *same* text: this finishes one
-delivery, it does not start another.
+rule that stops anything appending to a busy composer. When the service can
+establish from its own record that the composer holds the text it delivered, the
+resume submits it — send the *same* text: this finishes one delivery, it does
+not start another.
 
-**To clear text you must not send, use `discard`.** `POST …/discard?expect=<composerDigest>`
+**When no record backs the composer at all — the create-time-prompt case above,
+a record that outlived `strandedRetention` (30 minutes), or a session this
+service never touched — `resumeIfStranded`/`replaceIfStranded` still work
+(colab-fleet #135), just differently: nothing is left to *resume*, so both
+flags clear the composer and deliver THIS call's text in its place**, folding
+`discard`'s own read-then-clear corroboration into the one call rather than
+making you do it by hand across three round trips (read → discard → resend).
+Send whatever text you actually want delivered — not necessarily the same text
+as a prior attempt, since there is no prior delivery of this service's own to
+match against. The composer's own foreign content is discarded, never
+resubmitted. A bare `send` with **neither** flag set still refuses untouched,
+exactly as it always has.
+
+**To clear text without sending anything, use `discard`.** `POST …/discard?expect=<composerDigest>`
 — the digest comes from the same read that told you `waitingOn: unsent-input`.
 It is refused if the composer changed since (somebody may be typing), and
-refused if you omit it. This is the only safe move for text a session holds that
-you did not write: `send` will not append to it, and closing the session to be
-rid of a line is not a trade anyone should make.
+refused if you omit it. Reach for this when you want the composer emptied and
+have nothing to deliver in its place; reach for `resumeIfStranded`/
+`replaceIfStranded` on `send` instead when you do — closing the session to be
+rid of a line is not a trade anyone should make either way.
 
 **`rename` changes the id.** `POST …/sessions/{id}/rename` with `{"name":"…"}`,
 and carry `?startedAt=` exactly as you would for a delete — renaming the wrong

@@ -1869,14 +1869,49 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 						"there is its own, not a person's draft — but the text being sent now " +
 						"is different. resumeIfStranded finishes the ORIGINAL delivery; " +
 						"replaceIfStranded discards it and delivers this text instead; or " +
-						"read the session and discard the composer first",
+						"discard the composer directly first (discard?expect=" +
+						screenDigest(pending) + ")",
 				}, nil
 			}
+		} else if opts.ResumeIfStranded || opts.ReplaceIfStranded {
+			// colab-fleet #135: this driver holds no record of having put
+			// anything in this composer — the ordinary reason a resume/
+			// replace request lands here at all — but both flags already
+			// declare the same intent ("deliver this text regardless of
+			// what's stuck in the composer"), and there is nothing to
+			// RESUME without a record of what was sent, so both flags take
+			// the identical door out: clear whatever is there and deliver
+			// THIS call's text, exactly as a caller was previously forced
+			// to do by hand in three round trips (read → discard → resend).
+			//
+			// Safety is not loosened, only relocated. /discard's own
+			// property is that expectDigest must match what the composer
+			// holds AT THE MOMENT OF CLEARING — proof nothing changed
+			// between "look" and "destroy", not proof of whose text it is.
+			// pending/screenNow above were captured moments before this
+			// point in the same call, so their digest supplies that exact
+			// proof without a separate round trip; the caller's proof of
+			// intent is the opt-in flag on this very request, in place of a
+			// previously-read digest it would otherwise have to quote back.
+			expectedLines, _ := composerVisualLines(screenNow)
+			receipt, cleared, clearErr := d.tryClearUnrecordedComposer(ctx, ref, target, pending, expectedLines, screenNow, opts)
+			if clearErr != nil {
+				return fleet.DeliveryReceipt{}, clearErr
+			}
+			if !cleared {
+				return receipt, nil
+			}
+			// Cleared: fall through — deliberately NOT a return — to the
+			// ordinary delivery path below, identical to tryReplaceStranded's
+			// own success path just above.
 		} else {
 			return fleet.DeliveryReceipt{
 				Outcome: fleet.OutcomeRefused,
 				Reason: "composer holds unsent input; delivering would concatenate " +
-					"with text a human typed and has not submitted (§2.4)",
+					"with text a human typed and has not submitted (§2.4). Set " +
+					"resumeIfStranded or replaceIfStranded on this same call to clear it " +
+					"and deliver this text instead, or read the session and discard the " +
+					"composer directly first (discard?expect=" + screenDigest(pending) + ")",
 			}, nil
 		}
 	}
@@ -4274,8 +4309,8 @@ func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, t
 			Outcome: fleet.OutcomeRefused,
 			Reason: "a previous attempt to clear this exact composer residue made no " +
 				"progress at all (#87); refusing to press the same keys into a composer " +
-				"already proven not to move. Read the session and discard it directly " +
-				"instead, or wait for the residue to change",
+				"already proven not to move. discard the session directly instead " +
+				"(discard?expect=" + digest + "), or wait for the residue to change",
 		}, false, nil
 	}
 
@@ -4285,8 +4320,8 @@ func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, t
 			Reason: "composer holds a delivery this driver made into this session, but its " +
 				"content has changed since that delivery was recorded (or the record " +
 				"predates this check) and this driver cannot confirm it is still only its " +
-				"own text — refusing to guess. Read the session and discard the composer " +
-				"(discard?expect=<composerDigest>) before sending again",
+				"own text — refusing to guess. discard the composer directly " +
+				"(discard?expect=" + digest + ") before sending again",
 		}, false, nil
 	}
 
@@ -4311,6 +4346,93 @@ func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, t
 	}
 
 	d.forgetStranded(ref.ID)
+	return fleet.DeliveryReceipt{}, true, nil
+}
+
+// tryClearUnrecordedComposer is colab-fleet #135's door out of the §2.4
+// refusal for the shape tryReplaceStranded does not cover: a composer
+// holding text this driver has NO stranded record of at all — the ordinary
+// reason resumeIfStranded/replaceIfStranded land here in the first place
+// (Send's own else-branch just above). Neither flag has anything to
+// literally "resume" without a record of what was sent, so both take the
+// same door out: clear whatever the composer holds right now and let the
+// caller's Send fall through to deliver THIS call's text — exactly what a
+// caller was previously forced to do by hand across three round trips
+// (read → discard?expect=<digest> → resend), and exactly the gap #135's
+// field report described.
+//
+// # Safety is relocated, not loosened
+//
+// Corroboration is the digest of `pending` — the SAME composer read Send
+// already performed moments before calling this, not a fresh capture — so
+// this offers no less protection against a human typing in between "look"
+// and "clear" than /discard's own `?expect=` does; it supplies the "look"
+// step from data already in hand instead of demanding a separate round trip
+// the caller's opt-in flag already declared redundant. What replaces
+// /discard's requirement that a CALLER have separately read the composer
+// before destroying it is the opt-in flag on this very Send call: setting
+// resumeIfStranded or replaceIfStranded IS the caller's considered decision
+// to clear whatever is there, the same way setting either flag against a
+// recognised stranded record already is (tryReplaceStranded, above). A bare
+// /input with neither flag set never reaches this function.
+//
+// # No new stranded record on failure
+//
+// This driver never delivered anything of its own into this composer, so a
+// failed or partial clear leaves nothing of "ours" to keep a record of —
+// unlike tryReplaceStranded, which keeps the PRE-EXISTING record when its
+// clear does not finish. The failure is reported honestly instead, using
+// discardIncomplete's own two-shape distinction (unchanged vs
+// changed-but-nonempty) inline rather than the pre-formed error, because
+// this returns a DeliveryReceipt, not an error.
+//
+// cleared=true means the composer is now empty; the caller falls through to
+// the ordinary delivery path with the NEW text, the same contract
+// tryReplaceStranded's own cleared=true carries. cleared=false means the
+// returned receipt IS Send's answer. err is non-nil only for a failed
+// multiplexer call, never for an honest "did not clear".
+func (d *Driver) tryClearUnrecordedComposer(ctx context.Context, ref fleet.SessionRef, target *paneRow, pending string, expectedLines int, sc screen, opts driver.SendOptions) (receipt fleet.DeliveryReceipt, cleared bool, err error) {
+	digest := screenDigest(pending)
+	flag := "replaceIfStranded"
+	if opts.ResumeIfStranded {
+		flag = "resumeIfStranded"
+	}
+
+	// #87: identical discipline to tryReplaceStranded and Discard itself —
+	// refuse outright, before pressing anything, if a full, content-sized
+	// pass against this EXACT residue already proved it will not move.
+	if attempts := d.futileClearAttempts(ref.ID, target.cwd, digest); attempts > 0 {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "a previous attempt to clear this exact composer residue made no " +
+				"progress at all (#87); refusing to press the same keys into a composer " +
+				"already proven not to move. discard the session directly instead " +
+				"(discard?expect=" + digest + "), or wait for the residue to change",
+		}, false, nil
+	}
+
+	left, moved, didClear, err := d.clearComposer(ctx, target.paneID, ref.ID, target.cwd, pending, expectedLines, sc)
+	if err != nil {
+		return fleet.DeliveryReceipt{}, false, err
+	}
+	if !didClear {
+		reason := "this driver holds no record of having put anything in this composer, but " +
+			flag + " asked to clear it and deliver this text anyway; the clear did not " +
+			"fully empty the composer"
+		if !moved {
+			reason += " and made no progress at all — the keystroke never registered, so the " +
+				"composer is unchanged from what this call read; a further " + flag +
+				" attempt is refused (#87) until the residue changes — discard the session " +
+				"directly instead (discard?expect=" + digest + ")"
+		} else {
+			reason += fmt.Sprintf("; %d character(s) remain (found digest %s) — the composer "+
+				"now holds neither the original text nor nothing, so it is damaged, not "+
+				"merely unclear. Read the session before doing anything else rather than "+
+				"retrying blind", len(left), screenDigest(left))
+		}
+		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, false, nil
+	}
+
 	return fleet.DeliveryReceipt{}, true, nil
 }
 

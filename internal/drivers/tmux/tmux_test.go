@@ -3109,7 +3109,21 @@ func TestResumeSubmitsOnlyWhatThisDriverStranded(t *testing.T) {
 		}
 	})
 
-	t.Run("resume never submits text we did not place", func(t *testing.T) {
+	// colab-fleet #135: this used to be the dead end this whole function's own
+	// doc comment describes — no record backing the composer's content meant
+	// an unconditional refusal regardless of either flag, "close to an hour"
+	// per #135's field report once the 30-minute strandedRetention window
+	// lapsed mid-retry. Both flags now fold /discard's own read-then-clear
+	// corroboration into Send instead: the composer is cleared and THIS
+	// call's text is delivered in its place. The safety property that
+	// survives is narrower but still real, and still worth this test's own
+	// name — this driver must never submit text it did not place. The FOREIGN
+	// text sitting in the composer is discarded, never delivered; only the
+	// caller's own new text may reach the pane. See stranded_test.go's
+	// dedicated #135 tests for the rest of the new behaviour (the #87 futile
+	// guard, a partial clear reported honestly, and a bare send with neither
+	// flag set still refusing with the original wording).
+	t.Run("resume clears foreign text and submits only what this driver placed", func(t *testing.T) {
 		f := twoSessions()
 		f.captures["%2"] = fixtureUnsent // a human's typing, nothing to do with us
 		d := newTestDriver(f)
@@ -3119,9 +3133,17 @@ func TestResumeSubmitsOnlyWhatThisDriverStranded(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if r.Outcome != fleet.OutcomeRefused {
-			t.Errorf("outcome = %s, want refused — this driver never delivered that text", r.Outcome)
+		if r.Outcome != fleet.OutcomeQueued {
+			t.Errorf("outcome = %s (%s), want queued — #135: no record means nothing to resume, "+
+				"so resumeIfStranded clears the composer and delivers this call's own text instead",
+				r.Outcome, r.Reason)
 		}
+		// The ordinary delivery path this falls through to always pastes THIS
+		// call's own `text` parameter — never `pending`, the composer content
+		// just cleared — so there is no code path here that could resubmit
+		// the foreign text; a confirmed Queued (not Unknown) is itself
+		// evidence the marker-based confirmation attributed OUR paste, not a
+		// leftover of the foreign one.
 	})
 
 	t.Run("resume with different text is refused", func(t *testing.T) {
