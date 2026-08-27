@@ -446,6 +446,57 @@ func composerVisualLines(s screen) (int, bool) {
 	return last - prompt, true
 }
 
+// composerCursorRowBlank reports whether the composer's BOTTOM content row —
+// the row directly above the closing rule, where typing (and so the cursor)
+// is assumed to sit — is empty right now (colab-fleet#132).
+//
+// # Why this has to be checked at all
+//
+// C-u is readline's unix-line-discard: kill from the cursor back to the
+// START OF THE CURRENT LINE, nothing more. When that line already has
+// nothing on it — the shape a payload ending in one or more real trailing
+// newlines leaves behind, one blank row per newline — there is nothing to
+// kill and the keystroke is a complete no-op. It does not cross the line
+// boundary above it, because unix-line-discard was never defined to. A
+// clear pass that only ever sends C-u is therefore stuck forever the moment
+// it reaches such a row: every further press reports the identical capture,
+// which reads as "genuinely stuck" (#87's futility signal) even though nothing
+// about the surrounding text resists clearing at all.
+//
+// clearComposer uses this, each iteration, to choose the key that can
+// actually make progress: BSpace crosses a line boundary — it deletes the
+// one character behind the cursor, which on an empty row is the newline
+// itself, merging the blank row into the end of the row above it — where
+// C-u cannot.
+//
+// # Why the bottom row, not composerVisualLines' whole span
+//
+// Clearing walks backward one row at a time from wherever the cursor
+// currently is, and every caller of this function has already reduced
+// "where might the cursor be" to "the last row still standing" — the same
+// row composerVisualLines' own count decreases from as rows disappear (see
+// clearComposer). Checking any other row would be asking about text the
+// cursor is not, at this moment, sitting on.
+//
+// ok is false only in the cases composerSpan itself finds no composer at
+// all. A composer that has shrunk to (or never had more than) its own
+// ❯-marked line reports blank=false, never true: that line always carries
+// the marker glyph as visible content, so it can never be the empty-row
+// shape this exists to detect — and if the text after the marker is itself
+// empty, composerText already reports the whole composer empty, which the
+// clear loop treats as done before this is ever consulted.
+func composerCursorRowBlank(s screen) (blank bool, ok bool) {
+	prompt, last, spanOK := composerSpan(s)
+	if !spanOK {
+		return false, false
+	}
+	row := last - 1
+	if row <= prompt || row >= len(s.lines) {
+		return false, true
+	}
+	return strings.TrimSpace(s.lines[row]) == "", true
+}
+
 // awaitingSelection reports whether the TUI is showing a menu that blocks
 // on a human keypress.
 func awaitingSelection(s screen) bool {

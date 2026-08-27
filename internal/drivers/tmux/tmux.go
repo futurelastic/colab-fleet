@@ -1841,7 +1841,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		if record, hasRecord := d.strandedRecordFor(ref.ID, target.cwd); hasRecord {
 			if opts.ReplaceIfStranded {
 				expectedLines, _ := composerVisualLines(screenNow)
-				receipt, cleared, err := d.tryReplaceStranded(ctx, ref, target, record, pending, expectedLines)
+				receipt, cleared, err := d.tryReplaceStranded(ctx, ref, target, record, pending, expectedLines, screenNow)
 				if err != nil {
 					return fleet.DeliveryReceipt{}, err
 				}
@@ -2251,7 +2251,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	}
 
 	expectedLines, _ := composerVisualLines(sc)
-	left, _, cleared, err := d.clearComposer(ctx, live.paneID, ref.ID, live.cwd, pending, expectedLines)
+	left, _, cleared, err := d.clearComposer(ctx, live.paneID, ref.ID, live.cwd, pending, expectedLines, sc)
 	if err != nil {
 		return fleet.Ack{}, fmt.Errorf("discard: %w", err)
 	}
@@ -2275,7 +2275,10 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // expectedLines is composerVisualLines' count for that SAME corroborated
 // screen, computed by the caller because it already has the screen this
 // pending came from — see composerVisualLines for why an on-screen row
-// count, not a duration, is what a press budget should be sized to.
+// count, not a duration, is what a press budget should be sized to. sc IS
+// that same screen, passed through so the very first press can already be
+// chosen correctly — see the #132 section below for why the choice matters
+// from the first iteration, not just later ones.
 //
 // # Why a press count now, not colab-fleet#129's retired promptClearWindow
 //
@@ -2302,13 +2305,51 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // is actually measured in, capped at maxClearPresses so the pass still
 // terminates for content with no natural size limit (see that constant).
 //
+// # C-u alone cannot cross a real newline — colab-fleet#132
+//
+// unix-line-discard kills back to the start of the CURRENT line and stops
+// there; it was never defined to reach past a line boundary. A payload
+// ending in one or more real trailing (or interior) newlines leaves exactly
+// that shape behind: a blank row, with nothing on it for C-u to kill. Every
+// further C-u press against that row is a guaranteed no-op — the capture
+// comes back byte-for-byte identical, which used to read as either "stopped
+// moving" (#87's stall path, if some earlier row had already cleared) or
+// "never moved at all" (noteFutile), permanently wedging the composer: the
+// residue is recorded as proven-unclearable and every later Discard/replace
+// call is refused before it ever presses a key again, even though nothing
+// about the surrounding TEXT resisted clearing — only the mechanism did.
+// This is the exact field shape #132 reports (a partial clear stranding
+// 306 characters with no API path back).
+//
+// composerCursorRowBlank answers, before each press, whether the row the
+// cursor is assumed to sit on (the composer's current bottom row) is
+// exactly this shape. When it is, this presses Backspace instead of C-u:
+// Backspace deletes the ONE character behind the cursor, which on an empty
+// row is the newline itself, merging that row into the end of the row
+// above it — crossing the boundary C-u cannot. The very next iteration then
+// finds a non-blank (or shorter) composer and C-u resumes making progress
+// against real content, exactly as before. Escape and C-a C-k were already
+// measured not to help here (see discardProvenFutile's doc comment); this
+// is not a third alternative to C-u, it is what runs INSTEAD of C-u for the
+// one row shape C-u structurally cannot touch, alternating back to C-u the
+// moment that shape is gone.
+//
+// A row disappearing this way is real progress even when composerText's
+// own joined string does not change: composerText already drops every
+// blank continuation row from what it concatenates (see its own doc
+// comment), so a merge that only removes a blank row is invisible to a
+// TEXT-only comparison. Comparing composerVisualLines' row count as well —
+// not text alone — is what keeps that progress from being misread as "made
+// no difference" by the stall (#87) and futility (#87/#129) logic below,
+// which both key off whether ANY press changed anything observable.
+//
 // #87's early exit is UNCHANGED by any of this: once movement has actually
-// been observed, stallPresses further presses that change nothing are no
-// longer "still walking it backward" — they are evidence the pass has
-// stopped working, and pressing MORE just makes a bigger dent for no
-// further gain. That check still fires before the press budget is
-// necessarily exhausted, exactly as before; only what bounds the case where
-// it never fires has changed.
+// been observed (by either signal), stallPresses further presses that
+// change nothing are no longer "still walking it backward" — they are
+// evidence the pass has stopped working, and pressing MORE just makes a
+// bigger dent for no further gain. That check still fires before the press
+// budget is necessarily exhausted, exactly as before; only what counts as
+// movement, and which key gets pressed, have changed.
 //
 // Verification stays in the loop: a keypress that did not register looks
 // exactly like one that did, the same reason Send confirms before
@@ -2321,7 +2362,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // non-nil only for a failed keystroke or capture call — "ran out of budget
 // without emptying" is a normal outcome (cleared=false, err=nil), reported
 // differently by each of the two callers.
-func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending string, expectedLines int) (left string, moved, cleared bool, err error) {
+func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending string, expectedLines int, sc screen) (left string, moved, cleared bool, err error) {
 	presses := expectedLines + clearPressMargin
 	if presses < 1 {
 		presses = 1
@@ -2330,24 +2371,42 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 		presses = maxClearPresses
 	}
 	left = pending
+	curRows, _ := composerVisualLines(sc)
+	curBlank, _ := composerCursorRowBlank(sc)
 	stall := 0
 	for pressN := 0; pressN < presses; pressN++ {
-		if _, runErr := d.run(ctx, d.bin, "send-keys", "-t", paneID, "C-u"); runErr != nil {
+		// #132: a blank current row is a row C-u cannot make progress
+		// against at all — see this function's own doc comment. Cross it
+		// with Backspace instead; C-u resumes once the row it lands on
+		// next has real content again.
+		key := "C-u"
+		if curBlank {
+			key = "BSpace"
+		}
+		if _, runErr := d.run(ctx, d.bin, "send-keys", "-t", paneID, key); runErr != nil {
 			return left, moved, false, runErr
 		}
-		if sc, ok := d.captureForClassify(ctx, paneID); ok {
-			got, _ := composerText(sc)
+		if next, ok := d.captureForClassify(ctx, paneID); ok {
+			got, _ := composerText(next)
 			if got == "" {
 				d.forgetFutile(id)
 				return "", moved, true, nil
 			}
-			if got != left {
+			nextRows, _ := composerVisualLines(next)
+			// A press counts as progress if it changed the joined TEXT (an
+			// ordinary C-u killing real content) OR the composer's own row
+			// count (a #132 Backspace merge collapsing a blank row away,
+			// invisible to a text-only comparison — see this function's
+			// doc comment for why).
+			if got != left || nextRows != curRows {
 				moved = true
 				stall = 0
 			} else if moved {
 				stall++
 			}
 			left = got
+			curRows = nextRows
+			curBlank, _ = composerCursorRowBlank(next)
 		}
 		if moved && stall >= stallPresses {
 			break
@@ -2453,8 +2512,9 @@ func discardIncomplete(before, after string) error {
 // branch cannot: this is not the first pass against this residue, it is at
 // least the second, and the prior pass already spent a full, content-sized
 // press budget (clearComposer's expectedLines+clearPressMargin, capped at
-// maxClearPresses — colab-fleet#129) pressing C-u against it without moving
-// it at all (#87).
+// maxClearPresses — colab-fleet#129) pressing its clear keys (C-u, and
+// Backspace wherever #132 finds a blank row) against it without moving it
+// at all (#87).
 //
 // The Issue this closes described exactly the failure this guards against:
 // a caller that followed "retrying with the same digest is safe" to the
@@ -4198,8 +4258,10 @@ func (d *Driver) currentComposerDigest(ctx context.Context, paneID string) strin
 // expectedLines is composerVisualLines' count for the same screen pending
 // was read from — the caller already has that screen, see clearComposer's
 // own doc comment for why this is what a press budget is sized to now
-// (colab-fleet#129).
-func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, target *paneRow, record strandedRecord, pending string, expectedLines int) (receipt fleet.DeliveryReceipt, cleared bool, err error) {
+// (colab-fleet#129). sc is that SAME screen, passed through so clearComposer
+// can tell whether the row it is about to press against is blank
+// (colab-fleet#132) — see clearComposer's own doc comment for why.
+func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, target *paneRow, record strandedRecord, pending string, expectedLines int, sc screen) (receipt fleet.DeliveryReceipt, cleared bool, err error) {
 	digest := screenDigest(pending)
 
 	// #87: refuse outright, before pressing anything, if a full,
@@ -4228,7 +4290,7 @@ func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, t
 		}, false, nil
 	}
 
-	left, moved, didClear, err := d.clearComposer(ctx, target.paneID, ref.ID, target.cwd, pending, expectedLines)
+	left, moved, didClear, err := d.clearComposer(ctx, target.paneID, ref.ID, target.cwd, pending, expectedLines, sc)
 	if err != nil {
 		return fleet.DeliveryReceipt{}, false, err
 	}
