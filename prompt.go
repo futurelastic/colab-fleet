@@ -129,6 +129,33 @@ const (
 	PromptBypassAcceptance PromptKind = "bypass-permissions"
 )
 
+// # A known gap: the tool-server ("MCP") trust dialog has no kind yet
+//
+// Passing SessionSpec.McpConfig at creation can raise a boot question of its
+// own — "do you trust the servers named in this configuration" — distinct
+// from PromptToolPermission (which asks about one RUNTIME call, not a
+// configuration file read at boot) and from PromptFolderTrust (which asks
+// about the working directory, not a file the caller pointed at
+// separately). It has stranded sessions on two machines, prompt undelivered,
+// looking to an operator exactly like a broken spawn (colab-fleet #128).
+//
+// It is deliberately NOT one of the kinds above. Every kind above was added
+// from the runtime's own OPTION text, read off an installed build — see
+// classifyPromptKind's package doc for why option text is the only safe
+// source, and why the question itself must never be read. No such reading
+// has been taken for this dialog: the sessions that hit it were not
+// captured, and inventing option-text needles from the question alone would
+// repeat the exact mistake that once mislabelled a ship decision as
+// bypass-permissions. A kind guessed into existence would let a caller's
+// Consents auto-answer a screen this package has never actually seen —
+// worse than leaving it unclassified, because unclassified at least reads
+// as "unknown" rather than as false confidence.
+//
+// Add it the same way every other kind was: capture the real screen from an
+// installed build, add the needle to classifyPromptKind, and — only if its
+// affirmative option is as unambiguous as folder-trust's — an entry to
+// consentableKinds. Never the reverse order.
+
 type SessionPrompt struct {
 	// Question is the text above the options, best effort. It may be empty
 	// when the prompt is terse; the options are the load-bearing part.

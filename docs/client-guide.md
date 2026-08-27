@@ -566,6 +566,23 @@ is up; you do not need to wait and send it yourself. A question the runtime
 puts up on the way there **delays** that delivery, it does not cancel it: the
 service keeps waiting, and the prompt goes in once the session is receptive.
 
+**Prefer `contextRef` to a long `prompt` — the composer is the fragile
+surface, not a load-bearing one.** `prompt` is capped by this machine's
+`maxInputBytes` (1024 bytes by default; over it the create is refused
+outright rather than accepted and left to strand — see api-http.md §3.1 and
+§3.2), and even under that cap it still travels through the same composer
+keystrokes `input` does. Measured on live fleet operation: a roughly
+1800-byte brief stranded in a composer and the prompt was simply lost
+(colab-fleet #128). None of that fragility is a property this API needs you
+to accept — `contextRef` (below) hands the runtime a PATH instead, and a
+caller with more than a short instruction to give should write it to a file
+and pass only a one-line pointer here: "read `.claude/briefs/issue-N.md` and
+follow it end to end" is a `prompt`; the brief itself belongs in the file
+`contextRef` points at, never in the composer. This is not a new mechanism,
+only a choice of which existing field carries the payload — see §5.3 of
+session-abstraction.md for why a path travels better than inline content in
+general.
+
 **If you passed a `prompt`, read `promptDelivery` — never `input` — to check
 on it.** It carries the same outcome vocabulary `send`'s own receipt does
 (`submitted`/`queued`/`refused`/`unknown` — though no driver in this fleet can
@@ -590,6 +607,15 @@ something is already sitting in the composer; `starting` means the runtime
 has not painted an interface at all yet. Absent means this driver has not
 classified this particular wait — not that nothing is wrong, just that
 nothing here has an answer for it yet.
+
+**Answer boot questions here, at creation, rather than after the session has
+already parked on one.** `trustCwd` and `consents` below are the same idea as
+`contextRef` above, applied to boot dialogs instead of instructions: give the
+driver what it needs in the request that creates the session, before the
+fragile part — the composer, and a prompt parked behind an unanswered dialog
+— is ever reached. A caller that only ever answers through `respond` (§6)
+after the fact is choosing the slower, more fragile path by default rather
+than by decision.
 
 **`trustCwd` is your consent to one question, about the directory you just
 named.** Some runtimes ask, on the first session in a directory, whether you
