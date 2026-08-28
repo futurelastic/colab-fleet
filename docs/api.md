@@ -223,9 +223,17 @@ flag here.
 ```
 
 One of `Up`, `Down`, `Left`, `Right`, `Enter`, `Escape` — anything else is a
-`400` that names the valid set. Requires `?expect=<screenDigest>` from a prior
-read; a stale digest is a `409`. For full-screen dialogs `respond` cannot
-classify. Its own grant, deliberately not folded into `send`.
+`400` that names the valid set. Requires `?expect=<digest>` from a prior read; a
+stale digest is a `409`. Which digest depends on what the composer holds **right
+now**, decided before the check runs: `?expect=<composerDigest>` when the
+composer holds unsent text (the same value a read publishes as
+`state.composerDigest`, and the same one `discard` corroborates against) or
+`?expect=<screenDigest>` when it is empty (`state.screenDigest`). Sending the
+wrong one back is indistinguishable from a genuine race — both fail the same
+`409` — so read `state` immediately beforehand and use whichever digest it
+reports for the composer's current state, not whichever one you last happened to
+have. For full-screen dialogs `respond` cannot classify. Its own grant,
+deliberately not folded into `send`.
 
 ### `POST …/{id}/discard`
 
