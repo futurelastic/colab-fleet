@@ -133,9 +133,19 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// hash of "" no matter what a dialog says, which corroborates nothing —
 	// exactly the relaxation this driver must not make. GET publishes this as
 	// ScreenDigest, unconditionally.
+	// colab-fleet#134: composerHoldsText requires scan == composerFound, so
+	// a composerClipped screen falls into the SAME digest scope as an
+	// absent composer — screenDigest(text), below. That is deliberate, not
+	// an oversight: this driver cannot form a meaningful COMPOSER-scope
+	// digest for a clipped composer (there is no text to hash), but the
+	// SCREEN it captured is read in full regardless of the composer's own
+	// legibility, so a screen-scope digest still corroborates something
+	// real — "the caller saw this exact, possibly-ambiguous screen" — the
+	// same property screenDigest already proves for every other composer
+	// state that is not "found, holding text".
 	screen := newScreen(text)
-	pending, _ := composerText(screen)
-	composerHoldsText := strings.TrimSpace(pending) != ""
+	pending, scan := composerText(screen)
+	composerHoldsText := scan == composerFound && strings.TrimSpace(pending) != ""
 
 	if expectDigest == "" {
 		if composerHoldsText {
@@ -179,6 +189,23 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			Reason: "this session is at a prompt the driver recognises; answer it " +
 				"through respond, which verifies a nonce and can say which option " +
 				"it chose",
+		}, nil
+	}
+
+	// colab-fleet#134: a composer taller than this driver's capture window,
+	// with no recognised prompt to route to instead (that case already
+	// returned, above). Refuse rather than guess — a key sent now could
+	// submit text this driver never saw, the same hazard composerHoldsText
+	// guards below, just for a composer this driver could not read rather
+	// than one it read and found busy.
+	if scan == composerClipped {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "this composer is taller than this driver's capture window, so its " +
+				"content could not be read in full; a key delivered now could submit " +
+				"text nobody has seen. Wait for the composer to shrink into the " +
+				"capture window before sending a key — discard will refuse for the " +
+				"same reason until it does",
 		}, nil
 	}
 

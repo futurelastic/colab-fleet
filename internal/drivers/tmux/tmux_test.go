@@ -627,6 +627,20 @@ func idleFixtureFor(label string) string {
 	return "  transcript line for " + label + "\n✻ Brewed for 1m 0s\n" + rule + "\n❯\n" + rule + "\n  ⏵⏵ auto mode on"
 }
 
+// clippedComposerFixture models exactly what a `-S -N` capture returns for a
+// composer taller than the capture window (colab-fleet#134): only the TAIL of
+// the composer is in view, with no opening rule and no ❯-marked prompt row
+// anywhere in the captured lines — both scrolled out above the window, same
+// shape as classify_test.go's TestComposerSpanMissesAComposerTallerThanTheCaptureWindow.
+func clippedComposerFixture() string {
+	var lines []string
+	for i := 0; i < 30; i++ {
+		lines = append(lines, fmt.Sprintf("row %d of a paste taller than the capture window", i))
+	}
+	tail := lines[len(lines)-defaultCaptureLines:]
+	return strings.Join(tail, "\n") + "\n" + rule
+}
+
 func twoSessions() *fakeMux {
 	return &fakeMux{
 		sessions: []fakeSession{
@@ -795,6 +809,35 @@ func TestSendRefusesWhenComposerHoldsUnsentInput(t *testing.T) {
 	}
 	if got.Reason == "" {
 		t.Error("a refusal must explain itself (§2.4)")
+	}
+}
+
+// colab-fleet#134: before this fix, a composer taller than the capture
+// window read as composerAbsent, so this guard never fired — a delivery
+// would proceed to concatenate onto text this driver could not see. This
+// proves the fix fails closed instead: refused, and the payload never
+// reaches the multiplexer.
+func TestSendRefusesDeliveryIntoAClippedComposer(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = clippedComposerFixture()
+	d := newTestDriver(f)
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, "hello", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatalf("a refusal is a domain outcome, not an error: %v", err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("want refused for a clipped composer, got %q (%s)", got.Outcome, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "capture window") {
+		t.Errorf("reason should say why this driver could not confirm it is safe to send: %q", got.Reason)
+	}
+	for _, c := range f.callsSnapshot() {
+		for _, a := range c {
+			if strings.Contains(a, "hello") {
+				t.Errorf("payload reached a command line despite the refusal: %v", c)
+			}
+		}
 	}
 }
 
@@ -1657,9 +1700,9 @@ func TestConfirmSubmittedDetectsOurBlockLeavingDespiteResidue(t *testing.T) {
 	// after — the old single-signal check could not pass here no matter how
 	// long it waited.
 	for _, painted := range []string{bothBlocks, residueOnly} {
-		if text, found := composerText(newScreen(painted)); !found || text == "" {
+		if text, scan := composerText(newScreen(painted)); scan != composerFound || text == "" {
 			t.Fatalf("setup: composerText(%q) = %q, %v; want non-empty so the old "+
-				"composer-emptied check is genuinely defeated by this fixture", painted, text, found)
+				"composer-emptied check is genuinely defeated by this fixture", painted, text, scan)
 		}
 	}
 
@@ -2227,6 +2270,35 @@ func TestDiscardRefusesWhatItCannotCorroborate(t *testing.T) {
 			t.Errorf("want no-such-session, got %v", err)
 		}
 	})
+}
+
+// colab-fleet#134: before this fix, a composer taller than the capture
+// window read as composerAbsent, so Discard's early return
+// ("pending == \"\" means already clear") fired and reported success on a
+// composer that, off-screen, still held real unsent text — the exact false
+// negative #134 exists to close. This proves the fix: Discard must refuse,
+// not accept, and it must do so WITHOUT pressing a single key — a clipped
+// composer is never corroborated, so clearComposer must never run against
+// it (see this function's own doc comment on discardComposerClipped).
+func TestDiscardRefusesAClippedComposerRatherThanClaimingSuccess(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = clippedComposerFixture()
+	d := newTestDriver(f)
+
+	_, err := d.Discard(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, "any-digest-the-caller-happens-to-have")
+	if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+		t.Fatalf("want ErrAmbiguousTarget for a clipped composer, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "capture window") {
+		t.Errorf("error should say why this driver could not act: %v", err)
+	}
+	for _, call := range f.callsSnapshot() {
+		if len(call) > 0 && call[0] == "send-keys" {
+			t.Errorf("a clipped composer must never be pressed against — nothing was "+
+				"corroborated, so clearComposer must never run; saw %v", call)
+		}
+	}
 }
 
 // The happy path: the digest the caller read is the digest that gets cleared,

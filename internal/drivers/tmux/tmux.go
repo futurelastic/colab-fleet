@@ -1707,7 +1707,23 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		}, nil
 	}
 
-	if pending, ok := composerText(screenNow); ok && pending != "" {
+	pending, composerScanResult := composerText(screenNow)
+	if composerScanResult == composerClipped {
+		// colab-fleet#134: this driver's own capture ended above the
+		// composer's opening fence, so it cannot confirm the composer is
+		// empty before delivering. Fail closed, the same direction §2.4
+		// already takes for a composer it CAN read and finds busy — the
+		// alternative is concatenating onto text this driver never saw.
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "session's composer is taller than this driver's capture window, " +
+				"so it cannot confirm the composer is empty before delivering; " +
+				"sending now risks concatenating onto text it cannot see (§2.4). Wait " +
+				"for the composer to shrink into the capture window, or re-read the " +
+				"session once it has",
+		}, nil
+	}
+	if composerScanResult == composerFound && pending != "" {
 		// The one case where a busy composer is not somebody else's business:
 		// this driver put the text there itself, could not confirm it, and
 		// said so. Completing that delivery is finishing the caller's original
@@ -2237,7 +2253,14 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	}
 
 	sc := newScreen(captures[live.paneID])
-	pending, _ := composerText(sc)
+	pending, scan := composerText(sc)
+	if scan == composerClipped {
+		// colab-fleet#134: this driver's capture ended above the composer's
+		// opening fence. Claiming "already clear" here is #134's own false
+		// negative one function over — this driver has not seen enough of
+		// the composer to say that honestly, so it must not.
+		return fleet.Ack{}, discardComposerClipped()
+	}
 	if pending == "" {
 		// Already clear — including the case where what looked like text was
 		// the dim placeholder, which is not text at all and never was.
@@ -2422,8 +2445,15 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 			return left, moved, false, runErr
 		}
 		if next, ok := d.captureForClassify(ctx, paneID); ok {
-			got, _ := composerText(next)
-			if got == "" {
+			// composerFound is required alongside got=="" (colab-fleet#134):
+			// a mid-pass capture that comes back composerClipped or
+			// composerAbsent must not be read as "cleared" just because the
+			// TEXT this driver could extract happens to be empty — both
+			// composerText(next) return "" the same way a genuinely empty
+			// composer does, and only composerFound actually LOOKED at the
+			// whole composer to confirm that.
+			got, gotScan := composerText(next)
+			if got == "" && gotScan == composerFound {
 				d.forgetFutile(id)
 				return "", moved, true, nil
 			}
@@ -2466,6 +2496,37 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 		d.noteFutile(id, cwd, screenDigest(pending))
 	}
 	return left, moved, false, nil
+}
+
+// discardComposerClipped reports that this driver cannot corroborate — or
+// safely claim as clear — a composer taller than its own capture window
+// (colab-fleet#134): composerText returned composerClipped, not
+// composerFound or composerAbsent, so Discard has no text to diff against
+// expectDigest and no honest way to report "already clear". Claiming
+// success here would be #134's own false negative arriving through Discard
+// specifically: a caller retrying after a timeout, told "accepted", walking
+// away from a composer that may still hold exactly the text it started
+// with.
+//
+// Wrapped in ErrAmbiguousTarget for the same reason discardIncomplete and
+// discardProvenFutile are (409, not 400): the request was well formed, and
+// what failed is that this driver could not read enough of the screen to
+// carry it out — not a caller mistake to fix by resending the same digest.
+//
+// This is deliberately a DIFFERENT message from both of those: it is not
+// "the keystroke did not register" (nothing was pressed at all) and not
+// "a full pass already proved this futile" (no pass has been attempted —
+// clearComposer is never reached for this scan result). A caller that
+// pattern-matches on either of those substrings to decide what to do next
+// must see neither one here.
+func discardComposerClipped() error {
+	return fmt.Errorf(
+		"%w: discard: this composer is taller than this driver's single capture, so "+
+			"its content could not be read in full — neither \"already clear\" nor a "+
+			"digest-corroborated clear is honest here. Wait for the composer to shrink "+
+			"into the capture window (fewer on-screen rows), then read the session "+
+			"again and retry",
+		ErrAmbiguousTarget)
 }
 
 // discardIncomplete reports a clear that ran out of time without ever
@@ -3168,8 +3229,12 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		// A composer being present settles it: the runtime is doing
 		// something ordinary (idle, or a human mid-message), definitely
 		// not blocked on an unrecognised full-screen prompt, since that
-		// shape has no composer of its own to paint.
-		if _, hasComposer := composerText(screenNow); hasComposer {
+		// shape has no composer of its own to paint. A composerClipped
+		// screen counts as present too (colab-fleet#134) — this driver's
+		// capture not reaching the top of the composer is still positive
+		// evidence a composer is painted there at all, which is the only
+		// thing this check needs.
+		if _, scan := composerText(screenNow); scan != composerAbsent {
 			return fleet.DeliveryReceipt{
 				Outcome: fleet.OutcomeRefused,
 				Reason: "session is not waiting on a prompt; a keypress would be " +
@@ -3745,8 +3810,19 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) readinessCheck 
 			return readinessCheck{checked: true, present: true, blocking: p, reason: reason,
 				waitingOn: fleet.WaitingPrompt}
 		}
-		text, found := composerText(sc)
-		if !found {
+		text, scan := composerText(sc)
+		if scan == composerClipped {
+			// colab-fleet#134: a composer is painted, but taller than this
+			// driver's capture window — this driver cannot confirm it is
+			// empty, so it must not report ready. Fail closed the same
+			// direction WaitingUnsentInput already means: something may be
+			// sitting there this call cannot see.
+			return readinessCheck{checked: true, present: true,
+				reason: "the composer is taller than this driver's capture window; " +
+					"cannot confirm it is empty before placing this prompt",
+				waitingOn: fleet.WaitingUnsentInput}
+		}
+		if scan != composerFound {
 			return readinessCheck{checked: true, present: true,
 				reason:    "still starting: the interface has not painted a composer yet",
 				waitingOn: fleet.WaitingStarting}
@@ -4264,8 +4340,14 @@ func (d *Driver) currentComposerDigest(ctx context.Context, paneID string) strin
 	if !ok {
 		return ""
 	}
-	pending, ok := composerText(sc)
-	if !ok || pending == "" {
+	// composerClipped degrades to "" here exactly like composerAbsent
+	// already did: this is documented as an honest degrade a caller already
+	// treats the same as an absent ComposerDigest elsewhere (see this
+	// function's own doc comment) — colab-fleet#134 does not change that,
+	// because a caller with no digest to quote already falls back to the
+	// screen-scope corroboration keys.go uses instead.
+	pending, scan := composerText(sc)
+	if scan != composerFound || pending == "" {
 		return ""
 	}
 	return screenDigest(pending)
@@ -4987,8 +5069,14 @@ func (d *Driver) receptive(ctx context.Context, paneID string) (ready, blocked b
 	if _, b := selectionPrompt(sc); b {
 		return false, true
 	}
-	_, found := composerText(sc)
-	return found, false
+	// composerClipped counts as receptive too (colab-fleet#134): a painted
+	// composer this driver could not read in full is still a painted
+	// composer — the runtime is up and taking input, which is all this
+	// gate decides. What it does NOT decide is whether that composer is
+	// safe to write into; that is Send's own composerText check, further
+	// down the call path, which fails closed for exactly this scan result.
+	_, scan := composerText(sc)
+	return scan != composerAbsent, false
 }
 
 // awaitReceptive waits, within the call's own budget, for the runtime to be
@@ -5067,7 +5155,14 @@ func (d *Driver) confirmSubmitted(ctx context.Context, paneID string, key pasteK
 	deadline := start.Add(submitConfirmWindow)
 	for {
 		if sc, ok := d.captureForClassify(ctx, paneID); ok {
-			if text, found := composerText(sc); found && text == "" {
+			// composerClipped must NOT confirm here (colab-fleet#134):
+			// unlike composerFound with text=="", a clipped screen carries
+			// no assurance the composer is actually empty — it is simply
+			// unreadable in full. Only an explicit composerFound-and-empty
+			// reading counts as confirmation; everything else keeps
+			// polling exactly as it already did for "no composer this
+			// capture" (scan == composerAbsent).
+			if text, scan := composerText(sc); scan == composerFound && text == "" {
 				d.recordConfirmed(counterSubmitConfirmedByComposerEmpty, d.now().Sub(start))
 				return true
 			}

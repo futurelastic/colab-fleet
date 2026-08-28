@@ -18,10 +18,10 @@ func TestPlaceholderPadIsIrrelevant(t *testing.T) {
 	ghost := "transcript\n" + rule + "\n\x1b[39m❯ \x1b[2mmerge it\x1b[0m\n" + rule + "\n"
 	real := "transcript\n" + rule + "\n\x1b[39m❯ Now update the DB\n" + rule + "\n"
 
-	if got, has := composerText(newScreen(ghost)); got != "" || !has {
-		t.Errorf("NBSP-padded placeholder read as unsent text %q — this is the false veto", got)
+	if got, scan := composerText(newScreen(ghost)); got != "" || scan != composerFound {
+		t.Errorf("NBSP-padded placeholder read as unsent text %q (scan=%v) — this is the false veto", got, scan)
 	}
-	if got, has := composerText(newScreen(real)); !has || got == "" {
-		t.Errorf("real typed text after an NBSP pad was missed: %q", got)
+	if got, scan := composerText(newScreen(real)); scan != composerFound || got == "" {
+		t.Errorf("real typed text after an NBSP pad was missed: %q (scan=%v)", got, scan)
 	}
 }
