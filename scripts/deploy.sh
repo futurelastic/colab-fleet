@@ -82,6 +82,15 @@
 #                       binary reports itself as dirty and will never compare
 #                       equal to anything, including the next deploy.
 #
+# The dirty-tree gate below runs `git status --porcelain`, not `git diff
+# --quiet HEAD` — colab-fleet #139: the latter only inspects tracked files,
+# but Go's own VCS build stamp (what a running service reports as
+# `build.modified`) is computed by `cmd/go/internal/vcs`'s gitStatus, which
+# runs plain `git status --porcelain` and is flagged by ANY untracked file
+# too. A gate that only checks tracked changes can report "clean" and still
+# hand you a binary stamped modified — silently, because nothing here would
+# have caught it.
+#
 # Deliberately absent: hostnames, ports, paths and service labels. Those are
 # operational facts, and this repository is public.
 
@@ -124,12 +133,23 @@ else
 fi
 
 # --- refuse to ship something that cannot be identified ---------------------
+#
+# git status --porcelain, not git diff --quiet HEAD (colab-fleet #139): the
+# latter only sees tracked changes, but Go's own VCS build stamp is flagged
+# dirty by ANY untracked file too (cmd/go/internal/vcs's gitStatus runs the
+# same plain `git status --porcelain`). Matching that check here is what
+# makes this gate a reliable predictor of build.modified instead of an
+# independent, weaker opinion that can pass while the stamp is already lying.
 if [ "${ALLOW_DIRTY:-0}" != "1" ]; then
-	if ! git diff --quiet HEAD 2>/dev/null; then
-		echo "deploy: working tree is modified." >&2
-		echo "        A binary built from uncommitted changes has no build" >&2
-		echo "        identity — it can never be compared against a peer or" >&2
-		echo "        against itself. Commit, or set ALLOW_DIRTY=1." >&2
+	DIRTY=$(git status --porcelain 2>/dev/null)
+	if [ -n "$DIRTY" ]; then
+		echo "deploy: working tree is modified (tracked or untracked)." >&2
+		echo "        A binary built from a tree in this state has no build" >&2
+		echo "        identity — Go's own VCS stamp will report it modified," >&2
+		echo "        and it can never be compared against a peer or against" >&2
+		echo "        itself. Commit or remove the untracked files, or set" >&2
+		echo "        ALLOW_DIRTY=1." >&2
+		echo "$DIRTY" | sed 's/^/        /' >&2
 		exit 1
 	fi
 fi

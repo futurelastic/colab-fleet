@@ -85,6 +85,18 @@ id_rsa*
 .cursor/
 .windsurf/
 
+# ─── Per-issue worktree checkouts + session scratch (never commit) — see #139 ───
+# deploy.sh's dirty-tree gate now runs `git status --porcelain`, matching Go's
+# own vcs.modified stamp (which flags untracked files, not just tracked
+# changes). These paths are untracked on every ordinary working checkout —
+# .worktrees/ holds live per-issue git worktrees at the repo root, and
+# .claude/plans/, .claude/briefs/ hold session scratch files — so they must be
+# ignored here, or a normal working session poisons every build off that
+# checkout regardless of how clean the tracked tree is.
+.worktrees/
+.claude/plans/
+.claude/briefs/
+
 # ─── Raw pane captures (by suffix — never a directory, never committed) ───
 # testdata/corpus/README.md's curation path saves a raw capture to a scratch
 # file before redact.go's RedactCapture ever sees it. That file must never
