@@ -234,12 +234,23 @@ report itself modified, and a modified build compares equal to nothing.**
 This happened: an agent-settings file was ignored on one machine by that
 machine's own *global*, private ignore rule — nothing in this repository's own
 `.gitignore` knew about it. On a second machine the same path was untracked
-and unignored, `git diff --quiet HEAD` still passed because nothing tracked
-had changed, but the moment it did not pass was exactly the moment the file
-would have been silently eligible for `git add -A`. The fix has to live in
-this repository's own `.gitignore`, not in any one machine's private
-configuration — a rule only one machine holds does not travel to its peer, to
-a fresh clone, or to CI.
+and unignored. At the time the script's gate was `git diff --quiet HEAD`,
+which only inspects tracked files, so it still passed — but the build it let
+through was already stamped `modified: true`, because Go's own VCS stamp
+(`cmd/go/internal/vcs`) computes dirtiness from plain `git status --porcelain`,
+which flags untracked files too. The two checks disagreed, and the gate's
+answer was the wrong one to trust (colab-fleet #139). Two per-issue worktree
+checkouts and this repo's own `.claude/plans/`, `.claude/briefs/` reproduced
+the same gap later, at repo root.
+
+The fix is two parts, not one: the gate itself now runs `git status
+--porcelain` (matching what Go actually checks) instead of `git diff --quiet
+HEAD`, so it agrees with the build stamp it is supposed to be a proxy for; and
+the paths this repo is expected to always carry untracked — `.worktrees/`,
+`.claude/plans/`, `.claude/briefs/` — are in this repository's own
+`.gitignore`, not any one machine's private configuration, so a normal working
+session does not trip the now-stricter gate. A rule only one machine holds
+does not travel to its peer, to a fresh clone, or to CI.
 
 **A machine's git metadata can be far behind while its working tree is
 current.** A file-sync tool used elsewhere in this fleet mirrors a working
