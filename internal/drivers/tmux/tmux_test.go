@@ -60,6 +60,14 @@ type fakeMux struct {
 	// all — the untouched half of #32's missing branch, as distinct from
 	// composerLines' partial-clear model of the damaged half.
 	frozen map[string]bool
+	// frozenUnixLineDiscard models colab-fleet#138's own shape: C-u (even
+	// preceded by composerLineEndKey) makes no progress on this pane — as
+	// if the substrate does not honour the positioning key at all — while
+	// Backspace still clears a row normally. Distinct from frozen (which
+	// freezes BOTH keys): this exists to prove clearComposer's no-movement
+	// latch actually flips to the alternate shape rather than repeating a
+	// key that just proved itself a no-op.
+	frozenUnixLineDiscard map[string]bool
 	// composerFloor models the shape #87 needs and neither of the above
 	// two do: a composer that clears down to a certain number of lines and
 	// then STOPS moving, as opposed to composerLines (always empties given
@@ -149,6 +157,19 @@ func (f *fakeMux) freezeComposer(paneID string) {
 		f.frozen = map[string]bool{}
 	}
 	f.frozen[paneID] = true
+}
+
+// freezeUnixLineDiscard makes C-u (whether or not composerLineEndKey
+// preceded it) a no-op against paneID, while leaving Backspace fully
+// effective — colab-fleet#138's own shape, where the positioning fix does
+// not help on some substrate and only the alternate key shape converges.
+func (f *fakeMux) freezeUnixLineDiscard(paneID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.frozenUnixLineDiscard == nil {
+		f.frozenUnixLineDiscard = map[string]bool{}
+	}
+	f.frozenUnixLineDiscard[paneID] = true
 }
 
 // setComposerFloor arms the "moved, then stalled" shape for paneID: C-u
@@ -423,7 +444,7 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 					}
 					// unix-line-discard against a blank row: no-op,
 					// matching real unix-line-discard.
-				case unixLineDiscard:
+				case unixLineDiscard && !f.frozenUnixLineDiscard[pane]:
 					// unix-line-discard kills the line the cursor sits on, not the
 					// whole buffer: one press drops the LAST row, leaving
 					// every row above it exactly as it was. A composer with one
@@ -439,13 +460,33 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 					} else {
 						f.captures[pane] = composerHoldingRows(lines)
 					}
+				case backspace:
+					// colab-fleet#138: Backspace against a NON-blank row,
+					// reached only via clearComposer's no-movement latch —
+					// the alternate shape it falls back to once End+C-u has
+					// already proven itself a no-op against this pane
+					// (freezeUnixLineDiscard). This fake has no character-
+					// level cursor model, so Backspace is treated as
+					// equally capable of clearing the row it lands on as
+					// unix-line-discard is — enough to prove the pass
+					// converges once the latch has actually flipped shape,
+					// without claiming anything about which real keystroke
+					// a live terminal would need.
+					lines = lines[:len(lines)-1]
+					f.composerLines[pane] = lines
+					if len(lines) == 0 {
+						delete(f.composerLines, pane)
+						delete(f.pasted, pane)
+						f.captures[pane] = idleFixtureFor("cleared")
+					} else {
+						f.captures[pane] = composerHoldingRows(lines)
+					}
 				default:
-					// Backspace against a NON-blank row: this fake works
-					// one row at a time, not one character at a time, and
-					// clearComposer only ever sends Backspace against a
-					// row it has itself found blank (composerCursorRowBlank)
-					// — so this case is not reachable from production code
-					// and is deliberately left a no-op here.
+					// unix-line-discard was sent but frozenUnixLineDiscard
+					// made it a no-op for this pane, and no Backspace
+					// accompanied it this press: models "the positioning
+					// key did not help; C-u alone still cannot touch this
+					// row" — colab-fleet#138's own worst case.
 				}
 			} else {
 				delete(f.pasted, pane)
@@ -2520,6 +2561,233 @@ func TestDiscardCrossesTrailingBlankLinesWithBackspace(t *testing.T) {
 	}
 	if got := countClears(f.callsSnapshot()); got < 1 {
 		t.Error("no C-u was sent at all; the one real content row still needs it")
+	}
+}
+
+// colab-fleet#138: composerCursorRowBlank's row-blankness proxy is only
+// valid when the cursor sits at the END of the current row — an assumption
+// clearComposer used to take on faith. This pins the fix for the ordinary
+// non-blank case: composerLineEndKey (End) must be sent immediately before
+// C-u, in the SAME send-keys call, so C-u is well-defined regardless of
+// where the cursor actually started.
+func TestClearComposerPositionsBeforeKillingSoCUCanWorkOnTheCursorRow(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent // single non-blank line
+	d := newTestDriver(f)
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer holding unsent text published no composerDigest")
+	}
+
+	if _, err := d.Discard(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+
+	var sawPositionedClear bool
+	for _, call := range f.callsSnapshot() {
+		if len(call) == 5 && call[0] == "send-keys" && call[1] == "-t" &&
+			call[3] == composerLineEndKey && call[4] == "C-u" {
+			sawPositionedClear = true
+		}
+		// Never plain C-u alone against a non-blank row: that is exactly
+		// the pre-#138 shape whose cursor-position assumption was never
+		// actually established.
+		if len(call) == 4 && call[0] == "send-keys" && call[3] == "C-u" {
+			t.Errorf("sent plain C-u without positioning first: %v", call)
+		}
+	}
+	if !sawPositionedClear {
+		t.Errorf("never sent %s then C-u in one call; calls: %v", composerLineEndKey, f.callsSnapshot())
+	}
+}
+
+// colab-fleet#138's own measured shape: residue sitting on the composer's
+// ❯-marked row itself, where composerCursorRowBlank structurally reports
+// blank=false forever (its own doc comment) — so, pre-#138, clearComposer
+// pressed plain C-u to budget exhaustion with zero movement. This proves
+// the no-movement latch: once End+C-u has already proven itself a no-op on
+// a pane (freezeUnixLineDiscard models a substrate where positioning does
+// not help), the NEXT press must use the alternate shape (Backspace alone)
+// rather than repeating the one that just failed — and the pass must then
+// actually converge.
+func TestClearComposerAlternatesAfterAPressThatMovedNothing(t *testing.T) {
+	f := twoSessions()
+	lines := []string{"residue sitting on the marker row with nothing blank about it"}
+	f.setMultilineComposer("%2", lines)
+	f.freezeUnixLineDiscard("%2") // End+C-u never works on this pane; Backspace does
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer holding unsent text published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false; the alternate shape (Backspace) should have converged " +
+			"once End+C-u proved itself a no-op")
+	}
+
+	calls := f.callsSnapshot()
+	var sawEndCU, sawBSpaceAfterFailedEndCU bool
+	for i, call := range calls {
+		if len(call) == 5 && call[0] == "send-keys" && call[3] == composerLineEndKey && call[4] == "C-u" {
+			sawEndCU = true
+			// The very next send-keys call must be the alternate shape,
+			// not a repeat of End+C-u.
+			for _, later := range calls[i+1:] {
+				if later[0] != "send-keys" {
+					continue
+				}
+				if len(later) == 4 && later[3] == "BSpace" {
+					sawBSpaceAfterFailedEndCU = true
+				}
+				break
+			}
+			break
+		}
+	}
+	if !sawEndCU {
+		t.Fatalf("never sent the ordinary End+C-u shape first: %v", calls)
+	}
+	if !sawBSpaceAfterFailedEndCU {
+		t.Errorf("did not flip to Backspace after End+C-u produced no movement: %v", calls)
+	}
+}
+
+// colab-fleet#132 pinned unbroken by #138: a blank current row must still
+// get plain Backspace alone, never composerLineEndKey first. Positioning to
+// the end of an already-empty row buys nothing (there is nothing there to
+// position after) and #138's own fix is additive to #132's, not a
+// replacement of it.
+func TestClearComposerStillSendsBSpaceAloneOnABlankRow(t *testing.T) {
+	f := twoSessions()
+	lines := []string{"real content", ""}
+	f.setMultilineComposer("%2", lines)
+	// withClock(time.Now), not newTestDriver's fixed clock: this composer
+	// needs TWO presses to clear (the blank row, then the real-content row
+	// End+C-u empties), so it crosses the select{time.After(...)} wait
+	// between iterations — d.bounded's deadline is computed from d.now(),
+	// and a fixed/stale clock there makes ctx already-expired by the time
+	// that wait is reached, same reason every other multi-press test here
+	// (TestDiscardCrossesTrailingBlankLinesWithBackspace and siblings)
+	// avoids newTestDriver too.
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer ending in a blank row published no composerDigest")
+	}
+
+	if _, err := d.Discard(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+
+	// The FIRST clear press is the one aimed at this fixture's blank bottom
+	// row — that specific press is the #132 pin, and it must stay bare
+	// Backspace, never composerLineEndKey first (positioning to the end of
+	// an already-empty row has nothing to position after). A LATER press,
+	// once the blank row is gone and the composer has shrunk to its own
+	// ❯-marked row, correctly switches to End+C-u (#138) — that is not a
+	// regression, so this only pins the first press's shape.
+	var sendKeys [][]string
+	for _, call := range f.callsSnapshot() {
+		if len(call) > 0 && call[0] == "send-keys" {
+			sendKeys = append(sendKeys, call)
+		}
+	}
+	if len(sendKeys) == 0 {
+		t.Fatal("no send-keys calls at all")
+	}
+	first := sendKeys[0]
+	if len(first) != 4 || first[3] != "BSpace" {
+		t.Errorf("first press = %v, want bare Backspace for the blank bottom row", first)
+	}
+}
+
+// colab-fleet#134/#138 interaction: clearComposer's "cleared" check must
+// additionally require composerFound, not merely got=="" — a mid-pass
+// capture that comes back composerClipped (this driver's OWN capture
+// running out, not the composer actually emptying) produces exactly the
+// same "" text a genuinely empty composer would, and must never be read as
+// success. Modelled by freezing the clear keystroke (so nothing about the
+// real composer content ever changes) and swapping the pane's capture to a
+// taller-than-the-window shape right after Discard's own initial read —
+// so the FIRST post-press re-read inside clearComposer's loop sees the
+// clipped shape instead of the unchanged original.
+func TestClearComposerDoesNotReportClearedOnAClippedCapture(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = composerHoldingRows([]string{"a single unsent line"})
+	f.freezeComposer("%2") // the press itself must be a genuine no-op
+
+	execWithSwap := captureCounter(f, 2, func() {
+		// Capture-pane call #1 is List's own read (used below for the
+		// digest); call #2 is Discard's own initial enumerate — the read
+		// `sc`/`pending` come from. Swap right after it so the FIRST
+		// post-press re-read (capture-pane call #3, inside clearComposer's
+		// loop) sees the clipped shape instead of the unchanged original.
+		f.setCapture("%2", clippedComposerFixture())
+	})
+	d := New("testbox", withExec(execWithSwap), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer holding unsent text published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest); err == nil {
+		t.Fatal("want a refusal/error: a clipped mid-pass capture must never be read as " +
+			"\"cleared\" just because its extracted text happens to be empty")
 	}
 }
 

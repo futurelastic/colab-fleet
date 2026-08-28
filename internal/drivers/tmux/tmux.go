@@ -160,6 +160,17 @@ const (
 	// and, if there is more to clear, ask again.
 	maxClearPresses = 120
 
+	// composerLineEndKey positions the cursor at the end of the current row
+	// before clearComposer sends C-u (colab-fleet#138). C-u (unix-line-
+	// discard) kills from the cursor back to the start of the line — it is
+	// only guaranteed to remove the WHOLE row when the cursor is already
+	// sitting after all of that row's content, an assumption
+	// composerCursorRowBlank's row-blankness proxy does not actually
+	// establish (see clearComposer's own doc comment). Named as its own
+	// constant, not inlined as a literal "End", so a field measurement that
+	// finds this TUI does not bind End can swap it for "C-e" in one place.
+	composerLineEndKey = "End"
+
 	// startingWindow is how long a session with no visible interface is
 	// given the benefit of the doubt. The runtime takes tens of seconds to
 	// paint; beyond this, silence means something other than booting.
@@ -2409,6 +2420,61 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // budget is necessarily exhausted, exactly as before; only what counts as
 // movement, and which key gets pressed, have changed.
 //
+// # Row blankness is a PROXY for "anything behind the cursor" — colab-fleet#138
+//
+// composerCursorRowBlank's own doc comment names its assumption directly:
+// the cursor is assumed to sit at the END of the composer's bottom row. C-u
+// kills back to the start of whatever line the cursor is ACTUALLY on, so
+// the proxy is only valid when that assumption holds. It stops holding the
+// moment residue sits on the composer's own ❯-marked row: that row can
+// never read as blank (its doc comment again — the marker glyph is always
+// visible content), so curBlank is structurally false and, before #138,
+// this loop pressed plain C-u against it forever. Measured directly: 305
+// characters of residue, a full content-sized press budget spent, zero
+// movement — the signature of a key that could never have worked on that
+// shape, not merely "ran out of presses".
+//
+// The fix is two mechanisms, one for the ordinary non-blank case and one as
+// a convergence guarantee if the first does not hold on some substrate:
+//
+//  1. Position before killing. When the current row is not blank, this
+//     sends composerLineEndKey (End) THEN C-u, as one press-budget slot —
+//     not C-u alone. End moves the cursor to wherever this row's content
+//     actually ends, which is non-destructive (unlike sending Backspace
+//     "just in case", rejected as an alternative to #132 already, for
+//     exactly the reason it would eat a real character on a non-blank
+//     row). Once the cursor is provably after the row's content, C-u is
+//     well-defined regardless of where it started — the proxy stops
+//     mattering because the precondition it was standing in for is now
+//     actually true.
+//  2. The no-movement latch. If an iteration — whichever shape it used —
+//     produces NO movement (neither signal: text unchanged AND
+//     composerVisualLines unchanged), the NEXT iteration uses the OTHER
+//     shape (End+C-u <-> BSpace) rather than repeating the one that just
+//     proved itself a no-op. A press that changes nothing is itself the
+//     evidence the row-blankness guess was wrong for this row; alternating
+//     costs one budget slot and converges without ever needing to observe
+//     the cursor's column directly (the escalation this driver does not
+//     have — see the ADR's Alternatives for why cursor-column reads via
+//     `display-message` were rejected). A press that DOES move resets the
+//     latch, so the ordinary blank-based choice governs again once
+//     progress resumes.
+//
+// A composerClipped current row (colab-fleet#134: this driver could not
+// read the row at all) is treated the same as non-blank — default to
+// End+C-u and let the latch correct course if that guess is wrong, because
+// "assume nothing is there to kill" is the direction that reproduces #134's
+// own false negative one level down, inside the clear loop itself.
+//
+// composerLineEndKey is a named constant, not an inlined "End": if a
+// substrate is ever measured NOT to bind End, the field fix is swapping
+// this one constant to "C-e", not re-deriving the mechanism. Sending an
+// unbound End is not free — an unrecognising TUI could echo its escape
+// sequence as literal bytes, ADDING to the composer instead of leaving it
+// alone — which is exactly what the no-movement latch bounds: one such
+// press produces a capture that changed (worse, even) rather than one that
+// stalled, and either way the loop does not repeat the same shape blindly.
+//
 // Verification stays in the loop: a keypress that did not register looks
 // exactly like one that did, the same reason Send confirms before
 // submitting.
@@ -2430,18 +2496,38 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 	}
 	left = pending
 	curRows, _ := composerVisualLines(sc)
-	curBlank, _ := composerCursorRowBlank(sc)
+	curBlank, curBlankScan := composerCursorRowBlank(sc)
 	stall := 0
+	// altShape (colab-fleet#138): flips to true the moment a press produces
+	// no movement, forcing the OPPOSITE key shape on the next iteration
+	// instead of repeating the one that just proved itself a no-op — see
+	// this function's own doc comment, "The no-movement latch". Reset to
+	// false the moment a press DOES move something, so the ordinary
+	// blank-based choice governs again once progress resumes.
+	altShape := false
 	for pressN := 0; pressN < presses; pressN++ {
-		// #132: a blank current row is a row C-u cannot make progress
-		// against at all — see this function's own doc comment. Cross it
-		// with Backspace instead; C-u resumes once the row it lands on
-		// next has real content again.
-		key := "C-u"
-		if curBlank {
-			key = "BSpace"
+		// #132/#138: a blank current row is a row C-u cannot make progress
+		// against at all (#132) — cross it with Backspace instead. Anything
+		// else — real content, OR a composerClipped row this driver could
+		// not read (#134: assuming "nothing there" is the direction that
+		// reproduces #134's own false negative one level down) — gets
+		// positioned with composerLineEndKey before C-u, so C-u is
+		// well-defined regardless of where the cursor actually started
+		// (#138). altShape inverts whichever of the two this iteration
+		// would otherwise have chosen, once a prior press has already
+		// proven that choice a no-op.
+		backspace := curBlank && curBlankScan == composerFound
+		if altShape {
+			backspace = !backspace
 		}
-		if _, runErr := d.run(ctx, d.bin, "send-keys", "-t", paneID, key); runErr != nil {
+		var keys []string
+		if backspace {
+			keys = []string{"BSpace"}
+		} else {
+			keys = []string{composerLineEndKey, "C-u"}
+		}
+		args := append([]string{"send-keys", "-t", paneID}, keys...)
+		if _, runErr := d.run(ctx, d.bin, args...); runErr != nil {
 			return left, moved, false, runErr
 		}
 		if next, ok := d.captureForClassify(ctx, paneID); ok {
@@ -2463,15 +2549,20 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 			// count (a #132 Backspace merge collapsing a blank row away,
 			// invisible to a text-only comparison — see this function's
 			// doc comment for why).
-			if got != left || nextRows != curRows {
+			pressMoved := got != left || nextRows != curRows
+			if pressMoved {
 				moved = true
 				stall = 0
-			} else if moved {
-				stall++
+				altShape = false
+			} else {
+				if moved {
+					stall++
+				}
+				altShape = !altShape
 			}
 			left = got
 			curRows = nextRows
-			curBlank, _ = composerCursorRowBlank(next)
+			curBlank, curBlankScan = composerCursorRowBlank(next)
 		}
 		if moved && stall >= stallPresses {
 			break
