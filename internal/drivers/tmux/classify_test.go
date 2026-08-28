@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1187,5 +1188,155 @@ func TestUnterminatedEscapeDoesNotEatTheLine(t *testing.T) {
 	const cut = "trailing words\x1b]8;id=x;https://example"
 	if got := stripEscapes(cut); !strings.Contains(got, "trailing words") {
 		t.Errorf("stripEscapes(%q) = %q", cut, got)
+	}
+}
+
+// --- colab-fleet#133: the rest of #132's blank-row matrix -------------------
+//
+// #132 pinned four shapes with trailing/interior blank ROWS by tests. What
+// follows closes shapes #132 traced through by hand and believed safe, or
+// believed unaffected, but never actually exercised.
+
+// composerCursorRowBlank trims per line before deciding blank-or-not, and
+// newScreen itself already strips a trailing \r/\t/space from every line
+// before that ever runs (see newScreen's own TrimRight cutset). #132 called
+// this combination "believed unaffected, not exercised end to end" — this
+// pins it, for the row composerCursorRowBlank actually inspects (the
+// composer's own bottom row, which needs a continuation row present to be
+// anything other than the always-not-blank marker row — see this function's
+// own doc comment on that one-row special case).
+func TestComposerCursorRowBlankIgnoresLineEndingNoise(t *testing.T) {
+	cases := []struct {
+		name      string
+		bottomRow string
+		wantBlank bool
+	}{
+		{"CRLF after real content", "real content\r", false},
+		{"CRLF alone", "\r", true},
+		{"tabs alone", "\t\t\t", true},
+		{"trailing spaces alone", "   ", true},
+		{"real content with trailing spaces", "real content   ", false},
+		{"mixed tab and CRLF, no content", "\t \r", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := rule + "\n❯ top row\n" + tc.bottomRow + "\n" + rule
+			blank, ok := composerCursorRowBlank(newScreen(f))
+			if !ok {
+				t.Fatal("composer not found")
+			}
+			if blank != tc.wantBlank {
+				t.Errorf("blank = %v, want %v for bottom row %q", blank, tc.wantBlank, tc.bottomRow)
+			}
+		})
+	}
+}
+
+// Wide characters — CJK and emoji — must not be misread as blank, and must
+// still surface through composerText intact.
+func TestComposerHandlesWideCharacters(t *testing.T) {
+	f := rule + "\n❯ 日本語のテスト 🎉\n" + rule
+	text, ok := composerText(newScreen(f))
+	if !ok || text != "日本語のテスト 🎉" {
+		t.Errorf("composer = %q ok=%v, want the wide-character text intact", text, ok)
+	}
+}
+
+// A row holding ONLY a full-width (ideographic) space is, structurally, empty
+// content: Go's unicode.IsSpace (which strings.TrimSpace, and so
+// composerCursorRowBlank, relies on) treats U+3000 as whitespace exactly like
+// an ordinary space. It should cross the same way an ordinary blank row does,
+// not be mistaken for real content because the bytes are non-ASCII.
+func TestComposerCursorRowBlankTreatsFullWidthSpaceAsBlank(t *testing.T) {
+	f := rule + "\n❯ real content\n　　\n" + rule
+	blank, ok := composerCursorRowBlank(newScreen(f))
+	if !ok {
+		t.Fatal("composer not found")
+	}
+	if !blank {
+		t.Error("a row holding only full-width spaces was not read as blank")
+	}
+}
+
+// A row that literally contains bracketed-paste markers or other raw control
+// bytes — as opposed to the SGR/OSC sequences stripEscapes already strips —
+// must not break span-finding, must not be misread as blank, and must still
+// surface through composerText: it is unusual but real content, and needs an
+// ordinary C-u like any other non-blank row.
+func TestComposerSpanSurvivesControlBytesInText(t *testing.T) {
+	// \x1b[200~ / \x1b[201~ are the bracketed-paste start/end markers; \x07 is
+	// a bell. None is an SGR (…m) or OSC (…BEL/ST) sequence, so stripEscapes
+	// does not remove them — this is what a pane would actually show if a
+	// paste's own markers leaked into the rendered text.
+	f := rule + "\n❯ top row\n\x1b[200~pasted\x07text\x1b[201~\n" + rule
+	text, ok := composerText(newScreen(f))
+	if !ok {
+		t.Fatal("composer not found")
+	}
+	if !strings.Contains(text, "pasted") || !strings.Contains(text, "text") {
+		t.Errorf("composer text lost content around control bytes: %q", text)
+	}
+	blank, ok := composerCursorRowBlank(newScreen(f))
+	if !ok {
+		t.Fatal("composer not found")
+	}
+	if blank {
+		t.Error("a row holding real text plus control bytes was read as blank")
+	}
+}
+
+// colab-fleet#133 §1: "a payload taller than the visible pane, i.e. exceeding
+// the capture window" — flagged in the issue itself as possibly needing a fix
+// rather than just a test, because captureForClassify reads only the tail
+// (classifyCaptureArgs' `-S -N`, N = defaultCaptureLines = 24) of a pane, with
+// no upper end bound. A composer taller than that window has its OPENING
+// fence and prompt-marker row scrolled out of what gets captured.
+//
+// This is not hypothetical: colab-fleet#129's own field case was on the order
+// of eighty on-screen rows, more than three times this window.
+//
+// composerSpan finds the composer by walking UP from the closing rule looking
+// for the ❯-marked prompt row, and returns not-found if it reaches the top of
+// the captured lines without finding one (composerSpan's own "opening rule
+// reached with no composer between" case does not even apply here — there is
+// no opening rule in view at all, just ordinary continuation rows). This
+// reproduces that: a screen built from only the TAIL of a tall composer, the
+// same shape a real `-S -24` capture would hand the classifier.
+//
+// composerText/composerVisualLines report NOT a composer here, which is a
+// silent false-negative, not a refusal: Discard's own early-return
+// ("pending == \"\" → already clear") and Send's own composer-guard both read
+// "not found" as "nothing to protect" — the exact shape #87/#132 exist to
+// prevent, arrived at by scrolling instead of by a blank row. Recorded here
+// deliberately as a DOCUMENTED gap rather than fixed in this same change: a
+// fix changes what "found" means for every caller of composerSpan, which is a
+// wider blast radius than clearComposer's own key choice, and deserves its
+// own decision rather than riding in on a test-matrix issue. See
+// colab-fleet#134, filed alongside this test, for the fix.
+func TestComposerSpanMissesAComposerTallerThanTheCaptureWindow(t *testing.T) {
+	// Model only what a `-S -24` capture would actually return: the last 24
+	// rows of a composer with far more real content rows than that above it,
+	// with NO opening rule and NO ❯-marked row anywhere in view — both
+	// scrolled out above the window, exactly as they would be off a live pane.
+	var lines []string
+	for i := 0; i < 30; i++ {
+		lines = append(lines, fmt.Sprintf("row %d of a paste taller than the capture window", i))
+	}
+	tail := lines[len(lines)-defaultCaptureLines:]
+	f := strings.Join(tail, "\n") + "\n" + rule
+
+	text, ok := composerText(newScreen(f))
+	if ok {
+		t.Fatalf("composerText claims it found a composer in a truncated capture "+
+			"(text=%q); the opening fence and prompt row are not in view, so this "+
+			"cannot be a genuine finding — the fixture is wrong, not the code, if this "+
+			"ever fails to reproduce the ok=false this test documents", text)
+	}
+
+	// The failure mode this proves: were this screen handed to Discard, its
+	// early return ("pending == \"\" means already clear") would fire on a
+	// composer that, off-screen, still holds 30 rows of unsent text.
+	if text != "" {
+		t.Errorf("text = %q, want empty (composerText's own contract when ok=false)", text)
 	}
 }

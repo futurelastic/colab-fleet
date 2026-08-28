@@ -2578,6 +2578,500 @@ func TestDiscardCrossesSeveralTrailingBlankLines(t *testing.T) {
 	}
 }
 
+// colab-fleet#133: "a single line with no trailing newline at all" — the
+// control case the rest of this matrix is a deviation FROM. No blank row
+// exists anywhere, so this is a plain single-press C-u clear, and Backspace
+// must never be sent — pinned explicitly rather than only implied by the
+// shapes around it.
+func TestDiscardClearsASingleLineWithNoTrailingNewline(t *testing.T) {
+	f := twoSessions()
+	f.setMultilineComposer("%2", []string{"a single line, no trailing newline at all"})
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a single-line composer published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a single line with no trailing newline: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countBackspaces(f.callsSnapshot()); got != 0 {
+		t.Errorf("sent %d Backspace presses against a composer with no blank row at all; "+
+			"none was ever needed", got)
+	}
+	if got := countClears(f.callsSnapshot()); got < 1 {
+		t.Error("no C-u was sent for the one real content row")
+	}
+}
+
+// colab-fleet#133 §1: "a leading blank row ahead of the only remaining
+// content row" — believed safe during #132 ("it collapses into the existing
+// 'blank rows read as already-empty' behaviour before the new blank-row check
+// is ever consulted") but never pinned. composerCursorRowBlank only ever
+// inspects the composer's BOTTOM row (see its own doc comment); a blank row
+// sitting ABOVE the sole remaining content row is never the row being
+// inspected, so an ordinary C-u against the real content below it is what
+// clears this — and once that lands, the composer has shrunk to its own bare
+// ❯-marked line, which composerText already treats as empty (see
+// composerCursorRowBlank's doc comment on that one-row special case) without
+// Backspace ever having to cross anything.
+func TestDiscardCrossesALeadingBlankRowAheadOfTheOnlyRemainingContentRow(t *testing.T) {
+	f := twoSessions()
+	f.setMultilineComposer("%2", []string{"", "the only remaining content"})
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer with a leading blank row published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a composer with a leading blank row: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countBackspaces(f.callsSnapshot()); got != 0 {
+		t.Errorf("sent %d Backspace presses; a leading blank row ahead of the sole content row "+
+			"should clear via an ordinary C-u on the content row, never needing to cross the "+
+			"blank row directly (colab-fleet#133 §1)", got)
+	}
+	if got := countClears(f.callsSnapshot()); got < 1 {
+		t.Error("no C-u was sent for the one real content row")
+	}
+}
+
+// colab-fleet#133 §1: "whitespace-only payload". composerText already trims
+// per line (pinned directly against classify.go by
+// TestWhitespaceOnlyComposerIsEmpty); this exercises the SAME shape through
+// Discard end to end, closing the "believed unaffected, not exercised end to
+// end" gap #132 left open. A composer holding only whitespace reads as
+// already empty, so Discard's own early return fires — success, and not one
+// keystroke is spent proving it.
+func TestDiscardAcceptsAWhitespaceOnlyComposerWithoutTouchingThePane(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = rule + "\n❯      \n" + rule
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Discard's early return fires before expectDigest is ever consulted (an
+	// already-empty composer needs no corroboration to leave alone), so no
+	// real digest is required to prove this path.
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "irrelevant")
+	if err != nil {
+		t.Fatalf("discard of a whitespace-only composer: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a whitespace-only composer, which is already empty content-wise")
+	}
+	// Discard's own enumeration (finding the live session, reading its
+	// screen) still runs — this asserts no CLEAR keystroke was ever sent,
+	// not that the pane was never read at all.
+	if got := countClears(f.callsSnapshot()) + countBackspaces(f.callsSnapshot()); got != 0 {
+		t.Errorf("sent %d clear keystrokes against a composer already read as empty; want 0", got)
+	}
+}
+
+// Every shape above models a "content row" as a single line. A real pasted
+// message rarely is: a paragraph of prose wraps onto several visual rows
+// before the next blank-line break, so a multi-paragraph paste — someone
+// pasting an email, or several separate thoughts typed with blank lines
+// between them — leaves MULTIPLE non-blank rows standing between each blank
+// separator, not one. This is the shape none of the single-row fixtures
+// above can stand in for: it asks whether the blank/non-blank key choice
+// keeps alternating correctly across repeated multi-row-then-blank cycles,
+// not just a single blank row bounded by single content rows on each side.
+//
+// Three paragraphs (2, 3, and 1 rows respectively), two separate blank
+// separators between them — deliberately more than #132's own interior-blank
+// case (one blank row, one content row on each side) and more than any
+// trailing-run case (one paragraph, several blanks).
+func TestDiscardCrossesMultipleParagraphBreaksInAMultiRowPaste(t *testing.T) {
+	f := twoSessions()
+	lines := []string{
+		"first paragraph, line one",
+		"first paragraph, line two",
+		"",
+		"second paragraph, line one",
+		"second paragraph, line two",
+		"second paragraph, line three",
+		"",
+		"third paragraph, a single line",
+	}
+	f.setMultilineComposer("%2", lines)
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a multi-paragraph composer published no composerDigest")
+	}
+
+	// A hang-guard only, generous next to the ~8 presses (6 content rows + 2
+	// separators) this needs.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a multi-paragraph composer: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false on a successful clear")
+	}
+	if got := countClears(f.callsSnapshot()); got < 6 {
+		t.Errorf("sent %d C-u presses; six real content rows across three paragraphs each "+
+			"need one, got %d", got, got)
+	}
+	if got := countBackspaces(f.callsSnapshot()); got < 2 {
+		t.Errorf("sent %d Backspace presses; two separate paragraph-break blank rows each "+
+			"need one to cross (colab-fleet#132/#133), got %d", got, got)
+	}
+}
+
+// --- colab-fleet#133 follow-up: the press budget itself -------------------
+//
+// A separate reviewing pass over the same issue found the one area the
+// matrix above never touched: `clearComposer`'s press budget
+// (expectedLines + clearPressMargin, capped at maxClearPresses — #129) treats
+// a blank row's Backspace and a content row's C-u as costing the identical
+// one press each (ADR 132: "no third key, no changed budget shape"). Nothing
+// asserted that holds when blank rows dominate, nothing covered what happens
+// when the budget is not enough, and nothing checked that #132's new
+// row-count progress signal cannot mask a genuine #87 stall.
+
+// Budget fits when blank rows are the MAJORITY of the composer, not the
+// minority every shape above tested. The margin (clearPressMargin = 5) is a
+// fixed constant regardless of composer size, so this is "just inside the
+// budget" for any row count — if a blank row ever cost more than the one
+// press a content row costs, a blank-dominated composer is exactly the shape
+// that would first run the margin out.
+func TestDiscardClearsWithinBudgetWhenBlankRowsDominate(t *testing.T) {
+	f := twoSessions()
+	lines := []string{
+		"real content, row 1", "", "",
+		"real content, row 2", "", "",
+		"real content, row 3", "",
+	}
+	f.setMultilineComposer("%2", lines)
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a blank-dominated composer published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err != nil {
+		t.Fatalf("discard of a blank-dominated composer: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false; a blank-dominated composer must still clear fully within " +
+			"expectedLines+clearPressMargin, the same one-press-per-row budget any other shape gets")
+	}
+	if got := countClears(f.callsSnapshot()); got < 3 {
+		t.Errorf("sent %d C-u presses; three real content rows each need one, got %d", got, got)
+	}
+	if got := countBackspaces(f.callsSnapshot()); got < 5 {
+		t.Errorf("sent %d Backspace presses; five blank rows — the composer's own majority — "+
+			"each need one, got %d", got, got)
+	}
+}
+
+// Budget exhaustion is graceful, not silent success and not a wedge.
+// maxClearPresses (120) is a hard ceiling independent of composer size — a
+// composer taller than that cannot possibly clear in one pass, by
+// construction, regardless of how correctly clearComposer behaves. What
+// matters is what a caller is told, and whether a second attempt (with a
+// freshly read digest) can still make progress — the #132 field case was
+// exactly a partial clear that left NO way back; this proves this shape
+// still has one.
+func TestDiscardStopsGracefullyWhenTheBudgetIsNotEnough(t *testing.T) {
+	f := twoSessions()
+	lines := make([]string, maxClearPresses+10)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("row %d of a paste taller than even the capped budget", i)
+	}
+	f.setMultilineComposer("%2", lines)
+
+	// Real clock: the press loop's own select waits on a real timer between
+	// presses, same reason every other multi-press test here uses it.
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("setup: no composerDigest published")
+	}
+
+	// Generous next to the ~24s the capped 120 presses need at
+	// promptClearInterval apart.
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+
+	_, err = d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err == nil {
+		t.Fatal("a composer taller than the capped budget must not report success on the first pass")
+	}
+	if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+		t.Errorf("kind: got %v, want ErrAmbiguousTarget", err)
+	}
+	if !strings.Contains(err.Error(), "damaged") {
+		t.Errorf("message = %q; a partial clear that changed but did not empty is the same "+
+			"\"damaged\" shape as any other changed-but-nonempty residue, not a new kind of failure", err.Error())
+	}
+	if strings.Contains(err.Error(), "unchanged") {
+		t.Errorf("message = %q; real progress was made (120 rows cleared), so this must not "+
+			"read as the untouched-composer shape", err.Error())
+	}
+	if got := countClears(f.callsSnapshot()); got != maxClearPresses {
+		t.Errorf("sent %d C-u presses, want exactly maxClearPresses (%d) — the pass must stop "+
+			"AT the cap, neither short of it (still genuinely moving) nor past it (the cap not "+
+			"actually enforced)", got, maxClearPresses)
+	}
+
+	// The part #132 was actually filed over: is there a way back? Read the
+	// session fresh — the composer now holds only the top 10 rows the capped
+	// pass never reached — and confirm a SECOND call, with the fresh digest,
+	// is not refused as futile and completes the clear. A permanently wedged
+	// composer would refuse this exactly the way discardProvenFutile does;
+	// noteFutile is only ever recorded when a pass makes NO progress at all
+	// (moved=false), and this pass moved 120 rows' worth, so it must not have
+	// been recorded here.
+	col2, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest2 string
+	for _, s := range col2.Items() {
+		if s.ID == "beta" {
+			digest2 = s.State.ComposerDigest
+		}
+	}
+	if digest2 == "" {
+		t.Fatal("re-read: no composerDigest published for the remaining residue")
+	}
+	if digest2 == digest {
+		t.Fatal("re-read: digest unchanged after 120 presses — setup did not make progress")
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+	ack2, err := d.Discard(ctx2, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest2)
+	if err != nil {
+		t.Fatalf("second discard, against the fresh digest of what the capped pass left behind: %v — "+
+			"this is exactly colab-fleet#132's own wedge if it fails", err)
+	}
+	if !ack2.Accepted {
+		t.Error("accepted = false on the second pass; the remaining 10 rows fit well inside a " +
+			"fresh budget and should have cleared fully")
+	}
+}
+
+// Adversarial: #132 added "the composer's own visual row count changed" as a
+// SECOND progress signal alongside "the joined text changed" — either one
+// resets #87's stall counter (clearComposer's own doc comment). This
+// constructs a composer where genuine row-count progress (several blank rows
+// actually being crossed) happens FIRST, immediately ahead of a floor of
+// real content that then never moves again — checking that reaching the
+// floor still accumulates stallPresses (3) and breaks early, rather than the
+// earlier row-count movement's `moved=true` state letting the loop coast on
+// stale "progress" to the full press budget.
+func TestDiscardStallDetectionSurvivesPriorRowCountProgress(t *testing.T) {
+	f := twoSessions()
+	// Bottom-up press order (the fake pops from the end of this slice):
+	// "row F" real content, blank, "row E" real content, blank, "row D" real
+	// content — five presses of genuine progress, two of them via Backspace
+	// crossing a blank row — landing exactly on the 3-line floor below. Every
+	// press against the floor is then a complete no-op, on both signals at
+	// once (the fake's floor check runs before its blank-row check, so
+	// nothing here is blank-row-shaped once the floor is reached).
+	lines := []string{
+		"stuck 1", "stuck 2", "stuck 3",
+		"real content D", "",
+		"real content E", "",
+		"real content F",
+	}
+	f.setMultilineComposer("%2", lines)
+	f.setComposerFloor("%2", 3)
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("setup: no composerDigest published")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err = d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	if err == nil {
+		t.Fatal("a composer that stalls above empty must not report success, prior row-count " +
+			"progress notwithstanding")
+	}
+	if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+		t.Errorf("kind: got %v, want ErrAmbiguousTarget", err)
+	}
+	if !strings.Contains(err.Error(), "damaged") {
+		t.Errorf("message = %q; real progress was made before the stall, so this is the same "+
+			"damaged shape TestDiscardStopsPressingOnceTheComposerStopsMoving already covers "+
+			"for a floor with no blank rows ahead of it", err.Error())
+	}
+
+	// 5 real presses (2 of them Backspace, crossing the two blank rows) to
+	// reach the floor, then exactly stallPresses (3) more once every press
+	// there is a no-op on both signals — 8 total. This is the number that
+	// PROVES the row-count signal did not paper over the floor: if it had,
+	// the loop would instead have run the full expectedLines(8)+
+	// clearPressMargin(5) = 13-press budget, because "moved" from the
+	// earlier real progress never resets to false on its own.
+	want := 5 + stallPresses
+	if got := countClears(f.callsSnapshot()) + countBackspaces(f.callsSnapshot()); got != want {
+		t.Errorf("sent %d clear keystrokes, want exactly %d (5 presses of real progress — 3 "+
+			"content rows plus 2 blank-row crossings — then stallPresses more once the floor "+
+			"stops moving). If this is HIGHER, the row-count signal from the earlier blank-row "+
+			"crossings is masking the stall and letting the loop run past it toward the full "+
+			"budget — that would be a genuine finding to file as its own issue, not a reason to "+
+			"widen this assertion", got, want)
+	}
+}
+
+// colab-fleet#133 §1's "three caller paths" ask: clearComposer's row-level
+// key choice (this whole matrix's real subject) is shared code, already
+// exhaustively covered above through Discard — colab-fleet#112's own
+// extraction is what keeps Discard and replaceIfStranded from being able to
+// drift apart on it. What differs PER CALLER, and was untested until now (no
+// test anywhere exercised replaceIfStranded at all, blank row or not), is the
+// plumbing feeding that shared function: whether a blank row inside a
+// composer THIS DRIVER stranded gets crossed the same way when reached
+// through Send's replaceIfStranded path instead of Discard's own endpoint.
+func TestReplaceIfStrandedCrossesATrailingBlankLine(t *testing.T) {
+	f := twoSessions()
+	f.swallowSubmit = true // the first attempt's own submit keystroke never registers
+	// The REAL clock, deliberately not newTestDriver's frozen test constant:
+	// clearComposer's press loop waits out promptClearInterval on a real
+	// time.After between presses (see TestDiscardClearsAComposerBeyondTheOld
+	// ThreeSecondBudget's identical note), and d.bounded's deadline is
+	// computed from d.now() — a frozen historical clock makes that deadline
+	// already past real wall-clock time, so ctx.Err() fires after the very
+	// first press and the pass never gets a second one.
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+
+	first, err := d.Send(context.Background(), testCaller, ref, "original", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("setup: first send outcome = %q, want unknown so the text is recorded as stranded",
+			first.Outcome)
+	}
+
+	// The composer now holds this driver's own stranded delivery, plus a real
+	// trailing blank row — the #132 shape. composerText drops the blank row
+	// from what it joins, so this still corroborates against the record's
+	// digest exactly (screenDigest of the trimmed, joined text).
+	f.setMultilineComposer("%1", []string{"original", ""})
+	f.swallowSubmit = false
+
+	got, err := d.Send(context.Background(), testCaller, ref, "replacement text",
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome == fleet.OutcomeRefused {
+		t.Fatalf("replaceIfStranded refused instead of crossing the blank row: %s", got.Reason)
+	}
+	if n := countBackspaces(f.callsSnapshot()); n < 1 {
+		t.Error("no Backspace was sent to cross the trailing blank row reached via " +
+			"replaceIfStranded (colab-fleet#132/#133) — only Discard's own endpoint was " +
+			"ever proven to do this")
+	}
+}
+
 // Issue #32, the branch that did not exist at all: a clear that runs out of
 // time without emptying the composer covers two situations that demand
 // opposite handling, and nothing told them apart. This is the untouched
