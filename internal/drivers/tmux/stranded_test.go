@@ -374,3 +374,166 @@ func TestReplaceIfStrandedRefusesWhenComposerDigestNoLongerMatches(t *testing.T)
 			countClears(f.callsSnapshot()))
 	}
 }
+
+// colab-fleet #135: resumeIfStranded/replaceIfStranded should discard-then-
+// send internally instead of dead-ending at §2.4 — the shape Case 5 above
+// (TestSendStillRefusesGenuineThirdPartyTextWithOriginalWording) keeps
+// unchanged for a bare send with NEITHER flag set. These exercise the two
+// flags' new door out of that same starting point: no stranded record at
+// all, only an opt-in flag on the call itself.
+//
+// beta's own fixture (twoSessions, fixtureUnsent) is used untouched — this
+// driver never called Send against it, so there is genuinely no record, the
+// exact shape #135 targets, as opposed to stranded_test.go's other cases
+// above which all strand the record first via a real Send call.
+const betaPendingText = "yes, update the skill"
+
+// ReplaceIfStranded's door: with no record at all, there is nothing to
+// "replace" in the record sense — this is #135's headline case, the one
+// that used to dead-end at the unconditional §2.4 refusal regardless of
+// either flag.
+func TestReplaceIfStrandedClearsComposerWithNoStrandedRecord(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	got, err := d.Send(context.Background(), testCaller, ref, "something new entirely",
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeQueued {
+		t.Fatalf("outcome = %s (%s), want queued — an unrecorded composer must still clear "+
+			"and deliver when replaceIfStranded opts in", got.Outcome, got.Reason)
+	}
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alive := false
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			alive = true
+			if s.State.Status == fleet.StatusWaitingInput {
+				t.Error("composer still reads waiting_input after a successful clear-and-deliver")
+			}
+		}
+	}
+	if !alive {
+		t.Fatal("session no longer listed — clearing an unrecorded composer must not destroy the session")
+	}
+}
+
+// ResumeIfStranded's door: there is nothing of ours to RESUME without a
+// record of what this driver sent, so resumeIfStranded takes the identical
+// clear-and-deliver path replaceIfStranded does above — the two converge on
+// the same outcome once there is no record to distinguish "finish the old
+// one" from "throw it away", because there is no old one either flag can
+// name.
+func TestResumeIfStrandedClearsComposerWithNoStrandedRecord(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	got, err := d.Send(context.Background(), testCaller, ref, "something new entirely",
+		driver.SendOptions{Submit: true, ResumeIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeQueued {
+		t.Fatalf("outcome = %s (%s), want queued — an unrecorded composer must still clear "+
+			"and deliver when resumeIfStranded opts in", got.Outcome, got.Reason)
+	}
+}
+
+// Ask 1: every refusal whose actual remedy is /discard must name the exact
+// call, composer digest included, not just gesture at the concept — this
+// covers the one refusal #135 touched that keeps refusing (neither flag
+// set), regression-guarding both the unchanged "a human typed" wording
+// (Case 5, above) and the new exact-call addition alongside it.
+func TestSendWithNeitherFlagNamesTheExactDiscardCall(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	got, err := d.Send(context.Background(), testCaller, ref, "hello", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %s, want refused", got.Outcome)
+	}
+	if !strings.Contains(got.Reason, "discard?expect="+screenDigest(betaPendingText)) {
+		t.Errorf("reason = %q; must name the exact discard call with the composer's own "+
+			"digest inlined, not just gesture at the concept", got.Reason)
+	}
+	if !strings.Contains(got.Reason, "resumeIfStranded") || !strings.Contains(got.Reason, "replaceIfStranded") {
+		t.Errorf("reason = %q; must also name both opt-in doors now available", got.Reason)
+	}
+}
+
+// Safety rail, generalised from TestReplaceIfStrandedRefusesWhenAPriorClearProvenFutile
+// to the no-record case: #87's discipline (refuse before pressing again once
+// a full pass already proved this exact residue does not move) must hold
+// here too — futileClearAttempts is keyed on id+cwd+digest, independent of
+// any stranded record, so it was already reachable from this new path
+// without change; this pins that it actually fires.
+func TestReplaceIfStrandedRefusesUnrecordedResidueAlreadyProvenFutile(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	digest := screenDigest(betaPendingText)
+	d.noteFutile(ref.ID, "/work/beta", digest)
+
+	got, err := d.Send(context.Background(), testCaller, ref, "something new",
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %s, want refused — this residue is already proven futile", got.Outcome)
+	}
+	if countClears(f.callsSnapshot()) != 0 {
+		t.Errorf("a residue already proven futile must be refused BEFORE pressing C-u, "+
+			"got %d clear keystrokes", countClears(f.callsSnapshot()))
+	}
+}
+
+// The other half of #135's own safety analysis: a clear pass against an
+// unrecorded composer that makes real progress and then genuinely stops
+// (#87's stall shape) must be reported honestly — not as success, and not
+// indistinguishable from "nothing happened" — the same discipline
+// discardIncomplete already applies inside Discard itself, mirrored here
+// because this path returns a DeliveryReceipt rather than an error.
+func TestReplaceIfStrandedReportsAnUnrecordedComposerThatOnlyPartlyClears(t *testing.T) {
+	f := twoSessions()
+	lines := []string{"one", "two", "three", "four", "five", "six"}
+	f.setMultilineComposer("%2", lines)
+	f.setComposerFloor("%2", 3) // real progress (6 -> 3), then genuinely stops
+
+	// Real clock: clearComposer's inter-press wait is a real timer regardless
+	// of an injected clock — same reasoning as the Discard stall tests this
+	// mirrors (TestDiscardStopsPressingOnceTheComposerStopsMoving).
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	got, err := d.Send(context.Background(), testCaller, ref, "something new",
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %s (%s), want refused — a partial clear must never be reported "+
+			"as a successful delivery", got.Outcome, got.Reason)
+	}
+	if strings.Contains(got.Reason, "a human typed") {
+		t.Errorf("reason = %q; this is a failed clear attempt this driver itself made, not "+
+			"the genuinely-unknown-provenance answer", got.Reason)
+	}
+	if got := countClears(f.callsSnapshot()); got == 0 {
+		t.Error("no clear keystroke was even attempted")
+	}
+}

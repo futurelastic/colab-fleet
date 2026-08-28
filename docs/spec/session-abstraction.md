@@ -1064,12 +1064,25 @@ already made and could not confirm. §2.4's refusal is what makes it necessary:
 after an unconfirmed delivery the text is in the composer, a second send is
 refused by the very rule protecting it, and nothing else submits.
 
-A driver may honour it **only** by establishing, from its own record of what it
+A driver may honour it by establishing, from its own record of what it
 delivered, that the text is its own — never by reading the screen back, since a
 long message is collapsed to a summary and cannot be compared (F49), and the
 messages most likely to strand are exactly the long ones. Text the driver did
 not place is never submitted: composer contents are not evidence that anybody
 meant to send them.
+
+Colab-fleet #135: when no such record exists at all, `resumeIfStranded` and its
+sibling **replaceIfStranded** (colab-fleet #112, which clears a delivery the
+driver's own record shows is its own and delivers different text in its place)
+converge on one further door rather than dead-ending at §2.4's refusal — since
+neither has anything of the driver's own to resume or replace without a
+record. A driver may clear the composer using the SAME read of its current
+content as the corroborating proof (the property `discard`'s own
+`ComposerDigest` check enforces below, folded into this one call instead of
+requiring a separate one), then deliver THIS call's text. The foreign text
+itself is still never submitted — only ever the caller's own, on this same
+call — and a caller that sets neither flag still gets the original, unqualified
+refusal.
 
 `discard` removes unsent composer text **without submitting it** — the verb
 between "run it" and "destroy the session holding it", which was missing. `send`

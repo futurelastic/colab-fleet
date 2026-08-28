@@ -516,7 +516,7 @@ only ever completes the delivery already sitting in the composer — a caller
 that wants to send something else has no use for it, and until #112 had no
 other way in either: the busy-composer refusal below applied even though the
 service's own record showed the "human typed" attribution was wrong. With
-`replaceIfStranded` set, and only when the service's own record shows the
+`replaceIfStranded` set, and when the service's own record shows the
 composer holds a delivery **this service itself placed** there (never on the
 strength of any other evidence — a human may have attached and typed since,
 and the service cannot compare pasted bytes to rule that out), it clears that
@@ -536,10 +536,20 @@ human was typing:
   answer. `resumeIfStranded` would finish the OLD delivery; `replaceIfStranded`
   discards it and delivers the new text; `discard` (below) clears it without
   delivering anything.
-- **no matching record exists** — the original, unchanged answer: the
-  composer may hold a person's own unsent draft, and this service will not
-  guess otherwise. Neither flag helps here; read the session and `discard`
-  with the composer's digest, or wait.
+- **no matching record exists at all** — with *neither* flag set, this is
+  still the original, unchanged answer: the composer may hold a person's own
+  unsent draft, and this service will not guess otherwise. **With either flag
+  set, colab-fleet #135 closes this case too**, on different corroboration:
+  there is no record to compare a digest against, so the service reads the
+  composer's own current content and clears it using that same read as the
+  proof nothing changed between "look" and "clear" — the property `discard`'s
+  own `?expect=` digest enforces, folded into this one call instead of
+  requiring the caller to make a separate round trip to supply it by hand.
+  Both flags converge on the identical action here (clear, then deliver THIS
+  call's text) — there is nothing recorded to distinguish "finish it" from
+  "replace it" once there is no "it" to begin with. The response still
+  carries a refusal, never the foreign text delivered, if the clear itself
+  does not fully succeed (a `#87`-proven-futile residue, or a partial clear).
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&startedAt=
