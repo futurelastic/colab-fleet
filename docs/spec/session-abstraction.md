@@ -989,7 +989,7 @@ state(req, ref)                -> SessionState
 interrupt(req, ref)            -> Ack
 close(req, ref)                -> Ack
 rename(req, ref, to)           -> Ack
-discard(req, ref, digest)      -> Ack
+discard(req, ref, digest, force?) -> Ack
 keys(req, ref, key, expect)    -> DeliveryReceipt
 list(req, filter?)             -> Collection<Session>
 subscribe(req, filter?)        -> EventStream
@@ -1099,6 +1099,21 @@ there, remove it" is precisely the request this must not honour.
 Clearing an already-empty composer succeeds. A caller that timed out and retried
 must not be told it failed for having worked, and nothing is destroyed by
 clearing nothing.
+
+Colab-fleet #136: a residue a driver has already proven, by evidence, that its
+ordinary clear pass cannot move used to dead-end at one documented remedy —
+destroy the session holding it. Disproportionate: a session carries a
+conversation, a bridge, in-flight work, and for a caller that binds them, a
+claim and a worktree, none of which respawning recovers. `force` is the door
+past that dead end — set only once a prior call has already been refused as
+proven-futile against this exact residue, it authorises a driver to reach for
+a stronger clear mechanism than its ordinary pass. It is not a second, looser
+corroboration path: `ComposerDigest` is required exactly as it always was,
+because a forced clear is *more* destructive than the ordinary one, not less
+— the caller must still prove it saw what it is asking to force-clear. A
+driver may ignore `force` (treat it as unset) before a prior call has proven
+this residue futile; forcing is a remedy for proven futility, not a shortcut
+around attempting the ordinary pass first.
 
 `rename` changes a session's **id**, and that is not a slip of wording. On a
 substrate where the id is the name an operator sees and every command targets,

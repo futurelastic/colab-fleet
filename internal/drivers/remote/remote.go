@@ -957,14 +957,29 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 // The caller's digest travels, because corroboration has to happen where the
 // composer actually is — against what the CALLER saw, not the far driver's own
 // later reading.
-func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string) (fleet.Ack, error) {
+//
+// opts.Force (colab-fleet #136) is forwarded on the wire as its own query
+// parameter, never folded into or inferred from expect. This is the one
+// place in the whole DiscardOptions ripple that is NOT a local signature
+// change: dropping Force here would make the escape hatch work on a local
+// driver and silently vanish at the federation boundary — the exact class
+// of drift classifyCaptureArgs' own single-source-of-truth exists to
+// prevent for capture shape, arriving here for the wire shape instead.
+func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string, opts driver.DiscardOptions) (fleet.Ack, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/discard",
 		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
+	q := url.Values{}
 	if expectDigest != "" {
-		path += "?expect=" + url.QueryEscape(expectDigest)
+		q.Set("expect", expectDigest)
+	}
+	if opts.Force {
+		q.Set("force", "true")
+	}
+	if len(q) > 0 {
+		path += "?" + q.Encode()
 	}
 	var ack fleet.Ack
 	if err := d.do(ctx, req, http.MethodPost, path, nil, &ack); err != nil {

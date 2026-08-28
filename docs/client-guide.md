@@ -481,6 +481,20 @@ have nothing to deliver in its place; reach for `resumeIfStranded`/
 `replaceIfStranded` on `send` instead when you do — closing the session to be
 rid of a line is not a trade anyone should make either way.
 
+**If `discard` comes back `409` naming this exact residue proven futile —
+not the ordinary "unchanged, first pass" 409, a distinct message saying a
+prior full clear pass already left it unmoved — retry the SAME call with
+`&force=true` added** (`POST …/discard?expect=<the same composerDigest>&force=true`),
+colab-fleet#136. This reaches for a stronger, character-budgeted clear
+mechanism past whatever defeated the ordinary pass. It is not a looser
+corroboration path — `expect` is still required and still checked exactly as
+before, `force` only changes what happens once that check has already passed
+— so do not add `force` pre-emptively on a first call; it does nothing there
+and the ordinary pass deserves the chance to work first. **Do not reach for
+`DELETE` here** — closing the session to clear one stuck composer destroys
+the conversation, the bridge, and any in-flight work along with it, and
+`force` exists specifically so that trade is no longer necessary.
+
 **`rename` changes the id.** `POST …/sessions/{id}/rename` with `{"name":"…"}`,
 and carry `?startedAt=` exactly as you would for a delete — renaming the wrong
 session does not fail loudly, it succeeds and leaves that session named after

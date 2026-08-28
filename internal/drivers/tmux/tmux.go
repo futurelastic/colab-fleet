@@ -171,6 +171,17 @@ const (
 	// finds this TUI does not bind End can swap it for "C-e" in one place.
 	composerLineEndKey = "End"
 
+	// sweepMargin/maxSweepBackspaces/sweepBatchSize size clearComposerSweep
+	// (colab-fleet#136), the Force escape hatch reachable only once the
+	// ordinary row-budgeted pass has already been proven futile. The unit
+	// here is CHARACTERS, not rows — this mechanism presses Backspace one
+	// character at a time rather than clearing a structural row per press —
+	// so #129's content-derived sizing argument is applied at the finer
+	// grain this mechanism actually operates in.
+	sweepMargin        = 8
+	maxSweepBackspaces = 2000
+	sweepBatchSize     = 40
+
 	// startingWindow is how long a session with no visible interface is
 	// given the benefit of the doubt. The runtime takes tens of seconds to
 	// paint; beyond this, silence means something other than booting.
@@ -2239,7 +2250,20 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 //
 // A caller that timed out and retried must not be told it failed for having
 // worked the first time. Nothing is destroyed by clearing nothing.
-func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string) (fleet.Ack, error) {
+//
+// # Force is the exit from the cycle discardProvenFutile used to dead-end at
+//
+// colab-fleet#136: before this, a residue the ordinary pass had already
+// proven futile left exactly one documented remedy — DELETE the session.
+// Disproportionate: a session carries a conversation, a bridge, in-flight
+// work, and (for a caller that binds them) a claim and a worktree, none of
+// which respawning recovers. opts.Force, set only once futileClearAttempts
+// has already fired for this residue, reaches for clearComposerSweep
+// instead — a character-budgeted Backspace sweep past the ordinary pass's
+// structural key choice. It never relaxes expectDigest: the corroboration
+// above runs identically whether Force is set or not, because a forced
+// clear is MORE destructive, not less.
+func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string, opts driver.DiscardOptions) (fleet.Ack, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -2316,7 +2340,23 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	// spent that pass, would not learn anything new. Refuse outright,
 	// before touching the pane.
 	if attempts := d.futileClearAttempts(ref.ID, live.cwd, expectDigest); attempts > 0 {
-		return fleet.Ack{}, d.withRestartNote(ref.ID, discardProvenFutile(attempts))
+		if !opts.Force {
+			return fleet.Ack{}, d.withRestartNote(ref.ID, discardProvenFutile(attempts))
+		}
+		// colab-fleet#136: Force is the escape hatch discardProvenFutile's
+		// own refusal now names, reached only because attempts>0 — the
+		// ordinary pass HAS already been tried and found futile against
+		// this exact residue. expectDigest was already corroborated above,
+		// unconditionally; Force does not relax that, it only authorises a
+		// stronger mechanism once corroboration has already passed.
+		left, cleared, sweepErr := d.clearComposerSweep(ctx, live.paneID, ref.ID, pending)
+		if sweepErr != nil {
+			return fleet.Ack{}, fmt.Errorf("discard: %w", sweepErr)
+		}
+		if cleared {
+			return fleet.Ack{Accepted: true}, nil
+		}
+		return fleet.Ack{}, d.withRestartNote(ref.ID, discardIncomplete(pending, left))
 	}
 
 	expectedLines, _ := composerVisualLines(sc)
@@ -2589,6 +2629,108 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 	return left, moved, false, nil
 }
 
+// clearComposerSweep is colab-fleet#136's escape hatch: a character-
+// budgeted Backspace sweep, reachable only through Discard's opts.Force
+// once the ordinary row-budgeted pass (clearComposer, above) has already
+// been proven futile against this EXACT residue (discardProvenFutile's own
+// refusal is what names this as the next step).
+//
+// # Why Backspace alone, unconditionally, is the mechanism that reaches
+// what the structural pass could not
+//
+// clearComposer chooses between C-u and Backspace based on the composer's
+// STRUCTURE — which row the cursor is assumed to sit on, whether that row
+// reads as blank (#132), whether positioning first makes C-u well-defined
+// (#138). Every one of those readings can be wrong for the same reason
+// #138 exists at all: an assumption about where the cursor actually is,
+// not a direct observation of it. Backspace sidesteps the whole question —
+// it deletes the ONE character behind the cursor unconditionally, crosses
+// a newline exactly the way it crosses any other character (merging the
+// row above into whatever position the cursor lands on next), and cannot
+// escape the composer widget itself: a Backspace at the very start of a
+// text input is a no-op, not a way to type into something else. Pressed
+// enough times, it reaches whatever is there regardless of shape — the
+// property clearComposer's structural choice was already trying to
+// approximate at the row level, spent here in a coarser, blunter, and more
+// exhaustive way that does not depend on getting the row/cursor reading
+// right.
+//
+// pending is the CALLER-corroborated text — Discard's own digest check,
+// unconditional whether Force is set or not (see Discard's own doc
+// comment). This presses keys unconditionally and trusts that
+// corroboration already happened; it does not repeat it.
+//
+// # Sizing — characters, not rows (colab-fleet#129's argument, one level finer)
+//
+// The budget is len([]rune(pending)) + sweepMargin backspaces, capped at
+// maxSweepBackspaces: this mechanism spends one press per CHARACTER, not
+// one per structural row the way clearComposer's C-u does, so the unit the
+// budget is sized in has to match. Sent in batches of sweepBatchSize
+// backspaces per send-keys call rather than one call per character — this
+// driver already commits to one argv shape per verb
+// (classifyCaptureArgs' own single-source-of-truth discipline for capture;
+// applied here to keep this mechanism from growing a second, driftable
+// shape) — and deliberately not `send-keys -N` (a repeat-count flag that is
+// version-dependent behaviour this driver does not otherwise rely on).
+//
+// Verified the same way clearComposer verifies: a keypress that did not
+// register looks exactly like one that did, so this re-captures and
+// re-reads composerText after every batch rather than assuming the presses
+// landed.
+//
+// left is what remains (empty on success). cleared is true only once the
+// composer reads back genuinely empty — composerFound required alongside
+// got=="", same #134 discipline clearComposer's own success branch already
+// applies, for the identical reason: a mid-sweep capture that comes back
+// composerClipped must never be misread as "cleared". err is non-nil only
+// for a failed keystroke or capture call.
+func (d *Driver) clearComposerSweep(ctx context.Context, paneID, id, pending string) (left string, cleared bool, err error) {
+	left = pending
+	remaining := len([]rune(pending)) + sweepMargin
+	if remaining > maxSweepBackspaces {
+		remaining = maxSweepBackspaces
+	}
+	if remaining < 1 {
+		remaining = 1
+	}
+	if _, runErr := d.run(ctx, d.bin, "send-keys", "-t", paneID, composerLineEndKey); runErr != nil {
+		return left, false, runErr
+	}
+	for remaining > 0 {
+		if ctx.Err() != nil {
+			return left, false, ctx.Err()
+		}
+		batch := remaining
+		if batch > sweepBatchSize {
+			batch = sweepBatchSize
+		}
+		args := []string{"send-keys", "-t", paneID}
+		for i := 0; i < batch; i++ {
+			args = append(args, "BSpace")
+		}
+		if _, runErr := d.run(ctx, d.bin, args...); runErr != nil {
+			return left, false, runErr
+		}
+		remaining -= batch
+		if next, ok := d.captureForClassify(ctx, paneID); ok {
+			got, gotScan := composerText(next)
+			if got == "" && gotScan == composerFound {
+				d.forgetFutile(id)
+				return "", true, nil
+			}
+			left = got
+		}
+		if remaining > 0 {
+			select {
+			case <-ctx.Done():
+				return left, false, ctx.Err()
+			case <-time.After(promptClearInterval):
+			}
+		}
+	}
+	return left, false, nil
+}
+
 // discardComposerClipped reports that this driver cannot corroborate — or
 // safely claim as clear — a composer taller than its own capture window
 // (colab-fleet#134): composerText returned composerClipped, not
@@ -2714,20 +2856,38 @@ func discardIncomplete(before, after string) error {
 // to decide whether to retry sees a different answer here, not a repeat of
 // the first one.
 //
-// It names the one escape hatch this driver can actually offer: `keys`
-// refuses outright while the composer holds text (see keys.go), and this
-// file's own history already measured Escape as not helping here (Discard's
-// C-u comment: "C-a C-k and Escape were tried too"). What is left, and what
-// this says, is the session-level operation that is guaranteed to work
-// regardless of what state the composer is stuck in: close it.
+// # colab-fleet#136: this used to dead-end at destroying the session
+//
+// `keys` refuses outright while the composer holds text (see keys.go), and
+// this file's own history already measured Escape as not helping here
+// (Discard's C-u comment: "C-a C-k and Escape were tried too") — rejected
+// again, explicitly, as #136's own remedy: opening `keys` to Escape here
+// would hand a caller a door this driver has already measured not to open.
+// What this message used to say was left, and what it said, was the
+// session-level operation guaranteed to work regardless of what state the
+// composer is stuck in: close it. That was disproportionate — a session
+// carries a conversation, a bridge, in-flight work, and for a caller that
+// binds them, a claim and a worktree, none of which respawning recovers —
+// and enshrining it as the documented next step made an admission of a gap
+// read as the ordinary remedy.
+//
+// It now names `?force=true` instead: Discard's own opts.Force reaches for
+// clearComposerSweep, a character-budgeted Backspace sweep past whatever
+// shape defeated the structural pass this message is reporting on. Still
+// corroborated — expectDigest is unconditional whether Force is set or
+// not — so this is not a relaxation of §5.4, only a stronger mechanism
+// available once the ordinary one has already been proven not to work
+// against this exact residue.
 func discardProvenFutile(attempts int) error {
 	return fmt.Errorf(
 		"%w: discard: a full clear pass already left this exact composer text "+
 			"unmoved %d time(s); pressing again is not expected to do anything "+
 			"different, so this call made no attempt — re-read the composer before "+
-			"deciding anything, and if it genuinely must go, close the session "+
-			"(DELETE /v1/machines/{machine}/sessions/{id}) rather than retrying the "+
-			"same digest indefinitely",
+			"deciding anything. A stronger clear is available: retry with "+
+			"?expect=<the same digest>&force=true to sweep the composer character by "+
+			"character rather than by structural keystroke; closing the session "+
+			"(DELETE /v1/machines/{machine}/sessions/{id}) should not be needed for a "+
+			"stuck composer alone",
 		ErrAmbiguousTarget, attempts)
 }
 

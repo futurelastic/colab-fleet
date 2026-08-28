@@ -582,7 +582,7 @@ func TestUnimplementedOperations_ReturnErrUnsupported_NeverEmulate(t *testing.T)
 	if _, err := d.Respond(ctx, req, sref, fleet.Response{Choice: 1}); !errors.Is(err, driver.ErrUnsupported) {
 		t.Errorf("Respond: err = %v, want ErrUnsupported", err)
 	}
-	if _, err := d.Discard(ctx, req, sref, ""); !errors.Is(err, driver.ErrUnsupported) {
+	if _, err := d.Discard(ctx, req, sref, "", driver.DiscardOptions{}); !errors.Is(err, driver.ErrUnsupported) {
 		t.Errorf("Discard: err = %v, want ErrUnsupported", err)
 	}
 	if _, err := d.Rename(ctx, req, sref, "new-name"); !errors.Is(err, driver.ErrUnsupported) {
