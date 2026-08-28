@@ -1234,8 +1234,15 @@ func handleDiscard(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
+		// colab-fleet#136: force is the escape hatch past a proven-futile
+		// ordinary pass. It is its own query parameter, deliberately not
+		// folded into expect — expect keeps meaning exactly what it always
+		// has (the digest the caller last saw), and force is a SEPARATE
+		// opt-in a caller adds on top, never inferred from the presence or
+		// shape of expect.
+		opts := driver.DiscardOptions{Force: r.URL.Query().Get("force") == "true"}
 		ack, err := d.Discard(ctx, req, fleet.SessionRef{Machine: machine, ID: id},
-			r.URL.Query().Get("expect"))
+			r.URL.Query().Get("expect"), opts)
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return

@@ -768,6 +768,50 @@ func TestCloseForwardsTheCallersExpectation(t *testing.T) {
 	}
 }
 
+// colab-fleet#136: force is a real capability expansion (a stronger, more
+// destructive clear mechanism) and it is easy for it to work on a local
+// driver while silently vanishing at the federation boundary — the exact
+// class of drift this repo elsewhere builds single-source-of-truth argv
+// helpers to prevent. This pins that Discard forwards it, as its own query
+// parameter, never folded into or inferred from expect.
+func TestDiscardForwardsForceOnTheWire(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 202, fleet.Ack{Accepted: true}, &rec)
+	d := New("peerbox", srv.URL)
+
+	if _, err := d.Discard(context.Background(), caller, fleet.SessionRef{ID: "s1"},
+		"the-digest", driver.DiscardOptions{Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rec.query, "force=true") {
+		t.Fatalf("query = %q, must forward force=true (colab-fleet#136) — dropping it here "+
+			"makes the escape hatch work locally and die across the federation boundary", rec.query)
+	}
+	if !strings.Contains(rec.query, "expect=the-digest") {
+		t.Fatalf("query = %q, force must not replace or omit expect", rec.query)
+	}
+	if rec.method != "POST" {
+		t.Errorf("method = %q", rec.method)
+	}
+}
+
+// A caller that does not ask for force must not have it invented for it —
+// the mirror of TestCloseWithoutExpectationSendsNone, for the same reason:
+// a proxy must forward exactly what the caller asked for, nothing assumed.
+func TestDiscardWithoutForceSendsNone(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 202, fleet.Ack{Accepted: true}, &rec)
+	d := New("peerbox", srv.URL)
+
+	if _, err := d.Discard(context.Background(), caller, fleet.SessionRef{ID: "s1"},
+		"the-digest", driver.DiscardOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rec.query, "force=") {
+		t.Errorf("query = %q; a proxy must not manufacture force the caller did not ask for", rec.query)
+	}
+}
+
 // And a caller that supplies none must not have one invented for it.
 func TestCloseWithoutExpectationSendsNone(t *testing.T) {
 	var rec capture

@@ -108,6 +108,29 @@ type SendOptions struct {
 	ReplaceIfStranded bool
 }
 
+// DiscardOptions controls how far Discard is allowed to go past its
+// ordinary row-budgeted clear pass (driver.Driver.Discard).
+type DiscardOptions struct {
+	// Force (colab-fleet #136) authorises a stronger clear mechanism once
+	// the ordinary pass has already been proven futile against this EXACT
+	// residue (the same futility record discardProvenFutile's refusal
+	// already reads) — the escape hatch that refusal used to say did not
+	// exist short of destroying the session outright.
+	//
+	// It does NOT relax expectDigest. A forced clear is MORE destructive
+	// than the ordinary budgeted pass, not less — a character-by-character
+	// sweep rather than a handful of structural keystrokes — so the caller
+	// must still prove it saw the composer it is asking to force-clear.
+	// Corroboration is the property that makes exposing this safe at all;
+	// nothing about Force is licence to skip it.
+	//
+	// A driver may ignore Force (treat it as false) when the ordinary pass
+	// has not yet been tried and found futile against this residue —
+	// forcing is a remedy for proven futility, not a shortcut around
+	// attempting the ordinary pass first.
+	Force bool
+}
+
 // ListFilter narrows List to a subset of sessions (the query parameters of
 // GET /v1/sessions, api-http.md §3.2). The zero value means no filter.
 type ListFilter struct {
@@ -302,7 +325,14 @@ type Driver interface {
 	//
 	// Discarding an already-empty composer succeeds. A caller retrying after a
 	// timeout must not be told it failed for having previously worked.
-	Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string) (fleet.Ack, error)
+	//
+	// opts.Force (colab-fleet #136) is the escape hatch once the ordinary
+	// pass has already been proven futile against this EXACT residue: a
+	// caller with a corroborated digest, past what a budgeted clear pass
+	// could reach, asking for the composer back without destroying the
+	// session — see DiscardOptions' own doc for why this does not relax
+	// expectDigest.
+	Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string, opts DiscardOptions) (fleet.Ack, error)
 
 	// Rename changes a session's id.
 	//

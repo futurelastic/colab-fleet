@@ -75,7 +75,7 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 	return fleet.Ack{}, driver.ErrUnsupported
 }
 
-func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string) (fleet.Ack, error) {
+func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string, opts driver.DiscardOptions) (fleet.Ack, error) {
 	return fleet.Ack{}, driver.ErrUnsupported
 }
 

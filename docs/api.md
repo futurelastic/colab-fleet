@@ -240,6 +240,13 @@ deliberately not folded into `send`.
 Clears unsent composer text without submitting it. Requires
 `?expect=<composerDigest>` when the composer is non-empty. `202`.
 
+If a prior call already came back `409` naming this exact residue
+proven-futile, retry with `&force=true` on the SAME `?expect=` — this reaches
+for a stronger clear mechanism than the ordinary pass. `force` never relaxes
+`expect`; it has no effect before a prior call has actually proven this
+residue futile. `DELETE …/{id}` still works but should not be needed for a
+stuck composer alone (colab-fleet#136).
+
 ### `POST …/{id}/rename`
 
 ```json

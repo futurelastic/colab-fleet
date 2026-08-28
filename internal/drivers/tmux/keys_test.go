@@ -150,6 +150,38 @@ func TestKeysRefusesWhenTheComposerHoldsUnsentText(t *testing.T) {
 	}
 }
 
+// colab-fleet#134: a composer taller than this driver's capture window has
+// no composer-scope digest to corroborate (composerText returns "" for it,
+// same as an absent composer) — so this falls into the SCREEN-scope digest
+// branch, same as TestKeysDeliversToAnUnrecognisedDialogAndConfirmsTheRedraw,
+// and the caller must quote back digestOf (ScreenDigest), not a composer
+// digest that was never published. It must still refuse the key itself:
+// a clipped composer is unsent text this driver could not read, not text
+// that was proven absent.
+func TestKeysRefusesOnAClippedComposer(t *testing.T) {
+	f := dialogMux()
+	f.captures["%1"] = clippedComposerFixture()
+	d := newTestDriver(f)
+	want := digestOf(t, d, "alpha💬") // screen scope: no composer digest exists for a clipped read
+
+	got, err := d.Keys(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.KeyEnter, want)
+	if err != nil {
+		t.Fatalf("Keys: %v", err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %q (%s); a clipped composer must not be pressed into blind", got.Outcome, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "capture window") {
+		t.Errorf("reason = %q; it must say why this driver could not corroborate the composer", got.Reason)
+	}
+	for _, call := range f.callsSnapshot() {
+		if len(call) > 0 && call[0] == "send-keys" {
+			t.Errorf("a clipped composer must never be pressed against; saw %v", call)
+		}
+	}
+}
+
 // The bug this whole change exists for: GET's ScreenDigest and ComposerDigest
 // are two different values whenever the composer holds text. A caller that
 // quotes the screen-scope digest back at a composer-holds-text session must

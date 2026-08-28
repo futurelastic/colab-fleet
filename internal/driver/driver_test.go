@@ -44,7 +44,7 @@ func (fakeDriver) Close(ctx context.Context, req fleet.Request, ref fleet.Sessio
 	return fleet.Ack{}, ErrUnsupported
 }
 
-func (fakeDriver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string) (fleet.Ack, error) {
+func (fakeDriver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string, opts DiscardOptions) (fleet.Ack, error) {
 	return fleet.Ack{}, ErrUnsupported
 }
 

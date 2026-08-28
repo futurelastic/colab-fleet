@@ -60,6 +60,14 @@ type fakeMux struct {
 	// all — the untouched half of #32's missing branch, as distinct from
 	// composerLines' partial-clear model of the damaged half.
 	frozen map[string]bool
+	// frozenUnixLineDiscard models colab-fleet#138's own shape: C-u (even
+	// preceded by composerLineEndKey) makes no progress on this pane — as
+	// if the substrate does not honour the positioning key at all — while
+	// Backspace still clears a row normally. Distinct from frozen (which
+	// freezes BOTH keys): this exists to prove clearComposer's no-movement
+	// latch actually flips to the alternate shape rather than repeating a
+	// key that just proved itself a no-op.
+	frozenUnixLineDiscard map[string]bool
 	// composerFloor models the shape #87 needs and neither of the above
 	// two do: a composer that clears down to a certain number of lines and
 	// then STOPS moving, as opposed to composerLines (always empties given
@@ -149,6 +157,29 @@ func (f *fakeMux) freezeComposer(paneID string) {
 		f.frozen = map[string]bool{}
 	}
 	f.frozen[paneID] = true
+}
+
+// unfreezeComposer reverses freezeComposer — colab-fleet#136's own tests
+// need a pane that resists the ordinary pass (to get a genuine futility
+// record) and THEN responds to the sweep, which freezeComposer alone
+// cannot model (it freezes every key, forever).
+func (f *fakeMux) unfreezeComposer(paneID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.frozen, paneID)
+}
+
+// freezeUnixLineDiscard makes C-u (whether or not composerLineEndKey
+// preceded it) a no-op against paneID, while leaving Backspace fully
+// effective — colab-fleet#138's own shape, where the positioning fix does
+// not help on some substrate and only the alternate key shape converges.
+func (f *fakeMux) freezeUnixLineDiscard(paneID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.frozenUnixLineDiscard == nil {
+		f.frozenUnixLineDiscard = map[string]bool{}
+	}
+	f.frozenUnixLineDiscard[paneID] = true
 }
 
 // setComposerFloor arms the "moved, then stalled" shape for paneID: C-u
@@ -423,7 +454,7 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 					}
 					// unix-line-discard against a blank row: no-op,
 					// matching real unix-line-discard.
-				case unixLineDiscard:
+				case unixLineDiscard && !f.frozenUnixLineDiscard[pane]:
 					// unix-line-discard kills the line the cursor sits on, not the
 					// whole buffer: one press drops the LAST row, leaving
 					// every row above it exactly as it was. A composer with one
@@ -439,13 +470,33 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 					} else {
 						f.captures[pane] = composerHoldingRows(lines)
 					}
+				case backspace:
+					// colab-fleet#138: Backspace against a NON-blank row,
+					// reached only via clearComposer's no-movement latch —
+					// the alternate shape it falls back to once End+C-u has
+					// already proven itself a no-op against this pane
+					// (freezeUnixLineDiscard). This fake has no character-
+					// level cursor model, so Backspace is treated as
+					// equally capable of clearing the row it lands on as
+					// unix-line-discard is — enough to prove the pass
+					// converges once the latch has actually flipped shape,
+					// without claiming anything about which real keystroke
+					// a live terminal would need.
+					lines = lines[:len(lines)-1]
+					f.composerLines[pane] = lines
+					if len(lines) == 0 {
+						delete(f.composerLines, pane)
+						delete(f.pasted, pane)
+						f.captures[pane] = idleFixtureFor("cleared")
+					} else {
+						f.captures[pane] = composerHoldingRows(lines)
+					}
 				default:
-					// Backspace against a NON-blank row: this fake works
-					// one row at a time, not one character at a time, and
-					// clearComposer only ever sends Backspace against a
-					// row it has itself found blank (composerCursorRowBlank)
-					// — so this case is not reachable from production code
-					// and is deliberately left a no-op here.
+					// unix-line-discard was sent but frozenUnixLineDiscard
+					// made it a no-op for this pane, and no Backspace
+					// accompanied it this press: models "the positioning
+					// key did not help; C-u alone still cannot touch this
+					// row" — colab-fleet#138's own worst case.
 				}
 			} else {
 				delete(f.pasted, pane)
@@ -627,6 +678,20 @@ func idleFixtureFor(label string) string {
 	return "  transcript line for " + label + "\n✻ Brewed for 1m 0s\n" + rule + "\n❯\n" + rule + "\n  ⏵⏵ auto mode on"
 }
 
+// clippedComposerFixture models exactly what a `-S -N` capture returns for a
+// composer taller than the capture window (colab-fleet#134): only the TAIL of
+// the composer is in view, with no opening rule and no ❯-marked prompt row
+// anywhere in the captured lines — both scrolled out above the window, same
+// shape as classify_test.go's TestComposerSpanMissesAComposerTallerThanTheCaptureWindow.
+func clippedComposerFixture() string {
+	var lines []string
+	for i := 0; i < 30; i++ {
+		lines = append(lines, fmt.Sprintf("row %d of a paste taller than the capture window", i))
+	}
+	tail := lines[len(lines)-defaultCaptureLines:]
+	return strings.Join(tail, "\n") + "\n" + rule
+}
+
 func twoSessions() *fakeMux {
 	return &fakeMux{
 		sessions: []fakeSession{
@@ -795,6 +860,35 @@ func TestSendRefusesWhenComposerHoldsUnsentInput(t *testing.T) {
 	}
 	if got.Reason == "" {
 		t.Error("a refusal must explain itself (§2.4)")
+	}
+}
+
+// colab-fleet#134: before this fix, a composer taller than the capture
+// window read as composerAbsent, so this guard never fired — a delivery
+// would proceed to concatenate onto text this driver could not see. This
+// proves the fix fails closed instead: refused, and the payload never
+// reaches the multiplexer.
+func TestSendRefusesDeliveryIntoAClippedComposer(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = clippedComposerFixture()
+	d := newTestDriver(f)
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, "hello", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatalf("a refusal is a domain outcome, not an error: %v", err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("want refused for a clipped composer, got %q (%s)", got.Outcome, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "capture window") {
+		t.Errorf("reason should say why this driver could not confirm it is safe to send: %q", got.Reason)
+	}
+	for _, c := range f.callsSnapshot() {
+		for _, a := range c {
+			if strings.Contains(a, "hello") {
+				t.Errorf("payload reached a command line despite the refusal: %v", c)
+			}
+		}
 	}
 }
 
@@ -1657,9 +1751,9 @@ func TestConfirmSubmittedDetectsOurBlockLeavingDespiteResidue(t *testing.T) {
 	// after — the old single-signal check could not pass here no matter how
 	// long it waited.
 	for _, painted := range []string{bothBlocks, residueOnly} {
-		if text, found := composerText(newScreen(painted)); !found || text == "" {
+		if text, scan := composerText(newScreen(painted)); scan != composerFound || text == "" {
 			t.Fatalf("setup: composerText(%q) = %q, %v; want non-empty so the old "+
-				"composer-emptied check is genuinely defeated by this fixture", painted, text, found)
+				"composer-emptied check is genuinely defeated by this fixture", painted, text, scan)
 		}
 	}
 
@@ -2196,7 +2290,7 @@ func TestDiscardRefusesWhatItCannotCorroborate(t *testing.T) {
 		f := twoSessions()
 		f.captures["%2"] = fixtureUnsent
 		d := newTestDriver(f)
-		_, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "")
+		_, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "", driver.DiscardOptions{})
 		if !errors.Is(err, fleet.ErrAmbiguousTarget) {
 			t.Errorf("no digest should be refused, not treated as permission; got %v", err)
 		}
@@ -2206,7 +2300,7 @@ func TestDiscardRefusesWhatItCannotCorroborate(t *testing.T) {
 		f := twoSessions()
 		f.captures["%2"] = fixtureUnsent
 		d := newTestDriver(f)
-		_, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "not-the-digest")
+		_, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "not-the-digest", driver.DiscardOptions{})
 		if !errors.Is(err, fleet.ErrAmbiguousTarget) {
 			t.Errorf("a changed composer must refuse — somebody may be typing; got %v", err)
 		}
@@ -2215,18 +2309,47 @@ func TestDiscardRefusesWhatItCannotCorroborate(t *testing.T) {
 	t.Run("an empty composer succeeds, so a retry is safe", func(t *testing.T) {
 		f := twoSessions() // alpha's composer is empty
 		d := newTestDriver(f)
-		if _, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "anything"); err != nil {
+		if _, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "anything", driver.DiscardOptions{}); err != nil {
 			t.Errorf("clearing nothing destroys nothing and must not fail: %v", err)
 		}
 	})
 
 	t.Run("an unknown session is not found", func(t *testing.T) {
 		d := newTestDriver(twoSessions())
-		_, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "ghost"}, "x")
+		_, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "ghost"}, "x", driver.DiscardOptions{})
 		if !errors.Is(err, fleet.ErrNoSuchSession) {
 			t.Errorf("want no-such-session, got %v", err)
 		}
 	})
+}
+
+// colab-fleet#134: before this fix, a composer taller than the capture
+// window read as composerAbsent, so Discard's early return
+// ("pending == \"\" means already clear") fired and reported success on a
+// composer that, off-screen, still held real unsent text — the exact false
+// negative #134 exists to close. This proves the fix: Discard must refuse,
+// not accept, and it must do so WITHOUT pressing a single key — a clipped
+// composer is never corroborated, so clearComposer must never run against
+// it (see this function's own doc comment on discardComposerClipped).
+func TestDiscardRefusesAClippedComposerRatherThanClaimingSuccess(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = clippedComposerFixture()
+	d := newTestDriver(f)
+
+	_, err := d.Discard(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, "any-digest-the-caller-happens-to-have", driver.DiscardOptions{})
+	if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+		t.Fatalf("want ErrAmbiguousTarget for a clipped composer, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "capture window") {
+		t.Errorf("error should say why this driver could not act: %v", err)
+	}
+	for _, call := range f.callsSnapshot() {
+		if len(call) > 0 && call[0] == "send-keys" {
+			t.Errorf("a clipped composer must never be pressed against — nothing was "+
+				"corroborated, so clearComposer must never run; saw %v", call)
+		}
+	}
 }
 
 // The happy path: the digest the caller read is the digest that gets cleared,
@@ -2252,7 +2375,7 @@ func TestDiscardClearsWhatTheCallerSaw(t *testing.T) {
 	}
 
 	if _, err := d.Discard(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest); err != nil {
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{}); err != nil {
 		t.Fatalf("discard with the digest the caller read: %v", err)
 	}
 
@@ -2334,7 +2457,7 @@ func TestDiscardRepeatsTheClearForAMultiLineComposer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("discard of a %d-line composer: %v", len(lines), err)
 	}
@@ -2384,7 +2507,7 @@ func TestDiscardClearsAComposerBeyondTheOldThreeSecondBudget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("discard of a %d-line composer, beyond the old window's reach: %v", len(lines), err)
 	}
@@ -2435,7 +2558,7 @@ func TestDiscardCrossesTrailingBlankLinesWithBackspace(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("discard of a composer ending in two blank rows: %v", err)
 	}
@@ -2448,6 +2571,233 @@ func TestDiscardCrossesTrailingBlankLinesWithBackspace(t *testing.T) {
 	}
 	if got := countClears(f.callsSnapshot()); got < 1 {
 		t.Error("no C-u was sent at all; the one real content row still needs it")
+	}
+}
+
+// colab-fleet#138: composerCursorRowBlank's row-blankness proxy is only
+// valid when the cursor sits at the END of the current row — an assumption
+// clearComposer used to take on faith. This pins the fix for the ordinary
+// non-blank case: composerLineEndKey (End) must be sent immediately before
+// C-u, in the SAME send-keys call, so C-u is well-defined regardless of
+// where the cursor actually started.
+func TestClearComposerPositionsBeforeKillingSoCUCanWorkOnTheCursorRow(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent // single non-blank line
+	d := newTestDriver(f)
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer holding unsent text published no composerDigest")
+	}
+
+	if _, err := d.Discard(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{}); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+
+	var sawPositionedClear bool
+	for _, call := range f.callsSnapshot() {
+		if len(call) == 5 && call[0] == "send-keys" && call[1] == "-t" &&
+			call[3] == composerLineEndKey && call[4] == "C-u" {
+			sawPositionedClear = true
+		}
+		// Never plain C-u alone against a non-blank row: that is exactly
+		// the pre-#138 shape whose cursor-position assumption was never
+		// actually established.
+		if len(call) == 4 && call[0] == "send-keys" && call[3] == "C-u" {
+			t.Errorf("sent plain C-u without positioning first: %v", call)
+		}
+	}
+	if !sawPositionedClear {
+		t.Errorf("never sent %s then C-u in one call; calls: %v", composerLineEndKey, f.callsSnapshot())
+	}
+}
+
+// colab-fleet#138's own measured shape: residue sitting on the composer's
+// ❯-marked row itself, where composerCursorRowBlank structurally reports
+// blank=false forever (its own doc comment) — so, pre-#138, clearComposer
+// pressed plain C-u to budget exhaustion with zero movement. This proves
+// the no-movement latch: once End+C-u has already proven itself a no-op on
+// a pane (freezeUnixLineDiscard models a substrate where positioning does
+// not help), the NEXT press must use the alternate shape (Backspace alone)
+// rather than repeating the one that just failed — and the pass must then
+// actually converge.
+func TestClearComposerAlternatesAfterAPressThatMovedNothing(t *testing.T) {
+	f := twoSessions()
+	lines := []string{"residue sitting on the marker row with nothing blank about it"}
+	f.setMultilineComposer("%2", lines)
+	f.freezeUnixLineDiscard("%2") // End+C-u never works on this pane; Backspace does
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer holding unsent text published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
+	if err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false; the alternate shape (Backspace) should have converged " +
+			"once End+C-u proved itself a no-op")
+	}
+
+	calls := f.callsSnapshot()
+	var sawEndCU, sawBSpaceAfterFailedEndCU bool
+	for i, call := range calls {
+		if len(call) == 5 && call[0] == "send-keys" && call[3] == composerLineEndKey && call[4] == "C-u" {
+			sawEndCU = true
+			// The very next send-keys call must be the alternate shape,
+			// not a repeat of End+C-u.
+			for _, later := range calls[i+1:] {
+				if later[0] != "send-keys" {
+					continue
+				}
+				if len(later) == 4 && later[3] == "BSpace" {
+					sawBSpaceAfterFailedEndCU = true
+				}
+				break
+			}
+			break
+		}
+	}
+	if !sawEndCU {
+		t.Fatalf("never sent the ordinary End+C-u shape first: %v", calls)
+	}
+	if !sawBSpaceAfterFailedEndCU {
+		t.Errorf("did not flip to Backspace after End+C-u produced no movement: %v", calls)
+	}
+}
+
+// colab-fleet#132 pinned unbroken by #138: a blank current row must still
+// get plain Backspace alone, never composerLineEndKey first. Positioning to
+// the end of an already-empty row buys nothing (there is nothing there to
+// position after) and #138's own fix is additive to #132's, not a
+// replacement of it.
+func TestClearComposerStillSendsBSpaceAloneOnABlankRow(t *testing.T) {
+	f := twoSessions()
+	lines := []string{"real content", ""}
+	f.setMultilineComposer("%2", lines)
+	// withClock(time.Now), not newTestDriver's fixed clock: this composer
+	// needs TWO presses to clear (the blank row, then the real-content row
+	// End+C-u empties), so it crosses the select{time.After(...)} wait
+	// between iterations — d.bounded's deadline is computed from d.now(),
+	// and a fixed/stale clock there makes ctx already-expired by the time
+	// that wait is reached, same reason every other multi-press test here
+	// (TestDiscardCrossesTrailingBlankLinesWithBackspace and siblings)
+	// avoids newTestDriver too.
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer ending in a blank row published no composerDigest")
+	}
+
+	if _, err := d.Discard(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{}); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+
+	// The FIRST clear press is the one aimed at this fixture's blank bottom
+	// row — that specific press is the #132 pin, and it must stay bare
+	// Backspace, never composerLineEndKey first (positioning to the end of
+	// an already-empty row has nothing to position after). A LATER press,
+	// once the blank row is gone and the composer has shrunk to its own
+	// ❯-marked row, correctly switches to End+C-u (#138) — that is not a
+	// regression, so this only pins the first press's shape.
+	var sendKeys [][]string
+	for _, call := range f.callsSnapshot() {
+		if len(call) > 0 && call[0] == "send-keys" {
+			sendKeys = append(sendKeys, call)
+		}
+	}
+	if len(sendKeys) == 0 {
+		t.Fatal("no send-keys calls at all")
+	}
+	first := sendKeys[0]
+	if len(first) != 4 || first[3] != "BSpace" {
+		t.Errorf("first press = %v, want bare Backspace for the blank bottom row", first)
+	}
+}
+
+// colab-fleet#134/#138 interaction: clearComposer's "cleared" check must
+// additionally require composerFound, not merely got=="" — a mid-pass
+// capture that comes back composerClipped (this driver's OWN capture
+// running out, not the composer actually emptying) produces exactly the
+// same "" text a genuinely empty composer would, and must never be read as
+// success. Modelled by freezing the clear keystroke (so nothing about the
+// real composer content ever changes) and swapping the pane's capture to a
+// taller-than-the-window shape right after Discard's own initial read —
+// so the FIRST post-press re-read inside clearComposer's loop sees the
+// clipped shape instead of the unchanged original.
+func TestClearComposerDoesNotReportClearedOnAClippedCapture(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = composerHoldingRows([]string{"a single unsent line"})
+	f.freezeComposer("%2") // the press itself must be a genuine no-op
+
+	execWithSwap := captureCounter(f, 2, func() {
+		// Capture-pane call #1 is List's own read (used below for the
+		// digest); call #2 is Discard's own initial enumerate — the read
+		// `sc`/`pending` come from. Swap right after it so the FIRST
+		// post-press re-read (capture-pane call #3, inside clearComposer's
+		// loop) sees the clipped shape instead of the unchanged original.
+		f.setCapture("%2", clippedComposerFixture())
+	})
+	d := New("testbox", withExec(execWithSwap), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	if digest == "" {
+		t.Fatal("a composer holding unsent text published no composerDigest")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{}); err == nil {
+		t.Fatal("want a refusal/error: a clipped mid-pass capture must never be read as " +
+			"\"cleared\" just because its extracted text happens to be empty")
 	}
 }
 
@@ -2479,7 +2829,7 @@ func TestDiscardCrossesASingleTrailingBlankLine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("discard of a composer ending in one blank row: %v", err)
 	}
@@ -2522,7 +2872,7 @@ func TestDiscardCrossesAnInteriorBlankLine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("discard of a composer with an interior blank row: %v", err)
 	}
@@ -2565,7 +2915,7 @@ func TestDiscardCrossesSeveralTrailingBlankLines(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("discard of a composer ending in several blank rows: %v", err)
 	}
@@ -2607,7 +2957,7 @@ func TestDiscardClearsASingleLineWithNoTrailingNewline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("discard of a single line with no trailing newline: %v", err)
 	}
@@ -2658,7 +3008,7 @@ func TestDiscardCrossesALeadingBlankRowAheadOfTheOnlyRemainingContentRow(t *test
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("discard of a composer with a leading blank row: %v", err)
 	}
@@ -2695,7 +3045,7 @@ func TestDiscardAcceptsAWhitespaceOnlyComposerWithoutTouchingThePane(t *testing.
 	// Discard's early return fires before expectDigest is ever consulted (an
 	// already-empty composer needs no corroboration to leave alone), so no
 	// real digest is required to prove this path.
-	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "irrelevant")
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, "irrelevant", driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("discard of a whitespace-only composer: %v", err)
 	}
@@ -2760,7 +3110,7 @@ func TestDiscardCrossesMultipleParagraphBreaksInAMultiRowPaste(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("discard of a multi-paragraph composer: %v", err)
 	}
@@ -2823,7 +3173,7 @@ func TestDiscardClearsWithinBudgetWhenBlankRowsDominate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	ack, err := d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("discard of a blank-dominated composer: %v", err)
 	}
@@ -2880,7 +3230,7 @@ func TestDiscardStopsGracefullyWhenTheBudgetIsNotEnough(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 
-	_, err = d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	_, err = d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err == nil {
 		t.Fatal("a composer taller than the capped budget must not report success on the first pass")
 	}
@@ -2928,7 +3278,7 @@ func TestDiscardStopsGracefullyWhenTheBudgetIsNotEnough(t *testing.T) {
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel2()
-	ack2, err := d.Discard(ctx2, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest2)
+	ack2, err := d.Discard(ctx2, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest2, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("second discard, against the fresh digest of what the capped pass left behind: %v — "+
 			"this is exactly colab-fleet#132's own wedge if it fails", err)
@@ -2986,7 +3336,7 @@ func TestDiscardStallDetectionSurvivesPriorRowCountProgress(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err = d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	_, err = d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err == nil {
 		t.Fatal("a composer that stalls above empty must not report success, prior row-count " +
 			"progress notwithstanding")
@@ -3113,7 +3463,7 @@ func TestDiscardReportsAnUntouchedComposerDistinctlyAndSafely(t *testing.T) {
 		t.Fatal("setup: no composerDigest published")
 	}
 
-	_, err = d.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	_, err = d.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err == nil {
 		t.Fatal("a frozen pane must not report success")
 	}
@@ -3178,7 +3528,7 @@ func TestDiscardNotesWhenTheUnsentInputStatusPredatesTheService(t *testing.T) {
 	// changed — only the driver process.
 	second := newDriver()
 
-	_, err = second.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	_, err = second.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err == nil {
 		t.Fatal("a frozen pane must not report success")
 	}
@@ -3220,7 +3570,7 @@ func TestDiscardIncompleteFirstMessageBoundsItsOwnSafetyPromise(t *testing.T) {
 		t.Fatal("setup: no composerDigest published")
 	}
 
-	_, err = d.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	_, err = d.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err == nil {
 		t.Fatal("a frozen pane must not report success")
 	}
@@ -3284,7 +3634,7 @@ func TestDiscardReportsADamagedComposerDistinctlyAndUnsafely(t *testing.T) {
 		t.Fatal("setup: no composerDigest published")
 	}
 
-	_, err = d.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	_, err = d.Discard(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err == nil {
 		t.Fatal("a composer that never reaches empty must not report success")
 	}
@@ -3342,7 +3692,7 @@ func TestDiscardStopsPressingOnceTheComposerStopsMoving(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err = d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest)
+	_, err = d.Discard(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest, driver.DiscardOptions{})
 	if err == nil {
 		t.Fatal("a composer that stops moving above empty must not report success")
 	}
@@ -3404,7 +3754,7 @@ func TestDiscardStopsPromisingASafeRetryOnceItHasProvedFutile(t *testing.T) {
 	// sibling ReportsAnUntouchedComposer test — a caller-supplied deadline
 	// shorter than that races the internal ctx.Done() case and returns a
 	// bare "context deadline exceeded" instead of exercising this path.
-	_, err1 := d.Discard(context.Background(), testCaller, ref, digest)
+	_, err1 := d.Discard(context.Background(), testCaller, ref, digest, driver.DiscardOptions{})
 	if err1 == nil {
 		t.Fatal("a frozen pane must not report success on the first call")
 	}
@@ -3422,7 +3772,7 @@ func TestDiscardStopsPromisingASafeRetryOnceItHasProvedFutile(t *testing.T) {
 	// back to the old behaviour, it is never expected to fire.
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel2()
-	_, err2 := d.Discard(ctx2, testCaller, ref, digest)
+	_, err2 := d.Discard(ctx2, testCaller, ref, digest, driver.DiscardOptions{})
 	if err2 == nil {
 		t.Fatal("a residue already proven futile must not report success either")
 	}
@@ -3442,6 +3792,145 @@ func TestDiscardStopsPromisingASafeRetryOnceItHasProvedFutile(t *testing.T) {
 		t.Errorf("second call sent %d new clear keystrokes; a residue already proven "+
 			"futile must be refused BEFORE pressing, not re-learn the same lesson", after-before)
 	}
+}
+
+// colab-fleet#136: discardProvenFutile's message used to terminate in "close
+// the session (DELETE ...)" as the ONLY remedy it named. This pins that it no
+// longer does — the grep-able assertion the issue itself asks for — and that
+// the remedy it names now is force, not destruction.
+func TestDiscardProvenFutileNamesForceNotDestruction(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent
+	f.freezeComposer("%2")
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	if _, err := d.Discard(context.Background(), testCaller, ref, digest, driver.DiscardOptions{}); err == nil {
+		t.Fatal("setup: expected the frozen pane to refuse on the first call")
+	}
+
+	_, err = d.Discard(context.Background(), testCaller, ref, digest, driver.DiscardOptions{})
+	if err == nil {
+		t.Fatal("a residue already proven futile must still refuse without force")
+	}
+	if !strings.Contains(err.Error(), "force=true") {
+		t.Errorf("message = %q; must name force=true as the available remedy", err.Error())
+	}
+	if !strings.Contains(err.Error(), "should not be needed") {
+		t.Errorf("message = %q; must say closing the session is no longer the "+
+			"documented next step for a stuck composer alone", err.Error())
+	}
+}
+
+// colab-fleet#136: force is the escape hatch — once the ordinary pass has
+// already been proven futile against this exact residue, a retry WITH
+// force must reach clearComposerSweep instead of being refused outright,
+// and (given a pane that responds to Backspace at all, unlike the fully
+// frozen case above) actually clear it.
+func TestForceReachesTheSweepAfterFutilityIsProven(t *testing.T) {
+	f := twoSessions()
+	lines := []string{"residue that the ordinary pass never got a chance to move"}
+	f.setMultilineComposer("%2", lines)
+	f.freezeComposer("%2") // force the FIRST pass to fail and record futility
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(time.Now))
+
+	col, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	for _, s := range col.Items() {
+		if s.ID == "beta" {
+			digest = s.State.ComposerDigest
+		}
+	}
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	if _, err := d.Discard(context.Background(), testCaller, ref, digest, driver.DiscardOptions{}); err == nil {
+		t.Fatal("setup: expected the frozen pane to refuse on the first call")
+	}
+	if _, err := d.Discard(context.Background(), testCaller, ref, digest, driver.DiscardOptions{}); err == nil {
+		t.Fatal("setup: expected the SECOND call to refuse too (proven futile, no force yet)")
+	}
+	before := len(f.callsSnapshot())
+
+	// The pane now responds normally — modelling "the ordinary structural
+	// pass could not read this residue's shape correctly, but a blind
+	// character sweep still reaches it once the caller has asked for one."
+	f.unfreezeComposer("%2")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ack, err := d.Discard(ctx, testCaller, ref, digest, driver.DiscardOptions{Force: true})
+	if err != nil {
+		t.Fatalf("force should have reached the sweep and cleared: %v", err)
+	}
+	if !ack.Accepted {
+		t.Error("accepted = false; the sweep should have converged once the pane responded")
+	}
+
+	var sawSweepBackspaces, sawStructuralKeys bool
+	for _, call := range f.callsSnapshot()[before:] {
+		if len(call) == 0 || call[0] != "send-keys" {
+			continue
+		}
+		for _, a := range call {
+			if a == "BSpace" {
+				sawSweepBackspaces = true
+			}
+			if a == "C-u" {
+				sawStructuralKeys = true
+			}
+		}
+	}
+	if !sawSweepBackspaces {
+		t.Errorf("the forced call never sent a Backspace sweep: %v", f.callsSnapshot()[before:])
+	}
+	if sawStructuralKeys {
+		t.Errorf("the forced call sent C-u; the sweep must be a distinct, purely-Backspace "+
+			"mechanism, not a re-run of the structural pass: %v", f.callsSnapshot()[before:])
+	}
+}
+
+// colab-fleet#136: force is not a licence to skip corroboration. It changes
+// what happens ONCE a matching digest has already been proven futile, not
+// whether a digest is required at all — a caller cannot use force to
+// discard blind, or to discard against a composer that has changed since
+// they last read it.
+func TestForceDoesNotRelaxTheDigestRequirement(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = fixtureUnsent
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	t.Run("no digest at all", func(t *testing.T) {
+		_, err := d.Discard(context.Background(), testCaller, ref, "", driver.DiscardOptions{Force: true})
+		if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+			t.Errorf("force must not turn a blind discard into permission; got %v", err)
+		}
+	})
+
+	t.Run("a stale digest", func(t *testing.T) {
+		_, err := d.Discard(context.Background(), testCaller, ref, "not-the-real-digest", driver.DiscardOptions{Force: true})
+		if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+			t.Errorf("force must not corroborate a digest the caller did not actually see; got %v", err)
+		}
+	})
 }
 
 // #87: a residue that moves — even to something still non-empty — is
@@ -3473,7 +3962,7 @@ func TestDiscardForgetsFutilityWhenTheComposerMoves(t *testing.T) {
 	// content-derived press budget to run out before reporting "unchanged"
 	// — see the sibling ProvedFutile test's comment on why a short
 	// WithTimeout races the internal ctx.Done() case here.
-	if _, err := d.Discard(context.Background(), testCaller, ref, digest1); err == nil {
+	if _, err := d.Discard(context.Background(), testCaller, ref, digest1, driver.DiscardOptions{}); err == nil {
 		t.Fatal("setup: expected the frozen pane to refuse on the first call")
 	}
 
@@ -3501,7 +3990,7 @@ func TestDiscardForgetsFutilityWhenTheComposerMoves(t *testing.T) {
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel2()
-	ack, err := d.Discard(ctx2, testCaller, ref, digest2)
+	ack, err := d.Discard(ctx2, testCaller, ref, digest2, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("a fresh residue must get a fresh pass, not be blocked by a stale futile "+
 			"record: %v", err)
@@ -3540,7 +4029,7 @@ func TestDiscardFutilityIsCorroboratedByCwd(t *testing.T) {
 	// since the composer stays frozen throughout and neither is expected to
 	// be blocked before pressing (the second is deliberately NOT
 	// proven-futile-blocked here, that is the property under test).
-	if _, err := d.Discard(context.Background(), testCaller, ref, digest); err == nil {
+	if _, err := d.Discard(context.Background(), testCaller, ref, digest, driver.DiscardOptions{}); err == nil {
 		t.Fatal("setup: expected the frozen pane to refuse on the first call")
 	}
 	before := countClears(f.callsSnapshot())
@@ -3556,7 +4045,7 @@ func TestDiscardFutilityIsCorroboratedByCwd(t *testing.T) {
 	}
 	f.mu.Unlock()
 
-	if _, err := d.Discard(context.Background(), testCaller, ref, digest); err == nil {
+	if _, err := d.Discard(context.Background(), testCaller, ref, digest, driver.DiscardOptions{}); err == nil {
 		t.Fatal("a still-frozen composer must not report success")
 	}
 	after := countClears(f.callsSnapshot())

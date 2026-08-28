@@ -160,6 +160,28 @@ const (
 	// and, if there is more to clear, ask again.
 	maxClearPresses = 120
 
+	// composerLineEndKey positions the cursor at the end of the current row
+	// before clearComposer sends C-u (colab-fleet#138). C-u (unix-line-
+	// discard) kills from the cursor back to the start of the line — it is
+	// only guaranteed to remove the WHOLE row when the cursor is already
+	// sitting after all of that row's content, an assumption
+	// composerCursorRowBlank's row-blankness proxy does not actually
+	// establish (see clearComposer's own doc comment). Named as its own
+	// constant, not inlined as a literal "End", so a field measurement that
+	// finds this TUI does not bind End can swap it for "C-e" in one place.
+	composerLineEndKey = "End"
+
+	// sweepMargin/maxSweepBackspaces/sweepBatchSize size clearComposerSweep
+	// (colab-fleet#136), the Force escape hatch reachable only once the
+	// ordinary row-budgeted pass has already been proven futile. The unit
+	// here is CHARACTERS, not rows — this mechanism presses Backspace one
+	// character at a time rather than clearing a structural row per press —
+	// so #129's content-derived sizing argument is applied at the finer
+	// grain this mechanism actually operates in.
+	sweepMargin        = 8
+	maxSweepBackspaces = 2000
+	sweepBatchSize     = 40
+
 	// startingWindow is how long a session with no visible interface is
 	// given the benefit of the doubt. The runtime takes tens of seconds to
 	// paint; beyond this, silence means something other than booting.
@@ -1707,7 +1729,23 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		}, nil
 	}
 
-	if pending, ok := composerText(screenNow); ok && pending != "" {
+	pending, composerScanResult := composerText(screenNow)
+	if composerScanResult == composerClipped {
+		// colab-fleet#134: this driver's own capture ended above the
+		// composer's opening fence, so it cannot confirm the composer is
+		// empty before delivering. Fail closed, the same direction §2.4
+		// already takes for a composer it CAN read and finds busy — the
+		// alternative is concatenating onto text this driver never saw.
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "session's composer is taller than this driver's capture window, " +
+				"so it cannot confirm the composer is empty before delivering; " +
+				"sending now risks concatenating onto text it cannot see (§2.4). Wait " +
+				"for the composer to shrink into the capture window, or re-read the " +
+				"session once it has",
+		}, nil
+	}
+	if composerScanResult == composerFound && pending != "" {
 		// The one case where a busy composer is not somebody else's business:
 		// this driver put the text there itself, could not confirm it, and
 		// said so. Completing that delivery is finishing the caller's original
@@ -2212,7 +2250,20 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 //
 // A caller that timed out and retried must not be told it failed for having
 // worked the first time. Nothing is destroyed by clearing nothing.
-func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string) (fleet.Ack, error) {
+//
+// # Force is the exit from the cycle discardProvenFutile used to dead-end at
+//
+// colab-fleet#136: before this, a residue the ordinary pass had already
+// proven futile left exactly one documented remedy — DELETE the session.
+// Disproportionate: a session carries a conversation, a bridge, in-flight
+// work, and (for a caller that binds them) a claim and a worktree, none of
+// which respawning recovers. opts.Force, set only once futileClearAttempts
+// has already fired for this residue, reaches for clearComposerSweep
+// instead — a character-budgeted Backspace sweep past the ordinary pass's
+// structural key choice. It never relaxes expectDigest: the corroboration
+// above runs identically whether Force is set or not, because a forced
+// clear is MORE destructive, not less.
+func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string, opts driver.DiscardOptions) (fleet.Ack, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -2237,7 +2288,14 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	}
 
 	sc := newScreen(captures[live.paneID])
-	pending, _ := composerText(sc)
+	pending, scan := composerText(sc)
+	if scan == composerClipped {
+		// colab-fleet#134: this driver's capture ended above the composer's
+		// opening fence. Claiming "already clear" here is #134's own false
+		// negative one function over — this driver has not seen enough of
+		// the composer to say that honestly, so it must not.
+		return fleet.Ack{}, discardComposerClipped()
+	}
 	if pending == "" {
 		// Already clear — including the case where what looked like text was
 		// the dim placeholder, which is not text at all and never was.
@@ -2282,7 +2340,23 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	// spent that pass, would not learn anything new. Refuse outright,
 	// before touching the pane.
 	if attempts := d.futileClearAttempts(ref.ID, live.cwd, expectDigest); attempts > 0 {
-		return fleet.Ack{}, d.withRestartNote(ref.ID, discardProvenFutile(attempts))
+		if !opts.Force {
+			return fleet.Ack{}, d.withRestartNote(ref.ID, discardProvenFutile(attempts))
+		}
+		// colab-fleet#136: Force is the escape hatch discardProvenFutile's
+		// own refusal now names, reached only because attempts>0 — the
+		// ordinary pass HAS already been tried and found futile against
+		// this exact residue. expectDigest was already corroborated above,
+		// unconditionally; Force does not relax that, it only authorises a
+		// stronger mechanism once corroboration has already passed.
+		left, cleared, sweepErr := d.clearComposerSweep(ctx, live.paneID, ref.ID, pending)
+		if sweepErr != nil {
+			return fleet.Ack{}, fmt.Errorf("discard: %w", sweepErr)
+		}
+		if cleared {
+			return fleet.Ack{Accepted: true}, nil
+		}
+		return fleet.Ack{}, d.withRestartNote(ref.ID, discardIncomplete(pending, left))
 	}
 
 	expectedLines, _ := composerVisualLines(sc)
@@ -2386,6 +2460,61 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // budget is necessarily exhausted, exactly as before; only what counts as
 // movement, and which key gets pressed, have changed.
 //
+// # Row blankness is a PROXY for "anything behind the cursor" — colab-fleet#138
+//
+// composerCursorRowBlank's own doc comment names its assumption directly:
+// the cursor is assumed to sit at the END of the composer's bottom row. C-u
+// kills back to the start of whatever line the cursor is ACTUALLY on, so
+// the proxy is only valid when that assumption holds. It stops holding the
+// moment residue sits on the composer's own ❯-marked row: that row can
+// never read as blank (its doc comment again — the marker glyph is always
+// visible content), so curBlank is structurally false and, before #138,
+// this loop pressed plain C-u against it forever. Measured directly: 305
+// characters of residue, a full content-sized press budget spent, zero
+// movement — the signature of a key that could never have worked on that
+// shape, not merely "ran out of presses".
+//
+// The fix is two mechanisms, one for the ordinary non-blank case and one as
+// a convergence guarantee if the first does not hold on some substrate:
+//
+//  1. Position before killing. When the current row is not blank, this
+//     sends composerLineEndKey (End) THEN C-u, as one press-budget slot —
+//     not C-u alone. End moves the cursor to wherever this row's content
+//     actually ends, which is non-destructive (unlike sending Backspace
+//     "just in case", rejected as an alternative to #132 already, for
+//     exactly the reason it would eat a real character on a non-blank
+//     row). Once the cursor is provably after the row's content, C-u is
+//     well-defined regardless of where it started — the proxy stops
+//     mattering because the precondition it was standing in for is now
+//     actually true.
+//  2. The no-movement latch. If an iteration — whichever shape it used —
+//     produces NO movement (neither signal: text unchanged AND
+//     composerVisualLines unchanged), the NEXT iteration uses the OTHER
+//     shape (End+C-u <-> BSpace) rather than repeating the one that just
+//     proved itself a no-op. A press that changes nothing is itself the
+//     evidence the row-blankness guess was wrong for this row; alternating
+//     costs one budget slot and converges without ever needing to observe
+//     the cursor's column directly (the escalation this driver does not
+//     have — see the ADR's Alternatives for why cursor-column reads via
+//     `display-message` were rejected). A press that DOES move resets the
+//     latch, so the ordinary blank-based choice governs again once
+//     progress resumes.
+//
+// A composerClipped current row (colab-fleet#134: this driver could not
+// read the row at all) is treated the same as non-blank — default to
+// End+C-u and let the latch correct course if that guess is wrong, because
+// "assume nothing is there to kill" is the direction that reproduces #134's
+// own false negative one level down, inside the clear loop itself.
+//
+// composerLineEndKey is a named constant, not an inlined "End": if a
+// substrate is ever measured NOT to bind End, the field fix is swapping
+// this one constant to "C-e", not re-deriving the mechanism. Sending an
+// unbound End is not free — an unrecognising TUI could echo its escape
+// sequence as literal bytes, ADDING to the composer instead of leaving it
+// alone — which is exactly what the no-movement latch bounds: one such
+// press produces a capture that changed (worse, even) rather than one that
+// stalled, and either way the loop does not repeat the same shape blindly.
+//
 // Verification stays in the loop: a keypress that did not register looks
 // exactly like one that did, the same reason Send confirms before
 // submitting.
@@ -2407,23 +2536,50 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 	}
 	left = pending
 	curRows, _ := composerVisualLines(sc)
-	curBlank, _ := composerCursorRowBlank(sc)
+	curBlank, curBlankScan := composerCursorRowBlank(sc)
 	stall := 0
+	// altShape (colab-fleet#138): flips to true the moment a press produces
+	// no movement, forcing the OPPOSITE key shape on the next iteration
+	// instead of repeating the one that just proved itself a no-op — see
+	// this function's own doc comment, "The no-movement latch". Reset to
+	// false the moment a press DOES move something, so the ordinary
+	// blank-based choice governs again once progress resumes.
+	altShape := false
 	for pressN := 0; pressN < presses; pressN++ {
-		// #132: a blank current row is a row C-u cannot make progress
-		// against at all — see this function's own doc comment. Cross it
-		// with Backspace instead; C-u resumes once the row it lands on
-		// next has real content again.
-		key := "C-u"
-		if curBlank {
-			key = "BSpace"
+		// #132/#138: a blank current row is a row C-u cannot make progress
+		// against at all (#132) — cross it with Backspace instead. Anything
+		// else — real content, OR a composerClipped row this driver could
+		// not read (#134: assuming "nothing there" is the direction that
+		// reproduces #134's own false negative one level down) — gets
+		// positioned with composerLineEndKey before C-u, so C-u is
+		// well-defined regardless of where the cursor actually started
+		// (#138). altShape inverts whichever of the two this iteration
+		// would otherwise have chosen, once a prior press has already
+		// proven that choice a no-op.
+		backspace := curBlank && curBlankScan == composerFound
+		if altShape {
+			backspace = !backspace
 		}
-		if _, runErr := d.run(ctx, d.bin, "send-keys", "-t", paneID, key); runErr != nil {
+		var keys []string
+		if backspace {
+			keys = []string{"BSpace"}
+		} else {
+			keys = []string{composerLineEndKey, "C-u"}
+		}
+		args := append([]string{"send-keys", "-t", paneID}, keys...)
+		if _, runErr := d.run(ctx, d.bin, args...); runErr != nil {
 			return left, moved, false, runErr
 		}
 		if next, ok := d.captureForClassify(ctx, paneID); ok {
-			got, _ := composerText(next)
-			if got == "" {
+			// composerFound is required alongside got=="" (colab-fleet#134):
+			// a mid-pass capture that comes back composerClipped or
+			// composerAbsent must not be read as "cleared" just because the
+			// TEXT this driver could extract happens to be empty — both
+			// composerText(next) return "" the same way a genuinely empty
+			// composer does, and only composerFound actually LOOKED at the
+			// whole composer to confirm that.
+			got, gotScan := composerText(next)
+			if got == "" && gotScan == composerFound {
 				d.forgetFutile(id)
 				return "", moved, true, nil
 			}
@@ -2433,15 +2589,20 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 			// count (a #132 Backspace merge collapsing a blank row away,
 			// invisible to a text-only comparison — see this function's
 			// doc comment for why).
-			if got != left || nextRows != curRows {
+			pressMoved := got != left || nextRows != curRows
+			if pressMoved {
 				moved = true
 				stall = 0
-			} else if moved {
-				stall++
+				altShape = false
+			} else {
+				if moved {
+					stall++
+				}
+				altShape = !altShape
 			}
 			left = got
 			curRows = nextRows
-			curBlank, _ = composerCursorRowBlank(next)
+			curBlank, curBlankScan = composerCursorRowBlank(next)
 		}
 		if moved && stall >= stallPresses {
 			break
@@ -2466,6 +2627,139 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 		d.noteFutile(id, cwd, screenDigest(pending))
 	}
 	return left, moved, false, nil
+}
+
+// clearComposerSweep is colab-fleet#136's escape hatch: a character-
+// budgeted Backspace sweep, reachable only through Discard's opts.Force
+// once the ordinary row-budgeted pass (clearComposer, above) has already
+// been proven futile against this EXACT residue (discardProvenFutile's own
+// refusal is what names this as the next step).
+//
+// # Why Backspace alone, unconditionally, is the mechanism that reaches
+// what the structural pass could not
+//
+// clearComposer chooses between C-u and Backspace based on the composer's
+// STRUCTURE — which row the cursor is assumed to sit on, whether that row
+// reads as blank (#132), whether positioning first makes C-u well-defined
+// (#138). Every one of those readings can be wrong for the same reason
+// #138 exists at all: an assumption about where the cursor actually is,
+// not a direct observation of it. Backspace sidesteps the whole question —
+// it deletes the ONE character behind the cursor unconditionally, crosses
+// a newline exactly the way it crosses any other character (merging the
+// row above into whatever position the cursor lands on next), and cannot
+// escape the composer widget itself: a Backspace at the very start of a
+// text input is a no-op, not a way to type into something else. Pressed
+// enough times, it reaches whatever is there regardless of shape — the
+// property clearComposer's structural choice was already trying to
+// approximate at the row level, spent here in a coarser, blunter, and more
+// exhaustive way that does not depend on getting the row/cursor reading
+// right.
+//
+// pending is the CALLER-corroborated text — Discard's own digest check,
+// unconditional whether Force is set or not (see Discard's own doc
+// comment). This presses keys unconditionally and trusts that
+// corroboration already happened; it does not repeat it.
+//
+// # Sizing — characters, not rows (colab-fleet#129's argument, one level finer)
+//
+// The budget is len([]rune(pending)) + sweepMargin backspaces, capped at
+// maxSweepBackspaces: this mechanism spends one press per CHARACTER, not
+// one per structural row the way clearComposer's C-u does, so the unit the
+// budget is sized in has to match. Sent in batches of sweepBatchSize
+// backspaces per send-keys call rather than one call per character — this
+// driver already commits to one argv shape per verb
+// (classifyCaptureArgs' own single-source-of-truth discipline for capture;
+// applied here to keep this mechanism from growing a second, driftable
+// shape) — and deliberately not `send-keys -N` (a repeat-count flag that is
+// version-dependent behaviour this driver does not otherwise rely on).
+//
+// Verified the same way clearComposer verifies: a keypress that did not
+// register looks exactly like one that did, so this re-captures and
+// re-reads composerText after every batch rather than assuming the presses
+// landed.
+//
+// left is what remains (empty on success). cleared is true only once the
+// composer reads back genuinely empty — composerFound required alongside
+// got=="", same #134 discipline clearComposer's own success branch already
+// applies, for the identical reason: a mid-sweep capture that comes back
+// composerClipped must never be misread as "cleared". err is non-nil only
+// for a failed keystroke or capture call.
+func (d *Driver) clearComposerSweep(ctx context.Context, paneID, id, pending string) (left string, cleared bool, err error) {
+	left = pending
+	remaining := len([]rune(pending)) + sweepMargin
+	if remaining > maxSweepBackspaces {
+		remaining = maxSweepBackspaces
+	}
+	if remaining < 1 {
+		remaining = 1
+	}
+	if _, runErr := d.run(ctx, d.bin, "send-keys", "-t", paneID, composerLineEndKey); runErr != nil {
+		return left, false, runErr
+	}
+	for remaining > 0 {
+		if ctx.Err() != nil {
+			return left, false, ctx.Err()
+		}
+		batch := remaining
+		if batch > sweepBatchSize {
+			batch = sweepBatchSize
+		}
+		args := []string{"send-keys", "-t", paneID}
+		for i := 0; i < batch; i++ {
+			args = append(args, "BSpace")
+		}
+		if _, runErr := d.run(ctx, d.bin, args...); runErr != nil {
+			return left, false, runErr
+		}
+		remaining -= batch
+		if next, ok := d.captureForClassify(ctx, paneID); ok {
+			got, gotScan := composerText(next)
+			if got == "" && gotScan == composerFound {
+				d.forgetFutile(id)
+				return "", true, nil
+			}
+			left = got
+		}
+		if remaining > 0 {
+			select {
+			case <-ctx.Done():
+				return left, false, ctx.Err()
+			case <-time.After(promptClearInterval):
+			}
+		}
+	}
+	return left, false, nil
+}
+
+// discardComposerClipped reports that this driver cannot corroborate — or
+// safely claim as clear — a composer taller than its own capture window
+// (colab-fleet#134): composerText returned composerClipped, not
+// composerFound or composerAbsent, so Discard has no text to diff against
+// expectDigest and no honest way to report "already clear". Claiming
+// success here would be #134's own false negative arriving through Discard
+// specifically: a caller retrying after a timeout, told "accepted", walking
+// away from a composer that may still hold exactly the text it started
+// with.
+//
+// Wrapped in ErrAmbiguousTarget for the same reason discardIncomplete and
+// discardProvenFutile are (409, not 400): the request was well formed, and
+// what failed is that this driver could not read enough of the screen to
+// carry it out — not a caller mistake to fix by resending the same digest.
+//
+// This is deliberately a DIFFERENT message from both of those: it is not
+// "the keystroke did not register" (nothing was pressed at all) and not
+// "a full pass already proved this futile" (no pass has been attempted —
+// clearComposer is never reached for this scan result). A caller that
+// pattern-matches on either of those substrings to decide what to do next
+// must see neither one here.
+func discardComposerClipped() error {
+	return fmt.Errorf(
+		"%w: discard: this composer is taller than this driver's single capture, so "+
+			"its content could not be read in full — neither \"already clear\" nor a "+
+			"digest-corroborated clear is honest here. Wait for the composer to shrink "+
+			"into the capture window (fewer on-screen rows), then read the session "+
+			"again and retry",
+		ErrAmbiguousTarget)
 }
 
 // discardIncomplete reports a clear that ran out of time without ever
@@ -2562,20 +2856,38 @@ func discardIncomplete(before, after string) error {
 // to decide whether to retry sees a different answer here, not a repeat of
 // the first one.
 //
-// It names the one escape hatch this driver can actually offer: `keys`
-// refuses outright while the composer holds text (see keys.go), and this
-// file's own history already measured Escape as not helping here (Discard's
-// C-u comment: "C-a C-k and Escape were tried too"). What is left, and what
-// this says, is the session-level operation that is guaranteed to work
-// regardless of what state the composer is stuck in: close it.
+// # colab-fleet#136: this used to dead-end at destroying the session
+//
+// `keys` refuses outright while the composer holds text (see keys.go), and
+// this file's own history already measured Escape as not helping here
+// (Discard's C-u comment: "C-a C-k and Escape were tried too") — rejected
+// again, explicitly, as #136's own remedy: opening `keys` to Escape here
+// would hand a caller a door this driver has already measured not to open.
+// What this message used to say was left, and what it said, was the
+// session-level operation guaranteed to work regardless of what state the
+// composer is stuck in: close it. That was disproportionate — a session
+// carries a conversation, a bridge, in-flight work, and for a caller that
+// binds them, a claim and a worktree, none of which respawning recovers —
+// and enshrining it as the documented next step made an admission of a gap
+// read as the ordinary remedy.
+//
+// It now names `?force=true` instead: Discard's own opts.Force reaches for
+// clearComposerSweep, a character-budgeted Backspace sweep past whatever
+// shape defeated the structural pass this message is reporting on. Still
+// corroborated — expectDigest is unconditional whether Force is set or
+// not — so this is not a relaxation of §5.4, only a stronger mechanism
+// available once the ordinary one has already been proven not to work
+// against this exact residue.
 func discardProvenFutile(attempts int) error {
 	return fmt.Errorf(
 		"%w: discard: a full clear pass already left this exact composer text "+
 			"unmoved %d time(s); pressing again is not expected to do anything "+
 			"different, so this call made no attempt — re-read the composer before "+
-			"deciding anything, and if it genuinely must go, close the session "+
-			"(DELETE /v1/machines/{machine}/sessions/{id}) rather than retrying the "+
-			"same digest indefinitely",
+			"deciding anything. A stronger clear is available: retry with "+
+			"?expect=<the same digest>&force=true to sweep the composer character by "+
+			"character rather than by structural keystroke; closing the session "+
+			"(DELETE /v1/machines/{machine}/sessions/{id}) should not be needed for a "+
+			"stuck composer alone",
 		ErrAmbiguousTarget, attempts)
 }
 
@@ -3168,8 +3480,12 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		// A composer being present settles it: the runtime is doing
 		// something ordinary (idle, or a human mid-message), definitely
 		// not blocked on an unrecognised full-screen prompt, since that
-		// shape has no composer of its own to paint.
-		if _, hasComposer := composerText(screenNow); hasComposer {
+		// shape has no composer of its own to paint. A composerClipped
+		// screen counts as present too (colab-fleet#134) — this driver's
+		// capture not reaching the top of the composer is still positive
+		// evidence a composer is painted there at all, which is the only
+		// thing this check needs.
+		if _, scan := composerText(screenNow); scan != composerAbsent {
 			return fleet.DeliveryReceipt{
 				Outcome: fleet.OutcomeRefused,
 				Reason: "session is not waiting on a prompt; a keypress would be " +
@@ -3745,8 +4061,19 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) readinessCheck 
 			return readinessCheck{checked: true, present: true, blocking: p, reason: reason,
 				waitingOn: fleet.WaitingPrompt}
 		}
-		text, found := composerText(sc)
-		if !found {
+		text, scan := composerText(sc)
+		if scan == composerClipped {
+			// colab-fleet#134: a composer is painted, but taller than this
+			// driver's capture window — this driver cannot confirm it is
+			// empty, so it must not report ready. Fail closed the same
+			// direction WaitingUnsentInput already means: something may be
+			// sitting there this call cannot see.
+			return readinessCheck{checked: true, present: true,
+				reason: "the composer is taller than this driver's capture window; " +
+					"cannot confirm it is empty before placing this prompt",
+				waitingOn: fleet.WaitingUnsentInput}
+		}
+		if scan != composerFound {
 			return readinessCheck{checked: true, present: true,
 				reason:    "still starting: the interface has not painted a composer yet",
 				waitingOn: fleet.WaitingStarting}
@@ -4264,8 +4591,14 @@ func (d *Driver) currentComposerDigest(ctx context.Context, paneID string) strin
 	if !ok {
 		return ""
 	}
-	pending, ok := composerText(sc)
-	if !ok || pending == "" {
+	// composerClipped degrades to "" here exactly like composerAbsent
+	// already did: this is documented as an honest degrade a caller already
+	// treats the same as an absent ComposerDigest elsewhere (see this
+	// function's own doc comment) — colab-fleet#134 does not change that,
+	// because a caller with no digest to quote already falls back to the
+	// screen-scope corroboration keys.go uses instead.
+	pending, scan := composerText(sc)
+	if scan != composerFound || pending == "" {
 		return ""
 	}
 	return screenDigest(pending)
@@ -4987,8 +5320,14 @@ func (d *Driver) receptive(ctx context.Context, paneID string) (ready, blocked b
 	if _, b := selectionPrompt(sc); b {
 		return false, true
 	}
-	_, found := composerText(sc)
-	return found, false
+	// composerClipped counts as receptive too (colab-fleet#134): a painted
+	// composer this driver could not read in full is still a painted
+	// composer — the runtime is up and taking input, which is all this
+	// gate decides. What it does NOT decide is whether that composer is
+	// safe to write into; that is Send's own composerText check, further
+	// down the call path, which fails closed for exactly this scan result.
+	_, scan := composerText(sc)
+	return scan != composerAbsent, false
 }
 
 // awaitReceptive waits, within the call's own budget, for the runtime to be
@@ -5067,7 +5406,14 @@ func (d *Driver) confirmSubmitted(ctx context.Context, paneID string, key pasteK
 	deadline := start.Add(submitConfirmWindow)
 	for {
 		if sc, ok := d.captureForClassify(ctx, paneID); ok {
-			if text, found := composerText(sc); found && text == "" {
+			// composerClipped must NOT confirm here (colab-fleet#134):
+			// unlike composerFound with text=="", a clipped screen carries
+			// no assurance the composer is actually empty — it is simply
+			// unreadable in full. Only an explicit composerFound-and-empty
+			// reading counts as confirmation; everything else keeps
+			// polling exactly as it already did for "no composer this
+			// capture" (scan == composerAbsent).
+			if text, scan := composerText(sc); scan == composerFound && text == "" {
 				d.recordConfirmed(counterSubmitConfirmedByComposerEmpty, d.now().Sub(start))
 				return true
 			}

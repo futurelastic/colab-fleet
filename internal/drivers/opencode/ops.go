@@ -333,7 +333,7 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 // Discard is not implemented. There is no composer holding unsent text on
 // this substrate for the same reason Send refuses Submit:false — a message
 // delivered here is delivered, not staged. ErrUnsupported (§5.6).
-func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string) (fleet.Ack, error) {
+func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string, opts driver.DiscardOptions) (fleet.Ack, error) {
 	return fleet.Ack{}, driver.ErrUnsupported
 }
 

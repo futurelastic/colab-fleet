@@ -552,15 +552,16 @@ human was typing:
   does not fully succeed (a `#87`-proven-futile residue, or a partial clear).
 
 ```
-POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&startedAt=
+POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&startedAt=&force=
 → 202 { "accepted": true }
 → 409 if the digest does not match what is there now, or none was supplied
 → 409 also if the clear could not be confirmed to have finished — the message
   says which of three things happened: the composer is unchanged and this is
   the first time (safe to retry with the same digest), the composer is
   unchanged and a PRIOR full clear pass already proved retrying does nothing
-  (do not retry — see below), or the composer is now damaged (re-read before
-  doing anything else; do not retry blind)
+  (do not retry with the same call shape — see `force`, below), or the
+  composer is now damaged (re-read before doing anything else; do not retry
+  blind)
 ```
 
 Removes unsent composer text without submitting it. `expect` is
@@ -570,6 +571,14 @@ field in the read response that produced it. It is **required when there is
 text**: this deletes somebody's typing, and a caller that has not seen the
 current text has no business removing it. An already-empty composer returns
 202, so a retry after a timeout is safe.
+
+`force=true` (colab-fleet #136) authorises a stronger clear mechanism, but
+**only** once a prior call has already been refused as proven-futile against
+this exact residue (see below) — it has no effect on a first attempt, and a
+driver may ignore it entirely before that point. It never relaxes `expect`:
+the digest requirement above is unconditional whether `force` is set or not,
+because a forced clear is *more* destructive than the ordinary pass, not
+less.
 
 A driver that cannot confirm its own clear keystroke finished reports that as
 409 too, never 400: the request was well formed, and a keystroke failing to
@@ -585,9 +594,16 @@ outcomes share that 409, and need three different next steps:
   touching the pane at all, and the message deliberately does not repeat
   "safe to retry" — repeating it was #87's failure mode, a caller that
   followed that advice to the letter, four times, and made zero progress
-  each time. The message instead names the one operation guaranteed to work
-  regardless of what state the composer is stuck in: `DELETE
-  /v1/machines/{machine}/sessions/{id}`.
+  each time. The message instead names `?force=true`: retried with that flag
+  on the SAME call shape (same `?expect=`, still required — force does not
+  relax corroboration, only what happens once it has already passed), the
+  driver reaches for a stronger, character-budgeted clear mechanism past
+  whatever structural key choice defeated the ordinary pass (colab-fleet
+  #136). `DELETE /v1/machines/{machine}/sessions/{id}` still works — closing
+  a session always clears its composer along with everything else — but it
+  is no longer the *documented* remedy for a stuck composer alone: a session
+  carries a conversation, a bridge, and in-flight work that respawning does
+  not recover, and the fix belongs at the scale of the problem.
 - **damaged** — the keystroke registered PARTIALLY: some of the text is
   gone, none of it cleanly, and the composer now holds neither what the
   caller saw nor nothing — worse than either extreme, and not safe to retry

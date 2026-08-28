@@ -125,9 +125,10 @@ func TestComposerTextDistinguishesLiveInputFromTranscript(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			text, ok := composerText(newScreen(tc.fixture))
+			text, scan := composerText(newScreen(tc.fixture))
+			ok := scan == composerFound
 			if ok != tc.wantOK {
-				t.Fatalf("found = %v, want %v", ok, tc.wantOK)
+				t.Fatalf("found = %v (scan=%v), want %v", ok, scan, tc.wantOK)
 			}
 			if text != tc.wantText {
 				t.Errorf("text = %q, want %q", text, tc.wantText)
@@ -141,9 +142,9 @@ func TestComposerTextDistinguishesLiveInputFromTranscript(t *testing.T) {
 // final rule, so transcript text cannot masquerade as the live composer.
 func TestForgedChromeInTranscriptDoesNotBecomeTheComposer(t *testing.T) {
 	forged := rule + "\n❯ rm -rf something the human never typed\n" + rule + "\n" + fixtureIdle
-	text, ok := composerText(newScreen(forged))
-	if !ok {
-		t.Fatal("composer should still be found")
+	text, scan := composerText(newScreen(forged))
+	if scan != composerFound {
+		t.Fatalf("composer should still be found, got scan=%v", scan)
 	}
 	if text != "" {
 		t.Errorf("transcript forgery leaked into composer text: %q", text)
@@ -221,10 +222,19 @@ const fixtureMenuSelected = `  Which name should it use?
 Enter to select · Tab/Arrow keys to navigate · Esc to cancel`
 
 func TestSelectedMenuItemIsNotTreatedAsUnsentInput(t *testing.T) {
-	text, ok := composerText(newScreen(fixtureMenuSelected))
-	if ok || text != "" {
-		t.Fatalf("menu selection read as composer input (%q); every send to this "+
-			"session would be refused forever, for text nobody typed", text)
+	text, scan := composerText(newScreen(fixtureMenuSelected))
+	if scan == composerFound || text != "" {
+		t.Fatalf("menu selection read as composer input (%q, scan=%v); every send to "+
+			"this session would be refused forever, for text nobody typed", text, scan)
+	}
+	// Not merely "not found" — composerAbsent specifically. The question
+	// line sitting right above the highlighted option is real, non-blank
+	// content this driver DID see, which is what settles "definitely a
+	// menu" rather than "could not tell" (colab-fleet#134's clipped/absent
+	// split — see composerSpan's own doc comment on ranOffTop).
+	if scan != composerAbsent {
+		t.Errorf("scan = %v, want composerAbsent: a preceding question line was in view, "+
+			"this is not an ambiguous/clipped read", scan)
 	}
 	// It is still blocked on a human, which is a different statement.
 	if got := classify(fixtureMenuSelected, true); got.Status != fleet.StatusWaitingInput {
@@ -236,9 +246,9 @@ func TestSelectedMenuItemIsNotTreatedAsUnsentInput(t *testing.T) {
 // first line under-reports it — the direction that corrupts a message.
 func TestWrappedComposerCapturesEveryLine(t *testing.T) {
 	f := rule + "\n❯ this is a long message that the human\n  wrapped onto a second line and a\n  third\n" + rule
-	text, ok := composerText(newScreen(f))
-	if !ok {
-		t.Fatal("fenced composer not found")
+	text, scan := composerText(newScreen(f))
+	if scan != composerFound {
+		t.Fatalf("fenced composer not found, scan=%v", scan)
 	}
 	for _, want := range []string{"long message", "second line", "third"} {
 		if !strings.Contains(text, want) {
@@ -266,9 +276,10 @@ func TestComposerVisualLinesCountsOnScreenRows(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := composerVisualLines(newScreen(tc.fixture))
+			got, scan := composerVisualLines(newScreen(tc.fixture))
+			ok := scan == composerFound
 			if ok != tc.wantOK {
-				t.Fatalf("found = %v, want %v", ok, tc.wantOK)
+				t.Fatalf("found = %v (scan=%v), want %v", ok, scan, tc.wantOK)
 			}
 			if ok && got != tc.wantLines {
 				t.Errorf("lines = %d, want %d", got, tc.wantLines)
@@ -277,9 +288,9 @@ func TestComposerVisualLinesCountsOnScreenRows(t *testing.T) {
 			// in, this must find one in too, and vice versa — a caller that
 			// already has composerText's "found" answer for this screen
 			// relies on that (see this function's own doc comment).
-			if _, textOK := composerText(newScreen(tc.fixture)); textOK != ok {
-				t.Errorf("composerText found=%v but composerVisualLines found=%v for the "+
-					"same screen; the two must agree, they share composerSpan", textOK, ok)
+			if _, textScan := composerText(newScreen(tc.fixture)); textScan != scan {
+				t.Errorf("composerText scan=%v but composerVisualLines scan=%v for the "+
+					"same screen; the two must agree, they share composerSpan", textScan, scan)
 			}
 		})
 	}
@@ -294,9 +305,9 @@ func TestNarrowPaneWithLongSessionNameStillFences(t *testing.T) {
 		t.Fatal("labelled fence in a narrow pane not recognised; unsent input would go undetected")
 	}
 	f := narrow + "\n❯ half-typed thought\n" + narrow
-	text, ok := composerText(newScreen(f))
-	if !ok || text != "half-typed thought" {
-		t.Errorf("composer = %q ok=%v, want the typed text", text, ok)
+	text, scan := composerText(newScreen(f))
+	if scan != composerFound || text != "half-typed thought" {
+		t.Errorf("composer = %q scan=%v, want the typed text", text, scan)
 	}
 }
 
@@ -319,9 +330,9 @@ func TestProseIsNotAFence(t *testing.T) {
 // a stray space.
 func TestWhitespaceOnlyComposerIsEmpty(t *testing.T) {
 	f := rule + "\n❯      \n" + rule
-	text, ok := composerText(newScreen(f))
-	if !ok {
-		t.Fatal("composer not found")
+	text, scan := composerText(newScreen(f))
+	if scan != composerFound {
+		t.Fatalf("composer not found, scan=%v", scan)
 	}
 	if text != "" {
 		t.Errorf("composer = %q, want empty; a stray space must not block a session", text)
@@ -337,8 +348,8 @@ func TestNonTUIPaneYieldsNoComposer(t *testing.T) {
 		"\n\n\n",
 		"❯ a bare prompt with no fences at all",
 	} {
-		if _, ok := composerText(newScreen(f)); ok {
-			t.Errorf("claimed a composer in non-TUI output: %q", f)
+		if _, scan := composerText(newScreen(f)); scan != composerAbsent {
+			t.Errorf("claimed a composer (or an ambiguous read) in non-TUI output: %q, scan=%v", f, scan)
 		}
 	}
 }
@@ -346,8 +357,8 @@ func TestNonTUIPaneYieldsNoComposer(t *testing.T) {
 // A fresh session that has not painted its chrome yet must not be read as
 // holding input.
 func TestUnpaintedSessionHoldsNothing(t *testing.T) {
-	if _, ok := composerText(newScreen("\n\n")); ok {
-		t.Error("unpainted pane reported a composer")
+	if _, scan := composerText(newScreen("\n\n")); scan != composerAbsent {
+		t.Errorf("unpainted pane reported a composer (or an ambiguous read), scan=%v", scan)
 	}
 	if got := classify("", true); got.Status != fleet.StatusUnknown {
 		t.Errorf("status = %q, want unknown for an empty screen", got.Status)
@@ -365,9 +376,9 @@ func TestUnpaintedSessionHoldsNothing(t *testing.T) {
 func TestDimPlaceholderIsNotTypedInput(t *testing.T) {
 	// Exactly as captured from a live newly-created session.
 	raw := rule + "\n\x1b[39m❯ \x1b[2mTry\x1b[0m \x1b[2m\"how\x1b[0m \x1b[2mdo\x1b[0m \x1b[2mI\x1b[0m \x1b[2mlog\x1b[0m \x1b[2man\x1b[0m \x1b[2merror?\"\x1b[0m\n" + rule
-	text, ok := composerText(newScreen(raw))
-	if !ok {
-		t.Fatal("composer not found")
+	text, scan := composerText(newScreen(raw))
+	if scan != composerFound {
+		t.Fatalf("composer not found, scan=%v", scan)
 	}
 	if text != "" {
 		t.Errorf("placeholder read as pending input (%q); every send to a fresh "+
@@ -378,9 +389,9 @@ func TestDimPlaceholderIsNotTypedInput(t *testing.T) {
 // ...while real typed input is normal intensity and must still be protected.
 func TestNormalIntensityInputIsStillProtected(t *testing.T) {
 	raw := rule + "\n\x1b[39m❯ a half-typed thought\n" + rule
-	text, ok := composerText(newScreen(raw))
-	if !ok || text != "a half-typed thought" {
-		t.Errorf("composer = %q ok=%v; real input must not be mistaken for a placeholder", text, ok)
+	text, scan := composerText(newScreen(raw))
+	if scan != composerFound || text != "a half-typed thought" {
+		t.Errorf("composer = %q scan=%v; real input must not be mistaken for a placeholder", text, scan)
 	}
 }
 
@@ -1221,9 +1232,9 @@ func TestComposerCursorRowBlankIgnoresLineEndingNoise(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := rule + "\n❯ top row\n" + tc.bottomRow + "\n" + rule
-			blank, ok := composerCursorRowBlank(newScreen(f))
-			if !ok {
-				t.Fatal("composer not found")
+			blank, scan := composerCursorRowBlank(newScreen(f))
+			if scan != composerFound {
+				t.Fatalf("composer not found, scan=%v", scan)
 			}
 			if blank != tc.wantBlank {
 				t.Errorf("blank = %v, want %v for bottom row %q", blank, tc.wantBlank, tc.bottomRow)
@@ -1236,9 +1247,9 @@ func TestComposerCursorRowBlankIgnoresLineEndingNoise(t *testing.T) {
 // still surface through composerText intact.
 func TestComposerHandlesWideCharacters(t *testing.T) {
 	f := rule + "\n❯ 日本語のテスト 🎉\n" + rule
-	text, ok := composerText(newScreen(f))
-	if !ok || text != "日本語のテスト 🎉" {
-		t.Errorf("composer = %q ok=%v, want the wide-character text intact", text, ok)
+	text, scan := composerText(newScreen(f))
+	if scan != composerFound || text != "日本語のテスト 🎉" {
+		t.Errorf("composer = %q scan=%v, want the wide-character text intact", text, scan)
 	}
 }
 
@@ -1249,9 +1260,9 @@ func TestComposerHandlesWideCharacters(t *testing.T) {
 // not be mistaken for real content because the bytes are non-ASCII.
 func TestComposerCursorRowBlankTreatsFullWidthSpaceAsBlank(t *testing.T) {
 	f := rule + "\n❯ real content\n　　\n" + rule
-	blank, ok := composerCursorRowBlank(newScreen(f))
-	if !ok {
-		t.Fatal("composer not found")
+	blank, scan := composerCursorRowBlank(newScreen(f))
+	if scan != composerFound {
+		t.Fatalf("composer not found, scan=%v", scan)
 	}
 	if !blank {
 		t.Error("a row holding only full-width spaces was not read as blank")
@@ -1269,16 +1280,16 @@ func TestComposerSpanSurvivesControlBytesInText(t *testing.T) {
 	// does not remove them — this is what a pane would actually show if a
 	// paste's own markers leaked into the rendered text.
 	f := rule + "\n❯ top row\n\x1b[200~pasted\x07text\x1b[201~\n" + rule
-	text, ok := composerText(newScreen(f))
-	if !ok {
-		t.Fatal("composer not found")
+	text, scan := composerText(newScreen(f))
+	if scan != composerFound {
+		t.Fatalf("composer not found, scan=%v", scan)
 	}
 	if !strings.Contains(text, "pasted") || !strings.Contains(text, "text") {
 		t.Errorf("composer text lost content around control bytes: %q", text)
 	}
-	blank, ok := composerCursorRowBlank(newScreen(f))
-	if !ok {
-		t.Fatal("composer not found")
+	blank, blankScan := composerCursorRowBlank(newScreen(f))
+	if blankScan != composerFound {
+		t.Fatalf("composer not found, scan=%v", blankScan)
 	}
 	if blank {
 		t.Error("a row holding real text plus control bytes was read as blank")
@@ -1296,23 +1307,19 @@ func TestComposerSpanSurvivesControlBytesInText(t *testing.T) {
 // of eighty on-screen rows, more than three times this window.
 //
 // composerSpan finds the composer by walking UP from the closing rule looking
-// for the ❯-marked prompt row, and returns not-found if it reaches the top of
-// the captured lines without finding one (composerSpan's own "opening rule
-// reached with no composer between" case does not even apply here — there is
-// no opening rule in view at all, just ordinary continuation rows). This
-// reproduces that: a screen built from only the TAIL of a tall composer, the
-// same shape a real `-S -24` capture would hand the classifier.
+// for the ❯-marked prompt row, and reports composerClipped if it reaches the
+// top of the captured lines without finding one (composerSpan's own "opening
+// rule reached with no composer between" case does not even apply here —
+// there is no opening rule in view at all, just ordinary continuation rows).
+// This reproduces that: a screen built from only the TAIL of a tall composer,
+// the same shape a real `-S -24` capture would hand the classifier.
 //
-// composerText/composerVisualLines report NOT a composer here, which is a
-// silent false-negative, not a refusal: Discard's own early-return
-// ("pending == \"\" → already clear") and Send's own composer-guard both read
-// "not found" as "nothing to protect" — the exact shape #87/#132 exist to
-// prevent, arrived at by scrolling instead of by a blank row. Recorded here
-// deliberately as a DOCUMENTED gap rather than fixed in this same change: a
-// fix changes what "found" means for every caller of composerSpan, which is a
-// wider blast radius than clearComposer's own key choice, and deserves its
-// own decision rather than riding in on a test-matrix issue. See
-// colab-fleet#134, filed alongside this test, for the fix.
+// CLOSED by colab-fleet#134: composerText/composerVisualLines now report
+// composerClipped for this shape, not composerAbsent — every caller that used
+// to read "not found" as "nothing to protect" (Discard's early return,
+// Send's composer-guard) now fails closed instead of silently succeeding.
+// See classify.go's composerScan and each call site in tmux.go/keys.go for
+// how the three-valued result is actually consumed.
 func TestComposerSpanMissesAComposerTallerThanTheCaptureWindow(t *testing.T) {
 	// Model only what a `-S -24` capture would actually return: the last 24
 	// rows of a composer with far more real content rows than that above it,
@@ -1325,18 +1332,62 @@ func TestComposerSpanMissesAComposerTallerThanTheCaptureWindow(t *testing.T) {
 	tail := lines[len(lines)-defaultCaptureLines:]
 	f := strings.Join(tail, "\n") + "\n" + rule
 
-	text, ok := composerText(newScreen(f))
-	if ok {
-		t.Fatalf("composerText claims it found a composer in a truncated capture "+
-			"(text=%q); the opening fence and prompt row are not in view, so this "+
-			"cannot be a genuine finding — the fixture is wrong, not the code, if this "+
-			"ever fails to reproduce the ok=false this test documents", text)
+	text, scan := composerText(newScreen(f))
+	if scan != composerClipped {
+		t.Fatalf("composerText scan = %v, want composerClipped: the opening fence and "+
+			"prompt row are not in view, so this must read as \"could not tell\", never "+
+			"as \"found\" and never as \"definitely absent\" — the fixture is wrong, not "+
+			"the code, if this ever fails to reproduce composerClipped", scan)
 	}
 
-	// The failure mode this proves: were this screen handed to Discard, its
-	// early return ("pending == \"\" means already clear") would fire on a
-	// composer that, off-screen, still holds 30 rows of unsent text.
+	// The failure mode this closes: were this screen handed to Discard before
+	// #134, its early return ("pending == \"\" means already clear") would
+	// have fired on a composer that, off-screen, still holds 30 rows of
+	// unsent text. Discard now refuses instead — see
+	// TestDiscardRefusesAClippedComposerRatherThanClaimingSuccess.
 	if text != "" {
-		t.Errorf("text = %q, want empty (composerText's own contract when ok=false)", text)
+		t.Errorf("text = %q, want empty (composerText's own contract when scan != composerFound)", text)
+	}
+
+	// composerVisualLines and composerCursorRowBlank share composerSpan and
+	// must report the identical verdict for this same screen.
+	if _, linesScan := composerVisualLines(newScreen(f)); linesScan != composerClipped {
+		t.Errorf("composerVisualLines scan = %v, want composerClipped", linesScan)
+	}
+	if _, blankScan := composerCursorRowBlank(newScreen(f)); blankScan != composerClipped {
+		t.Errorf("composerCursorRowBlank scan = %v, want composerClipped", blankScan)
+	}
+}
+
+// colab-fleet#134: composerClipped must be a narrow predicate — reachable
+// only by the two "ran off the top of the capture" exits inside
+// composerSpan, never a catch-all for "did not find a composer". This pins
+// the three-way split directly: a genuinely tall/scrolled composer is
+// clipped, a real composer-less screen (or a menu with a real preceding
+// line) is absent, and an ordinary complete composer is found — for the
+// SAME three structural shapes composerSpan's own doc comments describe.
+func TestComposerSpanTellsClippedApartFromAbsent(t *testing.T) {
+	var tail []string
+	for i := 0; i < defaultCaptureLines; i++ {
+		tail = append(tail, fmt.Sprintf("row %d of a paste taller than the capture window", i))
+	}
+	clippedFixture := strings.Join(tail, "\n") + "\n" + rule
+
+	cases := []struct {
+		name    string
+		fixture string
+		want    composerScan
+	}{
+		{"tall composer, tail-only capture: ran off the top with no rule and no marker", clippedFixture, composerClipped},
+		{"ordinary complete composer", fixtureIdle, composerFound},
+		{"menu with a real preceding line: genuinely not a composer", fixtureMenuSelected, composerAbsent},
+		{"no rule anywhere in the screen at all", "$ ls -la\ntotal 8", composerAbsent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, scan := composerSpan(newScreen(tc.fixture)); scan != tc.want {
+				t.Errorf("scan = %v, want %v", scan, tc.want)
+			}
+		})
 	}
 }

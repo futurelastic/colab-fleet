@@ -301,13 +301,40 @@ func isRule(line string) bool {
 	return rules >= 3
 }
 
+// composerScan is composerSpan's three-valued verdict. A caller must never
+// collapse composerClipped into either of the other two: only composerFound
+// and composerAbsent license any inference about what the composer holds
+// (colab-fleet#134).
+type composerScan int
+
+const (
+	// composerFound: prompt and last are meaningful — a fenced composer was
+	// located in full.
+	composerFound composerScan = iota
+	// composerAbsent: the screen structurally has no composer. Distinct from
+	// composerClipped below — this is a POSITIVE finding (a rule with no
+	// marker between it and another rule, or a real non-rule line sitting
+	// where an opening fence would have to be), not merely "search ran out
+	// of rows".
+	composerAbsent
+	// composerClipped: the search ran off the TOP of the captured lines
+	// before it could rule the composer either in or out — the capture
+	// ended above wherever this composer's opening fence and/or ❯-marked
+	// row actually are. This is a statement about what this driver could
+	// read, not about the session: a composer may be sitting there, taller
+	// than captureForClassify's window (colab-fleet#134's field case: ~80
+	// on-screen rows against a ~24-row scrollback margin). Callers must
+	// treat this as "cannot tell", never as "empty" and never as "found
+	// holding nothing" — see composerText's own contract.
+	composerClipped
+)
+
 // composerSpan locates a composer's structural boundaries in s: prompt is
 // the index of its ❯-marked line, last is the index of its closing rule.
-// Both are meaningless and ok is false whenever composerText itself would
-// report no composer — this walks the identical rule/marker search
-// composerText always has, extracted so a caller that needs the composer's
-// SHAPE (composerVisualLines) is not forced to re-implement the search
-// rather than just its result.
+// Both are meaningless unless scan is composerFound — this walks the
+// identical rule/marker search composerText always has, extracted so a
+// caller that needs the composer's SHAPE (composerVisualLines) is not
+// forced to re-implement the search rather than just its result.
 //
 // The composer is identified structurally: a line beginning with the prompt
 // marker that sits between two horizontal rules. Finding it by structure
@@ -315,7 +342,7 @@ func isRule(line string) bool {
 // above also contains ❯-prefixed lines — they are how the TUI echoes
 // commands the human already ran (see the /remote-control fixture). Those
 // are history. Only the fenced one is live input.
-func composerSpan(s screen) (prompt, last int, ok bool) {
+func composerSpan(s screen) (prompt, last int, scan composerScan) {
 	// Walk back to the closing rule.
 	last = -1
 	for i := len(s.lines) - 1; i >= 0; i-- {
@@ -325,14 +352,22 @@ func composerSpan(s screen) (prompt, last int, ok bool) {
 		}
 	}
 	if last <= 0 {
-		return 0, 0, false
+		// No rule at all, or a rule sitting in the very first row with
+		// nothing above it to be a composer's interior. Not classified as
+		// clipped (colab-fleet#134 draws that line at the two walks below,
+		// which at least have a rule to walk up FROM) — a screen with no
+		// rule in view at all is the ordinary "not the TUI" shape most
+		// captures are, and treating every one of those as clipped would
+		// make the clipped predicate a catch-all, exactly what it must not
+		// be (see composerClipped's own doc comment).
+		return 0, 0, composerAbsent
 	}
 
 	// Find a prompt-marked line above it, stopping at another rule.
 	prompt = -1
 	for i := last - 1; i >= 0; i-- {
 		if isRule(s.lines[i]) {
-			return 0, 0, false // opening rule reached with no composer between
+			return 0, 0, composerAbsent // opening rule reached with no composer between
 		}
 		if strings.HasPrefix(strings.TrimSpace(s.lines[i]), composerRuneMarker) {
 			prompt = i
@@ -340,7 +375,14 @@ func composerSpan(s screen) (prompt, last int, ok bool) {
 		}
 	}
 	if prompt < 0 {
-		return 0, 0, false
+		// Ran off the top of the CAPTURE without hitting either a rule
+		// (which would have meant composerAbsent, above — this driver
+		// looked and found no composer between the two rules) or a ❯-marked
+		// row. Those are different findings: this one never got to look,
+		// because the capture ended first. colab-fleet#134's own fixture is
+		// exactly this shape — a tall composer's tail, no opening fence and
+		// no prompt row anywhere in the captured lines.
+		return 0, 0, composerClipped
 	}
 
 	// THE COMPOSER MUST BE FENCED, and this check is the whole reason this
@@ -360,25 +402,53 @@ func composerSpan(s screen) (prompt, last int, ok bool) {
 	// preceding line is menu text and fails this; a real composer's is its
 	// opening fence.
 	fenced := false
+	// ranOffTop tracks whether the walk below ever found a non-blank line to
+	// judge at all. If every row above the prompt down to the top of the
+	// capture is blank, this driver never got to see whether an opening
+	// fence was there — clipped, the same reasoning as the walk above — as
+	// opposed to seeing a real, non-rule line and correctly ruling the
+	// composer out (fixtureMenuSelected's own shape: a question line sits
+	// right above the highlighted option, settling it as composerAbsent).
+	ranOffTop := true
 	for i := prompt - 1; i >= 0; i-- {
 		if strings.TrimSpace(s.lines[i]) == "" {
 			continue
 		}
 		fenced = isRule(s.lines[i])
+		ranOffTop = false
 		break
 	}
 	if !fenced {
-		return 0, 0, false
+		if ranOffTop {
+			return 0, 0, composerClipped
+		}
+		return 0, 0, composerAbsent
 	}
-	return prompt, last, true
+	return prompt, last, composerFound
 }
 
 // composerText returns the text a human has typed into the input box but
-// not submitted, and whether a composer was found at all.
-func composerText(s screen) (string, bool) {
-	prompt, last, ok := composerSpan(s)
-	if !ok {
-		return "", false
+// not submitted, and one of three verdicts about whether a composer is
+// there to hold it (colab-fleet#134).
+//
+// # The contract every caller must honour
+//
+// text is only ever meaningful when scan is composerFound — "" otherwise.
+// composerAbsent is a POSITIVE finding: this driver looked at the whole
+// structure a composer would occupy and confirmed there is none. Callers
+// may treat that exactly as before — "nothing to protect, nothing to
+// refuse against". composerClipped is NOT that: it means this driver's own
+// capture ended before the search could be completed, so "" here does NOT
+// mean the composer is empty, and it does NOT mean there is no composer —
+// it means this driver could not tell. A caller that folds composerClipped
+// into "not found" reproduces #134's own false negative one level up:
+// Discard would report a residue-holding composer already clear, and
+// Send's busy-guard would never fire, both exactly as if a human's unsent
+// text were not there.
+func composerText(s screen) (string, composerScan) {
+	prompt, last, scan := composerSpan(s)
+	if scan != composerFound {
+		return "", scan
 	}
 
 	// A wholly dim composer is the TUI's placeholder hint, not something a
@@ -386,7 +456,7 @@ func composerText(s screen) (string, bool) {
 	// FRESH session, forever — a session the supervisor can never speak to,
 	// stuck for text nobody wrote. Observed live on a newly created session.
 	if prompt < len(s.raw) && allDim(afterMarker(s.raw[prompt])) {
-		return "", true
+		return "", composerFound
 	}
 
 	text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s.lines[prompt]), composerRuneMarker))
@@ -401,7 +471,7 @@ func composerText(s screen) (string, bool) {
 			text += " " + seg
 		}
 	}
-	return strings.TrimSpace(text), true
+	return strings.TrimSpace(text), composerFound
 }
 
 // composerVisualLines reports how many rows a composer's fenced box
@@ -434,16 +504,19 @@ func composerText(s screen) (string, bool) {
 // a paste that size has few if any real line breaks in it, so eighty
 // presses is a wrap count, not a paragraph count.
 //
-// ok is false in exactly the cases composerText itself reports no composer
-// — both walk composerSpan's identical structure, so a caller already
-// holding a true composerText result for this same screen can treat this as
-// reporting the same "found" answer without a separate check.
-func composerVisualLines(s screen) (int, bool) {
-	prompt, last, ok := composerSpan(s)
-	if !ok {
-		return 0, false
+// scan reports exactly what composerText's own scan would report for this
+// same screen — both walk composerSpan's identical structure — so a caller
+// already holding a true composerFound result from composerText can treat
+// this as reporting the same verdict without a separate check. A caller
+// that has NOT already established composerFound must still branch on scan
+// itself: 0 here means either "no composer" or "could not tell" (#134), and
+// the two demand opposite handling — see composerText's own doc comment.
+func composerVisualLines(s screen) (int, composerScan) {
+	prompt, last, scan := composerSpan(s)
+	if scan != composerFound {
+		return 0, scan
 	}
-	return last - prompt, true
+	return last - prompt, composerFound
 }
 
 // composerCursorRowBlank reports whether the composer's BOTTOM content row —
@@ -478,23 +551,27 @@ func composerVisualLines(s screen) (int, bool) {
 // clearComposer). Checking any other row would be asking about text the
 // cursor is not, at this moment, sitting on.
 //
-// ok is false only in the cases composerSpan itself finds no composer at
-// all. A composer that has shrunk to (or never had more than) its own
-// ❯-marked line reports blank=false, never true: that line always carries
-// the marker glyph as visible content, so it can never be the empty-row
-// shape this exists to detect — and if the text after the marker is itself
-// empty, composerText already reports the whole composer empty, which the
-// clear loop treats as done before this is ever consulted.
-func composerCursorRowBlank(s screen) (blank bool, ok bool) {
-	prompt, last, spanOK := composerSpan(s)
-	if !spanOK {
-		return false, false
+// scan is composerFound only in the cases composerSpan itself locates a
+// composer in full; otherwise blank is meaningless and the caller gets the
+// same composerAbsent/composerClipped split composerText does — a clipped
+// composer's cursor row is exactly as unreadable as its text (colab-fleet
+// #134), which #138's clearComposer must treat as "cannot assume blank",
+// never as "assume blank". A composer that has shrunk to (or never had more
+// than) its own ❯-marked line reports blank=false, never true: that line
+// always carries the marker glyph as visible content, so it can never be
+// the empty-row shape this exists to detect — and if the text after the
+// marker is itself empty, composerText already reports the whole composer
+// empty, which the clear loop treats as done before this is ever consulted.
+func composerCursorRowBlank(s screen) (blank bool, scan composerScan) {
+	prompt, last, scan := composerSpan(s)
+	if scan != composerFound {
+		return false, scan
 	}
 	row := last - 1
 	if row <= prompt || row >= len(s.lines) {
-		return false, true
+		return false, composerFound
 	}
-	return strings.TrimSpace(s.lines[row]) == "", true
+	return strings.TrimSpace(s.lines[row]) == "", composerFound
 }
 
 // awaitingSelection reports whether the TUI is showing a menu that blocks
@@ -1514,7 +1591,14 @@ func classifyAgedDetail(raw string, alive, young bool) (st fleet.SessionState, a
 	// Unsent composer text is checked after the spinner, because a running
 	// turn with queued input is still working — the queued text is a send
 	// hazard (§2.4), not a state.
-	pending, hasComposer := composerText(s)
+	pending, composerScanResult := composerText(s)
+	hasComposer := composerScanResult == composerFound
+	// clipped (colab-fleet#134): a composer is structurally there, this
+	// driver just could not read it in full. Handled as its own branch
+	// below, ahead of every case that would otherwise assert "composer
+	// empty" from hasComposer being false — clipped must never be read as
+	// empty, and must never be read as absent (see composerText's contract).
+	clipped := composerScanResult == composerClipped
 
 	switch {
 	case foundSpinner && running:
@@ -1531,6 +1615,17 @@ func classifyAgedDetail(raw string, alive, young bool) (st fleet.SessionState, a
 		held.ComposerDigest = screenDigest(pending)
 		return held, ambNone
 
+	case foundSpinner && !running && clipped:
+		// colab-fleet#134: the turn finished, but this driver's own capture
+		// ended above the composer's opening fence — it genuinely cannot
+		// tell whether a human left unsent text sitting there. The
+		// composer-empty branch just below must not fire for this screen:
+		// asserting "empty" here is the exact false negative that lets
+		// Discard report an untouched composer already clear.
+		return fleet.UnknownState(fleet.ConfidenceInferred,
+			"turn finished; composer is taller than this driver's capture window, "+
+				"cannot confirm it is empty"), ambNone
+
 	case foundSpinner && !running:
 		// Idle is the honest status: the session is up and will take input.
 		// But a turn that DIED here looks identical to one that finished, and
@@ -1542,6 +1637,14 @@ func classifyAgedDetail(raw string, alive, young bool) (st fleet.SessionState, a
 			st.Evidence = "turn ended in an error; session is up and will accept input"
 		}
 		return st, ambNone
+
+	case !foundSpinner && clipped:
+		// Same reasoning as the spinner-finished clipped case above, for the
+		// no-spinner branches below: none of them may assert composer-empty
+		// or composer-absent for a screen this driver could not fully read.
+		return fleet.UnknownState(fleet.ConfidenceInferred,
+			"no spinner line; composer is taller than this driver's capture window, "+
+				"cannot confirm it is empty"), ambNone
 
 	case !foundSpinner && hasComposer && pending == "" && young:
 		// A young session with a painted composer, no spinner and nothing
