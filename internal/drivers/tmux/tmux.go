@@ -114,6 +114,49 @@ const (
 	// above it.
 	defaultCaptureLines = 24
 
+	// captureChunkMaxArgs and captureChunkMaxBytes bound how many
+	// sessions' worth of display-message/capture-pane pairs go into ONE
+	// invocation of the batched enumeration (colab-fleet#141).
+	//
+	// The multiplexer's own client-to-server command channel refuses a
+	// chained invocation outright once it gets big enough — not a timeout,
+	// not this process's own ARG_MAX, but the multiplexer answering
+	// "command too long" and producing no output at all. Measured against
+	// a real (private, isolated) server, tmux 3.7, by bisection:
+	//
+	//	argc wall:  995 args OK, 1007 args fails  (~83 sessions OK, ~84 fails)
+	//	byte wall:  ~16.3-16.4KB of joined argv fails, independent of argc
+	//
+	// The argc wall is the one that fires in practice — session identifiers
+	// and this driver's marker are short, so the byte wall is rarely
+	// reached before the argc wall is. captureChunkMaxArgs sits ~10% under
+	// the measured 995-safe / 1007-fails boundary — deliberately not a huge
+	// margin, both because a fleet's realistic single-machine size can
+	// itself run into the 80s (colab-fleet#141's own follow-up: the SAME
+	// affected machine went clean carrying 81 sessions, just below this
+	// cliff, without needing to drop anywhere near a healthy peer's 22 — a
+	// third data point that lands almost exactly where this bisection put
+	// the wall) and because a much smaller cap would mean chunking, and its
+	// extra spawns, on fleet sizes that do not need it at all.
+	// captureChunkMaxBytes keeps its wider margin under the independent
+	// ~16.3-16.4KB byte wall, since that one is not the cap expected to
+	// bind for ordinary short identifiers — it exists as a second, cheaper
+	// insurance policy for the day a pane id or cwd is unusually long. The
+	// exact thresholds are this multiplexer BUILD's, not a documented
+	// contract, so a peer machine, a different OS, or a future upgrade
+	// could move either wall without warning; neither cap claims to be
+	// exact, only safely inside what was actually measured.
+	//
+	// Below either cap, a fleet still costs exactly one spawn — the cost
+	// model docs/internals.md measured (22 sessions, 18ms) is unchanged.
+	// Above it, enumerate() issues additional invocations rather than
+	// letting the whole batch come back empty and misclassifying every
+	// session in it as a driver malfunction, which is what colab-fleet#141
+	// reported: 85 sessions (1020 args) past the wall, 22 sessions
+	// (264 args) nowhere near it.
+	captureChunkMaxArgs  = 900
+	captureChunkMaxBytes = 14 * 1024
+
 	// promptClearWindow bounds the wait for an answered prompt to disappear.
 	promptClearWindow   = 3 * time.Second
 	promptClearInterval = 200 * time.Millisecond
@@ -854,7 +897,7 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 		return nil, map[string]string{}, nil
 	}
 
-	// One invocation, N captures, nonce-delimited.
+	// One invocation per CHUNK, N captures per chunk, nonce-delimited.
 	//
 	// The marker carries each pane's INDEX, never its pane id, and that is
 	// not a stylistic choice. display-message passes its argument through
@@ -867,39 +910,80 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 	// classifies as "unknown" instead of erroring, because an absent
 	// capture is indistinguishable from an empty one. It looks like a
 	// working driver that cannot read screens.
-	capArgs := make([]string, 0, len(rows)*8)
-	for i, r := range rows {
-		if i > 0 {
-			capArgs = append(capArgs, ";")
-		}
-		// The shape comes from classifyCaptureArgs, which is where the -e
-		// rationale lives: the composer's placeholder is distinguishable from
-		// typed input only by being rendered dim, and stripping colour here
-		// would discard the one signal separating "nobody typed anything"
-		// from "do not overwrite me".
-		capArgs = append(capArgs, "display-message", "-p", mark+strconv.Itoa(i), ";")
-		capArgs = append(capArgs, classifyCaptureArgs(r.paneID, d.captureLines)...)
-	}
-	// A pane can vanish in the gap between the listing above and this
-	// capture — a session that ends while unobserved is ordinary churn
-	// (reconcile.go treats it as exactly that), not a machine failure. The
-	// multiplexer exits nonzero when ANY chained capture-pane target in this
-	// one invocation is gone, and an earlier version of this call treated
-	// that as fatal for the whole batch — discarding the screens of every
-	// OTHER session in the same call, on a machine with any churn at all
-	// (see #29).
 	//
-	// The err here is deliberately not returned. Go's Cmd.Output still hands
-	// back whatever the process wrote to stdout before the failing
-	// sub-command, and the association loop three lines down already
-	// tolerates one pane's capture going missing — an absent entry in
-	// byIndex classifies that session "unknown" rather than aborting (see
-	// the marker-corruption comment above). So a nonzero exit here is
-	// folded into the same tolerance: keep whatever this invocation
-	// produced, and let the caller count what is missing rather than
-	// throwing all of it away.
-	capOut, _ := d.run(ctx, d.bin, capArgs...)
-	byIndex := splitCaptures(string(capOut), mark)
+	// Chunking (colab-fleet#141) is why this is "per chunk" rather than "the
+	// whole fleet, always" as an earlier version of this comment said: past
+	// captureChunkMaxArgs/captureChunkMaxBytes worth of chained commands, the
+	// multiplexer's OWN client-to-server channel refuses the invocation
+	// outright ("command too long"), and that failure is total — nothing in
+	// the batch comes back, so every session in it would misclassify as a
+	// driver malfunction, not just the ones past the cap. See the constants'
+	// doc comment for the measured thresholds. Each chunk is independent: a
+	// wall crossed by chunk 2 does not take chunk 1's already-captured
+	// screens down with it.
+	byIndex := make(map[string]string, len(rows))
+	chunks := chunkPaneRows(rows)
+	for chunkIdx, chunkRows := range chunks {
+		capArgs := make([]string, 0, len(chunkRows)*8)
+		for j, r := range chunkRows {
+			if j > 0 {
+				capArgs = append(capArgs, ";")
+			}
+			// The shape comes from classifyCaptureArgs, which is where the -e
+			// rationale lives: the composer's placeholder is distinguishable from
+			// typed input only by being rendered dim, and stripping colour here
+			// would discard the one signal separating "nobody typed anything"
+			// from "do not overwrite me".
+			capArgs = append(capArgs, "display-message", "-p", mark+strconv.Itoa(r.index), ";")
+			capArgs = append(capArgs, classifyCaptureArgs(r.paneID, d.captureLines)...)
+		}
+		// A pane can vanish in the gap between the listing above and this
+		// capture — a session that ends while unobserved is ordinary churn
+		// (reconcile.go treats it as exactly that), not a machine failure. The
+		// multiplexer exits nonzero when ANY chained capture-pane target in this
+		// one invocation is gone, and an earlier version of this call treated
+		// that as fatal for the whole batch — discarding the screens of every
+		// OTHER session in the same call, on a machine with any churn at all
+		// (see #29).
+		//
+		// The err here is deliberately not returned. Go's Cmd.Output still hands
+		// back whatever the process wrote to stdout before the failing
+		// sub-command, and the association loop below already tolerates one
+		// pane's capture going missing — an absent entry in byIndex classifies
+		// that session "unknown" rather than aborting (see the
+		// marker-corruption comment above). So a nonzero exit here is folded
+		// into the same tolerance: keep whatever this invocation produced, and
+		// let the caller count what is missing rather than throwing all of it
+		// away. That tolerance is now per-chunk rather than fleet-wide, which
+		// is strictly better: a #141-style wall in one chunk no longer costs
+		// every OTHER chunk's already-good captures.
+		//
+		// The error is still not RETURNED — that contract is unchanged — but
+		// colab-fleet#141 was invisible in the log for its entire life: the
+		// only reason it was ever noticed is that dozens of sessions' state
+		// timestamps stopped moving, and the only reason it was ever
+		// confirmed to have RECOVERED is the same timestamps starting to
+		// move again. Nothing in this driver's own log said a machine-wide
+		// capture outage started, worsened, or ended. So a chunk that comes
+		// back with nothing parseable at all — for a nonzero request — is
+		// logged once, here, at the point where the information still
+		// exists to say WHY: an exit error is the multiplexer explaining
+		// itself, and its absence with equally empty output points at the
+		// marker-corruption failure mode instead. Best-effort only; a
+		// logging call that itself panics or blocks must never be how a
+		// caller learns this driver is unavailable.
+		capOut, runErr := d.run(ctx, d.bin, capArgs...)
+		chunkCaptures := splitCaptures(string(capOut), mark)
+		if len(chunkCaptures) == 0 && len(chunkRows) > 0 {
+			log.Printf("tmux: batched capture returned nothing parseable for %d pane(s) "+
+				"(chunk %d/%d of this enumeration) — every session in this chunk will "+
+				"classify as a driver malfunction, not as an observation; exit error: %v",
+				len(chunkRows), chunkIdx+1, len(chunks), runErr)
+		}
+		for k, v := range chunkCaptures {
+			byIndex[k] = v
+		}
+	}
 	captures := make(map[string]string, len(rows))
 	for i, r := range rows {
 		if text, ok := byIndex[strconv.Itoa(i)]; ok {
@@ -907,6 +991,62 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 		}
 	}
 	return rows, captures, nil
+}
+
+// indexedPaneRow pairs a paneRow with its position in the ORIGINAL rows
+// slice, so a marker built while iterating one chunk still carries the
+// index the caller's association loop expects — chunking must not
+// renumber panes relative to the unchunked shape.
+type indexedPaneRow struct {
+	paneRow
+	index int
+}
+
+// chunkPaneRows splits rows into groups small enough that the batched
+// display-message/capture-pane invocation each group becomes never crosses
+// the multiplexer's own command-length limits (colab-fleet#141; see
+// captureChunkMaxArgs/captureChunkMaxBytes). A fleet under either cap comes
+// back as a single chunk, preserving the one-spawn cost this file's package
+// doc measured.
+//
+// The byte estimate here mirrors the shape enumerate() actually builds
+// (display-message + its marker + capture-pane's fixed flags + the pane id)
+// closely enough to budget correctly; it does not need to be exact, only
+// conservative, and captureChunkMaxBytes already carries a ~2x safety
+// margin over the measured wall for exactly this reason.
+func chunkPaneRows(rows []paneRow) [][]indexedPaneRow {
+	var chunks [][]indexedPaneRow
+	var cur []indexedPaneRow
+	curArgs, curBytes := 0, 0
+
+	// Per-row argument count and a byte estimate, matching the shape built
+	// in enumerate(): [";"] "display-message" "-p" <marker> ";" "capture-pane"
+	// "-p" "-e" "-t" <paneID> "-S" <lines> — 11 args for the first row in a
+	// chunk (no leading ";"), 12 for every row after it.
+	const fixedArgs = 11  // without the leading separator
+	const fixedBytes = 60 // "display-message" + "-p" + ";" + "capture-pane" + "-p" "-e" "-t" "-S" "-24" + separators, rounded up
+	for i, r := range rows {
+		rowArgs := fixedArgs
+		rowBytes := fixedBytes + len(r.paneID) + 12 /* room for the marker+index */
+		if len(cur) > 0 {
+			rowArgs++ // the leading ";"
+			rowBytes += 2
+		}
+		if len(cur) > 0 && (curArgs+rowArgs > captureChunkMaxArgs || curBytes+rowBytes > captureChunkMaxBytes) {
+			chunks = append(chunks, cur)
+			cur = nil
+			curArgs, curBytes = 0, 0
+			rowArgs = fixedArgs // this row now starts a fresh chunk, no leading ";"
+			rowBytes = fixedBytes + len(r.paneID) + 12
+		}
+		cur = append(cur, indexedPaneRow{paneRow: r, index: i})
+		curArgs += rowArgs
+		curBytes += rowBytes
+	}
+	if len(cur) > 0 {
+		chunks = append(chunks, cur)
+	}
+	return chunks
 }
 
 func parseRows(out, sep string) ([]paneRow, error) {

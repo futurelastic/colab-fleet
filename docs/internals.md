@@ -192,3 +192,17 @@ Stated plainly so nobody rediscovers them the expensive way.
   ~5 ms per session becomes ~0.15 ms per session, and the curve stops being a
   curve. `List` returns everything in one call for this reason.
 
+  **That "regardless of session count" needed a correction (colab-fleet#141).**
+  The multiplexer's own client-to-server command channel refuses a chained
+  invocation outright once it gets big enough — measured by bisection against
+  a real server, ~995 args survives and ~1007 fails — and that refusal is
+  total: the whole invocation comes back with no output at all, so every
+  session in it misclassifies as a driver malfunction, not just the ones past
+  the wall. A machine carrying 85 sessions (~1020 args) hit this; the number
+  above (22 sessions) does not, which is why the constant-spawns property
+  measured cleanly at that size and stayed wrong for any fleet crossing the
+  wall. The capture step now chunks (`captureChunkMaxArgs`/
+  `captureChunkMaxBytes` in `internal/drivers/tmux/tmux.go`), so a fleet under
+  either cap still costs the one spawn this table describes, and a fleet
+  above it costs one spawn per chunk rather than losing the whole batch.
+

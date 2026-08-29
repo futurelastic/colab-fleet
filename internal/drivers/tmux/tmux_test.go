@@ -86,6 +86,20 @@ type fakeMux struct {
 	// TestRenameSurvivesARuntimeRevert). Off by default: every rename this
 	// fake receives moves the name, exactly as the real multiplexer does.
 	renameNoop bool
+	// capChunkArgWall models colab-fleet#141's real-world failure mode: the
+	// multiplexer's own command channel refusing a chained invocation
+	// outright once it carries more than this many args, producing NO
+	// output at all (not a partial one) and a nonzero exit — "command too
+	// long", not a per-target failure like a vanished pane. Zero (the
+	// default) means unbounded, matching every other fakeMux behaviour: a
+	// test only pays for this if it asks for it.
+	capChunkArgWall int
+}
+
+func (f *fakeMux) setCapChunkArgWall(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.capChunkArgWall = n
 }
 
 func (f *fakeMux) setRenameNoop(v bool) {
@@ -576,6 +590,15 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		// real per-target failure and the multiplexer's documented "run
 		// every chained command, report failure if any of them failed"
 		// behaviour.
+		//
+		// capChunkArgWall models the OTHER real failure mode (#141): past a
+		// certain size, the multiplexer refuses the whole chained invocation
+		// before running any of it — total failure, empty output, distinct
+		// from the per-target "pane vanished" case below which still
+		// returns everything that DID capture.
+		if f.capChunkArgWall > 0 && len(args) > f.capChunkArgWall {
+			return nil, errors.New("command too long")
+		}
 		var groups [][]string
 		var cur []string
 		for _, a := range args {
@@ -725,6 +748,76 @@ func TestListCostsConstantSpawns(t *testing.T) {
 		t.Errorf("List made %d subprocess calls for %d sessions; must be constant (2), "+
 			"not proportional — see driver.Driver.List's contract",
 			len(f.callsSnapshot()), len(f.sessions))
+	}
+}
+
+// TestListSurvivesAFleetBiggerThanOneInvocationCanCarry is colab-fleet#141's
+// own regression test. Before the chunking fix, a fleet large enough to
+// cross the multiplexer's own command-length wall came back with EVERY
+// session misclassified as a driver malfunction — not just the ones past
+// the wall, because the one chained invocation carrying the whole fleet
+// failed as a unit and produced no output at all. This reproduces that wall
+// with a mock (capChunkArgWall) rather than a live multiplexer — the real
+// wall itself is confirmed separately, against an actual server, by
+// TestLiveEnumerationSurvivesTheCommandLengthWall in integration_test.go —
+// and asserts the driver never lets a single oversized invocation take the
+// whole fleet down with it.
+func TestListSurvivesAFleetBiggerThanOneInvocationCanCarry(t *testing.T) {
+	f := twoSessions()
+	const n = 200 // 200 sessions ≈ 2399 args unchunked — nowhere near fitting
+	// under any wall a real single invocation could survive.
+	for i := 0; i < n; i++ {
+		id := "%" + intToStr(300+i)
+		f.sessions = append(f.sessions, fakeSession{
+			name: "s" + intToStr(i), paneID: id, cwd: "/w", pid: 2000 + i, created: 1785600002,
+		})
+		f.captures[id] = idleFixtureFor("s" + intToStr(i))
+	}
+	// Set the fake's wall ABOVE captureChunkMaxArgs (so every chunk this
+	// driver actually issues still succeeds) but far BELOW what an
+	// unchunked whole-fleet invocation would need — the same relationship
+	// the real multiplexer had to the reported 85-session fleet.
+	f.setCapChunkArgWall(captureChunkMaxArgs + 50)
+
+	d := newTestDriver(f)
+	got, err := d.List(context.Background(), testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got.Items()) != n+2 {
+		t.Fatalf("want %d sessions, got %d", n+2, len(got.Items()))
+	}
+
+	var unknown []string
+	for _, s := range got.Items() {
+		if s.State.Status == fleet.StatusUnknown {
+			unknown = append(unknown, s.ID)
+		}
+	}
+	if len(unknown) != 0 {
+		t.Errorf("%d/%d sessions came back %q past the command-length wall "+
+			"(chunking should have kept every chunk under it): %v",
+			len(unknown), len(got.Items()), fleet.StatusUnknown, unknown)
+	}
+
+	// The wall must actually have been exercised — otherwise this test
+	// would pass vacuously even without the fix, because a single
+	// under-wall invocation covering everything never triggers the failure
+	// mode being guarded against.
+	var captureCalls int
+	for _, c := range f.callsSnapshot() {
+		if len(c) > 0 && c[0] == "display-message" {
+			captureCalls++
+			if len(c) > captureChunkMaxArgs {
+				t.Errorf("one capture invocation carried %d args, over captureChunkMaxArgs (%d) — "+
+					"chunking is not actually bounding invocation size", len(c), captureChunkMaxArgs)
+			}
+		}
+	}
+	if captureCalls < 2 {
+		t.Fatalf("expected chunking to issue at least 2 capture invocations for a fleet this "+
+			"size, got %d — the wall this test exists to guard against was never exercised",
+			captureCalls)
 	}
 }
 
