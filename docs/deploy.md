@@ -287,6 +287,16 @@ having done nothing. Step 5 above is not a formality for this class of change;
 verify the peer's own reported revision after its deploy, not only this
 machine's.
 
+**Run this script from the primary checkout, never a linked worktree.** Go's
+own VCS build stamp was measured embedding the *primary checkout's* HEAD, not
+a linked worktree's own, when built from inside one — reproduced twice,
+including after `go clean -cache` (colab-fleet #140). Plain `git rev-parse
+HEAD`, which the script uses for the revision it compares against, gets the
+right answer from a worktree; Go's detector does not. The script now refuses
+to build from a linked worktree by default (`ALLOW_WORKTREE_BUILD=1`
+overrides it) — this note exists so the refusal is not the first time you
+learn why.
+
 **Restarting is safe for running sessions.** They live in the multiplexer, not
 in this service, so a restart costs a moment of unavailability against this
 service's own API — not lost work. Nothing about a session's own state needs
