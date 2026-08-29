@@ -81,6 +81,11 @@
 #   ALLOW_DIRTY=1       build from a modified tree anyway. The resulting
 #                       binary reports itself as dirty and will never compare
 #                       equal to anything, including the next deploy.
+#   ALLOW_WORKTREE_BUILD=1  build from a linked git worktree anyway
+#                           (colab-fleet #140). Go's own VCS stamp can embed
+#                           the PRIMARY checkout's revision instead of this
+#                           worktree's own; only set this if you have
+#                           verified your toolchain does not do that.
 #
 # The dirty-tree gate below runs `git status --porcelain`, not `git diff
 # --quiet HEAD` — colab-fleet #139: the latter only inspects tracked files,
@@ -110,6 +115,47 @@ if [ -z "$HOST" ] || [ -z "$REMOTE_PATH" ]; then
 fi
 
 cd "$(dirname "$0")/.."
+
+# --- refuse to build from a linked worktree ---------------------------------
+#
+# colab-fleet #140: Go's own VCS build stamp (cmd/go/internal/vcs) was
+# measured embedding the PRIMARY checkout's HEAD, not the linked worktree's
+# own, when `go build -buildvcs=true` ran from inside a worktree — reproduced
+# twice, including after `go clean -cache`. Plain `git rev-parse HEAD` (used
+# for REV below) gets the right answer from inside a worktree; Go's detector
+# does not. That gap is silent at build time: the build succeeds, and the
+# binary just carries the wrong revision baked in.
+#
+# Step 4's verify loop below happens to catch this today — REV (correct,
+# from git) would not match RUNNING (wrong, from the stamp), so the deploy
+# reports FAILED rather than shipping a lying binary — but that is a
+# different check catching a symptom, not this script knowing its own
+# precondition. Refuse up front instead, before spending a build on it.
+#
+# `git rev-parse --git-dir` and `--git-common-dir` agree (both resolve to the
+# same `.git`) from the primary checkout; a linked worktree's git-dir lives
+# under the common dir's `worktrees/<name>/` instead, so the two diverge.
+# That comparison is what git itself uses to tell "am I a linked worktree"
+# apart from "am I the primary checkout" — this reuses it rather than
+# string-matching a path shape that could change.
+GIT_DIR=$(git rev-parse --git-dir 2>/dev/null || true)
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null || true)
+if [ -n "$GIT_DIR" ] && [ -n "$GIT_COMMON_DIR" ] && [ "$GIT_DIR" != "$GIT_COMMON_DIR" ]; then
+	if [ "${ALLOW_WORKTREE_BUILD:-0}" != "1" ]; then
+		echo "deploy: this checkout is a linked git worktree, not the primary" >&2
+		echo "        checkout — colab-fleet #140. Go's own VCS build stamp can" >&2
+		echo "        embed the PRIMARY checkout's revision instead of this" >&2
+		echo "        worktree's own, which would ship a binary that lies about" >&2
+		echo "        what commit it was built from." >&2
+		echo "        Run this from the primary checkout instead, or set" >&2
+		echo "        ALLOW_WORKTREE_BUILD=1 if you have verified this" >&2
+		echo "        toolchain/environment does not exhibit the bug." >&2
+		exit 1
+	fi
+	echo "deploy: WARNING building from a linked worktree (ALLOW_WORKTREE_BUILD=1)." >&2
+	echo "        The VCS stamp on this build may not be trustworthy — see" >&2
+	echo "        colab-fleet #140." >&2
+fi
 
 # --- local vs. remote, behind one seam --------------------------------------
 #
