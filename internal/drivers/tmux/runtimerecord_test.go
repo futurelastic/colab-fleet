@@ -223,3 +223,86 @@ func TestTurnsSince_MissingFileIsUnresolvable(t *testing.T) {
 		t.Fatal("expected ok=false for a record that does not exist")
 	}
 }
+
+// colab-fleet #142: turnsSinceOffset is the incremental counterpart to
+// turnsSince, used once a checkpoint (deliveryMark.Size) has already been
+// established by a prior successful count. Unlike turnsSince it needs no
+// honesty-window proof against a timestamp — `from` IS the boundary already
+// vouched for by that earlier count, so reading forward from it to EOF is
+// provably complete however large the file has grown since. This is what
+// lets turnsFor keep advancing once a session's record has grown past
+// recordTailBytes since its delivery mark, which is exactly the case
+// turnsSince's own window-honesty rule (by design, see
+// TestTurnsSince_TornWindowNotReachingSinceIsHonestlyUnresolvable) cannot
+// resolve on its own.
+func TestTurnsSinceOffset_CountsMarkersAfterTheOffset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "record.jsonl")
+	if err := os.WriteFile(path, []byte(turnLine("2026-08-19T13:39:00.000Z")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := info.Size()
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(turnLine("2026-08-19T13:41:00.000Z") + "\n" +
+		turnLine("2026-08-19T13:42:00.000Z") + "\n" +
+		rateLimitLine + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	n, ok := turnsSinceOffset(path, checkpoint)
+	if !ok {
+		t.Fatal("expected ok=true: reading forward from an already-vouched-for offset needs no window proof")
+	}
+	if n != 2 {
+		t.Fatalf("count = %d, want 2 (the pre-checkpoint marker must not be recounted)", n)
+	}
+}
+
+// Nothing appended since the checkpoint is a positive zero, the same §5.7
+// discipline turnsSince's own zero test pins.
+func TestTurnsSinceOffset_UnchangedSizeIsAPositiveZero(t *testing.T) {
+	path := writeAPIErrorFixture(t, []string{turnLine("2026-08-19T13:39:00.000Z")})
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, ok := turnsSinceOffset(path, info.Size())
+	if !ok {
+		t.Fatal("expected ok=true: the file is exactly as large as the checkpoint, nothing to prove")
+	}
+	if n != 0 {
+		t.Fatalf("count = %d, want 0", n)
+	}
+}
+
+// A file SMALLER than the checkpoint means the checkpoint no longer refers
+// to anything real (truncated or rotated underneath this driver) — honestly
+// unresolvable, never a guessed count, exactly like every other absence in
+// this file.
+func TestTurnsSinceOffset_TruncatedFileIsUnresolvable(t *testing.T) {
+	path := writeAPIErrorFixture(t, []string{turnLine("2026-08-19T13:39:00.000Z")})
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ok := turnsSinceOffset(path, info.Size()+1000)
+	if ok {
+		t.Fatal("expected ok=false: the checkpoint offset is past the current file size")
+	}
+}
+
+func TestTurnsSinceOffset_MissingFileIsUnresolvable(t *testing.T) {
+	_, ok := turnsSinceOffset(filepath.Join(t.TempDir(), "does-not-exist.jsonl"), 0)
+	if ok {
+		t.Fatal("expected ok=false for a record that does not exist")
+	}
+}

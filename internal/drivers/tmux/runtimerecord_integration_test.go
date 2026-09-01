@@ -563,6 +563,79 @@ func TestTurnsAbsentWhenThisDriverNeverDelivered(t *testing.T) {
 	}
 }
 
+// colab-fleet #142: once a checkpoint has been latched by a prior successful
+// count, a later read must not need to re-prove the window reaches all the
+// way back to the ORIGINAL delivery mark — only back to that checkpoint. A
+// single long turn is exactly the case that broke the old timestamp-anchored
+// rescan: enough content lands between polls to push the runtime record's
+// tail window (recordTailBytes) past the delivery timestamp, and every read
+// after that point fell back to the last cached count forever — even though
+// a genuine new turn_duration marker had landed well within the (now
+// shifted) tail window. Measured live: a ~4-5 minute turn was enough to
+// trigger this; this test reproduces the same shape with padding instead of
+// a real long turn.
+func TestTurnsAdvancesPastACheckpointEvenWhenTheOriginalDeliveryFallsOutOfTheWindow(t *testing.T) {
+	ctx := context.Background()
+	f := twoSessions()
+	deliveredAt := sessionStart.Add(1 * time.Hour)
+	root := t.TempDir()
+
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		withClock(func() time.Time { return deliveredAt }), WithRecordRoot(root))
+	if _, err := d.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"},
+		"do the thing", driver.SendOptions{Submit: false}); err != nil {
+		t.Fatal(err)
+	}
+
+	writeConversationWithAPIError(t, root, "/work/alpha", "conv-alpha", "alpha💬", sessionStart,
+		turnDurationEntry("conv-alpha", deliveredAt.Add(1*time.Minute)))
+
+	// First read: establishes the checkpoint (turns=1, latched to the
+	// record's file size right now) — same shape
+	// TestTurnsCountsCompletedTurnsSinceTheDelivery exercises, done here as
+	// setup rather than the assertion.
+	col, err := d.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := sessionOf(t, col, "alpha💬")
+	if alpha.State.Turns == nil || *alpha.State.Turns != 1 {
+		t.Fatalf("setup: turns after the first completed turn = %v, want 1", alpha.State.Turns)
+	}
+
+	// Pad the record past recordTailBytes with ordinary, non-turn content —
+	// large enough that a rescan anchored at the original `deliveredAt` can
+	// no longer be shown to reach back that far. A real session hits this
+	// from one long turn's own tool output; padding after the fact is the
+	// same shape without needing a real multi-minute turn in a unit test.
+	padAt := deliveredAt.Add(90 * time.Second)
+	padLine := map[string]any{
+		"type": "user", "sessionId": "conv-alpha",
+		"timestamp": padAt.UTC().Format(time.RFC3339Nano),
+		"message":   strings.Repeat("x", 512),
+	}
+	for i := 0; i < (recordTailBytes/600)+10; i++ {
+		appendRecordLine(t, root, "/work/alpha", "conv-alpha", padLine)
+	}
+	// The second genuine turn boundary, landing near the very end of the
+	// now-much-larger record.
+	appendRecordLine(t, root, "/work/alpha", "conv-alpha", turnDurationEntry("conv-alpha", deliveredAt.Add(2*time.Minute)))
+
+	col, err = d.List(ctx, testCaller, driver.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha = sessionOf(t, col, "alpha💬")
+	if alpha.State.Turns == nil {
+		t.Fatal("turns went from a positive count to absent — the checkpoint should still resolve honestly")
+	}
+	if *alpha.State.Turns != 2 {
+		t.Fatalf("turns = %d, want 2 — the second turn landed well within the tail window relative to the "+
+			"last checkpoint, even though it can no longer be shown to reach back to the original delivery",
+			*alpha.State.Turns)
+	}
+}
+
 // State (the single-session, targeted read) applies the same #111 upgrade
 // as List — mirrors TestStateAppliesTheSameLastTurnUpgradeAsList.
 func TestStateAppliesTheSameTurnsUpgradeAsList(t *testing.T) {
