@@ -325,11 +325,69 @@ func turnsSince(path string, since time.Time) (count int, ok bool) {
 	return count, true
 }
 
+// turnsSinceOffset counts turn_duration markers appended to a runtime
+// record strictly after byte offset `from` — the incremental counterpart to
+// turnsSince, used once a checkpoint (deliveryMark.Size) has already been
+// established. Unlike turnsSince, this needs no honesty-window proof against
+// a timestamp: `from` IS the boundary already vouched for by a previous
+// successful count (it is always a prior info.Size() taken right after a
+// full JSONL line was flushed, so it always lands exactly on a line
+// boundary), so reading forward from it to EOF is provably complete however
+// large the gap has grown — which is exactly what turnsSince's own
+// window-honesty rule (correctly, by its own contract) cannot promise once
+// the tail window no longer reaches back to the ORIGINAL delivery mark
+// (colab-fleet #142: a single long turn is large enough to do this between
+// polls).
+//
+// ok is false only when the record cannot be opened/stat'd, or the file is
+// now SMALLER than `from` (a truncated or rotated record — the checkpoint no
+// longer means anything and the caller must fall back to a fresh baseline
+// scan instead of trusting it).
+func turnsSinceOffset(path string, from int64) (count int, ok bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return 0, false
+	}
+	if info.Size() < from {
+		return 0, false
+	}
+	if info.Size() == from {
+		return 0, true
+	}
+	if _, err := f.Seek(from, io.SeekStart); err != nil {
+		return 0, false
+	}
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), recordLineLimit)
+	for sc.Scan() {
+		var entry turnRecordEntry
+		if err := json.Unmarshal(sc.Bytes(), &entry); err != nil {
+			continue
+		}
+		if entry.Type == "system" && entry.Subtype == "turn_duration" {
+			count++
+		}
+	}
+	return count, true
+}
+
 // turnsFor answers colab-fleet #111's liveness fact for one session, given
 // its already-resolved conversation record — List resolves that in its own
 // pending-conversation pass before this runs; State's own call site resolves
 // it itself, the same split upgradeLastTurnFromRecord already uses between
 // those two callers.
+//
+// When a delivery mark already has a checkpoint size (mark.Size > 0), the
+// count is incremented by reading forward from that size rather than by
+// timestamp-deriving a new window (#142); an unchanged checkpoint returns a
+// cached value without re-reading the file.
 //
 // nil is the honest answer whenever this driver cannot count: no delivery
 // mark for this session (nothing has been delivered into it that this
@@ -345,12 +403,28 @@ func (d *Driver) turnsFor(id, cwd string, conv *fleet.ConversationRef) *int {
 	}
 	path := d.conversations.recordPath(cwd, conv.ID)
 
-	// The memo-and-latch: an unchanged file size since the last successful
-	// count is a cache read, not a reason to re-parse up to 256KiB on every
-	// poll of a quiet session.
-	if info, err := os.Stat(path); err == nil && mark.Size > 0 && info.Size() == mark.Size {
+	info, statErr := os.Stat(path)
+	if statErr == nil && mark.Size > 0 && info.Size() == mark.Size {
+		// Memo-and-latch: an unchanged file size since the last successful
+		// count is a cache read, not a reason to re-parse.
 		n := mark.Count
 		return &n
+	}
+
+	if statErr == nil && mark.Size > 0 && info.Size() > mark.Size {
+		// A checkpoint already exists: count only what landed after it.
+		// This needs no window-honesty proof against `mark.At` — `mark.Size`
+		// is itself the already-vouched-for boundary (colab-fleet #142).
+		added, addedOK := turnsSinceOffset(path, mark.Size)
+		if addedOK {
+			n := mark.Count + added
+			d.updateDeliveryMarkCount(id, cwd, mark.At, n, info.Size())
+			return &n
+		}
+		// The checkpoint no longer refers to anything real (the record
+		// shrank below it — truncated or rotated underneath this driver).
+		// Fall through to the original timestamp-anchored path below rather
+		// than trust it.
 	}
 
 	n, ok := turnsSince(path, mark.At)
