@@ -172,3 +172,44 @@ already names as the reason the pane path stays a fallback.
   `docs/spec/session-abstraction.md` §2.4 and `docs/spec/api-http.md`'s
   `input` example are both updated to state the five new values and why
   they are not folded into the existing four.
+
+  **Addendum, colab-fleet #144:** #143 found that neither half of this ADR's
+  own path had ever been exercised against anything real — `internal/
+  inboxclient`'s framing was wrong on both request lines (its own doc
+  comment already disclosed the field names were "this package's choice,
+  not a transcription"), and a delivery that fully succeeds returns the
+  sending connection **zero bytes over a 12-second window**, with or
+  without a correlation id. Both gaps had shipped invisibly because the
+  full test suite ran over `net.Pipe` against this package's own
+  assumptions, never against anything that could disagree.
+
+  Three changes, all inside the seams this ADR already drew — nothing here
+  reopens a decision made above:
+
+  1. `internal/inboxclient`'s two request lines now match the runtime's own
+     documented shape (read on a machine that has one; CLAUDE.local.md,
+     unchanged, forbids restating it here).
+  2. `Deliver` no longer reads a response line at all. #143's own reading:
+     the runtime's status appears to travel as a separate frame to a bound
+     reply address, which a plain sender does not have — that is #120,
+     still unresolved. Rather than design around #120 as though it were
+     solved, a clean two-line write is reported `OutcomeDelivered` outright,
+     honestly stating the one thing this package can know without a reply
+     address: the bytes reached the socket. The five-value vocabulary above
+     stays the closed set `mapInboxOutcome` maps onto — only the path that
+     would ever produce the other four is what is deferred, to #120.
+  3. `sendViaInbox`'s fallback was final ("ok=true") for a dial failure and
+     for a post-dial write failure, not only for capability absence — #143
+     named this by exact quote: "a dial that succeeds and then fails to
+     resolve returns `ok=true` and the pane path never runs." Both now
+     report `ok=false` and fall through to the pane, on the same reasoning
+     already given above for a resolver error: a transport fact about this
+     attempt is not an answer from the target. The one path that stays
+     final with no pane fallback is unchanged — identity verification
+     failing immediately before the write, which is a deliberate #116
+     refusal, not a failed attempt.
+
+  `internal/inboxclient`'s own test suite now includes one case against a
+  real `net.Listen("unix", …)` socket rather than only `net.Pipe` — the same
+  "what makes it run" gap #122's addendum above names for the resolver,
+  answered here for the wire protocol.

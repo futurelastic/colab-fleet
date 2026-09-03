@@ -100,10 +100,28 @@ func withInboxDial(f inboxDialFunc) Option { return func(d *Driver) { d.inboxDia
 const inboxRoundTripTimeout = inboxclient.FirstLineDeadline
 
 // sendViaInbox is Send's capability-detected fast path (#119). ok=false
-// (with a zero DeliveryReceipt and nil error) means no inbox capability
-// applies to this call, so the caller falls through to the pane path
-// unchanged; every ok=true return is this path's own, final answer for the
-// call — never partial, never a guess.
+// (with a zero DeliveryReceipt and nil error) means the caller falls through
+// to the pane path unchanged; every ok=true return is this path's own,
+// final answer for the call — never partial, never a guess.
+//
+// #144: ok=false now covers two different things, deliberately conflated
+// the same way capability-absence and a resolver error already were before
+// this change (see the resolver call below) — "this driver could not make
+// the inbox path work for this call" and "there is no inbox for this call"
+// are both facts about THIS attempt, not an answer from the target, so both
+// fall through to the same pane path rather than reporting two different
+// permanent failures for what the pane might still deliver:
+//
+//   - no resolver configured, no identity, or the resolver itself declined
+//     (unchanged from before #144)
+//   - the dial to a resolved address failed
+//   - the write to a dialed connection failed (inboxclient.Deliver returned
+//     an error)
+//
+// The one case that stays final with no pane fallback is identity
+// verification failing immediately before the write, below — that is a
+// deliberate refusal (#116), not a failed attempt, and ADR 119 explains why
+// falling back there would defeat the check.
 func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text string) (fleet.DeliveryReceipt, bool, error) {
 	if d.inboxResolver == nil {
 		return fleet.DeliveryReceipt{}, false, nil
@@ -153,19 +171,24 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 	}
 	conn, derr := d.inboxDial(dctx, network, addr.Socket)
 	if derr != nil {
-		return fleet.DeliveryReceipt{
-			Outcome: fleet.OutcomeRefused,
-			Reason:  fmt.Sprintf("could not reach this session's inbox: %v", derr),
-		}, true, nil
+		// #144: a dial failure is a fact about this attempt's transport, not
+		// an answer from the target — the pane path independently re-derives
+		// whether the session itself is reachable, so this falls through to
+		// it rather than reporting a permanent refusal here.
+		return fleet.DeliveryReceipt{}, false, nil
 	}
 	defer conn.Close()
 
 	receipt, derr := inboxclient.Deliver(conn, addr.Token, text, inboxRoundTripTimeout)
 	if derr != nil {
-		return fleet.DeliveryReceipt{
-			Outcome: fleet.OutcomeUnknown,
-			Reason:  fmt.Sprintf("inbox delivery did not resolve to a receipt: %v", derr),
-		}, true, nil
+		// #144: previously mapped to a final OutcomeUnknown, which #143's
+		// own investigation named as the exact hazard — "the call site
+		// returns as soon as sendViaInbox reports ok=true, so a dial that
+		// succeeds then fails never reaches the pane." A write failure after
+		// a successful dial is the same kind of local transport fact as a
+		// dial failure above, not an answer from the target, so it falls
+		// back the same way.
+		return fleet.DeliveryReceipt{}, false, nil
 	}
 	return fleet.DeliveryReceipt{
 		Outcome: mapInboxOutcome(receipt.Outcome),
@@ -176,7 +199,11 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 // mapInboxOutcome is the one place inboxclient.Outcome becomes fleet.Outcome
 // — a single switch, one for one, so "was anything flattened here" is
 // answerable by reading one function rather than auditing every call site
-// (#117's "surface the receipt vocabulary honestly").
+// (#117's "surface the receipt vocabulary honestly"). #144: inboxclient.Deliver
+// currently only ever produces OutcomeDelivered (see its own doc comment —
+// there is no reply address to observe the other five over yet, #120); the
+// rest of this switch stays exhaustive and ready rather than trimmed to the
+// one reachable case, so wiring a future receipt path costs nothing here.
 func mapInboxOutcome(o inboxclient.Outcome) fleet.Outcome {
 	switch o {
 	case inboxclient.OutcomeDelivered:
@@ -192,11 +219,13 @@ func mapInboxOutcome(o inboxclient.Outcome) fleet.Outcome {
 	case inboxclient.OutcomeDropped:
 		return fleet.OutcomeDropped
 	default:
-		// inboxclient.Deliver already refuses to return an outcome outside
-		// its own closed set (Outcome.valid()), so this default is
-		// unreachable from that path — kept as the honest fallback rather
-		// than a panic, the same "fail toward unknown" discipline
-		// session-abstraction.md §2 states for every other field.
+		// Deliver only ever constructs a Receipt with OutcomeDelivered
+		// today (see its own doc comment, #144), so this default is
+		// unreachable from that path in practice — kept as the honest
+		// fallback rather than a panic, the same "fail toward unknown"
+		// discipline session-abstraction.md §2 states for every other
+		// field, in case a future #120 fix ever hands this an outcome
+		// outside the set above.
 		return fleet.OutcomeUnknown
 	}
 }

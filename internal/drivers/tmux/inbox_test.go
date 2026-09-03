@@ -3,10 +3,8 @@ package tmux
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
-	"strings"
 	"testing"
 	"time"
 
@@ -51,30 +49,30 @@ func pipeDialer(t *testing.T, onServer func(server net.Conn)) inboxDialFunc {
 	}
 }
 
-// respondWithOutcome builds an onServer func (see pipeDialer) that reads the
-// two request lines — auth, then message, each its own blocking Write on
-// the client side over net.Pipe's synchronous semantics, so each needs its
-// own Read here — and answers with a single receipt line carrying outcome
-// and, optionally, a reason. Mirrors internal/inboxclient's own test
-// server (inboxclient_test.go's runFakeServer), reproduced locally because
-// it is a test double for THIS package's dial seam.
-func respondWithOutcome(outcome, reason string) func(net.Conn) {
-	return func(server net.Conn) {
-		defer server.Close()
-		reader := bufio.NewReader(server)
-		if _, err := reader.ReadString('\n'); err != nil { // auth line
-			return
-		}
-		if _, err := reader.ReadString('\n'); err != nil { // message line
-			return
-		}
-		reply := `{"outcome":"` + outcome + `"`
-		if reason != "" {
-			reply += `,"reason":"` + reason + `"`
-		}
-		reply += "}\n"
-		_, _ = server.Write([]byte(reply))
+// readTwoLinesNoReply builds an onServer func (see pipeDialer) that reads
+// the two request lines — auth, then message, each its own blocking Write
+// on the client side over net.Pipe's synchronous semantics, so each needs
+// its own Read here — and never writes anything back. #144: this is what
+// #143 measured a real inbox actually does even on a fully successful
+// delivery (zero bytes over a 12-second window), so it is the realistic
+// double now, not a special case.
+func readTwoLinesNoReply(server net.Conn) {
+	defer server.Close()
+	reader := bufio.NewReader(server)
+	if _, err := reader.ReadString('\n'); err != nil { // auth line
+		return
 	}
+	if _, err := reader.ReadString('\n'); err != nil { // message line
+		return
+	}
+	// No reply written — see #144's own doc comment on inboxclient.Deliver.
+}
+
+// closeBeforeReading builds an onServer func that closes immediately without
+// reading anything, simulating a dial that succeeded but a write that then
+// fails — the case #144 added a pane fallback for.
+func closeBeforeReading(server net.Conn) {
+	server.Close()
 }
 
 // TestCapabilities_DeliversToInbox_ReflectsWhetherAResolverIsConfigured is
@@ -202,55 +200,77 @@ func TestSend_InboxIdentityVerificationFails_RefusesWithoutTouchingThePane(t *te
 	}
 }
 
-// TestSend_InboxDelivers_EveryOutcomeSurfacesDistinctly is #119's own
-// central assertion at the driver level, mirroring inboxclient's own
-// protocol-layer test: the six-value vocabulary must reach Send's caller
-// unflattened, and the pane must never be touched once the inbox path
-// commits to a delivery.
-func TestSend_InboxDelivers_EveryOutcomeSurfacesDistinctly(t *testing.T) {
+// TestMapInboxOutcome_EveryValueSurfacesDistinctly is #119's own central
+// assertion — the six-value vocabulary must reach a caller unflattened —
+// exercised directly against the mapping function rather than through a
+// live delivery. #144: inboxclient.Deliver itself only ever produces
+// OutcomeDelivered today (no reply address to observe the other five over,
+// #120), so this is no longer reachable end to end through Send; it stays a
+// direct unit test of mapInboxOutcome so the mapping itself is still proven
+// exhaustive and ready for whenever #120 lets Deliver produce the rest.
+func TestMapInboxOutcome_EveryValueSurfacesDistinctly(t *testing.T) {
 	cases := []struct {
-		wire string
+		wire inboxclient.Outcome
 		want fleet.Outcome
 	}{
-		{"delivered", fleet.OutcomeDelivered},
-		{"held", fleet.OutcomeHeld},
-		{"denied", fleet.OutcomeDenied},
-		{"expired", fleet.OutcomeExpired},
-		{"refused", fleet.OutcomeRefused},
-		{"dropped", fleet.OutcomeDropped},
+		{inboxclient.OutcomeDelivered, fleet.OutcomeDelivered},
+		{inboxclient.OutcomeHeld, fleet.OutcomeHeld},
+		{inboxclient.OutcomeDenied, fleet.OutcomeDenied},
+		{inboxclient.OutcomeExpired, fleet.OutcomeExpired},
+		{inboxclient.OutcomeRefused, fleet.OutcomeRefused},
+		{inboxclient.OutcomeDropped, fleet.OutcomeDropped},
 	}
 	for _, tc := range cases {
-		t.Run(tc.wire, func(t *testing.T) {
-			f := twoSessions()
-			ps := &fakePS{}
-			ps.set(100, time.Now())
-			ps.set(200, time.Now())
-			resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
-				return InboxAddress{Network: "unix", Socket: "/irrelevant", Token: "tok"}, true, nil
-			}
-			d := newInboxTestDriver(f, ps, resolver, pipeDialer(t, respondWithOutcome(tc.wire, "because")))
-
-			got, err := d.Send(context.Background(), testCaller,
-				fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Outcome != tc.want {
-				t.Fatalf("outcome = %q, want %q", got.Outcome, tc.want)
-			}
-			if got.Reason != "because" {
-				t.Errorf("reason = %q, want %q", got.Reason, "because")
-			}
-			for _, c := range f.callsSnapshot() {
-				if len(c) > 0 && (c[0] == "paste-buffer" || c[0] == "load-buffer" || c[0] == "send-keys") {
-					t.Fatalf("an inbox delivery must never also touch the pane, saw: %v", c)
-				}
+		t.Run(string(tc.wire), func(t *testing.T) {
+			if got := mapInboxOutcome(tc.wire); got != tc.want {
+				t.Fatalf("mapInboxOutcome(%q) = %q, want %q", tc.wire, got, tc.want)
 			}
 		})
 	}
 }
 
-func TestSend_InboxDialFails_Refuses(t *testing.T) {
+// TestSend_InboxDeliverySucceeds_ReportsDeliveredWithoutTouchingPane is
+// #144's own central case: a dial that succeeds and a write that succeeds,
+// against a double that never writes anything back — exactly what #143
+// measured a real inbox does even on a delivery that fully succeeds. Before
+// #144 this hung waiting on a response line for the full round-trip timeout
+// and then reported OutcomeUnknown; it must now report OutcomeDelivered
+// promptly, and the pane must never be touched.
+func TestSend_InboxDeliverySucceeds_ReportsDeliveredWithoutTouchingPane(t *testing.T) {
+	f := twoSessions()
+	ps := &fakePS{}
+	ps.set(100, time.Now())
+	ps.set(200, time.Now())
+	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
+		return InboxAddress{Network: "unix", Socket: "/irrelevant", Token: "tok"}, true, nil
+	}
+	d := newInboxTestDriver(f, ps, resolver, pipeDialer(t, readTwoLinesNoReply))
+
+	start := time.Now()
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed >= inboxRoundTripTimeout {
+		t.Errorf("Send took %s, at or beyond the round-trip timeout — it waited on a response line #144 says never arrives", elapsed)
+	}
+	if got.Outcome != fleet.OutcomeDelivered {
+		t.Fatalf("outcome = %q, want delivered", got.Outcome)
+	}
+	for _, c := range f.callsSnapshot() {
+		if len(c) > 0 && (c[0] == "paste-buffer" || c[0] == "load-buffer" || c[0] == "send-keys") {
+			t.Fatalf("an inbox delivery must never also touch the pane, saw: %v", c)
+		}
+	}
+}
+
+// TestSend_InboxDialFails_FallsBackToPane is #144's fix for the gap #143's
+// investigation named by exact quote: "the call site returns as soon as
+// sendViaInbox reports ok=true, so a dial that succeeds then fails never
+// reaches the pane." This covers the dial-failure half — before #144 this
+// was a final, permanent OutcomeRefused with no pane attempt at all.
+func TestSend_InboxDialFails_FallsBackToPane(t *testing.T) {
 	f := twoSessions()
 	ps := &fakePS{}
 	ps.set(100, time.Now())
@@ -268,12 +288,15 @@ func TestSend_InboxDialFails_Refuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != fleet.OutcomeRefused {
-		t.Fatalf("outcome = %q, want refused", got.Outcome)
+	if got.Outcome != fleet.OutcomeQueued {
+		t.Fatalf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
 	}
 }
 
-func TestSend_InboxNoReceiptBeforeClose_ReportsUnknown(t *testing.T) {
+// TestSend_InboxWriteFails_FallsBackToPane covers #143's other half of the
+// same gap: a dial that succeeds and a write that then fails. Before #144
+// this was a final, permanent OutcomeUnknown with no pane attempt at all.
+func TestSend_InboxWriteFails_FallsBackToPane(t *testing.T) {
 	f := twoSessions()
 	ps := &fakePS{}
 	ps.set(100, time.Now())
@@ -281,16 +304,15 @@ func TestSend_InboxNoReceiptBeforeClose_ReportsUnknown(t *testing.T) {
 	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
 		return InboxAddress{Network: "unix", Socket: "/irrelevant", Token: "tok"}, true, nil
 	}
-	closeNoReply := func(server net.Conn) { server.Close() }
-	d := newInboxTestDriver(f, ps, resolver, pipeDialer(t, closeNoReply))
+	d := newInboxTestDriver(f, ps, resolver, pipeDialer(t, closeBeforeReading))
 
 	got, err := d.Send(context.Background(), testCaller,
 		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != fleet.OutcomeUnknown {
-		t.Fatalf("outcome = %q, want unknown", got.Outcome)
+	if got.Outcome != fleet.OutcomeQueued {
+		t.Fatalf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
 	}
 }
 
@@ -356,22 +378,5 @@ func TestSend_InboxNoSuchSession_FallsThroughToTheSamePaneRefusal(t *testing.T) 
 	}
 	if called {
 		t.Error("the inbox resolver was called for an identity #116 never resolved")
-	}
-}
-
-// Sanity check that this test file's own fixtures speak the exact wire
-// shape internal/inboxclient expects, so a future change to either side's
-// field names is caught here rather than only as an opaque parse failure.
-func TestInboxTestFixtures_MatchTheRealClientWireShape(t *testing.T) {
-	raw := `{"outcome":"delivered","reason":"because"}` + "\n"
-	var parsed struct {
-		Outcome string `json:"outcome"`
-		Reason  string `json:"reason,omitempty"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &parsed); err != nil {
-		t.Fatal(err)
-	}
-	if inboxclient.Outcome(parsed.Outcome) != inboxclient.OutcomeDelivered {
-		t.Fatalf("outcome = %q", parsed.Outcome)
 	}
 }
