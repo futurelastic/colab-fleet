@@ -1810,7 +1810,14 @@ func TestConfirmLandedIgnoresResidueAndAttributesOnlyTheNewMarker(t *testing.T) 
 	})), withNonce(func() string { return testNonce }),
 		withClock(func() time.Time { return time.Unix(1785760000, 0) }))
 
-	key, atCount, ok := d2.confirmLanded(context.Background(), "%1", strings.Repeat("x\n", 30), before)
+	// "q", not "x": colab-fleet#143 made confirmLanded's literal-match needle
+	// the first LINE alone, which here is a single character — and "x" is a
+	// substring of "text", which appears in the fixture's own collapsed-paste
+	// marker text ("Pasted text #…"). That coincidence would satisfy the
+	// literal-match branch on the very first read, before this delivery's own
+	// marker (#11) ever appears, which is exactly the false positive this
+	// test exists to rule out. "q" appears nowhere in the fixture.
+	key, atCount, ok := d2.confirmLanded(context.Background(), "%1", strings.Repeat("q\n", 30), before)
 	if !ok {
 		t.Fatal("never confirmed landed, even after this delivery's own marker appeared")
 	}

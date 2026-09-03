@@ -4264,9 +4264,24 @@ func (d *Driver) confirmLanded(ctx context.Context, paneID, text string, before 
 	if needle == "" {
 		return pasteKey{}, 0, true
 	}
-	// A prefix, because the composer wraps and the tail may be off-screen.
+	// The FIRST LINE only, never a needle spanning a real newline. The
+	// rendered composer indents continuation lines — a marker on the first
+	// line, plain leading whitespace after it — which the raw source text
+	// has no counterpart for. A needle straddling the newline therefore
+	// compares against a painted shape it can never equal, at any payload
+	// size: measured, a 38-byte three-line payload strands exactly like a
+	// 130-byte one (colab-fleet#143). Splitting on the newline removes it
+	// from the needle entirely, so this can no longer happen.
+	needle = strings.SplitN(needle, "\n", 2)[0]
+	// The TAIL of that line, not the head. A composer taller than the
+	// capture window below scrolls to keep the cursor — parked at the end of
+	// a fresh paste — in view, so the head can end up in a row the runtime
+	// never painted at all; no amount of capture depth recovers a row that
+	// was never rendered. The tail is what stays on screen regardless of how
+	// far the composer scrolled. Measured boundary: 7 wrapped rows pass, 8
+	// strand, for a single-line payload (colab-fleet#143).
 	if len(needle) > 24 {
-		needle = needle[:24]
+		needle = needle[len(needle)-24:]
 	}
 	// ...except when the runtime does not echo the text at all.
 	//
