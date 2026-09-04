@@ -157,3 +157,60 @@ func TestConfirmLandedMatchesTheTailWhenTheHeadScrolledOut(t *testing.T) {
 		})
 	}
 }
+
+// colab-fleet#145: a genuinely multi-line payload — real newlines, not a
+// single line wrapped by the terminal — can lose its FIRST line entirely to
+// the same scroll-to-follow-the-cursor behavior #143 fixed for a single
+// wrapped line. A composer taller than the `-S -6` capture window scrolls to
+// keep the cursor, parked at the delivery's own end, in view, so with enough
+// real lines the very first one is never painted at all — no wrapping, no
+// long single line, just too many short ones.
+//
+// Measured live: a 10-line, 149-byte payload scrolled its first line
+// entirely off an `-S -6` window that still painted lines 5-11. A needle
+// built from the first line (#143's fix) cannot match a row that was never
+// rendered; a needle built from the LAST line survives, because the cursor's
+// own line is exactly what the scroll keeps on screen.
+func TestConfirmLandedMatchesTheLastLineWhenTheFirstLineScrolledOut(t *testing.T) {
+	const rule = "────────────────────"
+	const marker = "❯ "
+	const indent = "  "
+	const windowRows = 7 // what a `-S -6` capture leaves visible
+
+	lines := make([]string, 10)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("payload line %d of the message", i)
+	}
+	text := strings.Join(lines, "\n")
+
+	// The painted composer, as the runtime actually renders it: a marker on
+	// row one, plain leading whitespace on every continuation row.
+	rows := make([]string, len(lines))
+	for i, l := range lines {
+		if i == 0 {
+			rows[i] = marker + l
+			continue
+		}
+		rows[i] = indent + l
+	}
+
+	visible := rows
+	if len(visible) > windowRows {
+		visible = visible[len(visible)-windowRows:]
+	}
+	if strings.Contains(strings.Join(visible, "\n"), lines[0]) {
+		t.Fatalf("setup: painted composer still shows the first line " +
+			"— this fixture does not exercise the scrolled-out case")
+	}
+	painted := strings.Join(visible, "\n") + "\n" + rule
+
+	f := twoSessions()
+	f.setCapture("%2", painted)
+	d := newTestDriver(f)
+
+	_, _, ok := d.confirmLanded(context.Background(), "%2", text, map[pasteKey]int{})
+	if !ok {
+		t.Fatalf("confirmLanded did not confirm a landed multi-line paste "+
+			"(first line scrolled fully out of the window) against:\n%s", painted)
+	}
+}
