@@ -12,11 +12,20 @@ import (
 	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
 )
 
-// referenceStartedAt is one fixed instant, rendered in the exact `ps
-// -o lstart=` textual form tmux.ParseProcessStartTime parses — the value
-// this file's fixtures use whenever an index entry is meant to describe the
-// SAME process run as the identity passed to the resolver.
+// referenceStartedAt is one fixed instant, in the shape ProcessIdentity.StartedAt
+// actually carries at runtime (ResolveProcessIdentity's ps-lstart parse, via
+// tmux.ParseProcessStartTime — see that function's own doc comment). Fixtures
+// below render the SAME instant as an inbox-index entry's StartedAt in RFC
+// 3339 (referenceStartedAtRFC3339), matching colab-fleet #147's fixed
+// contract: the identity side keeps parsing the process table exactly as it
+// always did; only the index side's wire format changed.
 var referenceStartedAt = mustParseStartTime("Wed Aug 26 10:15:23 2026")
+
+// referenceStartedAtRFC3339 is referenceStartedAt, rendered the way #147's
+// fixed inboxresolver.go now expects an index entry's StartedAt to read —
+// zone-bearing, so it denotes the same instant regardless of which zone
+// produced the text or which zone reads it back.
+var referenceStartedAtRFC3339 = referenceStartedAt.Format(time.RFC3339)
 
 func mustParseStartTime(s string) time.Time {
 	t, err := tmux.ParseProcessStartTime(s)
@@ -37,7 +46,7 @@ func TestFileInboxResolver_EntryPresent_ResolvesAddress(t *testing.T) {
 	tokenPath := writeToken(t, dir, "tok-1")
 	writeIndexEntry(t, dir, 4242, fmt.Sprintf(
 		`{"network":"unix","socket":"/tmp/whatever.sock","token_path":%q,"started_at":%q}`,
-		tokenPath, "Wed Aug 26 10:15:23 2026"))
+		tokenPath, referenceStartedAtRFC3339))
 
 	resolve := newFileInboxResolver(dir)
 	addr, ok, err := resolve(context.Background(), tmux.ProcessIdentity{PID: 4242, StartedAt: referenceStartedAt})
@@ -60,7 +69,7 @@ func TestFileInboxResolver_DefaultsNetworkToUnix(t *testing.T) {
 	tokenPath := writeToken(t, dir, "tok-1")
 	writeIndexEntry(t, dir, 99, fmt.Sprintf(
 		`{"socket":"/tmp/whatever.sock","token_path":%q,"started_at":%q}`,
-		tokenPath, "Wed Aug 26 10:15:23 2026"))
+		tokenPath, referenceStartedAtRFC3339))
 
 	resolve := newFileInboxResolver(dir)
 	addr, ok, err := resolve(context.Background(), tmux.ProcessIdentity{PID: 99, StartedAt: referenceStartedAt})
@@ -107,12 +116,13 @@ func TestFileInboxResolver_StartTimeMismatch_CapabilityAbsentNotRefusal(t *testi
 	tokenPath := writeToken(t, dir, "tok-belongs-to-the-old-occupant")
 	writeIndexEntry(t, dir, 4242, fmt.Sprintf(
 		`{"socket":"/tmp/whatever.sock","token_path":%q,"started_at":%q}`,
-		tokenPath, "Wed Aug 26 10:15:23 2026"))
+		tokenPath, referenceStartedAtRFC3339))
 
 	// The pid was recycled: the process live right now started at a
 	// different instant than the index row describes.
 	recycled := tmux.ProcessIdentity{PID: 4242, StartedAt: referenceStartedAt.Add(1 * time.Hour)}
 
+	before := indexStartTimeMismatchCount()
 	resolve := newFileInboxResolver(dir)
 	addr, ok, err := resolve(context.Background(), recycled)
 	if ok {
@@ -123,6 +133,48 @@ func TestFileInboxResolver_StartTimeMismatch_CapabilityAbsentNotRefusal(t *testi
 	}
 	if err == nil {
 		t.Fatal("err = nil, want a reported mismatch (still capability-absent at the sendViaInbox call site)")
+	}
+	// #147's own "also worth fixing while here": this exact case must leave
+	// a trace a caller can count, not just an error string nobody aggregates.
+	if got := indexStartTimeMismatchCount(); got != before+1 {
+		t.Errorf("indexStartTimeMismatchCount() = %d, want %d (one mismatch just happened)", got, before+1)
+	}
+}
+
+// TestFileInboxResolver_RFC3339CrossZoneMatch proves colab-fleet #147's
+// actual fix: an index entry whose StartedAt is rendered in a DIFFERENT zone
+// than the one ProcessIdentity.StartedAt happens to carry must still match,
+// because both are now compared as real instants (RFC 3339 parses its own
+// offset) rather than as zone-blind text. This is deliberately the same
+// shape #147 measured in practice — a UTC-rendering writer, a nine-hour
+// offset — reproduced deterministically so the test never depends on the
+// zone the test runner itself happens to be in.
+func TestFileInboxResolver_RFC3339CrossZoneMatch(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := writeToken(t, dir, "tok-cross-zone")
+
+	// One instant, as the identity side would carry it: rendered here nine
+	// hours off UTC, matching #147's own measured offset.
+	jst := time.FixedZone("JST", 9*60*60)
+	instant := time.Date(2026, time.August, 26, 19, 15, 23, 0, jst)
+
+	// The index entry names the SAME instant, rendered in UTC — the shape
+	// #147's writer produces, and the exact case a zone-blind parse (the
+	// pre-#147 tmux.ParseProcessStartTime-on-the-index-side bug) got wrong.
+	writeIndexEntry(t, dir, 4343, fmt.Sprintf(
+		`{"socket":"/tmp/whatever.sock","token_path":%q,"started_at":%q}`,
+		tokenPath, instant.UTC().Format(time.RFC3339)))
+
+	resolve := newFileInboxResolver(dir)
+	addr, ok, err := resolve(context.Background(), tmux.ProcessIdentity{PID: 4343, StartedAt: instant})
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil — same instant, only the rendered zone differs", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true — the index entry describes the same instant the identity carries")
+	}
+	if addr.Token != "tok-cross-zone" {
+		t.Fatalf("token = %q, want %q", addr.Token, "tok-cross-zone")
 	}
 }
 
@@ -137,7 +189,7 @@ func TestFileInboxResolver_TokenReadFreshFromItsOwnLocation(t *testing.T) {
 	tokenPath := writeToken(t, dir, "tok-first")
 	writeIndexEntry(t, dir, 555, fmt.Sprintf(
 		`{"socket":"/tmp/whatever.sock","token_path":%q,"started_at":%q}`,
-		tokenPath, "Wed Aug 26 10:15:23 2026"))
+		tokenPath, referenceStartedAtRFC3339))
 
 	resolve := newFileInboxResolver(dir)
 	identity := tmux.ProcessIdentity{PID: 555, StartedAt: referenceStartedAt}
@@ -169,7 +221,7 @@ func TestFileInboxResolver_TokenLocationAbsent_FallsBackCleanly(t *testing.T) {
 	dir := t.TempDir()
 	writeIndexEntry(t, dir, 8, fmt.Sprintf(
 		`{"socket":"/tmp/whatever.sock","token_path":%q,"started_at":%q}`,
-		filepath.Join(dir, "no-such-token"), "Wed Aug 26 10:15:23 2026"))
+		filepath.Join(dir, "no-such-token"), referenceStartedAtRFC3339))
 
 	resolve := newFileInboxResolver(dir)
 	addr, ok, err := resolve(context.Background(), tmux.ProcessIdentity{PID: 8, StartedAt: referenceStartedAt})
@@ -224,8 +276,8 @@ func TestFileInboxResolver_IncompleteEntry_ReportsError(t *testing.T) {
 }
 
 // TestFileInboxResolver_UnparseableStartTime_ReportsError covers a start
-// time this file cannot parse in the layout it expects — a resolver-side
-// data problem, same bucket as a malformed or incomplete entry.
+// time this file cannot parse as RFC 3339 — a resolver-side data problem,
+// same bucket as a malformed or incomplete entry.
 func TestFileInboxResolver_UnparseableStartTime_ReportsError(t *testing.T) {
 	dir := t.TempDir()
 	tokenPath := writeToken(t, dir, "tok-1")
@@ -236,6 +288,29 @@ func TestFileInboxResolver_UnparseableStartTime_ReportsError(t *testing.T) {
 	_, ok, err := resolve(context.Background(), tmux.ProcessIdentity{PID: 9, StartedAt: referenceStartedAt})
 	if err == nil {
 		t.Fatal("err = nil, want an error for an unparseable start time")
+	}
+	if ok {
+		t.Error("ok = true, want false alongside a resolver error")
+	}
+}
+
+// TestFileInboxResolver_OldPsLayoutStartTime_ReportsError locks in colab-fleet
+// #147's own stated goal for a writer that has not been updated yet: a
+// pre-#147 index entry — StartedAt in the ps-lstart textual form, no zone —
+// must now fail loudly (a parse error, folded into capability-absent at the
+// sendViaInbox call site) instead of silently comparing as if it were local
+// time. That silent-wrong-instant comparison is exactly the bug #147 found;
+// this test is what stops it coming back as "well, it still parses".
+func TestFileInboxResolver_OldPsLayoutStartTime_ReportsError(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := writeToken(t, dir, "tok-1")
+	writeIndexEntry(t, dir, 10, fmt.Sprintf(
+		`{"socket":"/tmp/whatever.sock","token_path":%q,"started_at":"Wed Aug 26 10:15:23 2026"}`, tokenPath))
+
+	resolve := newFileInboxResolver(dir)
+	_, ok, err := resolve(context.Background(), tmux.ProcessIdentity{PID: 10, StartedAt: referenceStartedAt})
+	if err == nil {
+		t.Fatal("err = nil, want an error — the old ps-lstart layout is no longer an accepted StartedAt format")
 	}
 	if ok {
 		t.Error("ok = true, want false alongside a resolver error")
@@ -253,9 +328,9 @@ func TestFileInboxResolver_NeverListsTheDirectory(t *testing.T) {
 	tokenA := writeToken(t, dir, "tok-a")
 	tokenB := writeToken(t, dir, "tok-b")
 	writeIndexEntry(t, dir, 111, fmt.Sprintf(
-		`{"socket":"/tmp/a.sock","token_path":%q,"started_at":%q}`, tokenA, "Wed Aug 26 10:15:23 2026"))
+		`{"socket":"/tmp/a.sock","token_path":%q,"started_at":%q}`, tokenA, referenceStartedAtRFC3339))
 	writeIndexEntry(t, dir, 222, fmt.Sprintf(
-		`{"socket":"/tmp/b.sock","token_path":%q,"started_at":%q}`, tokenB, "Wed Aug 26 10:15:23 2026"))
+		`{"socket":"/tmp/b.sock","token_path":%q,"started_at":%q}`, tokenB, referenceStartedAtRFC3339))
 
 	resolve := newFileInboxResolver(dir)
 	addr, ok, err := resolve(context.Background(), tmux.ProcessIdentity{PID: 333, StartedAt: referenceStartedAt})

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
 )
@@ -43,10 +45,18 @@ import (
 // this driver's own ProcessIdentity, one layer up at this index. Two fields
 // close that gap:
 //
-//   - StartedAt binds the record to one exact process run, in the identical
-//     textual form ResolveProcessIdentity already produces
-//     (tmux.ParseProcessStartTime) — compared exactly, never a copy that
-//     could itself go stale.
+//   - StartedAt binds the record to one exact process run — but NOT in the
+//     textual form ResolveProcessIdentity produces (`ps -o lstart=`, no zone
+//     field). colab-fleet #147 measured that layout going into this index
+//     verbatim from a UTC-rendering writer, compared via
+//     time.ParseInLocation(layout, s, time.Local) on the identity side too —
+//     a comparison that is false for every session, on every call,
+//     permanently, and fails silently (a resolver error reads as
+//     capability-absent, so delivery just falls back to the pane and nothing
+//     ever says the index never matches). RFC 3339 closes that: the writer
+//     must emit a zone-bearing instant, this file compares real instants
+//     (time.Time.Equal), and a writer still emitting the old bare layout now
+//     gets a loud parse error here instead of a silent, permanent mismatch.
 //   - TokenPath is a LOCATOR, never the credential's value. #117's grant
 //     authorises this service to hold a per-session token; it never
 //     authorised a second directory holding a copy of one with its own,
@@ -58,8 +68,32 @@ type inboxIndexEntry struct {
 	Network   string `json:"network"`
 	Socket    string `json:"socket"`
 	TokenPath string `json:"token_path"`
+	// StartedAt is an RFC 3339 timestamp (zone-bearing — e.g. an offset or
+	// "Z"), naming the exact instant the process at Socket's other end
+	// started. Not the `ps -o lstart=` textual form tmux.ParseProcessStartTime
+	// parses — that layout carries no zone, so a value rendered in one zone
+	// and parsed in another silently denotes the wrong instant (#147). The
+	// writer converts once, at write time, to whatever RFC 3339 rendering is
+	// convenient for it; this file compares instants, never text.
 	StartedAt string `json:"started_at"`
 }
+
+// indexStartTimeMismatches counts every resolve call that found an index
+// entry for the requested pid whose StartedAt did not match — colab-fleet
+// #147's own "also worth fixing while here": a mismatch that happens on
+// every call and is never surfaced is indistinguishable from one that never
+// happens, the same reasoning internal/drivers/tmux/counters.go already
+// gives for identity.process_unresolved. Deliberately the smallest thing
+// that makes the rate readable (a test, an operator running the process
+// with a debugger, or a future `colab-fleetd` status surface) — not wired to
+// an HTTP endpoint here, matching that file's own precedent for landing a
+// counter before its surface exists.
+var indexStartTimeMismatches atomic.Int64
+
+// indexStartTimeMismatchCount reports indexStartTimeMismatches' current
+// value. Exported as a function rather than the raw var so a reader never
+// takes a copy of the atomic itself.
+func indexStartTimeMismatchCount() int64 { return indexStartTimeMismatches.Load() }
 
 // newFileInboxResolver returns a tmux.InboxResolver that answers from one
 // JSON file per pid under dir: "<dir>/<pid>.json". dir is never empty here —
@@ -112,10 +146,15 @@ func newFileInboxResolver(dir string) tmux.InboxResolver {
 				"inbox index: %s is missing socket, token path, or start time", path)
 		}
 
-		startedAt, err := tmux.ParseProcessStartTime(entry.StartedAt)
+		// #147: RFC 3339, not tmux.ParseProcessStartTime's ps-lstart layout —
+		// see inboxIndexEntry.StartedAt's doc comment for why. Both sides of
+		// the Equal below are now real instants, so this comparison is
+		// correct regardless of which zone the writer or this service's own
+		// machine happens to be in.
+		startedAt, err := time.Parse(time.RFC3339, entry.StartedAt)
 		if err != nil {
 			return tmux.InboxAddress{}, false, fmt.Errorf(
-				"inbox index: %s has an unparseable start time %q: %w", path, entry.StartedAt, err)
+				"inbox index: %s has an unparseable start time %q (want RFC 3339): %w", path, entry.StartedAt, err)
 		}
 		if !startedAt.Equal(identity.StartedAt) {
 			// #146's own proposed shape: on mismatch this is capability-
@@ -126,6 +165,15 @@ func newFileInboxResolver(dir string) tmux.InboxResolver {
 			// before the write — inbox.go's sendViaInbox). The pane
 			// fallback carries the message instead, which is the honest
 			// response to half a capability.
+			//
+			// #147: this is exactly the case that used to be permanently,
+			// silently true for every session — a genuine recycled-pid
+			// mismatch is now indistinguishable, from inside this function,
+			// from "the fix didn't take" or "the writer still emits the old
+			// layout". indexStartTimeMismatches gives it a rate an operator
+			// can check, the same idiom counters.go already uses elsewhere
+			// in this repo for a coverage gap that must not go silent twice.
+			indexStartTimeMismatches.Add(1)
 			return tmux.InboxAddress{}, false, fmt.Errorf(
 				"inbox index: %s describes pid %d started %s, but %d is now running as a process started %s (recycled)",
 				path, identity.PID, startedAt, identity.PID, identity.StartedAt)

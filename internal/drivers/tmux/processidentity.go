@@ -65,16 +65,26 @@ const psStartTimeLayout = "Mon Jan _2 15:04:05 2006"
 
 // ParseProcessStartTime parses a start-time value in the exact textual form
 // processStartedAt already produces from `ps -o lstart=`, for a caller
-// outside this package that stores such a value itself and later needs to
-// compare it against a freshly-resolved ProcessIdentity.StartedAt.
+// outside this package that needs to construct or compare such a value
+// itself — chiefly a test building the ProcessIdentity.StartedAt it expects
+// ResolveProcessIdentity to return.
 //
-// colab-fleet #146: the inbox index (cmd/colab-fleetd/inboxresolver.go) binds
-// each record to one process run by carrying this same textual value
-// alongside its socket, so a recycled pid reading a stale record can be told
-// apart from the process that record actually describes. Exported instead of
-// duplicated so both sides of that comparison parse the identical layout —
-// this is a field copy compared exactly, per the issue's own measured
-// finding, never a reformat and never a tolerance.
+// psStartTimeLayout carries no zone field, so this parses "as if local" —
+// correct only for text genuinely produced by `ps` on THIS machine, in the
+// zone this process is currently running in. It is not a general-purpose
+// parser for "a start time from somewhere else": colab-fleet #146 originally
+// proposed reusing it to parse the inbox index's StartedAt field too, on the
+// theory that a plain field copy compared exactly needed no format
+// conversion or clock reasoning. #147 measured that reasoning wrong — the
+// index is populated by a writer that renders in UTC, not this machine's
+// zone, so parsing its output with time.Local silently produced the wrong
+// instant on every call. The index now carries an RFC 3339 (zone-bearing)
+// timestamp instead and no longer calls this function; see
+// cmd/colab-fleetd/inboxresolver.go's inboxIndexEntry.StartedAt doc comment.
+// Reach for this function only where the source text is actually `ps
+// -o lstart=` output (or an exact stand-in for it, as in this package's own
+// tests) — never for a value that may have crossed a process, a machine, or
+// a serialization boundary in between.
 func ParseProcessStartTime(s string) (time.Time, error) {
 	return time.ParseInLocation(psStartTimeLayout, s, time.Local)
 }
