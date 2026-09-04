@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
 )
@@ -35,10 +36,29 @@ import (
 // other system defines, just the smallest shape InboxAddress needs. Network
 // is optional; an empty value defaults to "unix" the same way tmux.InboxAddress's
 // own doc comment says sendViaInbox already treats an empty Network.
+//
+// colab-fleet #146: a record keyed by pid alone cannot tell "the process
+// this driver resolved a moment ago" apart from "an unrelated process the
+// kernel has since handed the same pid" — the same hazard #116 named for
+// this driver's own ProcessIdentity, one layer up at this index. Two fields
+// close that gap:
+//
+//   - StartedAt binds the record to one exact process run, in the identical
+//     textual form ResolveProcessIdentity already produces
+//     (tmux.ParseProcessStartTime) — compared exactly, never a copy that
+//     could itself go stale.
+//   - TokenPath is a LOCATOR, never the credential's value. #117's grant
+//     authorises this service to hold a per-session token; it never
+//     authorised a second directory holding a copy of one with its own,
+//     longer lifetime. Reading the real source fresh at resolve time — the
+//     same source keyed the same way the address itself is — means a
+//     recycled pid can never read forward a stale token, with or without
+//     the StartedAt check above.
 type inboxIndexEntry struct {
-	Network string `json:"network"`
-	Socket  string `json:"socket"`
-	Token   string `json:"token"`
+	Network   string `json:"network"`
+	Socket    string `json:"socket"`
+	TokenPath string `json:"token_path"`
+	StartedAt string `json:"started_at"`
 }
 
 // newFileInboxResolver returns a tmux.InboxResolver that answers from one
@@ -50,7 +70,11 @@ type inboxIndexEntry struct {
 // Read fresh on every call, matching InboxAddress.Token's own doc comment
 // ("never cached by this driver"): a credential this service holds for
 // every session on the machine (#117's full grant) is exactly the kind of
-// value that must never go stale in memory between calls.
+// value that must never go stale in memory between calls. #146 extends this
+// to two reads per call instead of one — the index entry, then the
+// credential its TokenPath names — because the second read is what makes
+// "never cached" true of the token itself, not just of this function's own
+// return value.
 func newFileInboxResolver(dir string) tmux.InboxResolver {
 	return func(_ context.Context, identity tmux.ProcessIdentity) (tmux.InboxAddress, bool, error) {
 		path := filepath.Join(dir, strconv.Itoa(identity.PID)+".json")
@@ -73,12 +97,58 @@ func newFileInboxResolver(dir string) tmux.InboxResolver {
 
 		var entry inboxIndexEntry
 		if err := json.Unmarshal(data, &entry); err != nil {
+			// #146: these records churn continuously (whatever populates
+			// this directory rewrites them on every process transition), so
+			// a torn read here is expected traffic, not a broken index —
+			// still surfaced as an error like every other malformed-entry
+			// case below (sendViaInbox already folds it into
+			// capability-absent either way; see inbox.go's InboxResolver
+			// doc comment), deliberately not "improved" into a silent
+			// ok=false.
 			return tmux.InboxAddress{}, false, fmt.Errorf("inbox index: %s is not valid JSON: %w", path, err)
 		}
-		if entry.Socket == "" || entry.Token == "" {
+		if entry.Socket == "" || entry.TokenPath == "" || entry.StartedAt == "" {
 			return tmux.InboxAddress{}, false, fmt.Errorf(
-				"inbox index: %s is missing socket or token", path)
+				"inbox index: %s is missing socket, token path, or start time", path)
 		}
+
+		startedAt, err := tmux.ParseProcessStartTime(entry.StartedAt)
+		if err != nil {
+			return tmux.InboxAddress{}, false, fmt.Errorf(
+				"inbox index: %s has an unparseable start time %q: %w", path, entry.StartedAt, err)
+		}
+		if !startedAt.Equal(identity.StartedAt) {
+			// #146's own proposed shape: on mismatch this is capability-
+			// absent, not a refusal — a stale index is a fact about this
+			// service's own plumbing, not about the target session, so it
+			// must never be reported as the target refusing (that refusal
+			// stays reserved for VerifyProcessIdentity failing immediately
+			// before the write — inbox.go's sendViaInbox). The pane
+			// fallback carries the message instead, which is the honest
+			// response to half a capability.
+			return tmux.InboxAddress{}, false, fmt.Errorf(
+				"inbox index: %s describes pid %d started %s, but %d is now running as a process started %s (recycled)",
+				path, identity.PID, startedAt, identity.PID, identity.StartedAt)
+		}
+
+		// Ruling 1 on #146: read the credential fresh from its own source
+		// now, at resolve time — never from a copy this index file itself
+		// might carry. TokenPath is keyed the same way the address already
+		// is, so even a still-live-but-stale index row can never hand out a
+		// token that belongs to a different run than the one just resolved.
+		token, err := os.ReadFile(entry.TokenPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// The address row exists but the credential behind it does
+				// not (yet, or no longer) — same "not every session has an
+				// inbox" shape as the top-level not-exist case above, just
+				// discovered one read later.
+				return tmux.InboxAddress{}, false, nil
+			}
+			return tmux.InboxAddress{}, false, fmt.Errorf(
+				"inbox index: reading token at %s: %w", entry.TokenPath, err)
+		}
+
 		network := entry.Network
 		if network == "" {
 			network = "unix"
@@ -86,7 +156,7 @@ func newFileInboxResolver(dir string) tmux.InboxResolver {
 		return tmux.InboxAddress{
 			Network: network,
 			Socket:  entry.Socket,
-			Token:   entry.Token,
+			Token:   strings.TrimSpace(string(token)),
 		}, true, nil
 	}
 }

@@ -63,6 +63,22 @@ const counterProcessIdentityUnresolved = "identity.process_unresolved"
 // not something this code invents or needs to configure.
 const psStartTimeLayout = "Mon Jan _2 15:04:05 2006"
 
+// ParseProcessStartTime parses a start-time value in the exact textual form
+// processStartedAt already produces from `ps -o lstart=`, for a caller
+// outside this package that stores such a value itself and later needs to
+// compare it against a freshly-resolved ProcessIdentity.StartedAt.
+//
+// colab-fleet #146: the inbox index (cmd/colab-fleetd/inboxresolver.go) binds
+// each record to one process run by carrying this same textual value
+// alongside its socket, so a recycled pid reading a stale record can be told
+// apart from the process that record actually describes. Exported instead of
+// duplicated so both sides of that comparison parse the identical layout —
+// this is a field copy compared exactly, per the issue's own measured
+// finding, never a reformat and never a tolerance.
+func ParseProcessStartTime(s string) (time.Time, error) {
+	return time.ParseInLocation(psStartTimeLayout, s, time.Local)
+}
+
 // ResolveProcessIdentity answers colab-fleet #116's first requirement:
 // resolution from an authoritative source at send time, never a cached or
 // inferred map. Every call re-enumerates the multiplexer AND re-queries the
