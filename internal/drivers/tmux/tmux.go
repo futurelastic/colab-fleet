@@ -4243,7 +4243,8 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) readinessCheck 
 // verification budget while the text was, seconds later, fully and correctly
 // rendered.
 //
-// Matching is on a prefix of the delivered text: the composer wraps long
+// Matching is on the LAST LINE of the delivered text (see below for why the
+// last line and not the first), tail-truncated: the composer wraps long
 // input across lines and may decorate it, so requiring an exact whole-string
 // match would fail on precisely the long instructions that matter most.
 //
@@ -4264,22 +4265,34 @@ func (d *Driver) confirmLanded(ctx context.Context, paneID, text string, before 
 	if needle == "" {
 		return pasteKey{}, 0, true
 	}
-	// The FIRST LINE only, never a needle spanning a real newline. The
+	// The LAST LINE only, never a needle spanning a real newline. The
 	// rendered composer indents continuation lines — a marker on the first
 	// line, plain leading whitespace after it — which the raw source text
 	// has no counterpart for. A needle straddling the newline therefore
 	// compares against a painted shape it can never equal, at any payload
 	// size: measured, a 38-byte three-line payload strands exactly like a
-	// 130-byte one (colab-fleet#143). Splitting on the newline removes it
-	// from the needle entirely, so this can no longer happen.
-	needle = strings.SplitN(needle, "\n", 2)[0]
-	// The TAIL of that line, not the head. A composer taller than the
-	// capture window below scrolls to keep the cursor — parked at the end of
-	// a fresh paste — in view, so the head can end up in a row the runtime
-	// never painted at all; no amount of capture depth recovers a row that
-	// was never rendered. The tail is what stays on screen regardless of how
-	// far the composer scrolled. Measured boundary: 7 wrapped rows pass, 8
-	// strand, for a single-line payload (colab-fleet#143).
+	// 130-byte one (colab-fleet#143). Taking a single line at all removes
+	// the straddle entirely, so that failure can no longer happen.
+	//
+	// It is the LAST line specifically, not the first (as an earlier fix
+	// took it) — a composer taller than the capture window below scrolls to
+	// keep the cursor, parked at the end of a fresh paste, in view, so a
+	// genuinely multi-line payload's FIRST line can end up in a row the
+	// runtime never painted at all, even though none of its own lines
+	// individually wrapped. Measured live: a 10-line, 149-byte payload
+	// scrolled its first line fully off an `-S -6` window that still
+	// painted lines 5-11 (colab-fleet#145). The last line is the one
+	// guaranteed to still be on screen, because it is where the cursor sits.
+	if idx := strings.LastIndexByte(needle, '\n'); idx >= 0 {
+		needle = needle[idx+1:]
+	}
+	// The TAIL of that line, not the head. Even the last line can itself be
+	// long enough to wrap across several rows, and the same scroll-to-follow
+	// -the-cursor behavior then hides the head of THAT line too; no amount
+	// of capture depth recovers a row that was never rendered. The tail is
+	// what stays on screen regardless of how far the composer scrolled.
+	// Measured boundary: 7 wrapped rows pass, 8 strand, for a single-line
+	// payload (colab-fleet#143).
 	if len(needle) > 24 {
 		needle = needle[len(needle)-24:]
 	}
