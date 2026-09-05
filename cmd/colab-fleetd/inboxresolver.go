@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
+	"github.com/godx-jp/colab-fleet/internal/inboxclient"
 )
 
 // This file is colab-fleet #122's wiring for #119's inbox delivery path: a
@@ -76,6 +77,20 @@ type inboxIndexEntry struct {
 	// writer converts once, at write time, to whatever RFC 3339 rendering is
 	// convenient for it; this file compares instants, never text.
 	StartedAt string `json:"started_at"`
+	// ModeClass is the permission-mode class the process at Socket's other
+	// end is RUNNING IN — "bypass" or "prompting", the receiving runtime's
+	// own two-value vocabulary (inboxclient.ModeClass). colab-fleet #148.
+	//
+	// Optional, and its absence is the ordinary shape of "this writer does
+	// not know yet": the entry still resolves, delivery simply falls back to
+	// the pane path because nothing can be attested. That is deliberate — a
+	// wrong class is held exactly as firmly as a missing one, so guessing
+	// here would reproduce #148 rather than fix it.
+	//
+	// Machine-local knowledge, like every other field in this record: the
+	// writer knows how each session was launched, this repository does not
+	// and must not.
+	ModeClass string `json:"mode_class"`
 }
 
 // indexStartTimeMismatches counts every resolve call that found an index
@@ -94,6 +109,24 @@ var indexStartTimeMismatches atomic.Int64
 // value. Exported as a function rather than the raw var so a reader never
 // takes a copy of the atomic itself.
 func indexStartTimeMismatchCount() int64 { return indexStartTimeMismatches.Load() }
+
+// indexUnattestableEntries counts every resolve call that found a live,
+// start-time-matching entry carrying no usable permission-mode class — so
+// every send it serves falls back to the pane path (#148).
+//
+// This exists for the same reason indexStartTimeMismatches does, and #147 is
+// the precedent that makes it non-optional: on the day #148 lands this
+// condition is true for EVERY entry, because no writer emits the new field
+// yet. A condition true on every call and never surfaced is indistinguishable
+// from one that never happens — which is exactly how #147's own permanent,
+// silent mismatch survived. An operator rolling the writer out needs to watch
+// this fall to zero; without a counter the only observable difference between
+// "the field is not being written" and "the fix did not take" is neither.
+var indexUnattestableEntries atomic.Int64
+
+// indexUnattestableEntryCount reports indexUnattestableEntries' current value.
+// Exported as a function for the same reason its sibling is.
+func indexUnattestableEntryCount() int64 { return indexUnattestableEntries.Load() }
 
 // newFileInboxResolver returns a tmux.InboxResolver that answers from one
 // JSON file per pid under dir: "<dir>/<pid>.json". dir is never empty here —
@@ -197,14 +230,35 @@ func newFileInboxResolver(dir string) tmux.InboxResolver {
 				"inbox index: reading token at %s: %w", entry.TokenPath, err)
 		}
 
+		// #148: validate the class STRICTLY against the closed set, and treat
+		// an unrecognised value as a resolver error — capability-absent, the
+		// same shape a bad start time already takes above. Passing an
+		// uninterpretable string through to the wire would be worse than
+		// asserting nothing: the receiver holds a wrong class just as firmly
+		// as a missing one, and it would do so while this service reported
+		// delivered. Absent (empty) is NOT an error — it is the ordinary "this
+		// writer does not know yet", counted rather than complained about.
+		var modeClass inboxclient.ModeClass
+		switch {
+		case entry.ModeClass == "":
+			indexUnattestableEntries.Add(1)
+		case inboxclient.ModeClass(entry.ModeClass).Valid():
+			modeClass = inboxclient.ModeClass(entry.ModeClass)
+		default:
+			return tmux.InboxAddress{}, false, fmt.Errorf(
+				"inbox index: %s has an unrecognised mode class %q (want %q or %q)",
+				path, entry.ModeClass, inboxclient.ModeBypass, inboxclient.ModePrompting)
+		}
+
 		network := entry.Network
 		if network == "" {
 			network = "unix"
 		}
 		return tmux.InboxAddress{
-			Network: network,
-			Socket:  entry.Socket,
-			Token:   strings.TrimSpace(string(token)),
+			Network:   network,
+			Socket:    entry.Socket,
+			Token:     strings.TrimSpace(string(token)),
+			ModeClass: modeClass,
 		}, true, nil
 	}
 }

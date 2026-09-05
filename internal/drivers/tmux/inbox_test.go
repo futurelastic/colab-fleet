@@ -3,8 +3,10 @@ package tmux
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,8 +243,14 @@ func TestSend_InboxDeliverySucceeds_ReportsDeliveredWithoutTouchingPane(t *testi
 	ps := &fakePS{}
 	ps.set(100, time.Now())
 	ps.set(200, time.Now())
+	// #148: the address now carries the target's permission-mode class. Without
+	// it there is nothing to attest and this path is unavailable by design —
+	// see TestSend_InboxWithoutModeClass_FallsBackToPane below.
 	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
-		return InboxAddress{Network: "unix", Socket: "/irrelevant", Token: "tok"}, true, nil
+		return InboxAddress{
+			Network: "unix", Socket: "/irrelevant", Token: "tok",
+			ModeClass: inboxclient.ModeBypass,
+		}, true, nil
 	}
 	d := newInboxTestDriver(f, ps, resolver, pipeDialer(t, readTwoLinesNoReply))
 
@@ -378,5 +386,153 @@ func TestSend_InboxNoSuchSession_FallsThroughToTheSamePaneRefusal(t *testing.T) 
 	}
 	if called {
 		t.Error("the inbox resolver was called for an identity #116 never resolved")
+	}
+}
+
+// TestSend_InboxWithoutModeClass_FallsBackToPane is colab-fleet #148's own
+// regression test, and the one that actually proves the bug fixed.
+//
+// Before this change the resolver's address carried no permission-mode class,
+// this driver asserted none, and the receiving runtime held every message sent
+// to a session running with permission prompts bypassed — parked for a human
+// who was never coming, then dropped at the receiver's own hold deadline —
+// while this call reported `delivered`. #148 measured 206 such sends against
+// 62 real ones, and one session unreachable for three and a half days.
+//
+// The fix is not a better receipt: there is no reply address to read one over
+// (#120). It is refusing to claim the capability at all when the one fact that
+// makes it work is missing. So the assertion here is deliberately about the
+// PANE being used — an outcome of `delivered` on this test would mean the
+// regression is back.
+func TestSend_InboxWithoutModeClass_FallsBackToPane(t *testing.T) {
+	f := twoSessions()
+	ps := &fakePS{}
+	ps.set(100, time.Now())
+	ps.set(200, time.Now())
+	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
+		return InboxAddress{Network: "unix", Socket: "/irrelevant", Token: "tok"}, true, nil
+	}
+	dialled := false
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialled = true
+		return nil, errors.New("this dial must never happen")
+	}
+	d := newInboxTestDriver(f, ps, resolver, dial)
+
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome == fleet.OutcomeDelivered {
+		t.Fatal("reported delivered for a send this service could not attest — #148's exact regression")
+	}
+	if dialled {
+		t.Error("dialled the inbox for a send that could never be attested")
+	}
+	if got.Outcome != fleet.OutcomeQueued {
+		t.Errorf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
+	}
+}
+
+// TestSend_InboxUnattestableText_FallsBackToPane covers the second half of
+// Attest's refusal: a class IS known, but the text cannot be wrapped in a form
+// guaranteed to survive the receiver's byte-for-byte rebuild check. The
+// receiver discards an envelope that does not rebuild identically, which loses
+// the asserted class and lands the message right back in the held state — so
+// an unwrappable body has to take the pane path too.
+func TestSend_InboxUnattestableText_FallsBackToPane(t *testing.T) {
+	f := twoSessions()
+	ps := &fakePS{}
+	ps.set(100, time.Now())
+	ps.set(200, time.Now())
+	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
+		return InboxAddress{
+			Network: "unix", Socket: "/irrelevant", Token: "tok",
+			ModeClass: inboxclient.ModeBypass,
+		}, true, nil
+	}
+	dialled := false
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialled = true
+		return nil, errors.New("this dial must never happen")
+	}
+	d := newInboxTestDriver(f, ps, resolver, dial)
+
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "compare a < b first", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome == fleet.OutcomeDelivered {
+		t.Fatal("reported delivered for text that cannot be attested losslessly")
+	}
+	if dialled {
+		t.Error("dialled the inbox for a send that could never be attested")
+	}
+	if got.Outcome != fleet.OutcomeQueued {
+		t.Errorf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
+	}
+}
+
+// TestSend_InboxAttestedEnvelopeReachesTheWire proves the bytes that leave this
+// driver are the envelope, not the bare text — the assertion the whole fix
+// rests on. A driver that resolved a class, reported delivered, and still wrote
+// an unwrapped body would pass every other test in this file and reproduce
+// #148 exactly.
+func TestSend_InboxAttestedEnvelopeReachesTheWire(t *testing.T) {
+	f := twoSessions()
+	ps := &fakePS{}
+	ps.set(100, time.Now())
+	ps.set(200, time.Now())
+	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
+		return InboxAddress{
+			Network: "unix", Socket: "/irrelevant", Token: "tok",
+			ModeClass: inboxclient.ModePrompting,
+		}, true, nil
+	}
+	lines := make(chan string, 2)
+	dial := pipeDialer(t, func(server net.Conn) {
+		defer server.Close()
+		reader := bufio.NewReader(server)
+		for i := 0; i < 2; i++ {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			lines <- line
+		}
+	})
+	d := newInboxTestDriver(f, ps, resolver, dial)
+
+	if _, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	var message string
+	for i := 0; i < 2; i++ {
+		select {
+		case line := <-lines:
+			if strings.Contains(line, `"user"`) {
+				message = line
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for the request lines")
+		}
+	}
+	if message == "" {
+		t.Fatal("no message line reached the wire")
+	}
+	want, ok := inboxclient.Attest("hello", inboxclient.ModePrompting)
+	if !ok {
+		t.Fatal("Attest refused a plain body")
+	}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(message, string(encoded[1:len(encoded)-1])) {
+		t.Errorf("the message line does not carry the attested envelope:\n%s", message)
 	}
 }
