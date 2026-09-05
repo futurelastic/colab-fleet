@@ -213,3 +213,51 @@ already names as the reason the pane path stays a fallback.
   real `net.Listen("unix", …)` socket rather than only `net.Pipe` — the same
   "what makes it run" gap #122's addendum above names for the resolver,
   answered here for the wire protocol.
+
+---
+
+## Addendum — #148: the capability had a fourth requirement nobody knew about
+
+This ADR's rule that *the honest response to half a capability is the same as to
+none of it* turned out to be under-applied, because the capability had a part
+this ADR did not know existed.
+
+Reaching a target's inbox needs an address, a credential, and a verified
+identity — all three of which this ADR already handles. It also needs, it turns
+out, the **permission-mode class the target runs in**, asserted on the message
+itself. The receiving runtime's inbound policy defaults to mode parity: it holds
+a message asserting no class whenever the receiver runs with permission prompts
+bypassed, and holds a message asserting the *wrong* class in every case. Held
+means never handed to the model, then dropped.
+
+So between this ADR landing and #148, every send to an unattended session was
+held while `sendViaInbox` reported `delivered` — 206 of them in three days, one
+session unreachable for three and a half.
+
+Three consequences for this ADR's own text:
+
+1. **The resolver supplies four things, not three.** `InboxAddress` carries the
+   class beside the network, socket and token, from the same machine-local index
+   and for the same reason: it is knowledge about a target that this repository
+   must not derive for itself. Absent is a legitimate answer and makes the path
+   unavailable.
+2. **The fallback list grew by one, on this ADR's own reasoning.** A send that
+   cannot be attested joins the dial failure and the write failure as
+   `ok=false` — a fact about *this attempt*, not an answer from the target, so
+   the terminal path carries it. The one case that stays final with no fallback
+   is still identity verification failing immediately before the write.
+   #148 places the attestation deliberately *after* that check, so an
+   unattestable send can never turn that refusal into a fallback.
+3. **`deliversToInbox` now means less than a reader might assume, and
+   deliberately still means what it always said.** It reports whether the wiring
+   exists, never whether a given target will be reached over it — which was
+   already its documented contract. #148 makes the gap wide enough to notice: on
+   the day it lands, no index writer emits the class, so the flag reads true
+   while every send falls back. That is the intended state, and the counter in
+   the resolver is what makes it observable rather than merely true.
+
+The five-value receipt vocabulary is still unproduced, and #120 is still why.
+#148 explicitly does not close it: the runtime's status frame is routed to a
+reply address that must be bound in the receiver's own socket namespace, which
+confirms rather than contradicts #143's measurement of zero bytes back on a
+fully successful delivery. See `docs/adr/148-attest-or-fall-back.md`.
