@@ -119,13 +119,36 @@
 //	                       this option, so every delivery fell through to
 //	                       the pane path silently. The directory holds one
 //	                       JSON file per numeric process id
-//	                       ("<pid>.json": network, socket, token) — a shape
-//	                       this repository defines for itself, never the
-//	                       real third-party address convention (see
+//	                       ("<pid>.json": network, socket, token_path,
+//	                       started_at, mode_class) — a shape this repository
+//	                       defines for itself, never the real third-party
+//	                       address convention (see
 //	                       cmd/colab-fleetd/inboxresolver.go). GET
 //	                       /v1/runtimes reports whether this wiring is live
 //	                       as deliversToInbox, so an operator never has to
 //	                       infer it from a receipt's wording.
+//	                       colab-fleet #148: mode_class names the permission-
+//	                       mode class the target session RUNS IN, and without
+//	                       it a send cannot be attested and falls back to the
+//	                       pane path — so an index whose writer does not yet
+//	                       emit it leaves deliversToInbox reading true while
+//	                       nothing actually uses the inbox. That is the
+//	                       intended day-one state, not a fault; an
+//	                       unrecognised value is rejected outright rather
+//	                       than guessed at, because the receiving runtime
+//	                       holds a wrong class as firmly as a missing one.
+//	FLEET_CAPTURE_LINES    how many lines of each pane this driver captures
+//	                       to classify it. Absent, or not a positive
+//	                       integer, means the built-in default is used and
+//	                       this option is never called. colab-fleet #148:
+//	                       the default was effectively hard-coded — the
+//	                       option existed with no caller — and a composer
+//	                       pushed past the capture window by accumulated
+//	                       notices becomes unreadable, at which point the
+//	                       driver correctly refuses to act on what it cannot
+//	                       see (#134) and an operator's only exit was to
+//	                       attach to the multiplexer by hand. This is the
+//	                       lever that was missing.
 package main
 
 import (
@@ -137,6 +160,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -335,6 +359,22 @@ func main() {
 			// own stdout is not the place machine-local filesystem layout
 			// belongs, committed repo or not.
 			log.Print("colab-fleetd: inbox delivery configured (#119, #122)")
+		}
+		// colab-fleet #148: the capture window had no caller, so its default
+		// was hard-coded in practice. A pane whose composer has been pushed
+		// past the window cannot be classified, #134's guard then correctly
+		// refuses to send a key it cannot reason about, and the documented
+		// way out ("wait for the composer to shrink") never arrives on an
+		// unattended session. Off by default — an absent or non-positive
+		// value calls nothing and leaves the built-in default in place.
+		if raw := os.Getenv("FLEET_CAPTURE_LINES"); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n <= 0 {
+				log.Printf("colab-fleetd: ignoring FLEET_CAPTURE_LINES=%q (want a positive integer)", raw)
+			} else {
+				opts = append(opts, tmux.WithCaptureLines(n))
+				log.Printf("colab-fleetd: pane capture window set to %d lines (#148)", n)
+			}
 		}
 		d := tmux.New(self, opts...)
 		// An unreadable key table is surfaced, never absorbed: continuing

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
+	"github.com/godx-jp/colab-fleet/internal/inboxclient"
 )
 
 // referenceStartedAt is one fixed instant, in the shape ProcessIdentity.StartedAt
@@ -361,4 +362,90 @@ func writeToken(t *testing.T, dir, value string) string {
 		t.Fatalf("writing token fixture %s: %v", path, err)
 	}
 	return path
+}
+
+// TestFileInboxResolver_ModeClassReachesTheAddress is colab-fleet #148's
+// resolver half: the permission-mode class an operator's index writer records
+// has to arrive on the address, because it is the one fact that decides
+// whether the inbox path can be used at all.
+func TestFileInboxResolver_ModeClassReachesTheAddress(t *testing.T) {
+	for _, want := range []inboxclient.ModeClass{inboxclient.ModeBypass, inboxclient.ModePrompting} {
+		dir := t.TempDir()
+		tokenPath := writeToken(t, dir, "tok-1")
+		writeIndexEntry(t, dir, 4242, fmt.Sprintf(
+			`{"socket":"/tmp/whatever.sock","token_path":%q,"started_at":%q,"mode_class":%q}`,
+			tokenPath, referenceStartedAtRFC3339, want))
+
+		resolve := newFileInboxResolver(dir)
+		addr, ok, err := resolve(context.Background(), tmux.ProcessIdentity{PID: 4242, StartedAt: referenceStartedAt})
+		if err != nil {
+			t.Fatalf("resolve() error = %v, want nil", err)
+		}
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if addr.ModeClass != want {
+			t.Errorf("addr.ModeClass = %q, want %q", addr.ModeClass, want)
+		}
+	}
+}
+
+// TestFileInboxResolver_ModeClassAbsent_ResolvesUnattestable pins the
+// day-one shape of #148: no writer emits the new field yet, so the entry must
+// still resolve — it simply carries no class, which makes the inbox path
+// unavailable for the send and lets the pane path carry it. An error here
+// would take the whole fleet's delivery down on the day this lands.
+func TestFileInboxResolver_ModeClassAbsent_ResolvesUnattestable(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := writeToken(t, dir, "tok-1")
+	writeIndexEntry(t, dir, 4242, fmt.Sprintf(
+		`{"socket":"/tmp/whatever.sock","token_path":%q,"started_at":%q}`,
+		tokenPath, referenceStartedAtRFC3339))
+
+	before := indexUnattestableEntryCount()
+	resolve := newFileInboxResolver(dir)
+	addr, ok, err := resolve(context.Background(), tmux.ProcessIdentity{PID: 4242, StartedAt: referenceStartedAt})
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil — an absent class is not a malformed entry", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true — the address is still usable for everything except attestation")
+	}
+	if addr.ModeClass != "" {
+		t.Errorf("addr.ModeClass = %q, want empty", addr.ModeClass)
+	}
+	if addr.ModeClass.Valid() {
+		t.Error("an absent class must never read as valid — that is what would put an unattested message on the wire")
+	}
+	if got := indexUnattestableEntryCount(); got <= before {
+		t.Errorf("unattestable counter = %d, want > %d — this condition is true for every entry on day one and must be observable", got, before)
+	}
+}
+
+// TestFileInboxResolver_UnrecognisedModeClass_ReportsError is the strictness
+// half. An uninterpretable class must never reach the wire: the receiving
+// runtime holds a WRONG class exactly as firmly as a missing one, and it does
+// so while this service would be reporting delivered. Capability-absent (a
+// resolver error, folded into the pane fallback by sendViaInbox) is the same
+// shape a bad start time already takes.
+func TestFileInboxResolver_UnrecognisedModeClass_ReportsError(t *testing.T) {
+	for _, bad := range []string{"bypassPermissions", "acceptEdits", "default", "plan", "BYPASS", "yes"} {
+		dir := t.TempDir()
+		tokenPath := writeToken(t, dir, "tok-1")
+		writeIndexEntry(t, dir, 4242, fmt.Sprintf(
+			`{"socket":"/tmp/whatever.sock","token_path":%q,"started_at":%q,"mode_class":%q}`,
+			tokenPath, referenceStartedAtRFC3339, bad))
+
+		resolve := newFileInboxResolver(dir)
+		addr, ok, err := resolve(context.Background(), tmux.ProcessIdentity{PID: 4242, StartedAt: referenceStartedAt})
+		if err == nil {
+			t.Errorf("mode_class %q resolved without error; addr = %+v", bad, addr)
+		}
+		if ok {
+			t.Errorf("mode_class %q reported ok = true — an uninterpretable class must be capability-absent", bad)
+		}
+		if addr.ModeClass != "" {
+			t.Errorf("mode_class %q leaked onto the address as %q", bad, addr.ModeClass)
+		}
+	}
 }

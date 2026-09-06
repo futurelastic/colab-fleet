@@ -401,5 +401,20 @@ with the implementation is worse than one that admits where it does.
   actually return it today. A confirmed submission, including a confirmed
   `resumeIfStranded` retry, reports `queued` instead. `submitted` remains
   reachable through `respond` and `keys()`.
+- **`input`'s inbox outcomes are documented as five values; four of them cannot
+  occur.** Only `delivered` is reachable. `held`, `denied`, `expired` and
+  `dropped` would all require reading a receipt the protocol routes to a reply
+  address this service does not hold (#120). `held` is the consequential one:
+  #148 measured a receiver holding 206 messages for a human who never came and
+  then dropping them, while this endpoint answered `delivered` every time. That
+  is addressed at the source — a send this service cannot attest now declines
+  the inbox path and falls back to the terminal one — rather than by producing
+  `held`, so `delivered` is honest but still means "the attested bytes reached
+  the socket", never "the model saw the turn".
+- **`deliversToInbox: true` does not imply any send will use the inbox.** Since
+  #148 a send also needs the target's permission-mode class from the
+  machine-local index; without it every send falls back while this flag still
+  reads true. On a machine whose index writer does not emit that field yet, that
+  is every send.
 - **`/v1/machines` and `/v1/runtimes` take no `scope`.** Every other plural
   endpoint does.

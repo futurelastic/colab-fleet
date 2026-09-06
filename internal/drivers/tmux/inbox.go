@@ -45,6 +45,21 @@ type InboxAddress struct {
 	// ProcessIdentity's own doc comment states for a different kind of
 	// identity, applied here to a credential instead of a pid.
 	Token string
+	// ModeClass is the permission-mode class the TARGET session runs in, as
+	// known to whatever supplies this address — never a fact this driver
+	// derives, and never a default. Empty means the resolver could not say,
+	// which makes the inbox path unavailable for the call (sendViaInbox
+	// below); it is not an error and not a refusal.
+	//
+	// colab-fleet #148: the receiving runtime holds a message whose sender
+	// asserts no class whenever the receiver runs with permission prompts
+	// bypassed, and holds one asserting the WRONG class in every case. Both
+	// are silent — held messages never reach the model and are dropped when
+	// the receiver's hold deadline passes, while this driver reported
+	// delivered. So the class must travel per target, beside the socket and
+	// the token, and be mirrored rather than assumed. See
+	// inboxclient.ModeClass for why a single compiled-in class is not a fix.
+	ModeClass inboxclient.ModeClass
 }
 
 // InboxResolver answers, for one authoritatively-resolved process identity,
@@ -163,6 +178,32 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 		}, true, nil
 	}
 
+	// #148: attest the target's permission-mode class, or do not use this path
+	// at all. Attest refuses when the resolver named no class, named an
+	// unusable one, or when the text cannot be wrapped in a form guaranteed to
+	// survive the receiver's own byte-for-byte rebuild check.
+	//
+	// This is ADR 119's rule applied to a piece of the capability we did not
+	// previously know was part of it: the honest response to half a capability
+	// is the same as to none of it. Sending anyway is what produced #148 —
+	// this driver reported delivered while the receiver held the message for a
+	// human who was never coming, then dropped it at its own hold deadline.
+	// The pane path is the pre-#144 default, which #148 itself records running
+	// at a 100% delivery rate, so falling back costs a slower delivery and
+	// nothing else.
+	//
+	// Placed AFTER the identity verification above and BEFORE the dial below,
+	// deliberately. Verification failing is a final refusal with no pane
+	// fallback (ADR 119: falling back there would defeat the check), so
+	// checking attestability first would silently convert that refusal into a
+	// fallback for any send that merely happened to be unattestable — turning
+	// a security gate off through an unrelated door. Nothing is dialled for a
+	// send that cannot be attested.
+	attested, ok := inboxclient.Attest(text, addr.ModeClass)
+	if !ok {
+		return fleet.DeliveryReceipt{}, false, nil
+	}
+
 	dctx, cancel := context.WithTimeout(ctx, inboxRoundTripTimeout)
 	defer cancel()
 	network := addr.Network
@@ -179,7 +220,7 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 	}
 	defer conn.Close()
 
-	receipt, derr := inboxclient.Deliver(conn, addr.Token, text, inboxRoundTripTimeout)
+	receipt, derr := inboxclient.Deliver(conn, addr.Token, attested, inboxRoundTripTimeout)
 	if derr != nil {
 		// #144: previously mapped to a final OutcomeUnknown, which #143's
 		// own investigation named as the exact hazard — "the call site

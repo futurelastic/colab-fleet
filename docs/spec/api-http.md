@@ -119,6 +119,18 @@ but-unconfigured deployment reads `false` here exactly like a machine that
 never adopted #119 at all — the honest answer, since from a caller's side
 those two states behave identically.
 
+⚠️ **`true` is a statement about wiring, never a prediction about a given
+send, and colab-fleet #148 widened that gap deliberately.** A send now also
+needs the target's permission-mode class, supplied per target by the same
+machine-local index the address comes from; without it the send cannot be
+attested and falls back to the terminal path. So a machine whose index writer
+does not yet emit that class reads `true` here while using the inbox for
+nothing at all. That is the intended state — sending unattested is what #148
+measured as 206 sends reported delivered and in fact held by the receiver and
+dropped — but a reader treating this flag as "the inbox will be used" will
+misread it. The field's contract is unchanged; only the number of ways a send
+can decline the path has grown.
+
 They must also consult `source`. `assumed` means nobody has confirmed these
 values and they are a conservative floor — reading them as the runtime's answer
 is how a temporarily unreachable peer becomes a permanently incapable one.
@@ -706,6 +718,20 @@ the full vocabulary and why those five are not folded into the four above.
 This is capability-detected per target, never a caller choice: the same call
 shape, the same endpoint, a richer answer only when that surface was actually
 used for this delivery.
+
+⚠️ **Of those five, only `delivered` is reachable today, and `held` is
+specifically not** (colab-fleet #120, #148). The receiving runtime's status
+frame is routed to a reply address that must be a socket bound in the
+receiver's own namespace, which this service does not have — so a sender reads
+nothing back even on a delivery that fully succeeded. `held` is the value that
+would matter most: #148 measured a receiver holding messages for a human who
+never came, then dropping them, while this endpoint answered `delivered` 206
+times. That is fixed at the source — a send this service cannot attest now
+declines the inbox path entirely and the terminal path carries it, so
+`delivered` is a true statement rather than a hopeful one — **not** by
+producing `held`, which would require inventing a receipt this protocol never
+hands a plain sender. A caller must still not read `delivered` as proof the
+model saw the turn; it means the attested bytes reached the socket.
 
 **`text` is capped by the same effective limit `prompt` carries on create**
 (colab-fleet #114, #130). Over that, the call is rejected outright —

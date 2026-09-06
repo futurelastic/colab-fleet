@@ -78,6 +78,33 @@ own doc comment names the variable; it does not name a value). Check
 `deliversToInbox` after any deploy you expect this path to be live on,
 rather than assuming a clean verify implies it.
 
+**And `deliversToInbox: true` is still not a usable path unless the index
+carries a permission-mode class (colab-fleet #148).** Each index entry now has
+an optional `mode_class` naming the class its target session RUNS IN. Without
+it a send cannot be attested and falls back to the terminal path — silently,
+and while the flag still reads true. Until whatever populates that directory
+emits the field, expect a correctly-deployed machine to use the inbox for
+nothing at all. That is the intended state, not a fault: sending unattested is
+what caused #148, where 206 sends in three days were reported delivered and
+were in fact held by the receiver and dropped.
+
+Two things to check on a deploy you expect this path to be live on:
+
+- the index writer emits `mode_class`, and emits the class the session is
+  actually running in — a *wrong* class is held exactly as firmly as a missing
+  one, so a writer that guesses is worse than one that omits the field;
+- the resolver's unattestable-entry counter falls to zero as the writer rolls
+  out. It exists precisely because "the field is not being written" and "the fix
+  did not take" are otherwise indistinguishable from outside.
+
+`FLEET_CAPTURE_LINES` is the other operator lever this deploy gains. It widens
+how much of each pane the driver captures to classify it. The default is
+unchanged if it is unset or non-positive; raise it only if you have hit the
+clipped-composer state, where accumulated notices push a composer out of the
+capture window and the driver correctly refuses to act on what it cannot read.
+Before this existed the only exit from that state was a human attaching to the
+multiplexer by hand.
+
 ## Running it
 
 ```sh
