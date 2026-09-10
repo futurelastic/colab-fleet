@@ -60,7 +60,7 @@ func TestStagedEnvIsAppliedToTheSessionAndThenUnlinked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, envFile,
+	out, err := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, envFile, "",
 		"/bin/sh", "-c", `printf '%s' "$FLEET_TEST_APPLIED"`).CombinedOutput()
 	if err != nil {
 		t.Fatalf("wrapper failed: %v (%s)", err, out)

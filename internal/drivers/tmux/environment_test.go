@@ -26,7 +26,7 @@ func TestEnvironmentRecordNeverContainsAValue(t *testing.T) {
 	record := filepath.Join(dir, "rec")
 
 	const secret = "s3cr3t-value-that-must-not-appear"
-	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, "", "/bin/echo", "ran")
+	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, "", "", "/bin/echo", "ran")
 	cmd.Env = append(os.Environ(), "FLEET_TEST_TOKEN="+secret)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("wrapper failed: %v (%s)", err, out)
@@ -69,7 +69,7 @@ func TestEnvironmentRecordDoesNotInventNamesFromMultilineValues(t *testing.T) {
 	dir := t.TempDir()
 	record := filepath.Join(dir, "rec")
 
-	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, "", "/bin/echo", "ran")
+	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, "", "", "/bin/echo", "ran")
 	cmd.Env = append(os.Environ(), "FLEET_TEST_MULTI=first\nPHANTOM=injected\nlast")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("wrapper failed: %v (%s)", err, out)
@@ -93,13 +93,94 @@ func TestSessionStartsEvenWhenTheRecordCannotBeWritten(t *testing.T) {
 	sh := shellForTest(t)
 	unwritable := filepath.Join(t.TempDir(), "no-such-dir", "rec")
 
-	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", unwritable, "", "/bin/echo", "AGENT-RAN")
+	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", unwritable, "", "", "/bin/echo", "AGENT-RAN")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the agent did not run when the record was unwritable: %v (%s)", err, out)
 	}
 	if !strings.Contains(string(out), "AGENT-RAN") {
 		t.Errorf("agent output = %q, want it to have run regardless", out)
+	}
+}
+
+// #151: the pane must end up in the requested directory even when the process
+// that starts it has a working directory that no longer exists.
+//
+// That is the exact state a long-running multiplexer server hands every new pane
+// once its own directory is deleted — and `-c` did not rescue it. This rebuilds
+// the state for real: an outer shell enters a directory, deletes it, and only
+// then execs the wrapper, so the wrapper inherits a dead cwd exactly as a pane
+// does. The control run without a cwd argument proves the state is reproduced
+// rather than assumed; without it this test would pass on a machine where the
+// reproduction silently failed.
+func TestWrapperEntersTheRequestedDirectoryFromADeadInheritedOne(t *testing.T) {
+	sh := shellForTest(t)
+	base := t.TempDir()
+	dead := filepath.Join(base, "dead")
+	target := filepath.Join(base, "target dir with spaces")
+	for _, d := range []string{dead, target} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(cwdArg string) (string, error) {
+		// A fresh dead directory per run; the outer shell leaves before rmdir
+		// could matter to anything but its own child.
+		if err := os.MkdirAll(dead, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		outer := `cd -- "$1" && rmdir -- "$1" && shift && exec "$@"`
+		cmd := exec.Command(sh, "-c", outer, "outer", dead,
+			sh, "-c", envRecordScript, "colab-fleet", "", "", cwdArg,
+			"/bin/pwd", "-P")
+		// stdout only: a shell starting in a dead directory complains about it
+		// on stderr (getcwd failures) — which is the reproduction showing
+		// itself, not the agent's answer.
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil {
+			return strings.TrimSpace(string(out) + stderr.String()), err
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+
+	if out, err := run(""); err == nil && out == want {
+		t.Fatalf("control run landed in the target without being asked to (%q); the dead-cwd "+
+			"state was not reproduced, so the real assertion below would prove nothing", out)
+	}
+
+	out, err := run(target)
+	if err != nil {
+		t.Fatalf("the wrapper did not run the agent from a dead inherited cwd: %v (%s)", err, out)
+	}
+	if out != want {
+		t.Errorf("agent started in %q, want %q — the explicit cd did not take", out, want)
+	}
+}
+
+// A directory that cannot be entered ends the pane rather than starting the
+// agent somewhere the caller did not name.
+func TestWrapperRefusesToRunTheAgentOutsideTheRequestedDirectory(t *testing.T) {
+	sh := shellForTest(t)
+	missing := filepath.Join(t.TempDir(), "no-such-dir")
+
+	out, err := exec.Command(sh, "-c", envRecordScript, "colab-fleet", "", "", missing,
+		"/bin/echo", "AGENT-RAN").CombinedOutput()
+	if err == nil {
+		t.Fatalf("the wrapper exited 0 for a directory that does not exist (%s)", out)
+	}
+	if strings.Contains(string(out), "AGENT-RAN") {
+		t.Fatal("the agent ran even though its working directory could not be entered; it " +
+			"would be working on something the caller never named")
+	}
+	if !strings.Contains(string(out), missing) {
+		t.Errorf("the failure does not name the directory: %q", out)
 	}
 }
 

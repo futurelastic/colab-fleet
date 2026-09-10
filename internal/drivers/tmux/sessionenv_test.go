@@ -449,7 +449,7 @@ func TestASessionEnvProvisionedValueReachesTheProcessThroughTheRealWrapper(t *te
 	}
 
 	record := filepath.Join(dir, "rec")
-	out, err := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, envPath,
+	out, err := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, envPath, "",
 		"/bin/sh", "-c", `printf '%s' "$FLEET_TEST_IDENTITY"`).CombinedOutput()
 	if err != nil {
 		t.Fatalf("wrapper failed: %v (%s)", err, out)
