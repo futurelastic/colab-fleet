@@ -885,10 +885,17 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 	// everything. Measured, the listing alone is ~8ms and the combined
 	// call ~18ms; two calls total ~26ms for 22 sessions, still O(1) in
 	// session count and still 4x cheaper than the per-session loop.
+	//
+	// Timed (colab-fleet#156) because a capture failure line that cannot say
+	// how much of the call's budget the LISTING already spent cannot tell "the
+	// capture was slow" from "the capture inherited almost nothing".
+	listStart := time.Now()
 	out, err := d.run(ctx, d.bin, args...)
+	listWall := time.Since(listStart)
 	if err != nil {
 		return nil, nil, fmt.Errorf("enumerate: listing sessions: %w", err)
 	}
+	d.noteSlowInvocation("listing", listWall, 0)
 	rows, err := parseRows(string(out), sep)
 	if err != nil {
 		return nil, nil, err
@@ -921,21 +928,28 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 	// doc comment for the measured thresholds. Each chunk is independent: a
 	// wall crossed by chunk 2 does not take chunk 1's already-captured
 	// screens down with it.
+	//
+	// Chunking bounds each invocation's SIZE; colab-fleet#156 is the other
+	// wall, TIME. The whole call — listing, every chunk, and whatever the verb
+	// does afterwards — shares one declared deadline (bounded), so a single
+	// invocation that stalls used to spend all of it: the process was killed
+	// at the call's own deadline, the chunk came back empty, and there was no
+	// budget left to try again. Measured on three machines at 3 to 75 panes per
+	// failure — including machines with only three or four panes, so pane count
+	// is not the lever and a budget scaled by it would not have helped. So each
+	// invocation now runs under a SLICE of what is left (captureSlice), never
+	// more than half of it, and one empty chunk per enumeration whose slice
+	// expired is retried with a fresh slice. Everything still derives from the
+	// caller's context: no call runs longer than it did before.
 	byIndex := make(map[string]string, len(rows))
 	chunks := chunkPaneRows(rows)
+	retryUnused := true
 	for chunkIdx, chunkRows := range chunks {
-		capArgs := make([]string, 0, len(chunkRows)*8)
-		for j, r := range chunkRows {
-			if j > 0 {
-				capArgs = append(capArgs, ";")
-			}
-			// The shape comes from classifyCaptureArgs, which is where the -e
-			// rationale lives: the composer's placeholder is distinguishable from
-			// typed input only by being rendered dim, and stripping colour here
-			// would discard the one signal separating "nobody typed anything"
-			// from "do not overwrite me".
-			capArgs = append(capArgs, "display-message", "-p", mark+strconv.Itoa(r.index), ";")
-			capArgs = append(capArgs, classifyCaptureArgs(r.paneID, d.captureLines)...)
+		// Invocations still to run, this one included: the chunks from here
+		// on, plus the retry while nobody has spent it.
+		pending := len(chunks) - chunkIdx
+		if retryUnused {
+			pending++
 		}
 		// A pane can vanish in the gap between the listing above and this
 		// capture — a session that ends while unobserved is ordinary churn
@@ -972,13 +986,56 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 		// marker-corruption failure mode instead. Best-effort only; a
 		// logging call that itself panics or blocks must never be how a
 		// caller learns this driver is unavailable.
-		capOut, runErr := d.run(ctx, d.bin, capArgs...)
-		chunkCaptures := splitCaptures(string(capOut), mark)
+		//
+		// colab-fleet#156 widened that line: it now carries the invocation's
+		// wall time against the slice it was given, how much of the call's
+		// budget was left, and how long the listing took. Without those, "the
+		// multiplexer was slow" and "the budget was too small" cannot be told
+		// apart, and that was the one question the first round of failures
+		// could not answer. The #141 prefix is kept word for word so an
+		// existing search of the log still finds these lines.
+		chunkCaptures, att := d.captureChunk(ctx, chunkRows, mark, pending)
 		if len(chunkCaptures) == 0 && len(chunkRows) > 0 {
-			log.Printf("tmux: batched capture returned nothing parseable for %d pane(s) "+
-				"(chunk %d/%d of this enumeration) — every session in this chunk will "+
-				"classify as a driver malfunction, not as an observation; exit error: %v",
-				len(chunkRows), chunkIdx+1, len(chunks), runErr)
+			d.counters.incr(counterCaptureChunkFailed)
+			detail := fmt.Sprintf("wall %v of %v slice (call budget left %v, listing took %v); "+
+				"cause: %s; exit error: %v",
+				roundMs(att.wall), roundMs(att.slice), roundMs(att.remaining), roundMs(listWall),
+				att.cause, att.err)
+			retryNote := ""
+			switch {
+			case att.cause != captureSliceExpired:
+				// Retrying is only useful when this invocation hit its OWN
+				// slice. If the caller has gone away or the call's budget is
+				// used up, nobody is waiting for the answer. A multiplexer
+				// exit is its own answer, and asking again gets the same one.
+				retryNote = "not attempted (" + att.cause + " is not a slice expiry)"
+			case !retryUnused:
+				retryNote = "not attempted (this enumeration's one retry is already spent)"
+			default:
+				retryUnused = false
+				retryCaptures, retry := d.captureChunk(ctx, chunkRows, mark, len(chunks)-chunkIdx)
+				if len(retryCaptures) > 0 {
+					d.counters.incr(counterCaptureRetryRecovered)
+					log.Printf("tmux: batched capture came back empty for %d pane(s) "+
+						"(chunk %d/%d of this enumeration), %s; retry recovered %d/%d pane(s) in %v",
+						len(chunkRows), chunkIdx+1, len(chunks), detail,
+						len(retryCaptures), len(chunkRows), roundMs(retry.wall))
+					chunkCaptures = retryCaptures
+					break
+				}
+				d.counters.incr(counterCaptureRetryFailed)
+				retryNote = fmt.Sprintf("failed after %v of %v slice (cause: %s; exit error: %v)",
+					roundMs(retry.wall), roundMs(retry.slice), retry.cause, retry.err)
+			}
+			if retryNote != "" {
+				log.Printf("tmux: batched capture returned nothing parseable for %d pane(s) "+
+					"(chunk %d/%d of this enumeration) — every session in this chunk will "+
+					"classify as a driver malfunction, not as an observation; %s; retry: %s",
+					len(chunkRows), chunkIdx+1, len(chunks), detail, retryNote)
+			}
+		} else if att.err == nil {
+			d.noteSlowInvocation(fmt.Sprintf("capture chunk %d/%d", chunkIdx+1, len(chunks)),
+				att.wall, len(chunkRows))
 		}
 		for k, v := range chunkCaptures {
 			byIndex[k] = v
@@ -992,6 +1049,147 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 	}
 	return rows, captures, nil
 }
+
+// Why a capture invocation came back with nothing, as far as this driver can
+// tell. These are log vocabulary. Only captureSliceExpired changes behaviour:
+// it is the one cause where running the invocation again can produce
+// a different answer inside the same call.
+const (
+	// captureSliceExpired: the invocation hit its own slice while the call
+	// still had budget. It was the multiplexer that was slow, not the
+	// caller that gave up.
+	captureSliceExpired = "slice-expired"
+	// captureCallerCancelled: the caller's context was cancelled (a client
+	// disconnected, a subscription closed). Nobody is waiting for the answer.
+	captureCallerCancelled = "caller-cancelled"
+	// captureBudgetExhausted: the call's whole declared deadline has run out.
+	// Before colab-fleet#156 every stall ended in this cause, because
+	// the capture ran under the call's full budget.
+	captureBudgetExhausted = "call-budget-exhausted"
+	// captureMultiplexerExit: the process exited on its own with an error —
+	// the multiplexer answering, not the clock.
+	captureMultiplexerExit = "multiplexer-exit"
+	// captureNoOutput: exited cleanly and still produced nothing
+	// parseable. This is the marker-corruption shape described in enumerate.
+	captureNoOutput = "no-output"
+)
+
+// captureAttempt is what one batched capture invocation reports about
+// itself, beyond its output.
+type captureAttempt struct {
+	wall      time.Duration // measured on the real clock, whatever d.now says
+	slice     time.Duration // the budget this invocation was given
+	remaining time.Duration // the call's budget left when it started
+	err       error
+	cause     string // one of the capture* causes; meaningful only when output was empty
+}
+
+// captureChunk runs ONE batched display-message/capture-pane invocation for
+// chunkRows under a slice of the caller's remaining budget (captureSlice),
+// and reports how it went. pending is the number of invocations still to run
+// in this enumeration, this one included.
+//
+// The slice is a child of ctx, never a replacement for it: a caller's own
+// deadline or cancellation still ends the invocation at once, and nothing
+// here can make a call run longer than its declared deadline (§4.4).
+func (d *Driver) captureChunk(ctx context.Context, chunkRows []indexedPaneRow, mark string, pending int) (map[string]string, captureAttempt) {
+	capArgs := make([]string, 0, len(chunkRows)*8)
+	for j, r := range chunkRows {
+		if j > 0 {
+			capArgs = append(capArgs, ";")
+		}
+		// The shape comes from classifyCaptureArgs, which is where the -e
+		// rationale lives: the composer's placeholder is distinguishable from
+		// typed input only by being rendered dim, and stripping colour here
+		// would discard the one signal separating "nobody typed anything"
+		// from "do not overwrite me".
+		capArgs = append(capArgs, "display-message", "-p", mark+strconv.Itoa(r.index), ";")
+		capArgs = append(capArgs, classifyCaptureArgs(r.paneID, d.captureLines)...)
+	}
+
+	// Measured on d.now, the same clock bounded() set the deadline with.
+	remaining := d.deadline
+	if dl, ok := ctx.Deadline(); ok {
+		remaining = dl.Sub(d.now())
+	}
+	att := captureAttempt{slice: captureSlice(remaining, pending), remaining: remaining}
+
+	runCtx := ctx
+	if att.slice > 0 {
+		c, cancel := context.WithDeadline(ctx, d.now().Add(att.slice))
+		defer cancel()
+		runCtx = c
+	}
+	start := time.Now()
+	out, err := d.run(runCtx, d.bin, capArgs...)
+	att.wall = time.Since(start)
+	att.err = err
+
+	// The order matters. A child context is done whenever its parent is, so
+	// the parent is checked first: only a child that expired under a parent
+	// still live counts as this invocation's own slice running out.
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled):
+		att.cause = captureCallerCancelled
+	case ctx.Err() != nil:
+		att.cause = captureBudgetExhausted
+	case runCtx.Err() != nil:
+		att.cause = captureSliceExpired
+	case err != nil:
+		att.cause = captureMultiplexerExit
+	default:
+		att.cause = captureNoOutput
+	}
+	return splitCaptures(string(out), mark), att
+}
+
+// captureSlice is the budget ONE capture invocation may spend, given the
+// call's remaining budget and the invocations still to run (this one
+// included). One extra share is always held back, for the verb's own work
+// after the enumeration (Send's paste and submit, Discard's clear loop). So
+// no invocation ever gets more than half of what is left, and one stalled
+// invocation can no longer take the whole call's deadline with it
+// (colab-fleet#156).
+//
+// At the default 30 s with one chunk and the retry unspent, the first
+// attempt gets 10 s. A healthy batched capture takes tens of milliseconds, so
+// 10 s is still hundreds of times its normal cost. Any invocation that
+// succeeds but runs slow enough to matter shows up in the log first (see
+// noteSlowInvocation). This function is where to tune the slice if the log
+// ever shows healthy captures getting killed.
+func captureSlice(remaining time.Duration, pending int) time.Duration {
+	if remaining <= 0 {
+		return 0
+	}
+	if pending < 1 {
+		pending = 1
+	}
+	return remaining / time.Duration(pending+1)
+}
+
+// slowInvocationDivisor puts the "slow" line at 1/15 of the declared
+// deadline: 2 s at the default 30 s. That is about a hundred times what a
+// healthy invocation costs, and still far below any slice, so a slow success
+// is logged well before it could turn into a kill.
+const slowInvocationDivisor = 15
+
+// noteSlowInvocation logs and counts one multiplexer invocation that
+// succeeded but took longer than the slow line. Without this, the only wall
+// times ever recorded come from failures, and failures alone cannot say how
+// close healthy invocations run to the slice (colab-fleet#156).
+// panes is 0 for an invocation that does not capture panes, such as the listing.
+func (d *Driver) noteSlowInvocation(what string, wall time.Duration, panes int) {
+	line := d.deadline / slowInvocationDivisor
+	if wall <= line {
+		return
+	}
+	d.counters.incr(counterEnumerateSlowInvocation)
+	log.Printf("tmux: slow multiplexer invocation — %s took %v for %d pane(s) (slow line %v); "+
+		"it succeeded, and is logged only so wall times are on record before the next failure",
+		what, roundMs(wall), panes, roundMs(line))
+}
+
+func roundMs(x time.Duration) time.Duration { return x.Round(time.Millisecond) }
 
 // indexedPaneRow pairs a paneRow with its position in the ORIGINAL rows
 // slice, so a marker built while iterating one chunk still carries the
