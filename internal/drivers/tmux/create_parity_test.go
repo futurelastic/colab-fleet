@@ -271,6 +271,38 @@ func TestAgentArgvIsBoundPositionallyNeverSplicedIntoTheScript(t *testing.T) {
 	}
 }
 
+// #151: the wrapper is handed the working directory to enter itself, as the
+// positional parameter the script reads for it — and `-c` is still passed to
+// the multiplexer alongside it. Both halves are pinned: dropping the positional
+// reopens the dead-inherited-cwd failure, and dropping `-c` loses the pane path
+// the multiplexer reports.
+func TestWrapperIsHandedTheCwdAndMultiplexerKeepsDashC(t *testing.T) {
+	f := twoSessions()
+	const cwd = "/work/has space/x"
+	_, argv := createWith(t, f, fleet.SessionSpec{Name: "x", Cwd: cwd},
+		WithLoginShell("/bin/testsh"))
+
+	if got, ok := flagValue(argv[:len(argv)-len(agentArgv(argv))], "-c"); !ok || got != cwd {
+		t.Errorf("new-session -c = %q (present %v), want %q", got, ok, cwd)
+	}
+
+	agent := agentArgv(argv)
+	// shell, -lic, script, $0, $1 record, $2 env, $3 cwd, then the agent.
+	const cwdAt = 6
+	if len(agent) <= cwdAt {
+		t.Fatalf("wrapper argv too short to carry a cwd: %v", agent)
+	}
+	if !strings.Contains(agent[2], `cd -- "$3"`) {
+		t.Fatalf("the wrapper script does not enter $3: %q", agent[2])
+	}
+	if agent[cwdAt] != cwd {
+		t.Errorf("wrapper $3 = %q, want the spec's cwd %q", agent[cwdAt], cwd)
+	}
+	if agent[cwdAt+1] != "claude" {
+		t.Errorf("the agent should follow the cwd positional, got %q", agent[cwdAt+1])
+	}
+}
+
 // Opting out is expressible, and is the only thing that turns it off. The zero
 // value of a bool would silently mean "off", which is the second-class shape
 // this work exists to stop being the default.

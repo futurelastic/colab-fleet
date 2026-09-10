@@ -3331,6 +3331,12 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// environment a launcher-created session does, and stage a record of what
 	// it actually ended up with. See environment.go for why interactive is not
 	// optional and why the record carries no values.
+	//
+	// #151: the wrapper also enters spec.Cwd itself. `-c` below is kept — it is
+	// still what the multiplexer reports as the pane's path — but it is not
+	// trusted to be what the agent starts in. A bare-exec session has no shell
+	// to do the `cd`, so it stays exposed to a server with a dead directory;
+	// that is part of what opting out of the wrapper costs.
 	envPath, err := d.stageEnv(spec.Env)
 	if err != nil {
 		_ = d.idem.release(key)
@@ -3339,7 +3345,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	recordPath := ""
 	if !d.bareExec {
 		recordPath = d.envRecordPath()
-		argv = loginWrap(d.loginShell(), recordPath, envPath, argv)
+		argv = loginWrap(d.loginShell(), recordPath, envPath, string(spec.Cwd), argv)
 	}
 
 	// #47, point 5: seed this session's own working directory before the

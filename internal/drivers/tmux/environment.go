@@ -130,6 +130,27 @@ func (d *Driver) loginShell() string {
 //     cannot cost the session — but it also must not be silent, which is why
 //     the driver validates the content before staging rather than trusting the
 //     shell to complain.
+//
+// The working directory arrives as `$3` and is entered with an explicit `cd`
+// immediately before the `exec`, rather than trusted to the multiplexer's `-c`
+// alone. Measured on a multiplexer server whose OWN working directory had been
+// deleted: every new pane inherited that dead directory — `pwd` printed `.`, the
+// agent exited at once reporting its directory gone — even though the session
+// was created with `-c` naming a directory that existed. Two different existing
+// directories, same result. `new-session` still returned success, so nothing on
+// the create path could see it; the session was simply dead a second later. An
+// absolute `cd` from inside the pane escapes the inherited directory, which a
+// launcher that does exactly this was verified to survive on the same server.
+//
+// Placed last, after the interactive startup files have run, it also overrides
+// any `cd` those files do — a second way the session could otherwise start
+// somewhere other than where it was asked to.
+//
+// A `cd` that fails ends the pane instead of running the agent. The directory
+// was named by the caller; an agent started anywhere else would be working on
+// something nobody asked it to touch, which is worse than a session that is
+// reported dead. This is deliberately the opposite trade from the record above:
+// the record is a diagnostic, the directory is the request.
 const envRecordScript = `if [ -n "$2" ]; then
   while IFS= read -r fleet_env_line; do
     [ -n "$fleet_env_line" ] && export "$fleet_env_line"
@@ -137,7 +158,10 @@ const envRecordScript = `if [ -n "$2" ]; then
   rm -f "$2" 2>/dev/null
 fi
 { printf '%s\n' "$PATH"; env -0 | tr -d '\n' | tr '\0' '\n' | sed 's/=.*//' | sort; } > "$1" 2>/dev/null || true
-shift 2
+if [ -n "$3" ]; then
+  cd -- "$3" || { printf 'colab-fleet: cannot enter the working directory %s\n' "$3" >&2; exit 1; }
+fi
+shift 3
 exec "$@"`
 
 // loginWrap wraps the agent argv in a login+interactive shell, and returns the
@@ -145,9 +169,12 @@ exec "$@"`
 //
 // recordPath and envPath may each be empty, independently: the wrap is the fix,
 // the record is the evidence, and the caller's variables are a third thing. Any
-// one working without the others is a legitimate state.
-func loginWrap(shell, recordPath, envPath string, argv []string) []string {
-	wrapped := []string{shell, "-lic", envRecordScript, "colab-fleet", recordPath, envPath}
+// one working without the others is a legitimate state. cwd is bound the same
+// way — a positional parameter, never spliced into the script — and empty means
+// "no explicit cd", which only a direct test of the script uses; Create always
+// passes one, because Create refuses a spec without a cwd.
+func loginWrap(shell, recordPath, envPath, cwd string, argv []string) []string {
+	wrapped := []string{shell, "-lic", envRecordScript, "colab-fleet", recordPath, envPath, cwd}
 	return append(wrapped, argv...)
 }
 
