@@ -1092,11 +1092,16 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			// ResumeIfStranded is: it has no effect unless explicitly set,
 			// so a caller that never sets it sees no symptom at all.
 			ReplaceIfStranded bool `json:"replaceIfStranded,omitempty"`
+			// From (colab-fleet #158) labels the message with who it says
+			// it comes from. Its Machine is replaced by stampSender below,
+			// never passed through.
+			From *fleet.MessageFrom `json:"from,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "malformed JSON body", Machine: machine})
 			return
 		}
+		from := svc.stampSender(r, body.From)
 
 		if ferr := rejectOverLength("text", body.Text, machine, svc.MaxInputBytes()); ferr != nil {
 			writeError(w, ferr)
@@ -1115,7 +1120,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded})
+		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, From: from})
 		if err != nil {
 			// A refusal from the driver is not this branch — Send returns
 			// it as a DeliveryReceipt value, not an error. Only a
@@ -1129,6 +1134,36 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		// unknown.
 		writeJSON(w, http.StatusOK, receipt)
 	}
+}
+
+// stampSender applies colab-fleet #158's one rule about a sender's machine:
+// the service stamps it, the caller never supplies it.
+//
+// The machine is where the request ENTERED the fleet. For a direct request
+// that is this machine. For a relayed one it is the machine that relayed it,
+// which forwarded its own stamp in from.machine — accepted here only because
+// the request arrives as a relay (it carries the on-behalf-of assertion) and
+// only when it names one of this machine's configured peers. That is the same
+// bound the on-behalf-of assertion itself has: trusted exactly as far as the
+// relay is. Anything else, and the machine is omitted rather than guessed —
+// including a peer whose configured name here differs from its own name for
+// itself, which FLEET_PEERS permits.
+//
+// Nil in, nil out: no `from` means unlabelled, exactly as before #158.
+func (svc *Service) stampSender(r *http.Request, from *fleet.MessageFrom) *fleet.MessageFrom {
+	if from == nil {
+		return nil
+	}
+	out := *from
+	out.Machine = ""
+	if r.Header.Get(onBehalfOfHeader) == "" {
+		out.Machine = svc.Self()
+	} else if claimed := from.Machine; claimed != "" && claimed != svc.Self() {
+		if _, isPeer := svc.peerDrivers()[claimed]; isPeer {
+			out.Machine = claimed
+		}
+	}
+	return &out
 }
 
 // handleRespond answers a prompt a session is blocked on (§3).

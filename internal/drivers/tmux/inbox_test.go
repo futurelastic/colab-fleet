@@ -524,7 +524,7 @@ func TestSend_InboxAttestedEnvelopeReachesTheWire(t *testing.T) {
 	if message == "" {
 		t.Fatal("no message line reached the wire")
 	}
-	want, ok := inboxclient.Attest("hello", inboxclient.ModePrompting)
+	want, ok := inboxclient.Attest("hello", inboxclient.ModePrompting, "")
 	if !ok {
 		t.Fatal("Attest refused a plain body")
 	}
@@ -534,5 +534,136 @@ func TestSend_InboxAttestedEnvelopeReachesTheWire(t *testing.T) {
 	}
 	if !strings.Contains(message, string(encoded[1:len(encoded)-1])) {
 		t.Errorf("the message line does not carry the attested envelope:\n%s", message)
+	}
+}
+
+// colab-fleet #158: the sender label must reach the wire INSIDE the envelope —
+// as the sender-name attribute, with a relayOfHuman declaration as the body's
+// first line — and the send must still be attested and delivered.
+func TestSend_InboxCarriesTheSenderLabel(t *testing.T) {
+	f := twoSessions()
+	ps := &fakePS{}
+	ps.set(100, time.Now())
+	ps.set(200, time.Now())
+	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
+		return InboxAddress{
+			Network: "unix", Socket: "/irrelevant", Token: "tok",
+			ModeClass: inboxclient.ModeBypass,
+		}, true, nil
+	}
+	lines := make(chan string, 2)
+	dial := pipeDialer(t, func(server net.Conn) {
+		defer server.Close()
+		reader := bufio.NewReader(server)
+		for i := 0; i < 2; i++ {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			lines <- line
+		}
+	})
+	d := newInboxTestDriver(f, ps, resolver, dial)
+
+	from := &fleet.MessageFrom{Agent: "agent-a", Session: "s-158", Machine: "entrybox", RelayOfHuman: true}
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true, From: from})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeDelivered {
+		t.Fatalf("outcome = %q, want delivered — a label must never cost the inbox path", got.Outcome)
+	}
+
+	var message string
+	for i := 0; i < 2; i++ {
+		select {
+		case line := <-lines:
+			if strings.Contains(line, `"user"`) {
+				message = line
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for the request lines")
+		}
+	}
+	want, ok := inboxclient.Attest(driver.RelayDeclaration+"\nhello", inboxclient.ModeBypass, "agent-a · s-158 · entrybox")
+	if !ok {
+		t.Fatal("Attest refused a labelled plain body")
+	}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(message, string(encoded[1:len(encoded)-1])) {
+		t.Errorf("the message line does not carry the labelled envelope:\n%s", message)
+	}
+	if !strings.Contains(want, `from-name="agent-a · s-158 · entrybox" from-mode="bypass"`) {
+		t.Errorf("envelope lacks the sender-name attribute before the mode attribute: %q", want)
+	}
+}
+
+// colab-fleet #158: the terminal path has no envelope, so the same label goes
+// on as the first line of the pasted text.
+func TestSend_PaneFallbackCarriesTheSenderLabelAsFirstLine(t *testing.T) {
+	f := twoSessions()
+	ps := &fakePS{}
+	ps.set(100, time.Now())
+	ps.set(200, time.Now())
+	// A successful submit empties the fake's composer, taking the pasted text
+	// with it; a swallowed submit leaves it where this test can read it.
+	f.swallowSubmit = true
+	d := newInboxTestDriver(f, ps, nil, nil) // no inbox: the pane path
+
+	from := &fleet.MessageFrom{Agent: "agent-a", Session: "s-158", Machine: "entrybox", RelayOfHuman: true}
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true, From: from})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome == fleet.OutcomeRefused {
+		t.Fatalf("a labelled pane send was refused: %s", got.Reason)
+	}
+	want := "[from: agent-a · s-158 · entrybox]\n" + driver.RelayDeclaration + "\nhello"
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	found := false
+	for _, pasted := range f.pasted {
+		if strings.HasPrefix(pasted, want) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no pane received the labelled text %q; pasted = %q", want, f.pasted)
+	}
+}
+
+// Unlabelled pane sends are unchanged by #158.
+func TestPaneLabelled_NilFromIsIdentity(t *testing.T) {
+	if got := paneLabelled("hello", nil); got != "hello" {
+		t.Errorf("paneLabelled(nil) = %q, want the text unchanged", got)
+	}
+	if got := paneLabelled("hello", &fleet.MessageFrom{Agent: "‍​"}); got != "hello" {
+		t.Errorf("a label that normalises to nothing added a line: %q", got)
+	}
+}
+
+// colab-fleet #158: the label is added AFTER the #53 guard has judged the
+// caller's own text. Prefixing first would push a runtime-syntax line off the
+// first line and past the guard — a label must never be a way around it.
+func TestSend_SenderLabelDoesNotDefuseTheRuntimeSyntaxGuard(t *testing.T) {
+	f := twoSessions()
+	ps := &fakePS{}
+	ps.set(100, time.Now())
+	ps.set(200, time.Now())
+	d := newInboxTestDriver(f, ps, nil, nil)
+
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "!ls -la",
+		driver.SendOptions{Submit: true, From: &fleet.MessageFrom{Agent: "agent-a", Machine: "entrybox"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Errorf("outcome = %q, want refused — the label must not carry runtime syntax past the guard", got.Outcome)
 	}
 }

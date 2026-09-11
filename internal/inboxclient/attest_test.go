@@ -39,8 +39,11 @@ func rebuild(from, fromSession, hopChain, fromName, mode, body string) string {
 	if hopChain != "" {
 		attrs = append(attrs, `hop-chain="`+hopChain+`"`)
 	}
-	if fromName != "" {
-		attrs = append(attrs, `from-name="`+fromName+`"`)
+	// The receiver re-normalises the name it parsed before writing it back
+	// (colab-fleet #158) — omitting this step would make the round-trip
+	// check blind to exactly the byte differences that discard an envelope.
+	if n := receiverRebuildName(fromName); fromName != "" && n != "" {
+		attrs = append(attrs, `from-name="`+n+`"`)
 	}
 	if mode != "" {
 		attrs = append(attrs, `from-mode="`+mode+`"`)
@@ -64,7 +67,7 @@ func TestAttestGoldenBytes(t *testing.T) {
 		{ModeBypass, "<cross-session-message from-mode=\"bypass\">\nhello\n</cross-session-message>"},
 		{ModePrompting, "<cross-session-message from-mode=\"prompting\">\nhello\n</cross-session-message>"},
 	} {
-		got, ok := Attest("hello", tc.class)
+		got, ok := Attest("hello", tc.class, "")
 		if !ok {
 			t.Fatalf("Attest(%q) refused a plain body", tc.class)
 		}
@@ -92,7 +95,7 @@ func TestAttestSatisfiesReceiverGrammar(t *testing.T) {
 	}
 	for _, class := range []ModeClass{ModeBypass, ModePrompting} {
 		for _, body := range bodies {
-			got, ok := Attest(body, class)
+			got, ok := Attest(body, class, "")
 			if !ok {
 				t.Fatalf("Attest(%q, %q) refused an attestable body", body, class)
 			}
@@ -140,7 +143,7 @@ func TestAttestRefuses(t *testing.T) {
 		{"less-dot lookalike", "a ⋖ b", ModeBypass},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := Attest(tc.text, tc.class)
+			got, ok := Attest(tc.text, tc.class, "")
 			if ok {
 				t.Fatalf("Attest attested a body it cannot guarantee: %q", got)
 			}
@@ -158,7 +161,7 @@ func TestAttestRefusesEveryOpenLookalike(t *testing.T) {
 	n := 0
 	for _, r := range openLookalikes {
 		n++
-		if _, ok := Attest("before "+string(r)+" after", ModeBypass); ok {
+		if _, ok := Attest("before "+string(r)+" after", ModeBypass, ""); ok {
 			t.Errorf("rune %U is in openLookalikes but was not refused", r)
 		}
 	}
