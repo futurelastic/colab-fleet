@@ -119,6 +119,23 @@ const (
 	counterSubmitConfirmLatencyUnder1s    = "submit_confirm.latency_under_1s"
 	counterSubmitConfirmLatencyUnder2s    = "submit_confirm.latency_under_2s"
 	counterSubmitConfirmLatencyUnder4s    = "submit_confirm.latency_under_4s"
+
+	// colab-fleet#156: the batched capture's TIME wall. chunk_failed counts
+	// every capture chunk that came back with nothing parseable, whatever
+	// the cause and whether or not a retry then recovered it. The rate of
+	// failures is the signal, and a retry that quietly fixes each one would
+	// hide it (same argument as counterInitialPromptRetried). retry_recovered
+	// and retry_failed split the retries that were attempted, and their ratio
+	// answers whether retrying is worth doing. A stall across the whole server
+	// shows up as retry_failed, and more retrying will not fix that.
+	// slow_invocation counts every multiplexer invocation, listing included,
+	// that SUCCEEDED but took longer than slowInvocationLine. It gives a wall
+	// time distribution before the next failure, which the failure line
+	// alone cannot.
+	counterCaptureChunkFailed      = "capture.chunk_failed"
+	counterCaptureRetryRecovered   = "capture.retry_recovered"
+	counterCaptureRetryFailed      = "capture.retry_failed"
+	counterEnumerateSlowInvocation = "enumerate.slow_invocation"
 )
 
 // confirmLatencyBucket maps an observed confirm latency onto one of the five
