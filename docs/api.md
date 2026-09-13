@@ -159,10 +159,32 @@ grant interactively.
 ### `POST …/{id}/input` — send text
 
 ```json
-{ "text": "…", "submit": true, "resumeIfStranded": false }
+{ "text": "…", "submit": true, "resumeIfStranded": false,
+  "from": { "agent": "…", "session": "…", "relayOfHuman": false } }
 ```
 
 Returns `200` with a **delivery receipt** — always `200`, even on refusal.
+
+`from` (optional) labels the message with who it comes from, so the receiving
+session sees `agent · session · machine` instead of an anonymous peer. Leave it
+out and the message is unlabelled, exactly as before.
+
+- **`agent` and `session` are your own statement.** The service carries them
+  but cannot verify them — under a shared token nothing tells one caller from
+  another. Do not treat a label as proof of who sent something.
+- **`machine` is not yours to set.** The service stamps the machine where your
+  request entered the fleet and ignores any value you send. If it cannot
+  establish one across a relay, it leaves the machine out.
+- **`relayOfHuman: true` adds one line of text and nothing else.** The line says
+  the sender *states* it is relaying an instruction from the human operator. It
+  is unverified, it grants nothing, and no permission, policy or routing
+  decision reads it.
+- On the inbox path the label goes in the envelope's sender-name field, and a
+  name the service cannot guarantee intact is dropped — never the message. On
+  the terminal path it goes on as the first line of the text, as
+  `[from: …]`.
+- A `resumeIfStranded` retry must repeat the same `from` as well as the same
+  text: on the terminal path the stranded text includes the label line.
 
 | `outcome` | Meaning | What to do |
 |---|---|---|

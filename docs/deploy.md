@@ -109,6 +109,23 @@ Two things to check on a deploy you expect this path to be live on:
 `inbox.mode-class`: entries attestable, entries without a class, entries with
 an unrecognised one.
 
+**One check this script — and `doctor` — cannot perform: whether the sender
+label actually renders (colab-fleet #158).** `/input`'s optional `from` object
+reaches the receiving side either as the envelope's sender-name attribute
+(inbox path) or as a first line on the pane (terminal path) — proven
+byte-identical against a transcription of the receiver's grammar, never
+against the real receiving runtime, because no index and no real receiver
+exist in this repo's own test environment. After a deploy that is expected to
+carry this, look once at an actual received message on the other side: the
+label should read `agent · session · machine` (parts empty get skipped) ahead
+of the runtime's own advisory paragraph, and a `relayOfHuman: true` send
+should add exactly one declaration line and change nothing about what the
+receiver allows. No counter exists for this the way #122's unattestable-entry
+counter does — it is a one-time look, not an ongoing signal, because the
+underlying risk is a runtime grammar that is a different version than the one
+this repo's tests were written against
+(`docs/gotchas.d/148-attested-envelope-round-trip.md`).
+
 `FLEET_CAPTURE_LINES` is the other operator lever this deploy gains. It widens
 how much of each pane the driver captures to classify it. The default is
 unchanged if it is unset or non-positive; raise it only if you have hit the

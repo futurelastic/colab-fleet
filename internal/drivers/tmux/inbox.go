@@ -137,7 +137,7 @@ const inboxRoundTripTimeout = inboxclient.FirstLineDeadline
 // verification failing immediately before the write, below — that is a
 // deliberate refusal (#116), not a failed attempt, and ADR 119 explains why
 // falling back there would defeat the check.
-func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text string) (fleet.DeliveryReceipt, bool, error) {
+func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text string, from *fleet.MessageFrom) (fleet.DeliveryReceipt, bool, error) {
 	if d.inboxResolver == nil {
 		return fleet.DeliveryReceipt{}, false, nil
 	}
@@ -199,7 +199,12 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 	// fallback for any send that merely happened to be unattestable — turning
 	// a security gate off through an unrelated door. Nothing is dialled for a
 	// send that cannot be attested.
-	attested, ok := inboxclient.Attest(text, addr.ModeClass)
+	//
+	// #158: the sender label rides in the envelope's sender-name attribute,
+	// and a relayOfHuman declaration as the body's first line. Attest drops a
+	// name it cannot guarantee rather than refusing the send, so the label
+	// never changes whether this path is taken.
+	attested, ok := inboxclient.Attest(driver.WithDeclaration(from, text), addr.ModeClass, driver.SenderLabel(from))
 	if !ok {
 		return fleet.DeliveryReceipt{}, false, nil
 	}
@@ -283,4 +288,26 @@ func mapInboxOutcome(o inboxclient.Outcome) fleet.Outcome {
 // let sendViaInbox reinterpret a pane-shaped request.
 func inboxEligible(opts driver.SendOptions) bool {
 	return opts.Submit && !opts.ResumeIfStranded && !opts.ReplaceIfStranded
+}
+
+// panePrefix opens the first line the terminal path adds for a labelled send.
+const panePrefix = "[from: "
+
+// paneLabelled is the terminal path's form of the sender label (colab-fleet
+// #158). That path has no envelope, so the label goes on as one short first
+// line of the text, followed by the relayOfHuman declaration when asked for.
+//
+// It uses the same normalised name the envelope would carry, which also keeps
+// it one line: SenderName drops every line and paragraph separator. A label
+// that normalises to nothing adds no line at all.
+//
+// Send applies this AFTER the #53 runtime-syntax guard has judged the caller's
+// own text. Prefixing first would move a leading slash command off the first
+// line and past the guard, which is the opposite of what a label is for.
+func paneLabelled(text string, from *fleet.MessageFrom) string {
+	text = driver.WithDeclaration(from, text)
+	if name := inboxclient.SenderName(driver.SenderLabel(from)); name != "" {
+		return panePrefix + name + "]\n" + text
+	}
+	return text
 }

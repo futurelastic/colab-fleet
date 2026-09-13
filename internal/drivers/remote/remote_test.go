@@ -364,6 +364,46 @@ func TestSendForwardsReplaceIfStranded(t *testing.T) {
 	}
 }
 
+// colab-fleet #158: From is the third field Send's hand-built body has to be
+// told about (#33, #112). Machine must travel with it: this hop is the only
+// place it is on the wire, carrying the entering machine's own stamp.
+func TestSendForwardsFrom(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+	d := New("peerbox", srv.URL)
+
+	from := &fleet.MessageFrom{Agent: "agent-a", Session: "s-158", Machine: "entrybox", RelayOfHuman: true}
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "hi",
+		driver.SendOptions{Submit: true, From: from}); err != nil {
+		t.Fatal(err)
+	}
+
+	var body struct {
+		From *fleet.MessageFrom `json:"from"`
+	}
+	if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+		t.Fatalf("body = %q: %v", rec.body, err)
+	}
+	if body.From == nil || *body.From != *from {
+		t.Fatalf("body = %q, want from %+v carried through to the owning daemon (#158)", rec.body, *from)
+	}
+}
+
+// An unlabelled send must stay byte-for-byte what it was before #158.
+func TestSendWithoutFromSendsNone(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+	d := New("peerbox", srv.URL)
+
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "hi",
+		driver.SendOptions{Submit: true}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rec.body, `"from"`) {
+		t.Fatalf("body = %q, want no from field on an unlabelled send", rec.body)
+	}
+}
+
 // #45: createBody is, like Send's body before #33, a hand-maintained mirror
 // of the struct it represents rather than a marshal of it — and Marker and
 // RemoteControl were the two fields that mirror never grew. A session

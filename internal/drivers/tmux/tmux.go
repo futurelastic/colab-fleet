@@ -1946,7 +1946,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// this function bounds just below, because it must run — and
 	// possibly return — before that bound exists.
 	if inboxEligible(opts) {
-		if receipt, ok, err := d.sendViaInbox(ctx, ref, text); err != nil {
+		if receipt, ok, err := d.sendViaInbox(ctx, ref, text, opts.From); err != nil {
 			return fleet.DeliveryReceipt{}, err
 		} else if ok {
 			return receipt, nil
@@ -1954,6 +1954,12 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// ok=false: no inbox capability for this target — fall through to
 		// the pane path below, unchanged.
 	}
+
+	// colab-fleet #158: from here on the text is the pane's, so it carries
+	// the sender label as its first line. Everything below — the stranded-
+	// delivery record included — sees the labelled text, so a resume must
+	// repeat the same `from` as well as the same text.
+	text = paneLabelled(text, opts.From)
 
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()

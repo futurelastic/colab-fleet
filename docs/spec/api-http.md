@@ -513,8 +513,47 @@ attempts one, lands on the *next* read, not this one — a single
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/input
-{ "text": "...", "submit": true, "resumeIfStranded": false, "replaceIfStranded": false }
+{ "text": "...", "submit": true, "resumeIfStranded": false, "replaceIfStranded": false,
+  "from": { "agent": "...", "session": "...", "relayOfHuman": false } }
 ```
+
+**`from` (colab-fleet #158) is optional and labels the message with its
+sender.** Absent means unlabelled, exactly the behaviour before it existed. The
+label is `agent · session · machine`, with empty parts skipped, and it reaches
+the receiving session as follows:
+
+- **On the inbox path**, it is the envelope's sender-name attribute. The
+  receiver rebuilds the envelope and compares bytes, so the service emits only
+  a name that the receiver's own normalisation leaves unchanged. A name it
+  cannot guarantee is **dropped, never the message**: the name is optional to
+  the receiver, while the permission-mode class the same envelope carries is
+  not, and losing the envelope would hold the message silently.
+- **On the terminal path**, which has no envelope, the same label goes on as
+  one short first line, `[from: …]`, added after the runtime-syntax guard has
+  judged the caller's own text.
+
+The three caller fields are **unverified statements**, and the label must not
+be read otherwise:
+
+- `agent` and `session` are the caller's own claim. Under a single shared
+  token nothing distinguishes one bearer from another (`Caller.Principal` is
+  provenance, not identity), so a service carries them and cannot check them.
+- `relayOfHuman: true` adds one line to the text saying the sender states it
+  is relaying an instruction from the human operator. It is a **label, never
+  authority**: it must not change what the receiver is allowed to do, and no
+  grant, policy or routing decision in this service reads it. Making it
+  verifiable would need a credential only a human holds — out of scope here.
+
+**`machine` is stamped by the service; a caller-supplied value is ignored.**
+It is the machine where the request entered the fleet. On a relayed hop the
+entering machine forwards its own stamp as `from.machine`, and the owning peer
+keeps it only because the request arrives as a relay (it carries the
+on-behalf-of assertion) and only when it names one of that peer's configured
+peers — the same trust bound as the on-behalf-of assertion itself. Otherwise
+the machine is omitted, never guessed.
+
+A `resumeIfStranded` retry repeats the same `from` as well as the same text:
+on the terminal path the record of what was delivered includes the label line.
 
 `resumeIfStranded` completes a delivery that returned `unknown` — the text
 reached the composer and could not be confirmed. The service submits it only if

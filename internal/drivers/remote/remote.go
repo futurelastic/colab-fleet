@@ -891,12 +891,17 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
+	// #158: From travels too, Machine included — this is the one hop where
+	// the machine field is on the wire at all. The entering machine stamped
+	// it; the owning daemon accepts it only because this request arrives as a
+	// relay (see the service's stampSender).
 	body := struct {
-		Text              string `json:"text"`
-		Submit            bool   `json:"submit"`
-		ResumeIfStranded  bool   `json:"resumeIfStranded,omitempty"`
-		ReplaceIfStranded bool   `json:"replaceIfStranded,omitempty"`
-	}{Text: text, Submit: opts.Submit, ResumeIfStranded: opts.ResumeIfStranded, ReplaceIfStranded: opts.ReplaceIfStranded}
+		Text              string             `json:"text"`
+		Submit            bool               `json:"submit"`
+		ResumeIfStranded  bool               `json:"resumeIfStranded,omitempty"`
+		ReplaceIfStranded bool               `json:"replaceIfStranded,omitempty"`
+		From              *fleet.MessageFrom `json:"from,omitempty"`
+	}{Text: text, Submit: opts.Submit, ResumeIfStranded: opts.ResumeIfStranded, ReplaceIfStranded: opts.ReplaceIfStranded, From: opts.From}
 
 	var out fleet.DeliveryReceipt
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/input",
