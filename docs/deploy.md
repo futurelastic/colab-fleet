@@ -12,6 +12,11 @@ If you take one thing from this page: **`scripts/deploy.sh` is the procedure.**
 Read its header before reading further — it explains, in the same order as
 below, why each step exists and what it refuses to do silently.
 
+**This page assumes a service that already runs.** Every step below backs up,
+replaces, restarts or asks something that has to exist first. For a machine
+that has never run this, start with [`install.md`](install.md) — from nothing
+to a running service — and come back here for every change after that.
+
 ## The procedure
 
 0. **Back up what you are about to replace, before anything else.**
@@ -64,7 +69,9 @@ grant`, which reads like a permissions bug rather than the setup step it
 actually is. Across a peer relay it is two grants, on two machines: `keys` at
 the far end that runs the key, `relay` at the near end that forwards the
 request there — see api-http.md §3 for why fixing the first refusal does not
-fix the call.
+fix the call. `colab-fleetd doctor --principal=<name>` names the near half as
+rows `principals.supervisor` and `principals.relay`; the far half is that
+peer's own `doctor` run.
 
 **A verified deploy is not yet a usable inbox delivery path either
 (colab-fleet #122).** `deliversToInbox: true` on `GET /v1/runtimes` is
@@ -76,7 +83,8 @@ does not perform and cannot: the directory it names, and what populates it,
 are machine-local facts this repository never commits (`cmd/colab-fleetd`'s
 own doc comment names the variable; it does not name a value). Check
 `deliversToInbox` after any deploy you expect this path to be live on,
-rather than assuming a clean verify implies it.
+rather than assuming a clean verify implies it — `colab-fleetd doctor` reports
+it as row `inbox.index`, run under the service's own environment.
 
 **And `deliversToInbox: true` is still not a usable path unless the index
 carries a permission-mode class (colab-fleet #148).** Each index entry now has
@@ -96,6 +104,10 @@ Two things to check on a deploy you expect this path to be live on:
 - the resolver's unattestable-entry counter falls to zero as the writer rolls
   out. It exists precisely because "the field is not being written" and "the fix
   did not take" are otherwise indistinguishable from outside.
+
+`colab-fleetd doctor` counts both from the index itself, as row
+`inbox.mode-class`: entries attestable, entries without a class, entries with
+an unrecognised one.
 
 `FLEET_CAPTURE_LINES` is the other operator lever this deploy gains. It widens
 how much of each pane the driver captures to classify it. The default is
