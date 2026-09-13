@@ -149,6 +149,17 @@
 //	                       see (#134) and an operator's only exit was to
 //	                       attach to the multiplexer by hand. This is the
 //	                       lever that was missing.
+//
+// # Subcommands
+//
+// Operator subcommands run and exit without starting the service:
+//
+//	colab-fleetd principal add|list   enrol a client (enrol.go)
+//	colab-fleetd doctor [--json]      read-only check that this installation is
+//	                                  complete — token, config, grants, state
+//	                                  directory, inbox index, peers (doctor.go,
+//	                                  colab-fleet #160). Run it under the service
+//	                                  unit's environment.
 package main
 
 import (
@@ -179,6 +190,12 @@ func main() {
 	// Operator subcommands run and exit — they never start a service. Handled
 	// before anything else so that enrolling a principal does not require the
 	// environment a running instance needs.
+	//
+	// doctor (colab-fleet #160) is read-only and never needs the environment
+	// to be complete either — reporting that it is not is its whole job.
+	if handled, code := runDoctor(os.Args[1:], os.Getenv, os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	if handled, err := runPrincipal(os.Args[1:]); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
