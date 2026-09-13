@@ -53,6 +53,7 @@ func (c ModeClass) Valid() bool { return c == ModeBypass || c == ModePrompting }
 const (
 	envelopeTag      = "cross-session-message"
 	envelopeModeAttr = "from-mode"
+	envelopeNameAttr = "from-name"
 )
 
 // openLookalikes is every rune the receiving runtime treats as an
@@ -101,11 +102,23 @@ const openLookalikes = "<" +
 // #148 records running at a 100% delivery rate. Reporting delivered without
 // attesting is the bug; falling back is the fix.
 //
-// Only the class attribute is emitted. A reply address is deliberately NOT
-// asserted: this service has no socket bound in the receiver's own namespace
-// to receive one over (colab-fleet #120), and advertising an address that
-// cannot be honoured would be a second lie in the same envelope.
-func Attest(text string, class ModeClass) (string, bool) {
+// # The sender name (colab-fleet #158)
+//
+// name, when non-empty, is emitted as the sender-name attribute, which the
+// receiver shows in place of an anonymous "peer". It passes through SenderName
+// first, and a name SenderName cannot guarantee is dropped rather than
+// refused: the name is optional to the receiver, the class is not, so a
+// doubtful name must never turn an attestable send into a fallback. The name
+// never makes ok false.
+//
+// The attribute goes BEFORE the class attribute. That is the receiver's own
+// order, and its rebuild compares bytes, so the order is load-bearing.
+//
+// A reply address is deliberately NOT asserted: this service has no socket
+// bound in the receiver's own namespace to receive one over (colab-fleet
+// #120), and advertising an address that cannot be honoured would be a second
+// lie in the same envelope.
+func Attest(text string, class ModeClass, name string) (string, bool) {
 	if !class.Valid() {
 		return "", false
 	}
@@ -113,7 +126,11 @@ func Attest(text string, class ModeClass) (string, bool) {
 		return "", false
 	}
 	var b strings.Builder
-	b.WriteString("<" + envelopeTag + " " + envelopeModeAttr + `="`)
+	b.WriteString("<" + envelopeTag)
+	if n := SenderName(name); n != "" {
+		b.WriteString(" " + envelopeNameAttr + `="` + n + `"`)
+	}
+	b.WriteString(" " + envelopeModeAttr + `="`)
 	b.WriteString(string(class))
 	b.WriteString("\">\n")
 	b.WriteString(text)

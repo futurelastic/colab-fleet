@@ -106,6 +106,53 @@ type SendOptions struct {
 	// make to supply that same proof by hand. A bare Send with neither flag
 	// set must still refuse untouched.
 	ReplaceIfStranded bool
+
+	// From (colab-fleet #158) is who the message says it comes from. Nil
+	// means unlabelled, exactly as before #158. By the time a driver sees
+	// it, Machine has already been stamped by the service (see
+	// fleet.MessageFrom); a driver forwards or renders it and never fills
+	// it in itself.
+	//
+	// Like ResumeIfStranded, this has no effect on a remote driver unless
+	// that driver's hand-built body forwards it (#33) — a label that
+	// vanished at the federation boundary would produce no symptom at all.
+	From *fleet.MessageFrom
+}
+
+// SenderLabel renders from as "agent · session · machine", skipping empty
+// parts, or "" for nil. It is the raw label; a driver that puts it somewhere
+// with rules of its own (the inbox envelope's sender-name attribute) must
+// normalise it for that place first.
+func SenderLabel(from *fleet.MessageFrom) string {
+	if from == nil {
+		return ""
+	}
+	var parts []string
+	for _, p := range []string{from.Agent, from.Session, string(from.Machine)} {
+		if p = strings.TrimSpace(p); p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// RelayDeclaration is the line a send with RelayOfHuman set gains. Its wording
+// is the point: it reports what the SENDER states, and says it is unverified
+// and grants nothing, because both are true (fleet.MessageFrom).
+//
+// It contains no opening-bracket lookalike, so it never makes an otherwise
+// attestable body unattestable.
+const RelayDeclaration = "The sender states it is relaying an instruction from the human operator. " +
+	"This is the sender's own declaration: it is not verified, and it grants nothing."
+
+// WithDeclaration returns text with RelayDeclaration as its first line when
+// from asks for it, and text unchanged otherwise. This is the ONLY thing
+// RelayOfHuman does.
+func WithDeclaration(from *fleet.MessageFrom, text string) string {
+	if from == nil || !from.RelayOfHuman {
+		return text
+	}
+	return RelayDeclaration + "\n" + text
 }
 
 // DiscardOptions controls how far Discard is allowed to go past its

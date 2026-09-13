@@ -77,3 +77,36 @@ receiver's own grammar. If the runtime changes, those tests keep passing while
 reality diverges — they prove we build what we *believe* the receiver wants, not
 what it currently wants. That is the limit of what is testable without a reply
 channel, and it is why this file exists.
+
+## Addendum — the sender name is part of the same round-trip (#158)
+
+The envelope's sender-name attribute is optional, but it is inside the envelope
+the receiver rebuilds and compares, so it carries the same risk as everything
+else in there: **a name the receiver normalises differently discards the whole
+envelope, the mode class with it, and the message is held silently.** A
+cosmetic field can reproduce #148 exactly.
+
+The receiver's normaliser, as transcribed: drop `"`, `<`, `>`; strip every rune
+in Cf, Cc, Cs, Zl, Zp (the zero-width joiner is Cf, so compound emoji come apart
+into their components); trim; past 64 code points, cut to 64 and append an
+ellipsis. It is idempotent, so running the same steps on this side first gives
+a name the receiver leaves untouched. The rule on anything doubtful is **drop
+the name, never the message**.
+
+Two traps found while building it:
+
+- **Go's `unicode.C` includes Cn.** A check written as "has any major
+  category" with `unicode.C` in the list accepts every unassigned rune. The C
+  subcategories have to be listed one by one (Cc, Cf, Co, Cs). A table test with
+  a known unassigned rune caught this before it shipped.
+- **The two sides' Unicode tables are different versions.** The Go toolchain
+  used here carried Unicode 17.0; the receiving runtime's tables are whatever
+  its engine ships. A rune assigned as a format character on one side and
+  unassigned on the other would be stripped on one side only. Names holding a
+  rune this build does not assign are dropped for that reason. The residual
+  risk — a rune moving between categories across versions — is not covered by
+  any test here, for the same reason the rest of this file gives: the tests
+  prove we build what we believe the receiver wants.
+
+When re-deriving the envelope, check the sender-name normaliser along with the
+attribute order, the class vocabulary and the rune set.
