@@ -1,6 +1,7 @@
 package fleet_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -103,5 +104,42 @@ func TestSelfBuildNeverClaimsAnEmptyRevision(t *testing.T) {
 	}
 	if b.Go == "" {
 		t.Error("toolchain version should always be available")
+	}
+}
+
+// A plain `go build` — and `go test`, which links the same way — carries no
+// link-time stamp, so the release version must read as unstamped: explicitly
+// null on the wire, never omitted and never a fabricated "v0.0.0" that a
+// version floor would compare against on no evidence (colab-fleet #161).
+func TestSelfBuildVersionIsNullWhenUnstamped(t *testing.T) {
+	b := fleet.SelfBuild()
+	if b.Version != nil {
+		t.Fatalf("unstamped build reports version %q, want nil", *b.Version)
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	v, present := wire["version"]
+	if !present {
+		t.Fatalf("version omitted from %s; an unstamped build must say null, not nothing", raw)
+	}
+	if v != nil {
+		t.Errorf("version = %v on the wire, want null", v)
+	}
+}
+
+// Version is not identity: two builds at one clean revision are the same
+// code whatever their stamps say.
+func TestBuildSameAsIgnoresVersion(t *testing.T) {
+	v1 := "v0.1.0"
+	a := fleet.Build{Known: true, Revision: "abc123", Version: &v1}
+	b := fleet.Build{Known: true, Revision: "abc123"}
+	if !a.SameAs(b) || !b.SameAs(a) {
+		t.Error("a version stamp must not change whether two builds are the same code")
 	}
 }

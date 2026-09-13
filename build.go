@@ -50,6 +50,44 @@ type Build struct {
 	// Go is the toolchain version. Skew here is rarer and less dangerous
 	// than source skew, but it costs one field to rule out.
 	Go string `json:"go,omitempty"`
+	// Version is the release this build descends from, as `git describe
+	// --tags` printed it at build time: "v0.1.0" for a build exactly at a
+	// tag, "v0.1.0-2-g3ce7e27" for two commits past it. It answers "is this
+	// at least release X?", which Revision cannot — a sha is not ordered,
+	// and deciding whether one commit follows a tag takes a checkout a
+	// client on another machine does not have (colab-fleet #161).
+	//
+	// Always serialized, never omitted: null means "not stamped", the same
+	// three-value discipline as Known. The toolchain does not record tags,
+	// so this cannot be derived at runtime — only a build that passed
+	// -ldflags "-X" (scripts/deploy.sh does) carries one. A plain `go build`
+	// reports null, never a fabricated "v0.0.0" that would satisfy or fail a
+	// version floor on no evidence. A field absent altogether means the
+	// service predates this one; a client treats both as "cannot verify".
+	//
+	// Version plays no part in SameAs: two builds at one revision are the
+	// same code whatever their stamps say, and Revision stays the identity.
+	Version *string `json:"version"`
+}
+
+// version is set at link time by scripts/deploy.sh:
+//
+//	go build -ldflags "-X github.com/godx-jp/colab-fleet.version=$(git describe --tags)"
+//
+// Empty in every other build, which SelfBuild reports as unstamped.
+var version string
+
+// stampedVersion validates a link-time stamp. Anything that does not look
+// like a describe of a "v"-prefixed release tag is reported as unstamped
+// rather than passed through: a bare sha (describe --always on a history
+// with no tag) is not a release, and a value a floor comparison cannot
+// parse is worse than none, because it looks like an answer.
+func stampedVersion(raw string) *string {
+	v := strings.TrimSpace(raw)
+	if len(v) < 2 || v[0] != 'v' || v[1] < '0' || v[1] > '9' {
+		return nil
+	}
+	return &v
 }
 
 // SameAs reports whether two builds are demonstrably the same code.
@@ -117,7 +155,7 @@ func (b Build) Short() string {
 // Read once at startup by the service and served from GET /v1/health; a caller
 // asking a peer gets the peer's answer, which is the entire point.
 func SelfBuild() Build {
-	b := Build{Go: runtime.Version()}
+	b := Build{Go: runtime.Version(), Version: stampedVersion(version)}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return b

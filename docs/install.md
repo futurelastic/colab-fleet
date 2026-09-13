@@ -37,9 +37,15 @@ order of this page and the order of its output are the same.
    executes is not an install path.
 
    ```sh
-   go build -o ./colab-fleetd ./cmd/colab-fleetd
+   go build -ldflags "-X github.com/godx-jp/colab-fleet.version=$(git describe --tags --match 'v[0-9]*')" \
+     -o ./colab-fleetd ./cmd/colab-fleetd
    install -m 0755 ./colab-fleetd /usr/local/bin/colab-fleetd
    ```
+
+   The `-ldflags` stamp is what `/v1/health` reports as `build.version` — the
+   release a client checks a minimum supported version against (#161). A plain
+   `go build` still runs, and reports `version: null`; `scripts/deploy.sh`
+   stamps it for you on every later deploy.
 
 2. **Pick this machine's id** — `FLEET_MACHINE`. It is the name every peer
    uses for this machine in its own peer list, so choose it once. Unset, it

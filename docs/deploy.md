@@ -34,14 +34,17 @@ to a running service — and come back here for every change after that.
 1. **Build with the version-control stamp intact.** A binary built from a
    modified tree has no identity and can never be compared against a peer or
    against itself. The script refuses a dirty tree by default; do not override
-   that on a deploy you intend to keep.
+   that on a deploy you intend to keep. It also stamps the release version
+   (`git describe --tags`) at link time — the toolchain records the revision
+   on its own but never the tag — so `/v1/health` can report `build.version`
+   for clients enforcing a minimum version (#161).
 2. **Install atomically** — write beside the target and rename into place.
    Writing over a running binary is how you get a half-written executable and
    a service that will not start.
 3. **Restart through the machine's own service manager.** The script never
    invents one; it runs whatever command you give it and stops there.
 4. **Verify by asking the running service what it is**, and compare that
-   answer to the commit just built. A deploy that does not verify is a deploy
+   answer to the commit just built — the revision, and then the version stamp. A deploy that does not verify is a deploy
    that can silently not have happened — this is the step that makes it a
    deploy rather than a copy.
 5. **Then the peer, and only then.** One machine deployed is a fleet at two

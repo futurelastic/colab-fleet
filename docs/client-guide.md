@@ -112,7 +112,8 @@ layer up", which is not the same question as "are there sessions". It also
 carries `build`, a version-control stamp of the running code:
 
 ```json
-"build": { "known": true, "revision": "0f0d390…", "modified": false, "go": "go1.26.5" }
+"build": { "known": true, "revision": "0f0d390…", "modified": false, "go": "go1.26.5",
+           "version": "v0.1.0-2-g0f0d390" }
 ```
 
 Show it somewhere. Two machines running different builds is a normal condition
@@ -120,6 +121,13 @@ during a rollout and an invisible one otherwise — it has already cost one
 debugging session where the symptom made no sense against the source. When
 comparing builds, treat `known: false` or `modified: true` as **unverifiable**,
 never as equal.
+
+**Need a minimum service version? Compare `build.version`, not `revision`.** It
+is `git describe --tags` at the built commit: the tag is the release, and a
+`-N-g<sha>` suffix means N commits after it. `null` (unstamped) or a missing
+field (an older service) means **you cannot tell** — say that, rather than
+reporting the service as too old. Full comparison rule: `docs/api.md`,
+`GET /v1/health`.
 
 **`/v1/runtimes` you MUST consult before relying on a capability**, and degrade
 rather than assume when one is missing:

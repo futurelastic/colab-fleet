@@ -62,7 +62,8 @@ work as gone while it is running fine on an unreachable host.
 GET /v1/health
 → 200 { "epoch": "...", "cursor": 12904, "startedAt": "...",
         "build": { "known": true, "revision": "...", "modified": false,
-                   "time": "...", "go": "go1.26.5" },
+                   "time": "...", "go": "go1.26.5",
+                   "version": "v0.1.0-2-g3ce7e27" },  ← null when unstamped
         "maxInputBytes": 1024,
         "drivers": [...] }
 
@@ -142,6 +143,17 @@ comparing builds **must** treat an unstamped or `modified` build as
 *unverifiable* rather than as equal — an unmodified pair of equal revisions is
 the only comparison that means anything, and the failure this field exists to
 catch is precisely a confident conclusion drawn from an absent measurement.
+
+**`build.version` answers a different question than `revision`** (colab-fleet
+#161): not "is this exact commit running?" but "is this at least release X?".
+It is `git describe --tags` at the built commit, stamped at link time — the
+toolchain records no tag, so it cannot be derived at runtime. A service
+**must** report `null` when unstamped and **must not** substitute a default
+such as `v0.0.0`, which a version floor would compare against on no evidence.
+A client enforcing a floor **must** treat `null` or an absent field as
+*unverifiable*, distinct from "below the floor". The release is the tag part;
+a trailing `-N-g<sha>` means N commits after it. `version` never participates
+in build equality.
 
 **`/v1/machines` carries the same `build` object per entry** (colab-fleet
 #121) — self is always known (read once at startup), a peer is whatever the

@@ -96,6 +96,34 @@ counters}`. The `build` is a version-control stamp: an unknown or
 locally-modified build never compares equal to anything, so "we disagree" stays
 distinguishable from "we are different vintages".
 
+`build` fields: `known`, `revision` (a commit sha), `modified`, `time`, `go`,
+and `version`.
+
+**`build.version` is the release the running code descends from** — the output
+of `git describe --tags` at the built commit, stamped at link time by
+`scripts/deploy.sh` (#161). It is what a client checks to enforce a minimum
+supported service version; `revision` cannot do that, because a sha is not
+ordered.
+
+| Value | Means |
+|---|---|
+| `"v0.1.0"` | built exactly at release `v0.1.0` |
+| `"v0.1.0-2-g3ce7e27"` | two commits **after** `v0.1.0`, at commit `3ce7e27` |
+| `"v0.1.0-2-g3ce7e27-dirty"` | as above, plus uncommitted changes (`modified: true`) |
+| `null` | not stamped — a plain `go build`, or no release tag reachable |
+| absent | the service predates this field |
+
+Comparing against a floor `vX.Y.Z`: strip a trailing `-dirty`, then a
+trailing `-<digits>-g<hex>` group; what remains is the release tag, compared as
+semver. A stripped `-N-g<sha>` means "after that release", so it satisfies a
+floor equal to its tag. Strip from the end rather than splitting on the first
+`-`, so a pre-release tag (`v0.2.0-rc.1-3-gabc1234`) keeps its own hyphen. **`null` and absent are
+"cannot verify", never "too old" and never "new enough"** — refuse with a message
+saying the service did not report a version, which is a different problem to
+solve than a version that is too low. A version never participates in build
+equality: two builds at one clean revision are the same code whatever their
+stamps say.
+
 ### `GET /v1/machines`
 
 `{items: [{machine, self, status, observedAt}], sources, complete}`. Always

@@ -203,6 +203,20 @@ fi
 REV=$(git rev-parse HEAD)
 echo "deploy: revision ${REV}"
 
+# colab-fleet #161: the release version, stamped at link time because the
+# toolchain's own build info carries the revision but never the tag — a
+# checkout builds as "(devel)". `--match 'v[0-9]*'` and no `--always`: with no
+# release tag reachable there is no release to report, and a bare sha in this
+# field would read as one. Left empty, the service reports `version: null`
+# ("not stamped"), which is the honest answer. `--dirty` only ever shows when
+# ALLOW_DIRTY=1 let a modified tree past the gate above.
+VERSION=$(git describe --tags --dirty --match 'v[0-9]*' 2>/dev/null || true)
+if [ -n "$VERSION" ]; then
+	echo "deploy: version ${VERSION}"
+else
+	echo "deploy: no release tag reachable from ${REV} — build.version will be null"
+fi
+
 # --- target platform, asked rather than assumed -----------------------------
 if [ -z "${GOOS:-}" ] || [ -z "${GOARCH:-}" ]; then
 	echo "deploy: asking ${HOST} what it is"
@@ -233,7 +247,9 @@ echo "deploy: building for ${GOOS}/${GOARCH}"
 # "unknown" and skew becomes undetectable again.
 TMPBIN=$(mktemp -t colab-fleetd.XXXXXX)
 trap 'rm -f "$TMPBIN"' EXIT
-GOOS="$GOOS" GOARCH="$GOARCH" go build -buildvcs=true -o "$TMPBIN" ./cmd/colab-fleetd
+GOOS="$GOOS" GOARCH="$GOARCH" go build -buildvcs=true \
+	-ldflags "-X github.com/godx-jp/colab-fleet.version=${VERSION}" \
+	-o "$TMPBIN" ./cmd/colab-fleetd
 
 # --- install ----------------------------------------------------------------
 #
@@ -320,6 +336,7 @@ echo "deploy: verifying (up to ${FLEET_VERIFY_TIMEOUT}s)"
 START=$(date +%s)
 NEXT_NOTICE=30
 RUNNING=""
+RUNNING_VERSION=""
 STATUS=""
 BODY=""
 while :; do
@@ -340,6 +357,7 @@ while :; do
 		STATUS=$(printf '%s\n' "$RAW" | tail -n1)
 		BODY=$(printf '%s\n' "$RAW" | sed '$d')
 		RUNNING=$(printf '%s\n' "$BODY" | tr ',' '\n' | sed -n 's/.*"revision":"\([^"]*\)".*/\1/p' | head -1)
+		RUNNING_VERSION=$(printf '%s\n' "$BODY" | tr ',' '\n' | sed -n 's/.*"version":"\([^"]*\)".*/\1/p' | head -1)
 	else
 		STATUS=""
 		BODY=""
@@ -401,4 +419,16 @@ if [ "$RUNNING" != "$REV" ]; then
 	exit 1
 fi
 
-echo "deploy: verified — ${HOST} is running ${REV}"
+# #161: the revision matched, so this is the right binary — a version that
+# does not match is a stamping defect, not a deploy that failed to land, and
+# it is reported as that. It still fails: a client enforcing a version floor
+# reads this field, and a wrong one refuses (or admits) on false evidence.
+if [ "$RUNNING_VERSION" != "$VERSION" ]; then
+	echo "deploy: FAILED — running revision is ${REV}, as built, but it reports" >&2
+	echo "        version '${RUNNING_VERSION:-null}' where '${VERSION:-null}' was stamped." >&2
+	echo "        The binary landed; its release stamp did not survive the build" >&2
+	echo "        (check the -X symbol path against build.go's version variable)." >&2
+	exit 1
+fi
+
+echo "deploy: verified — ${HOST} is running ${REV} (version ${VERSION:-null})"
