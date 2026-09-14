@@ -10,6 +10,8 @@ channels: [procedure]
 # channels: supplied by --channels, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17)
 exposure: self
 # exposure: supplied by --exposure, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17) — merging to trunk reaches nothing by itself; the service changes only when a human runs the documented build-install-restart procedure on each machine
+autonomy: auto-trunk
+# autonomy: granted by the maintainer in a live session (2026-09-14, #164)
 trunk: main
 # trunk: detected (the repo's default branch, 2026-08-17)
 stack: Go — standard library only, no third-party dependencies
