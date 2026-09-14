@@ -689,6 +689,9 @@ func intToStr(i int) string {
 	return string(b)
 }
 
+// newTestDriver injects no control-mode dialer, so anything that dials —
+// Subscribe above all — attaches REAL multiplexer clients to whatever server
+// the test machine has. Subscription tests use newSubDriver instead (#162).
 func newTestDriver(f *fakeMux) *Driver {
 	return New("testbox",
 		withExec(f.exec),

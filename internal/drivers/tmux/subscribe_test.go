@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -548,7 +549,12 @@ func TestSubscribeCapsContentClients(t *testing.T) {
 		})
 		f.captures[id] = idleFixtureFor("big" + intToStr(i))
 	}
-	d := newTestDriver(f)
+	// A fake dialer, like every other subscription test. The real one would
+	// attach genuine multiplexer clients from a unit test — to whatever server
+	// the machine running it has — and those die at once, which is how this
+	// test came to trip #162 under load instead of measuring the cap.
+	r := &ctlRegistry{}
+	d := newSubDriver(f, r)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -750,4 +756,55 @@ func awaitAccount(t *testing.T, s driver.EventStream, d time.Duration) (fleet.Ma
 		}
 	}
 	return fleet.MachineAccountPayload{}, false
+}
+
+// dyingDial opens control clients that are already dead: every attach
+// "succeeds" and the client exits at once, the way a real client does when
+// the session it attached to is gone. The lifecycle supervisor therefore
+// spends its whole life losing its host, announcing it, and re-attaching.
+func dyingDial(_ context.Context, _, session string) (ctlConn, error) {
+	c := &fakeCtl{session: session, notes: make(chan ctlNote)}
+	close(c.notes)
+	c.closed = true
+	return c, nil
+}
+
+// The stream has two writers to its output — the engine, and the lifecycle
+// supervisor announcing a lost host — and only one of them closes it. Closing
+// the stream while the supervisor was mid-announcement closed the channel
+// under a concurrent send: the race detector reports it, and outside the
+// detector the same interleaving is a send on a closed channel, which panics
+// the whole service rather than ending one subscription. It was first seen in
+// a test that unintentionally attached real multiplexer clients, which die at
+// once for exactly this reason.
+func TestClosingDuringLifecycleReattachDoesNotRaceTheEngine(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		f := twoSessions()
+		d := New("testbox",
+			withExec(f.exec),
+			withCtlDialer(dyingDial),
+			withNonce(func() string { return testNonce }),
+			withClock(func() time.Time { return time.Unix(1785760000, 0) }),
+		)
+		s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Let the supervisor go round its lose-announce-reattach loop a few
+		// times with nobody reading, so a send is in flight when Close lands.
+		time.Sleep(time.Duration(5+i) * time.Millisecond)
+		_ = s.Close()
+
+		// The stream must still end cleanly: every writer stopped, then EOF.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		for {
+			if _, err := s.Next(ctx); err != nil {
+				if !errors.Is(err, io.EOF) {
+					t.Fatalf("iteration %d: stream did not end after Close: %v", i, err)
+				}
+				break
+			}
+		}
+		cancel()
+	}
 }
