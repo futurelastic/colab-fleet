@@ -744,6 +744,42 @@ func runReal(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).Output()
 }
 
+// noServerRunning reports whether err is the multiplexer itself saying there
+// is no server to ask — as opposed to the invocation failing (colab-fleet#157).
+//
+// Only a process that ran and exited counts: the stderr text is read from the
+// *exec.ExitError that Output() fills in, never from an error string, so a
+// wrapper error that merely quotes these words does not qualify. Two
+// signatures, both measured against tmux 3.7c:
+//
+//   - no socket file at all (every session closed and the server exited):
+//     "error connecting to <path> (No such file or directory)"
+//   - a socket file left behind with nobody listening on it:
+//     "no server running on <path>" (the wording older versions print for
+//     the first case too)
+//
+// The "error connecting to" prefix is deliberately NOT enough on its own:
+// the same prefix carries "(Permission denied)" and "(File name too long)",
+// both measured, and both are a socket this driver could not read — a
+// machine whose sessions are unknown, not a machine that has none.
+func noServerRunning(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	for _, line := range strings.Split(string(exitErr.Stderr), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "no server running on ") {
+			return true
+		}
+		if strings.HasPrefix(line, "error connecting to ") &&
+			strings.HasSuffix(line, "(No such file or directory)") {
+			return true
+		}
+	}
+	return false
+}
+
 // Capabilities declares what this driver can and cannot do (§4.3).
 //
 // ObservesState is false and must stay false: every status this driver
@@ -893,6 +929,21 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 	out, err := d.run(ctx, d.bin, args...)
 	listWall := time.Since(listStart)
 	if err != nil {
+		// colab-fleet#157: a machine whose multiplexer has no server is a
+		// machine with zero sessions — the normal resting state once its last
+		// session closes — and that is a complete answer, not a failed one.
+		// Reporting it unreachable turned every fleet-scope read incomplete
+		// for as long as the machine stayed idle. Only the multiplexer's own
+		// no-server messages qualify (see noServerRunning); anything else —
+		// a missing binary, a socket it may not open, a deadline kill (a
+		// killed process printed no such message) — is still a read that
+		// did not happen. Deliberately no ctx.Err() guard: whether the
+		// deadline has passed says nothing about what the multiplexer
+		// already answered, and coupling the verdict to the clock would make
+		// it depend on when it was asked rather than on what was said.
+		if noServerRunning(err) {
+			return nil, map[string]string{}, nil
+		}
 		return nil, nil, fmt.Errorf("enumerate: listing sessions: %w", err)
 	}
 	d.noteSlowInvocation("listing", listWall, 0)
@@ -1306,6 +1357,9 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		// comment — a capture-side failure is folded into the per-session
 		// "unknown" path below instead). Unreachable is the right word
 		// exactly because nothing about this machine answered at all.
+		// A multiplexer that answered "there is no server" did answer, and
+		// enumerate returns that as zero rows rather than as an error
+		// (#157), so it never reaches this branch.
 		src := fleet.SourceStatus{
 			Machine:    d.machine,
 			Status:     fleet.SourceUnreachable,
