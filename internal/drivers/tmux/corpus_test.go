@@ -157,7 +157,12 @@ func TestCorpusReplaysToItsStatedState(t *testing.T) {
 					t.Errorf("observation %d (t+%ds): status = %q, want %q (evidence: %s)",
 						i, obs.AfterSeconds, got.Status, want, got.Evidence)
 				}
-				prior = paneMemory{known: true, digest: digest, at: now}
+				// The driver remembers when a digest was FIRST seen, not
+				// when it was last read (#159, observation.digestSince), so
+				// an unchanged screen keeps its original timestamp here too.
+				if !prior.known || prior.digest != digest {
+					prior = paneMemory{known: true, digest: digest, at: now}
+				}
 			}
 		})
 	}
