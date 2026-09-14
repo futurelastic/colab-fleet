@@ -68,6 +68,7 @@ every configured peer, exactly one hop — peers never recurse.
 |---|---|---|---|---|
 | `GET` | `/v1/health` | Build stamp, uptime, drivers, current event cursor | — ⚠️ | no |
 | `GET` | `/v1/machines` | Known machines and whether they answered | — ⚠️ | always |
+| `GET` | `/v1/whoami` | What the presented credential may do | none — authentication only | no |
 | `GET` | `/v1/runtimes` | Drivers present and the capabilities they declare | — ⚠️ | always |
 | `GET` | `/v1/sessions` | List sessions, filtered | — ⚠️ | `scope` |
 | `GET` | `/v1/sessions/watch` | Long-poll the event feed | — ⚠️ | `scope` |
@@ -141,6 +142,28 @@ Read it before relying on a cross-machine write, instead of learning from a
 listed". `observed` with `grantsToMe: []` is a real negative. The `self` item
 reports `listsMeBack: true` and what this machine's own table grants the
 credential it presents to peers. `?verify=1` re-probes every peer first.
+
+### `GET /v1/whoami`
+
+`{principal, machine, grants, source, listsYou}` — what the credential you
+presented may do. It needs authentication but **no grant**, not even `read`:
+a credential holding nothing can still learn that it holds nothing, instead of
+finding out one `403` at a time. It reports only your own credential, never
+another principal.
+
+`?machine=` defaults to this machine, answered `source: "observed"` from its own
+table. Naming a peer does **not** relay: it answers `source: "assumed"` with
+`grants: []`, because this service cannot know what a peer grants. Ask that
+machine directly. A relayed write needs a grant on both machines, and this
+route can confirm only the first.
+
+`?peer=<id>` fills `listsYou`: `true` or `false` for whether `<id>` is in this
+machine's peer roster. It is a question only a service asks. A service probing a
+peer names itself there, and the answer becomes that peer's `listsMeBack` on
+`GET /v1/machines`. `listsYou` is `null` when no `peer` was asked, when the
+report is about another machine, or when the credential lacks `read`, because
+`read` guards the roster. The key is always present on a build that has it; an
+absent key means an older build, never "not listed".
 
 ### `GET /v1/runtimes`
 
