@@ -1760,6 +1760,19 @@ directly: run its own `whoami` there, or read its principal table locally
 (`colab-fleetd principal list` on that machine) — neither of which this
 service can do on a caller's behalf.
 
+**Narrowed by colab-fleet #154: this service's OWN standing on a peer is
+observed.** The paragraph above stays true of a *caller's* credential, which the
+peer does not know. But a service holds exactly one credential every peer does
+know — its own, the one each relayed read and write rides on — and asking about
+it is `whoami` asked by the service about itself, not about anyone else. So the
+peer probe (§4.3, `RefreshCapabilities`) now also calls the peer's
+`whoami?peer=<self>` and caches what comes back: whether that peer's roster lists
+this service, and what it grants the presented credential. `GET /v1/machines`
+reports it per machine as `peer` (api-http.md §3.1), with the same
+observed/assumed provenance, and a peer that cannot answer — unreached, stale, or
+on an older build — is `assumed`, never a negative. This is a report of drift,
+not a fix for it: the roster stays hand-configured (§7.2).
+
 ## 7a. Still open
 
 - **Input ordering under concurrency.** If two callers `send()` to one session

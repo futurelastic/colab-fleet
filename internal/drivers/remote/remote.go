@@ -179,6 +179,15 @@ type Driver struct {
 	// peer has not answered yet or it predates labels — see requireLabels,
 	// which trusts only a positive answer and re-asks before refusing.
 	labelLimits *fleet.LabelLimits
+
+	// self is this machine's own id, named to the peer when asking whether it
+	// is listed there (colab-fleet #154). Empty means the standing probe is
+	// not made.
+	self fleet.MachineId
+	// standing is this machine's registration on the peer as the peer last
+	// reported it — see refreshStanding and PeerStanding.
+	standing     fleet.PeerStanding
+	standingSeen bool
 }
 
 // Option configures a Driver.
@@ -254,6 +263,12 @@ func (d *Driver) effectiveDeadline() time.Duration {
 // credential, which only works while every machine accepts the same secret.
 func WithIdentity(token string) Option {
 	return func(d *Driver) { d.identity = token }
+}
+
+// WithSelf names this machine, so the probe can ask the peer whether it lists
+// this machine back (colab-fleet #154).
+func WithSelf(machine fleet.MachineId) Option {
+	return func(d *Driver) { d.self = machine }
 }
 
 func withClock(f func() time.Time) Option { return func(d *Driver) { d.now = f } }
@@ -361,6 +376,13 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 	// not block unboundedly. This is an out-of-band metadata probe made by
 	// an operator at startup, and it honours the caller's context — which is
 	// where the bound belongs for a call whose purpose is to discover bounds.
+	//
+	// Standing goes first (colab-fleet #154): a credential the peer accepts
+	// but grants no read is exactly the misconfiguration it exists to report,
+	// and the /v1/runtimes read below would refuse that credential and return
+	// before anything after it ran.
+	d.refreshStanding(ctx, req)
+
 	var body fleet.Collection[fleet.RuntimeInfo]
 	if err := d.do(ctx, req, http.MethodGet, "/v1/runtimes", nil, &body); err != nil {
 		return err
@@ -508,6 +530,80 @@ func (d *Driver) noteSuccessfulContact(req fleet.Request) {
 	}()
 }
 
+// refreshStanding asks the peer what it makes of THIS machine: whether its
+// roster lists us, and what it grants the credential we present (colab-fleet
+// #154). It asks the peer's whoami — authentication only, exempt from read —
+// so a credential the peer accepts but grants nothing still gets an observed
+// answer, and a 401 can only mean the credential matches no principal there.
+//
+// Made only with this machine's own identity. In shared-token mode the
+// credential presented is whichever caller's request triggered the probe, and
+// its grants say nothing about this machine; standing stays assumed there.
+//
+// The mixed-version rule is the whole point of reading the raw key: a peer on
+// a build that predates the field omits `listsYou`, and that must read as
+// assumed — never as false, which would report a registration problem nobody
+// has.
+func (d *Driver) refreshStanding(ctx context.Context, req fleet.Request) {
+	if d.identity == "" || d.self == "" {
+		return
+	}
+	var raw map[string]json.RawMessage
+	err := d.do(ctx, req, http.MethodGet, "/v1/whoami?peer="+url.QueryEscape(string(d.self)), nil, &raw)
+	now := d.now()
+	st := fleet.AssumedPeerStanding()
+	var fe *fleet.Error
+	switch {
+	case err == nil:
+		lists, has := raw["listsYou"]
+		if !has {
+			break // older build: nobody can tell
+		}
+		var listsMeBack *bool
+		var grants []string
+		if json.Unmarshal(lists, &listsMeBack) != nil || json.Unmarshal(raw["grants"], &grants) != nil {
+			return // a malformed answer is not an observation; keep the last one
+		}
+		if grants == nil {
+			grants = []string{}
+		}
+		st = fleet.PeerStanding{ListsMeBack: listsMeBack, GrantsToMe: grants,
+			Source: fleet.CapabilitiesObserved, ObservedAt: &now}
+	case routeMissing(err):
+		// A build that predates whoami itself: still nobody can tell.
+	case errors.As(err, &fe) && fe.Kind == fleet.ErrorUnauthorized:
+		// The peer answered: this credential matches no principal there.
+		st = fleet.PeerStanding{GrantsToMe: []string{}, Source: fleet.CapabilitiesObserved, ObservedAt: &now}
+	default:
+		// Unreached, or a failure that is not an answer: keep what we knew.
+		// PeerStanding decays it to assumed once it is too old to stand on.
+		return
+	}
+	d.mu.Lock()
+	d.standing, d.standingSeen = st, true
+	d.mu.Unlock()
+}
+
+// PeerStanding reports this machine's standing on the peer as last observed.
+// Implements driver.PeerStandingReporter (colab-fleet #154).
+//
+// An observation older than capabilityStaleness degrades to the assumed floor,
+// for #67's reason: a peer may have been reconfigured since, and a stale
+// `observed` is worse than an honest `assumed`.
+func (d *Driver) PeerStanding() fleet.PeerStanding {
+	d.mu.RLock()
+	st, seen := d.standing, d.standingSeen
+	d.mu.RUnlock()
+	if !seen || st.Source != fleet.CapabilitiesObserved ||
+		(st.ObservedAt != nil && d.now().Sub(*st.ObservedAt) > capabilityStaleness) {
+		return fleet.AssumedPeerStanding()
+	}
+	st.GrantsToMe = append([]string{}, st.GrantsToMe...)
+	return st
+}
+
+var _ driver.PeerStandingReporter = (*Driver)(nil)
+
 // Runtime reports the peer's runtime id, empty until the peer has answered.
 func (d *Driver) Runtime() fleet.RuntimeId {
 	d.mu.RLock()
@@ -622,7 +718,7 @@ func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string,
 	// paths capability discovery itself uses — RefreshCapabilities and
 	// peerBuild — so a probe triggered below does not immediately trigger
 	// another one recursively.
-	if path != "/v1/runtimes" && path != "/v1/health" {
+	if path != "/v1/runtimes" && path != "/v1/health" && !strings.HasPrefix(path, "/v1/whoami") {
 		d.noteSuccessfulContact(req)
 	}
 

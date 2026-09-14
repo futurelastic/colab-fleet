@@ -129,6 +129,68 @@ type Service struct {
 	// SetMaxInputBytes, meant to be called at most once, at startup, the
 	// same one-shot-config rule defaultRuntime above follows.
 	maxInputBytes int
+
+	// selfGrants evaluates this machine's own authorization model for a
+	// credential — installed by NewMux, which is where the model lives. Nil
+	// for a Service used without a mux, whose self standing then reads
+	// assumed rather than inventing an answer (colab-fleet #154).
+	selfGrants func(token string) []string
+
+	// verifyMu single-flights GET /v1/machines?verify=1: a caller holding
+	// only read must not be able to multiply probes to every peer.
+	verifyMu sync.Mutex
+}
+
+// setSelfGrantResolver installs how this service answers "what does my own
+// table grant this credential". See Service.selfGrants.
+func (s *Service) setSelfGrantResolver(f func(token string) []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.selfGrants = f
+}
+
+// selfStanding is the self item's PeerStanding (colab-fleet #154): this
+// machine trivially lists itself, and grantsToMe is what its own table grants
+// the credential it presents to peers — so the same fact is comparable when
+// read from either machine.
+func (s *Service) selfStanding() fleet.PeerStanding {
+	s.mu.RLock()
+	resolve, tok := s.selfGrants, s.peerCredential
+	s.mu.RUnlock()
+	yes := true
+	if resolve == nil {
+		st := fleet.AssumedPeerStanding()
+		st.ListsMeBack = &yes
+		return st
+	}
+	now := time.Now()
+	return fleet.PeerStanding{ListsMeBack: &yes, GrantsToMe: resolve(tok), Source: fleet.CapabilitiesObserved, ObservedAt: &now}
+}
+
+// RefreshPeers re-probes every peer that can be probed, concurrently, each
+// bounded by its effective deadline — GET /v1/machines?verify=1, for an
+// operator who has just edited a configuration and will not wait for the
+// cached cycle (colab-fleet #154). Concurrent callers are serialized.
+func (s *Service) RefreshPeers(ctx context.Context, callerDeadline time.Duration) {
+	s.verifyMu.Lock()
+	defer s.verifyMu.Unlock()
+	req := s.peerRequest()
+	var wg sync.WaitGroup
+	for _, d := range s.peerDrivers() {
+		refresher, ok := d.(driver.CapabilityRefresher)
+		if !ok {
+			continue
+		}
+		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, callerDeadline)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			callCtx, cancel := context.WithTimeout(ctx, deadline)
+			defer cancel()
+			_ = refresher.RefreshCapabilities(callCtx, req)
+		}()
+	}
+	wg.Wait()
 }
 
 // New constructs a Service without durable state. See NewWithState.
@@ -565,7 +627,7 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 	now := time.Now()
 	items := []fleet.MachineInfo{{
 		Machine: s.self, Self: true, Status: fleet.SourceOK, ObservedAt: now,
-		Build: s.build, MaxInputBytes: s.MaxInputBytes(),
+		Build: s.build, MaxInputBytes: s.MaxInputBytes(), Peer: s.selfStanding(),
 	}}
 	sources := []fleet.SourceStatus{{Machine: s.self, Status: fleet.SourceOK, ObservedAt: now}}
 
@@ -603,9 +665,16 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 		if reporter, ok := d.(driver.MaxInputBytesReporter); ok {
 			maxInputBytes = reporter.MaxInputBytes()
 		}
+		// This service's own standing there, learned on the same probe
+		// (colab-fleet #154). A driver that cannot report one reads as the
+		// floor — assumed, never "not listed".
+		peer := fleet.AssumedPeerStanding()
+		if reporter, ok := d.(driver.PeerStandingReporter); ok {
+			peer = reporter.PeerStanding()
+		}
 		items = append(items, fleet.MachineInfo{
 			Machine: machine, Self: false, Status: status, ObservedAt: observed,
-			Build: build, MaxInputBytes: maxInputBytes,
+			Build: build, MaxInputBytes: maxInputBytes, Peer: peer,
 		})
 		sources = append(sources, fleet.SourceStatus{Machine: machine, Status: status, Error: errText, ObservedAt: observed})
 	}

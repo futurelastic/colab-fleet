@@ -67,6 +67,10 @@ type Config struct {
 // here, not faked by half-real handlers.
 func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux := http.NewServeMux()
+	// The self item of GET /v1/machines reports what this machine's own
+	// model grants the credential it presents to peers (#154); the model is
+	// cfg, which only the mux holds.
+	svc.setSelfGrantResolver(func(tok string) []string { return grantsForToken(cfg, tok) })
 
 	mux.HandleFunc("GET /v1/health", withAuth(cfg, reading(handleHealth(svc))))
 	// GET /v1/whoami deliberately skips reading()'s GrantRead gate — see
@@ -478,6 +482,11 @@ func handleHealth(svc *Service) http.HandlerFunc {
 
 func handleMachines(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// ?verify=1 re-probes every peer first, instead of answering from
+		// the cached cycle (colab-fleet #154). Still only read.
+		if r.URL.Query().Get("verify") == "1" {
+			svc.RefreshPeers(r.Context(), parseDeadline(r))
+		}
 		col, err := svc.ListMachines(r.Context(), requestFrom(r), parseDeadline(r))
 		if err != nil {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error()})

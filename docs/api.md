@@ -129,8 +129,18 @@ stamps say.
 
 ### `GET /v1/machines`
 
-`{items: [{machine, self, status, observedAt}], sources, complete}`. Always
-probes peers; there is no `scope` here.
+`{items: [{machine, self, status, observedAt, build, maxInputBytes, peer}],
+sources, complete}`. Always probes peers; there is no `scope` here.
+
+`peer` is this service's own standing on each machine:
+`{listsMeBack, grantsToMe, source, observedAt?}` — whether that machine lists
+this one back, and what it grants the credential this machine presents there.
+Read it before relying on a cross-machine write, instead of learning from a
+`403`. `source: "assumed"` with `listsMeBack: null` means nobody could tell
+(unreached, stale, an older build, or no per-peer credential) — not "not
+listed". `observed` with `grantsToMe: []` is a real negative. The `self` item
+reports `listsMeBack: true` and what this machine's own table grants the
+credential it presents to peers. `?verify=1` re-probes every peer first.
 
 ### `GET /v1/runtimes`
 

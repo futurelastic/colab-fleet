@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/subtle"
 	"net/http"
 
 	fleet "github.com/godx-jp/colab-fleet"
@@ -68,11 +69,22 @@ func handleWhoAmI(svc *Service, cfg Config) http.HandlerFunc {
 			return
 		}
 
+		// ?peer= is how a SERVICE probing this machine asks whether it is
+		// listed here (colab-fleet #154). The roster is this machine's
+		// configuration, so only a credential holding read gets an answer;
+		// everyone else reads null, never false.
+		var listsYou *bool
+		if asker := fleet.MachineId(r.URL.Query().Get("peer")); asker != "" && callerHoldsRead(r) {
+			_, listed := svc.peerDrivers()[asker]
+			listsYou = &listed
+		}
+
 		writeJSON(w, http.StatusOK, fleet.GrantReport{
 			Principal: caller.Principal,
 			Machine:   svc.Self(),
 			Grants:    grantsForRequest(cfg, r),
 			Source:    fleet.CapabilitiesObserved,
+			ListsYou:  listsYou,
 		})
 	}
 }
@@ -87,12 +99,52 @@ func handleWhoAmI(svc *Service, cfg Config) http.HandlerFunc {
 // have grown.
 func grantsForRequest(cfg Config, r *http.Request) []string {
 	if p, ok := principalOf(r); ok {
-		out := make([]string, 0, len(p.Grants))
-		for _, g := range p.Grants {
-			out = append(out, string(g))
-		}
-		return out
+		return grantNames(p.Grants)
 	}
+	return legacyGrants(cfg)
+}
+
+func grantNames(gs []Grant) []string {
+	out := make([]string, 0, len(gs))
+	for _, g := range gs {
+		out = append(out, string(g))
+	}
+	return out
+}
+
+// callerHoldsRead reports whether the request's credential may read this
+// machine's configuration. Single-token mode grants read unconditionally.
+func callerHoldsRead(r *http.Request) bool {
+	if p, ok := principalOf(r); ok {
+		return p.Allows(GrantRead)
+	}
+	return true
+}
+
+// grantsForToken is what this machine's own authorization model grants a
+// given credential — the self item's grantsToMe on GET /v1/machines
+// (colab-fleet #154), evaluated for the credential this service presents to
+// its peers. Same one-definition rule as grantsForRequest: a credential that
+// matches nothing holds nothing.
+func grantsForToken(cfg Config, token string) []string {
+	if token == "" {
+		return []string{}
+	}
+	if len(cfg.Principals) > 0 {
+		for _, p := range cfg.Principals {
+			if p.Token != "" && subtle.ConstantTimeCompare([]byte(p.Token), []byte(token)) == 1 {
+				return grantNames(p.Grants)
+			}
+		}
+		return []string{}
+	}
+	if cfg.Token != "" && subtle.ConstantTimeCompare([]byte(cfg.Token), []byte(token)) == 1 {
+		return legacyGrants(cfg)
+	}
+	return []string{}
+}
+
+func legacyGrants(cfg Config) []string {
 
 	// Legacy single-token mode has no per-verb table, only the two coarse
 	// flags mutating() actually consults, plus reading()'s own documented

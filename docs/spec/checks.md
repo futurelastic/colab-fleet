@@ -31,7 +31,9 @@ Two directions, both real bugs:
 Registered types live in `specFieldTypes` (`spec_fields_test.go`):
 `SessionSpec`, `SessionRef`, `SessionState`, `DeliveryReceipt`, `Ack`,
 `Request`, `Caller`, `Expectation`, `SessionPrompt`, `Response`,
-`AttachHint`, `ConversationRef`, `DriverCapabilities`, `SourceStatus`.
+`AttachHint`, `ConversationRef`, `DriverCapabilities`, `SourceStatus`,
+`PromptDelivery`, `PinOutcome`, `PinResult`, `RuntimeSurfaceRef`,
+`IdentityAssertion`, `PeerStanding`.
 
 **Field names only — never types, tags-minus-name, or ordering.** A field
 that changes shape (say, a field renamed to a different key with the same

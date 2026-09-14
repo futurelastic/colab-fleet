@@ -34,4 +34,19 @@ type GrantReport struct {
 	// under "assumed" and must be read the same way an unreached peer's
 	// capabilities are: a conservative floor, never that peer's real answer.
 	Source CapabilitySource `json:"source"`
+	// ListsYou answers a question only a SERVICE asks (colab-fleet #154): is
+	// the machine named in `?peer=` in this machine's own roster of peers?
+	// A service probing a peer names itself there and reads this back as
+	// PeerStanding.ListsMeBack.
+	//
+	// Always present on a build that has it, and null whenever it was not
+	// answered — no `peer` asked, a report about another machine, or a
+	// credential without `read`, because the roster is this machine's
+	// configuration and `read` is what guards that. So an ABSENT key can
+	// only mean a build that predates the field, which is how the prober
+	// tells "not listed" (false) from "cannot say" (a peer on older code).
+	//
+	// The id is asserted by the caller. That is acceptable because this is a
+	// report, never authority: nothing is granted or refused on it.
+	ListsYou *bool `json:"listsYou"`
 }

@@ -58,7 +58,7 @@ func peerServing(t *testing.T, status int, payload any, rec *capture) *httptest.
 		// operation under test — by never recording the probe's own
 		// requests here — removes both, without serializing anything: the
 		// probe still runs concurrently, it just never touches this slot.
-		probing := r.URL.Path == "/v1/runtimes" || r.URL.Path == "/v1/health"
+		probing := r.URL.Path == "/v1/runtimes" || r.URL.Path == "/v1/health" || r.URL.Path == "/v1/whoami"
 		if rec != nil && !probing {
 			raw, _ := io.ReadAll(r.Body)
 			*rec = capture{

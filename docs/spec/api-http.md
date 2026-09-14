@@ -68,13 +68,17 @@ GET /v1/health
         "labels": { "maxKeys": 16, "maxKeyBytes": 128, "maxValueBytes": 128 },
         "drivers": [...] }
 
-GET /v1/machines
+GET /v1/machines[?verify=1]
 → 200 { "items": [ { "machine": "...", "self": true, "status": "ok",
                      "observedAt": "...",
                      "build": { "known": true, "revision": "...",
                                 "modified": false, "time": "...",
                                 "go": "go1.26.5" },
-                     "maxInputBytes": 1024 } ],
+                     "maxInputBytes": 1024,
+                     "peer": { "listsMeBack": true,
+                               "grantsToMe": ["read", "send"],
+                               "source": "observed",
+                               "observedAt": "..." } } ],
         "sources": [...], "complete": true }
 
 GET /v1/runtimes
@@ -91,9 +95,9 @@ GET /v1/runtimes
                                        "observedAt": "..." } } ],
         "sources": [...], "complete": true }
 
-GET /v1/whoami[?machine=<id>]
+GET /v1/whoami[?machine=<id>][&peer=<id>]
 → 200 { "principal": "...", "machine": "...", "grants": ["read", "send"],
-        "source": "observed" }
+        "source": "observed", "listsYou": null }
 ```
 
 **`/v1/whoami` reports the presented credential's own grants, and nothing
@@ -107,6 +111,16 @@ reused rather than reinvented, because it is the identical "nobody has told
 me anything" fact. This service has no mechanism to learn what a peer has
 granted a credential (unlike a peer's driver capabilities, which are probed
 and cached), so a peer's real answer must be read from that machine directly.
+
+**`peer=<id>` is how a service asks a machine whether it is listed there**
+(colab-fleet #154). When the report is about this machine and the credential
+holds `read`, `listsYou` is `true` or `false` — whether `<id>` is in this
+machine's own peer roster. Otherwise it is `null`: nothing asked, a report
+about another machine, or a credential without `read`, because the roster is
+this machine's configuration and `read` is what guards it. The key is
+**always present** on a build that has it, so an absent key means only "this
+build predates the field". The id is the caller's assertion; that is
+acceptable because the answer is a report and grants nothing.
 
 Clients **must** consult `/v1/runtimes` before relying on a capability, and
 degrade rather than assume. A driver never emulates (§5.6).
@@ -179,6 +193,48 @@ directly; `/v1/machines` carries it per entry the same way it carries
 successful probe learned. Unlike `build`, an unanswered peer's entry needs
 no separate `known` flag — a real effective limit is never zero, so the
 zero value is unambiguous on its own as "not yet observed."
+
+**`peer` on each `/v1/machines` item is this service's own standing on that
+machine** (colab-fleet #154) — the one credential a service holds that a peer
+knows, its own, and whether that peer's roster lists it back. Federation is
+two hand-kept halves of configuration, and before this their disagreement was
+discoverable only by a 403 at the moment of need.
+
+```
+PeerStanding {
+  listsMeBack : boolean | null   // that machine's roster names this service
+  grantsToMe  : string[]         // grants that machine gives the credential this service presents
+  source      : "observed" | "assumed"
+  observedAt? : Timestamp        // this machine's clock; absent under "assumed"
+}
+```
+
+It is gathered on the peer probe that already learns `build` and
+`maxInputBytes`, by calling that peer's `GET /v1/whoami?peer=<self>` with the
+credential this service presents there — so it adds no request class a peer
+has not already accepted, and needs no grant beyond `read` to be read here.
+Three answers **must not** collapse into one another:
+
+- `observed`, `listsMeBack: false` — the peer answered, and does not list this
+  service. Its fleet reads and relays never reach this machine.
+- `observed`, `grantsToMe: []` — the peer answered, and this credential holds
+  nothing there. A `401` from that whoami is this answer: whoami requires only
+  authentication, so the only thing a 401 can mean is that the credential
+  matches no principal there. A real negative.
+- `assumed`, `listsMeBack: null`, `grantsToMe: []` — **nobody could tell**: the
+  peer was never reached; the last answer is older than the capability
+  staleness bound; this service presents no credential of its own there
+  (single-token mode, where the credential is whichever caller's request
+  triggered the probe); or the peer runs a build that predates the field. A
+  whoami answer without `listsYou` **must** read as `assumed`, never as
+  `listsMeBack: false` — that would report a registration problem no one has.
+
+The `self` item reports `listsMeBack: true` and, as `grantsToMe`, what this
+machine's own table grants the credential it presents to its peers —
+`observed`, and `[]` when that credential matches nothing here — so the same
+fact is comparable when read from either machine. `?verify=1` re-probes every
+peer before answering instead of using the cached cycle; concurrent verifies
+are serialized, so a caller holding only `read` cannot multiply probes.
 
 **`labels` on `/v1/health` is the bounds this machine enforces on session
 labels** (colab-fleet #153; §3.3's `labels`), and its presence is how a

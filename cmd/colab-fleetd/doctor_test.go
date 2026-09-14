@@ -447,7 +447,7 @@ func TestDoctorPeerReachable(t *testing.T) {
 
 // The triage ruling for #160: whether a peer grants this machine keys is not
 // readable locally until #154. The row ships now and says so — never a guess.
-func TestDoctorPeerGrantsAlwaysUnknown(t *testing.T) {
+func TestDoctorPeerGrantsUnknownWhenOffline(t *testing.T) {
 	cfg := writeTestConfig(t, t.TempDir(), []testPrincipal{{Name: "system:m1", Token: "s", Grants: grants("read")}},
 		[]testPeer{{Machine: "m2", URL: "http://192.0.2.1:9000", Token: "p"}, {Machine: "m3", URL: "http://192.0.2.2:9000", Token: "q"}})
 	env := testDoctorEnv(map[string]string{"FLEET_MACHINE": "m1", "FLEET_CONFIG": cfg, "FLEET_RUNTIME": "stub"})
@@ -455,7 +455,7 @@ func TestDoctorPeerGrantsAlwaysUnknown(t *testing.T) {
 	rows := runChecks(context.Background(), env)
 	for _, id := range []string{"peer.m2.grants", "peer.m3.grants"} {
 		row := rowByID(t, rows, id)
-		if row.Status != statusUnknown || !strings.Contains(row.Detail, "#154") {
+		if row.Status != statusUnknown || len(row.Refs) == 0 || row.Refs[0] != 154 {
 			t.Fatalf("%s: got %+v, want unknown citing #154", id, row)
 		}
 	}

@@ -421,11 +421,20 @@ func runChecks(ctx context.Context, env doctorEnv) []doctorRow {
 			}
 		}
 
-		c.add(doctorRow{ID: prefix + ".grants", Status: statusUnknown,
-			Summary: fmt.Sprintf("whether %s grants this machine keys/send/… is not readable from here", p.machine),
-			Detail: "a peer's grants to this machine's credential are not exposed by any endpoint yet (#106); " +
-				"#154 proposes the read. Check that peer's own doctor",
-			Refs: []int{106, 154}})
+		// This machine's standing on the peer, as the peer reports it
+		// (colab-fleet #154). The row id is the one it has always had.
+		switch {
+		case env.Offline:
+			c.add(doctorRow{ID: prefix + ".grants", Status: statusUnknown,
+				Summary: "not probed (--offline)", Refs: []int{154}})
+		case !urlOK || credential == "":
+			c.add(doctorRow{ID: prefix + ".grants", Status: statusUnknown,
+				Summary: "not probed — no usable address or credential", Refs: []int{154}})
+		case c.skipped(prefix + ".grants"):
+			c.add(doctorRow{ID: prefix + ".grants"})
+		default:
+			c.add(probePeerGrants(ctx, env, prefix+".grants", strings.TrimRight(p.base, "/"), credential, self, p.machine))
+		}
 	}
 
 	return c.rows
@@ -913,6 +922,97 @@ func probePeer(ctx context.Context, env doctorEnv, id, base, credential string) 
 		row.Status = statusWarn
 		row.Summary = fmt.Sprintf("reachable; credential accepted — but peer build %s vs ours %s", body.Build.Short(), fleet.SelfBuild().Short())
 		row.Detail = why + "; a disagreement between these two may be skew rather than a bug"
+	}
+	return row
+}
+
+// probePeerGrants reads this machine's standing on a peer from that peer's own
+// whoami, asked with the credential this machine presents there (colab-fleet
+// #154): whether the peer lists this machine back, and what it grants.
+//
+// Read-only like every other row. A peer that cannot answer the question —
+// unreachable, or on a build without the read — is unknown, never a failure:
+// the reachable row already reports reachability.
+func probePeerGrants(ctx context.Context, env doctorEnv, id, base, credential string, self, peer fleet.MachineId) doctorRow {
+	row := doctorRow{ID: id, Refs: []int{154}}
+	ctx, cancel := context.WithTimeout(ctx, env.Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		base+"/v1/whoami?peer="+url.QueryEscape(string(self)), nil)
+	if err != nil {
+		row.Status = statusUnknown
+		row.Summary = "not read — request could not be built from the configured address"
+		return row
+	}
+	req.Header.Set("Authorization", "Bearer "+credential)
+	client := env.HTTP
+	if client == nil {
+		client = &http.Client{Timeout: env.Timeout}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		row.Status = statusUnknown
+		row.Summary = "not read — unreachable: " + describeNetErr(err)
+		return row
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized, http.StatusForbidden:
+		row.Status = statusFail
+		row.Summary = fmt.Sprintf("%s holds no principal for this machine's credential (%d)", peer, resp.StatusCode)
+		row.Detail = "every relayed call from this machine is refused there (#98: token VALUE must match on both sides)"
+		return row
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		row.Status = statusUnknown
+		row.Summary = fmt.Sprintf("%s predates whoami — its grants cannot be read from here", peer)
+		return row
+	default:
+		row.Status = statusUnknown
+		row.Summary = fmt.Sprintf("not read — whoami answered %d", resp.StatusCode)
+		return row
+	}
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&raw); err != nil {
+		row.Status = statusUnknown
+		row.Summary = "not read — whoami's answer did not parse"
+		return row
+	}
+	var held []string
+	_ = json.Unmarshal(raw["grants"], &held)
+	grantText := "grants: none"
+	if len(held) > 0 {
+		grantText = "grants: " + strings.Join(held, ", ")
+	}
+	lists, has := raw["listsYou"]
+	if !has {
+		row.Status = statusUnknown
+		row.Summary = fmt.Sprintf("%s predates the standing read; %s", peer, grantText)
+		row.Detail = "whether it lists this machine back is not reported by that build"
+		return row
+	}
+	var listsMe *bool
+	_ = json.Unmarshal(lists, &listsMe)
+	hasRead := false
+	for _, g := range held {
+		if g == string(service.GrantRead) {
+			hasRead = true
+		}
+	}
+	switch {
+	case listsMe != nil && !*listsMe:
+		row.Status = statusWarn
+		row.Summary = fmt.Sprintf("%s does not list this machine back; %s", peer, grantText)
+		row.Detail = "registration is one-sided: that machine's fleet-wide reads and relays never reach this one"
+	case listsMe == nil:
+		row.Status = statusWarn
+		row.Summary = fmt.Sprintf("%s did not say whether it lists this machine — this credential lacks read there; %s", peer, grantText)
+	case !hasRead:
+		row.Status = statusWarn
+		row.Summary = fmt.Sprintf("%s lists this machine back, but this credential lacks read there; %s", peer, grantText)
+	default:
+		row.Status = statusPass
+		row.Summary = fmt.Sprintf("%s lists this machine back; %s", peer, grantText)
 	}
 	return row
 }

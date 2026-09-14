@@ -536,3 +536,18 @@ type BuildReporter interface {
 type MaxInputBytesReporter interface {
 	MaxInputBytes() int
 }
+
+// PeerStandingReporter is another OPTIONAL capability, same shape again: a
+// driver fronting a PEER reports this service's own standing there — whether
+// that peer lists this service back and what it grants the credential this
+// service presents (colab-fleet #154), learned on the same probe as Build.
+// A driver without it reads as fleet.AssumedPeerStanding().
+type PeerStandingReporter interface {
+	PeerStanding() fleet.PeerStanding
+}
+
+// CapabilityRefresher is a driver that can re-probe its peer on demand —
+// what GET /v1/machines?verify=1 asks for, instead of the cached cycle.
+type CapabilityRefresher interface {
+	RefreshCapabilities(ctx context.Context, req fleet.Request) error
+}
