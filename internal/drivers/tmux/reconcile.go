@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
@@ -92,6 +93,15 @@ type sessionRecord struct {
 	// absent".
 	Marker        string `json:"marker,omitempty"`
 	MarkerApplied bool   `json:"markerApplied,omitempty"`
+
+	// SessionMarker is colab-fleet #165's published fact: the marker the
+	// create that started this run carried AND the resolved name ended in —
+	// what fleet.Session.Marker reports. Distinct from Marker/MarkerApplied
+	// on purpose. Those answer a naming question about ONE string ("did this
+	// driver append it to Name?") and are cleared by a rename, because the
+	// caller dictated the new string. This answers what KIND of session the
+	// run is, which a rename does not change — so noteRenamed carries it.
+	SessionMarker string `json:"sessionMarker,omitempty"`
 
 	// Reasserts counts how many times a List has already put Name back
 	// after finding the runtime disagreeing with it (colab-fleet #97).
@@ -214,6 +224,7 @@ func vanishedSession(machine fleet.MachineId, id string, rec sessionRecord, why 
 		SessionRef: fleet.SessionRef{Machine: machine, ID: id, Name: id},
 		Cwd:        fleet.AbsolutePath(rec.Cwd),
 		StartedAt:  &started,
+		Marker:     rec.publishedMarker(),
 		State: fleet.InferredState(fleet.StatusDead,
 			"disappeared while unobserved: "+why, nil),
 	}
@@ -420,6 +431,67 @@ func identityAssertionFor(r paneRow, prior map[string]sessionRecord, byRun map[p
 	return nil
 }
 
+// carriedMarker is the value SessionMarker records for a create that asked
+// for marker and resolved to name: the marker itself when the name ends in
+// it — whether this call appended it or the name already carried it, since
+// "carried, never stacked" makes those the same outcome for the caller —
+// and empty otherwise. Otherwise means no marker was asked for, or the name
+// kept a DIFFERENT marker it already carried (applyMarker never stacks), in
+// which case this create applied nothing and must not claim it did.
+//
+// The suffix test is safe here where #90 found it unsafe: that defect was
+// deciding whether to APPEND from the string alone. By now the decision is
+// made, and the question is only whether the string the session carries
+// ends in the marker this create asked for.
+func carriedMarker(name, marker string) string {
+	if marker == "" || !strings.HasSuffix(name, marker) {
+		return ""
+	}
+	return marker
+}
+
+// publishedMarker is what a record publishes as fleet.Session.Marker. A
+// record written before SessionMarker existed still answers when it can do
+// so exactly: MarkerApplied is only ever true on a record no rename has
+// touched (noteRenamed clears it), so its Marker is on the name for certain.
+func (rec sessionRecord) publishedMarker() string {
+	if rec.SessionMarker != "" {
+		return rec.SessionMarker
+	}
+	if rec.MarkerApplied {
+		return rec.Marker
+	}
+	return ""
+}
+
+// markerFor finds the record describing the live run r and returns its
+// published marker. Matched the way identityAssertionFor matches — by run
+// first, so a rename (ours, or a second actor reverting it) still finds it —
+// then by name for a record not yet corroborated against a live read. That
+// name match refuses a record whose Created disagrees with r's: the id was
+// recycled by a different run, and the old run's type is not this one's.
+func markerFor(r paneRow, prior map[string]sessionRecord, byRun map[paneCreated]sessionRecord) string {
+	if rec, ok := byRun[paneCreatedOf(r.paneID, r.created)]; ok {
+		return rec.publishedMarker()
+	}
+	if rec, ok := prior[r.session]; ok && rec.Pane == "" &&
+		(rec.Created.IsZero() || rec.Created.Equal(r.created)) {
+		return rec.publishedMarker()
+	}
+	return ""
+}
+
+// markerForCreate is markerFor for the Create-family returns, which have no
+// live row to match: the record Create itself just wrote (or wrote on the
+// original call a replay is answering), read back so the 201 and every later
+// read report one fact rather than two that can drift.
+func (d *Driver) markerForCreate(name string) string {
+	if d.store == nil {
+		return ""
+	}
+	return d.loadRecords()[name].publishedMarker()
+}
+
 // markerStateFor answers colab-fleet #96 exactly, when this driver has a
 // record to answer from: whether the marker resolveName would apply to
 // name is already there because THIS driver put it there — never guessed
@@ -479,6 +551,7 @@ func (d *Driver) noteAssertedName(key, cwd, name, marker string, applied bool) {
 	rec.Name = name
 	rec.Marker = marker
 	rec.MarkerApplied = applied
+	rec.SessionMarker = carriedMarker(name, marker)
 	rec.Reasserts = 0
 	rec.NameAssertedAt = now
 	if rec.FirstSeen.IsZero() {
@@ -497,7 +570,8 @@ func (d *Driver) noteAssertedName(key, cwd, name, marker string, applied bool) {
 //
 // Marker/MarkerApplied are cleared rather than carried across: the caller
 // dictated the whole new string, so whatever this driver knew about the OLD
-// name's marker is not a fact about this one.
+// name's marker is not a fact about this one. SessionMarker is carried: it
+// describes the run, not the string (colab-fleet #165).
 func (d *Driver) noteRenamed(from, to, cwd, pane string, created time.Time) {
 	if d.store == nil {
 		return
