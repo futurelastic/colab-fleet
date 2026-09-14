@@ -508,7 +508,9 @@ func main() {
 		// hand: it presents the authority of whoever made the request
 		// (§13). A proxy holding its own identity is the confused deputy
 		// this design forbids.
-		opts := []remote.Option{remote.WithDeadline(3 * time.Second)}
+		// WithSelf lets the probe ask the peer whether it lists this machine
+		// back (colab-fleet #154).
+		opts := []remote.Option{remote.WithDeadline(3 * time.Second), remote.WithSelf(self)}
 		// The credential THIS machine holds on that peer. Distinct from
 		// anything a caller presents here, and distinct from the peer's
 		// own credential on us — conflating those is how a fleet ends up

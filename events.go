@@ -17,7 +17,16 @@ const (
 	// accept-time event, always, and a later follow-up once this service has
 	// something to say about whether it held — see SessionRenamed.Corroboration.
 	EventSessionRenamed EventKind = "session.renamed"
-	EventSourceStatus   EventKind = "source.status"
+	// EventSessionLabels carries a session's labels after they changed
+	// (colab-fleet #153) — at create when it carried any, and after every
+	// POST …/labels. The payload is the WHOLE map, not the patch, so a
+	// subscriber that missed an earlier one still converges.
+	//
+	// It is also the guarantee for a create: a driver's own session.created
+	// can be observed before the service has stored the create's labels, so
+	// that event may carry `{}` for a session this one then labels.
+	EventSessionLabels EventKind = "session.labels"
+	EventSourceStatus  EventKind = "source.status"
 	// EventMachineQuota reports that this machine's ACCOUNT started or
 	// stopped refusing work — a fact about the machine, not about any one
 	// session, and the only event here whose subject is not a session.
@@ -90,6 +99,15 @@ type SessionStatePayload struct {
 	State SessionState `json:"state"`
 }
 
+// SessionLabelsPayload is session.labels' payload (colab-fleet #153): the
+// session, when it started (so a subscriber can tell a recycled id apart,
+// §5.4), and its complete label map after the change.
+type SessionLabelsPayload struct {
+	Ref       SessionRef        `json:"ref"`
+	StartedAt *Timestamp        `json:"startedAt,omitempty"`
+	Labels    map[string]string `json:"labels"`
+}
+
 // MachineQuotaPayload is machine.quota's payload.
 //
 // Blocked is explicit rather than implied by Quota being nil, so a recovery
@@ -131,6 +149,7 @@ type MachineAccountPayload struct {
 // Payload's Go type varies by Kind:
 //   - EventSessionCreated -> Session
 //   - EventSessionState, EventSessionClosed -> SessionStatePayload
+//   - EventSessionLabels -> SessionLabelsPayload
 //   - EventSourceStatus -> SourceStatus
 //   - EventMachineQuota -> MachineQuotaPayload
 //   - EventMachineAccount -> MachineAccountPayload

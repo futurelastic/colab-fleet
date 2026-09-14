@@ -93,6 +93,10 @@ type Service struct {
 
 	state *state.Store
 
+	// labels is where caller-supplied session labels live (colab-fleet
+	// #153) — see labels.go for why the service stores them, not a driver.
+	labels *labelStore
+
 	// events is the service-wide event plane: §7.3's cursor and epoch live
 	// here because they are per service instance, not per driver.
 	events *hub
@@ -125,6 +129,68 @@ type Service struct {
 	// SetMaxInputBytes, meant to be called at most once, at startup, the
 	// same one-shot-config rule defaultRuntime above follows.
 	maxInputBytes int
+
+	// selfGrants evaluates this machine's own authorization model for a
+	// credential — installed by NewMux, which is where the model lives. Nil
+	// for a Service used without a mux, whose self standing then reads
+	// assumed rather than inventing an answer (colab-fleet #154).
+	selfGrants func(token string) []string
+
+	// verifyMu single-flights GET /v1/machines?verify=1: a caller holding
+	// only read must not be able to multiply probes to every peer.
+	verifyMu sync.Mutex
+}
+
+// setSelfGrantResolver installs how this service answers "what does my own
+// table grant this credential". See Service.selfGrants.
+func (s *Service) setSelfGrantResolver(f func(token string) []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.selfGrants = f
+}
+
+// selfStanding is the self item's PeerStanding (colab-fleet #154): this
+// machine trivially lists itself, and grantsToMe is what its own table grants
+// the credential it presents to peers — so the same fact is comparable when
+// read from either machine.
+func (s *Service) selfStanding() fleet.PeerStanding {
+	s.mu.RLock()
+	resolve, tok := s.selfGrants, s.peerCredential
+	s.mu.RUnlock()
+	yes := true
+	if resolve == nil {
+		st := fleet.AssumedPeerStanding()
+		st.ListsMeBack = &yes
+		return st
+	}
+	now := time.Now()
+	return fleet.PeerStanding{ListsMeBack: &yes, GrantsToMe: resolve(tok), Source: fleet.CapabilitiesObserved, ObservedAt: &now}
+}
+
+// RefreshPeers re-probes every peer that can be probed, concurrently, each
+// bounded by its effective deadline — GET /v1/machines?verify=1, for an
+// operator who has just edited a configuration and will not wait for the
+// cached cycle (colab-fleet #154). Concurrent callers are serialized.
+func (s *Service) RefreshPeers(ctx context.Context, callerDeadline time.Duration) {
+	s.verifyMu.Lock()
+	defer s.verifyMu.Unlock()
+	req := s.peerRequest()
+	var wg sync.WaitGroup
+	for _, d := range s.peerDrivers() {
+		refresher, ok := d.(driver.CapabilityRefresher)
+		if !ok {
+			continue
+		}
+		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, callerDeadline)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			callCtx, cancel := context.WithTimeout(ctx, deadline)
+			defer cancel()
+			_ = refresher.RefreshCapabilities(callCtx, req)
+		}()
+	}
+	wg.Wait()
 }
 
 // New constructs a Service without durable state. See NewWithState.
@@ -145,6 +211,9 @@ func NewWithState(self fleet.MachineId, st *state.Store) (*Service, error) {
 	svc.state = st
 	if st == nil {
 		return svc, nil
+	}
+	if err := svc.labels.load(st); err != nil {
+		return nil, err
 	}
 
 	var seq eventSequence
@@ -183,6 +252,7 @@ func newService(self fleet.MachineId) *Service {
 		local:     make(map[fleet.RuntimeId]driver.Driver),
 		peers:     make(map[fleet.MachineId]driver.Driver),
 		events:    newHub(self, now.UTC().Format(time.RFC3339Nano)),
+		labels:    newLabelStore(),
 		// #130: every instance starts with the shipped default in force,
 		// not a zero value a caller could mistake for "no limit" — see the
 		// field's own doc comment.
@@ -404,8 +474,25 @@ func (s *Service) ListSessions(ctx context.Context, req fleet.Request, scope Sco
 	var items []fleet.Session
 	var sources []fleet.SourceStatus
 
-	for _, d := range s.localDrivers() {
+	// Local drivers are walked with their runtime, because a session's labels
+	// are keyed by (runtime, id) — colab-fleet #153.
+	s.mu.RLock()
+	local := make(map[fleet.RuntimeId]driver.Driver, len(s.local))
+	for rt, d := range s.local {
+		local[rt] = d
+	}
+	s.mu.RUnlock()
+	for rt, d := range local {
+		listedAt := time.Now()
 		its, srcs := s.callList(ctx, req, s.self, d, filter, callerDeadline)
+		// Only a complete, unfiltered answer may prune: anything narrower
+		// proves nothing about which sessions are gone (§5.7).
+		if filter.IsZero() && allSourcesOK(srcs) {
+			s.labels.retain(rt, its, listedAt)
+		}
+		for i := range its {
+			its[i].Labels = s.labels.get(rt, its[i].ID, its[i].StartedAt)
+		}
 		items = append(items, its...)
 		sources = append(sources, srcs...)
 	}
@@ -418,6 +505,21 @@ func (s *Service) ListSessions(ctx context.Context, req fleet.Request, scope Sco
 		}
 	}
 
+	// Applied to EVERY item, peers' included. A peer on a build that
+	// predates labels ignores the parameter and answers with everything it
+	// has; the remote driver already turns that into a degraded source, and
+	// filtering again here is what keeps any such answer from ever being
+	// counted as a match.
+	if len(filter.Labels) > 0 {
+		kept := items[:0]
+		for _, it := range items {
+			if fleet.MatchesLabels(it.Labels, filter.Labels) {
+				kept = append(kept, it)
+			}
+		}
+		items = kept
+	}
+
 	if len(sources) == 0 {
 		// No drivers registered at all for this scope. Still must not
 		// return a bare, sourceless Collection (§9) — the service itself
@@ -426,6 +528,35 @@ func (s *Service) ListSessions(ctx context.Context, req fleet.Request, scope Sco
 	}
 
 	return fleet.NewCollection(items, sources)
+}
+
+// allSourcesOK reports whether a listing's sources all answered ok.
+func allSourcesOK(srcs []fleet.SourceStatus) bool {
+	if len(srcs) == 0 {
+		return false
+	}
+	for _, src := range srcs {
+		if src.Status != fleet.SourceOK {
+			return false
+		}
+	}
+	return true
+}
+
+// publishLabels announces a session's complete label map (session.labels,
+// colab-fleet #153).
+func (s *Service) publishLabels(machine fleet.MachineId, sess fleet.Session) {
+	ref := sess.SessionRef
+	if ref.Machine == "" {
+		ref.Machine = machine
+	}
+	s.events.publish(fleet.Event{
+		Machine: machine,
+		Kind:    fleet.EventSessionLabels,
+		Payload: fleet.SessionLabelsPayload{
+			Ref: ref, StartedAt: sess.StartedAt, Labels: fleet.CopyLabels(sess.Labels),
+		},
+	})
 }
 
 // callList invokes one driver's List and folds its result into the
@@ -496,7 +627,7 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 	now := time.Now()
 	items := []fleet.MachineInfo{{
 		Machine: s.self, Self: true, Status: fleet.SourceOK, ObservedAt: now,
-		Build: s.build, MaxInputBytes: s.MaxInputBytes(),
+		Build: s.build, MaxInputBytes: s.MaxInputBytes(), Peer: s.selfStanding(),
 	}}
 	sources := []fleet.SourceStatus{{Machine: s.self, Status: fleet.SourceOK, ObservedAt: now}}
 
@@ -534,9 +665,16 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 		if reporter, ok := d.(driver.MaxInputBytesReporter); ok {
 			maxInputBytes = reporter.MaxInputBytes()
 		}
+		// This service's own standing there, learned on the same probe
+		// (colab-fleet #154). A driver that cannot report one reads as the
+		// floor — assumed, never "not listed".
+		peer := fleet.AssumedPeerStanding()
+		if reporter, ok := d.(driver.PeerStandingReporter); ok {
+			peer = reporter.PeerStanding()
+		}
 		items = append(items, fleet.MachineInfo{
 			Machine: machine, Self: false, Status: status, ObservedAt: observed,
-			Build: build, MaxInputBytes: maxInputBytes,
+			Build: build, MaxInputBytes: maxInputBytes, Peer: peer,
 		})
 		sources = append(sources, fleet.SourceStatus{Machine: machine, Status: status, Error: errText, ObservedAt: observed})
 	}

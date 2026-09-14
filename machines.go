@@ -33,6 +33,50 @@ type MachineInfo struct {
 	// §5.7's "absence and failure are different answers" holds here by
 	// construction rather than by an extra field.
 	MaxInputBytes int `json:"maxInputBytes,omitempty"`
+	// Peer is this service's own standing on that machine — whether it lists
+	// this service back and what it grants the credential this service
+	// presents there (colab-fleet #154). Federation is two hand-kept halves
+	// of configuration, and before this the only way to learn they disagreed
+	// was a 403 at the moment of need.
+	//
+	// Always present. See PeerStanding for how "not listed" and "nobody
+	// could tell" stay different answers.
+	Peer PeerStanding `json:"peer"`
+}
+
+// PeerStanding is this service's registration on one machine, as that
+// machine itself reported it (colab-fleet #154).
+//
+// It is gathered on the peer probe that already learns build and
+// maxInputBytes, by asking the peer's whoami about the credential this
+// service presents there. Three answers must not collapse into each other:
+//
+//   - observed, listsMeBack false — the peer answered and does not list us.
+//   - observed, grantsToMe [] — the peer answered and our credential holds
+//     nothing there, or matches no principal at all. A real negative.
+//   - assumed — nobody could tell: the peer was never reached, answered too
+//     long ago (the same staleness bound as capabilities), runs a build that
+//     predates this read, or this service presents no credential of its own
+//     to it. listsMeBack is null and grantsToMe is [] — a floor, exactly as an
+//     unreached peer's capabilities are, never a claim of absence.
+type PeerStanding struct {
+	// ListsMeBack is whether that machine's own peer roster names this
+	// service. Null when it did not say — including a peer credential without
+	// `read` there, since the roster is what `read` guards.
+	ListsMeBack *bool `json:"listsMeBack"`
+	// GrantsToMe is every grant that machine attaches to the credential this
+	// service presents to it. Never another principal's.
+	GrantsToMe []string `json:"grantsToMe"`
+	// Source is CapabilitySource's provenance, reused for the same fact.
+	Source CapabilitySource `json:"source"`
+	// ObservedAt is when the answer arrived, on this machine's clock. Absent
+	// under "assumed".
+	ObservedAt *Timestamp `json:"observedAt,omitempty"`
+}
+
+// AssumedPeerStanding is the conservative floor: nothing confirmed.
+func AssumedPeerStanding() PeerStanding {
+	return PeerStanding{GrantsToMe: []string{}, Source: CapabilitiesAssumed}
 }
 
 // RuntimeInfo is one entry of GET /v1/runtimes (api-http.md §3.1).

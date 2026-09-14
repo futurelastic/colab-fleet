@@ -67,6 +67,10 @@ type Config struct {
 // here, not faked by half-real handlers.
 func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux := http.NewServeMux()
+	// The self item of GET /v1/machines reports what this machine's own
+	// model grants the credential it presents to peers (#154); the model is
+	// cfg, which only the mux holds.
+	svc.setSelfGrantResolver(func(tok string) []string { return grantsForToken(cfg, tok) })
 
 	mux.HandleFunc("GET /v1/health", withAuth(cfg, reading(handleHealth(svc))))
 	// GET /v1/whoami deliberately skips reading()'s GrantRead gate — see
@@ -87,6 +91,7 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/discard", withAuth(cfg, mutating(svc, cfg, handleDiscard(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/rename", withAuth(cfg, mutating(svc, cfg, handleRename(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/keys", withAuth(cfg, mutating(svc, cfg, handleKeys(svc))))
+	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/labels", withAuth(cfg, mutating(svc, cfg, handleLabels(svc))))
 	mux.HandleFunc("DELETE /v1/machines/{machine}/sessions/{id}", withAuth(cfg, mutating(svc, cfg, handleClose(svc))))
 	mux.HandleFunc("GET /v1/events", withAuth(cfg, reading(handleEvents(svc))))
 
@@ -447,7 +452,12 @@ func handleHealth(svc *Service) http.HandlerFunc {
 			// and what internal/drivers/remote's peerHealth reads to learn
 			// a PEER's own value the same way it already learns build.
 			"maxInputBytes": svc.MaxInputBytes(),
-			"drivers":       svc.driverSummaries(),
+			// The bounds this machine enforces on session labels
+			// (colab-fleet #153). Its presence is also how a relaying peer
+			// learns this service carries labels at all, so a labelled
+			// create is refused there rather than silently stripped here.
+			"labels":  fleet.SelfLabelLimits(),
+			"drivers": svc.driverSummaries(),
 			// counters is the read path #9 asked for onto the registry #44
 			// built (internal/drivers/tmux/counters.go): an integer per
 			// named fact, keyed by runtime. It is deliberately read here
@@ -472,6 +482,11 @@ func handleHealth(svc *Service) http.HandlerFunc {
 
 func handleMachines(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// ?verify=1 re-probes every peer first, instead of answering from
+		// the cached cycle (colab-fleet #154). Still only read.
+		if r.URL.Query().Get("verify") == "1" {
+			svc.RefreshPeers(r.Context(), parseDeadline(r))
+		}
 		col, err := svc.ListMachines(r.Context(), requestFrom(r), parseDeadline(r))
 		if err != nil {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error()})
@@ -505,10 +520,16 @@ func handleListSessions(svc *Service) http.HandlerFunc {
 			return
 		}
 
+		labels, ferr := parseLabelFilter(q["label"])
+		if ferr != nil {
+			writeError(w, ferr)
+			return
+		}
 		filter := driver.ListFilter{
 			Status:    fleet.Status(q.Get("status")),
 			Agent:     fleet.AgentId(q.Get("agent")),
 			CwdPrefix: q.Get("cwdPrefix"),
+			Labels:    labels,
 		}
 
 		// Read the sequence position BEFORE enumerating, so a client that
@@ -527,6 +548,33 @@ func handleListSessions(svc *Service) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, col)
 	}
+}
+
+// parseLabelFilter reads repeated `label=key:value` parameters into the AND
+// set GET /v1/sessions filters on (colab-fleet #153). The split is on the
+// first separator, which keys may not contain. Naming one key twice is
+// refused rather than answered with a list that can never match anything.
+func parseLabelFilter(raw []string) (map[string]string, *fleet.Error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(raw))
+	for _, pair := range raw {
+		k, v, ok := strings.Cut(pair, fleet.LabelSeparator)
+		if !ok {
+			return nil, &fleet.Error{Kind: fleet.ErrorInvalid,
+				Message: fmt.Sprintf("label filter %q must be key%svalue", pair, fleet.LabelSeparator)}
+		}
+		if err := fleet.ValidateLabelKey(k); err != nil {
+			return nil, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "label filter: " + err.Error()}
+		}
+		if prev, dup := out[k]; dup && prev != v {
+			return nil, &fleet.Error{Kind: fleet.ErrorInvalid,
+				Message: fmt.Sprintf("label filter names key %q twice with different values; every pair must match, so nothing could", k)}
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 // Long-poll bounds. The default is long enough that an idle fleet costs one
@@ -757,6 +805,11 @@ type createSessionBody struct {
 	// fleet.SessionSpec for why paths and not content, and createNeedsSend for
 	// why it is one of the fields that asks for more than a create.
 	McpConfig []fleet.AbsolutePath `json:"mcpConfig"`
+
+	// Labels are stored by the service against the created session
+	// (colab-fleet #153). Only create is needed to send them, as for name
+	// and marker: they describe the session, they grant it nothing.
+	Labels map[string]string `json:"labels"`
 }
 
 // createNeedsSend names the part of a create body that requires the send grant,
@@ -865,6 +918,10 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			writeError(w, ferr)
 			return
 		}
+		if err := fleet.ValidateLabels(body.Labels); err != nil {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error() + " (#153)", Machine: machine})
+			return
+		}
 
 		// Two things in this body ask for more than a create.
 		//
@@ -922,7 +979,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			Marker: body.Marker, RemoteControl: body.RemoteControl,
 			TrustCwd: body.TrustCwd, Env: body.Env, Resume: body.Resume,
 			PermissionMode: body.PermissionMode, Consents: body.Consents,
-			McpConfig: body.McpConfig,
+			McpConfig: body.McpConfig, Labels: body.Labels,
 		}
 
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
@@ -967,6 +1024,15 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 		// peer's) is left alone.
 		if sess.State.Status == "" {
 			sess.State, _ = d.State(ctx, requestFrom(r), sess.SessionRef)
+		}
+		// Labels (colab-fleet #153). A local session's are this service's to
+		// store; a relayed create's are the peer's, and arrive on its answer.
+		if via != resolvedPeer {
+			stored, added := svc.labels.setIfAbsent(resolvedRuntime, sess.ID, sess.StartedAt, body.Labels)
+			sess.Labels = stored
+			if added {
+				svc.publishLabels(svc.Self(), sess)
+			}
 		}
 		writeJSON(w, http.StatusCreated, sess)
 	}
@@ -1055,6 +1121,9 @@ func handleGetSession(svc *Service) http.HandlerFunc {
 		if col, err := d.List(ctx, req, driver.ListFilter{}); err == nil {
 			for _, s := range col.Items() {
 				if s.ID == id {
+					if via != resolvedPeer {
+						s.Labels = svc.labels.get(resolvedRuntime, s.ID, s.StartedAt)
+					}
 					writeJSON(w, http.StatusOK, s)
 					return
 				}
@@ -1250,6 +1319,9 @@ func handleClose(svc *Service) http.HandlerFunc {
 			writeDriverError(w, machine, deadline, err)
 			return
 		}
+		if via != resolvedPeer {
+			svc.labels.remove(resolvedRuntime, id)
+		}
 		writeJSON(w, http.StatusAccepted, ack)
 	}
 }
@@ -1331,7 +1403,122 @@ func handleRename(svc *Service) http.HandlerFunc {
 		// about it, which publishRename's own corroboration watch supplies —
 		// see rename_corroboration.go.
 		svc.publishRename(machine, id, body.Name, req.Expect.StartedAt)
+		// Labels follow the session to its new id (colab-fleet #153). A
+		// rename that later reverts is caught by the label store's retain.
+		if via != resolvedPeer {
+			svc.labels.rekey(resolvedRuntime, id, body.Name)
+		}
 		writeJSON(w, http.StatusAccepted, ack)
+	}
+}
+
+// handleLabels changes a session's labels after it exists (POST …/labels,
+// colab-fleet #153): merge semantics, and a null value deletes its key.
+//
+// It corroborates against startedAt the way rename does, for the same
+// reason: labelling the wrong session succeeds silently and binds a stranger
+// to somebody's work. With ?startedAt= a disagreement — or a live session
+// whose startedAt nobody knows — is a 409. Without it the write gets the
+// weaker id-only guarantee.
+//
+// The answer is the whole session, labels included, so a caller never has to
+// read back what it just wrote.
+func handleLabels(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		machine := fleet.MachineId(r.PathValue("machine"))
+		id := r.PathValue("id")
+		runtimeHint := fleet.RuntimeId(r.URL.Query().Get("runtime"))
+
+		var body struct {
+			Labels map[string]*string `json:"labels"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "malformed JSON body", Machine: machine})
+			return
+		}
+		if body.Labels == nil {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
+				Message: `labels needs a "labels" object; a null value deletes that key`, Machine: machine})
+			return
+		}
+		for k := range body.Labels {
+			if err := fleet.ValidateLabelKey(k); err != nil {
+				writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error() + " (#153)", Machine: machine})
+				return
+			}
+		}
+
+		req := requestFrom(r)
+		d, resolvedRuntime, via, resErr := svc.resolveSessionDriver(r.Context(), req, machine, id, runtimeHint, parseDeadline(r))
+		if resErr != nil {
+			writeError(w, resErr)
+			return
+		}
+		setResolutionHeaders(w, resolvedRuntime, via)
+
+		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
+		ctx, cancel := context.WithTimeout(r.Context(), deadline)
+		defer cancel()
+		ref := fleet.SessionRef{Machine: machine, ID: id}
+
+		if via == resolvedPeer {
+			relayer, ok := d.(driver.LabelRelayer)
+			if !ok {
+				writeDriverError(w, machine, deadline, driver.ErrUnsupported)
+				return
+			}
+			sess, err := relayer.Labels(ctx, req, ref, body.Labels)
+			if err != nil {
+				writeDriverError(w, machine, deadline, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, sess)
+			return
+		}
+
+		// The live session, read the way handleGetSession reads it: from a
+		// listing, because that is where startedAt is.
+		var live *fleet.Session
+		if col, err := d.List(ctx, req, driver.ListFilter{}); err == nil {
+			for _, s := range col.Items() {
+				if s.ID == id {
+					s := s
+					live = &s
+					break
+				}
+			}
+		}
+		if live == nil {
+			state, err := d.State(ctx, req, ref)
+			if err != nil {
+				writeDriverError(w, machine, deadline, err)
+				return
+			}
+			live = &fleet.Session{SessionRef: ref, State: state}
+		}
+		if want := req.Expect.StartedAt; want != nil && !startedAtMatches(want, live.StartedAt) {
+			msg := "startedAt disagrees with the live session: it has been replaced since you looked (§5.4)"
+			if live.StartedAt == nil {
+				msg = "startedAt was supplied and this session's start time is unknown, so the write cannot be corroborated (§5.4)"
+			}
+			writeError(w, &fleet.Error{Kind: fleet.ErrorConflict, Message: msg, Machine: machine})
+			return
+		}
+
+		merged, err := svc.labels.merge(resolvedRuntime, id, live.StartedAt, body.Labels)
+		if err != nil {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error() + " (#153)", Machine: machine})
+			return
+		}
+		live.Labels = merged
+		if live.Runtime == "" {
+			live.Runtime = resolvedRuntime
+		}
+		if live.Machine == "" {
+			live.Machine = machine
+		}
+		svc.publishLabels(machine, *live)
+		writeJSON(w, http.StatusOK, *live)
 	}
 }
 

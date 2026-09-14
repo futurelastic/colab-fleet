@@ -376,6 +376,8 @@ func eventTarget(ev fleet.Event) (id, cwd string) {
 		return p.ID, string(p.Cwd)
 	case fleet.SessionStatePayload:
 		return p.Ref.ID, ""
+	case fleet.SessionLabelsPayload:
+		return p.Ref.ID, ""
 	}
 	return "", ""
 }
@@ -525,6 +527,16 @@ func (s *Service) drainStream(ctx context.Context, stream driver.EventStream) er
 		ev, err := stream.Next(ctx)
 		if err != nil {
 			return err
+		}
+		// A LOCAL driver's session.created carries no labels — the driver
+		// never sees them (colab-fleet #153). Attach whatever this service
+		// already holds. A create's own labels may land a moment after this
+		// event; session.labels is what guarantees a subscriber sees them.
+		if ev.Kind == fleet.EventSessionCreated && (ev.Machine == "" || ev.Machine == s.self) {
+			if sess, ok := ev.Payload.(fleet.Session); ok {
+				sess.Labels = s.labels.get("", sess.ID, sess.StartedAt)
+				ev.Payload = sess
+			}
 		}
 		s.events.publish(ev)
 	}

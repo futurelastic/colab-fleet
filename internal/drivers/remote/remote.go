@@ -84,6 +84,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -173,6 +174,20 @@ type Driver struct {
 	// and cached the same way: zero until the peer has answered at least
 	// once, which is honest — see driver.MaxInputBytesReporter.
 	maxInputBytes int
+	// labelLimits is what the peer's /v1/health said about session labels
+	// (colab-fleet #153), on the same probe as build. Nil means either the
+	// peer has not answered yet or it predates labels — see requireLabels,
+	// which trusts only a positive answer and re-asks before refusing.
+	labelLimits *fleet.LabelLimits
+
+	// self is this machine's own id, named to the peer when asking whether it
+	// is listed there (colab-fleet #154). Empty means the standing probe is
+	// not made.
+	self fleet.MachineId
+	// standing is this machine's registration on the peer as the peer last
+	// reported it — see refreshStanding and PeerStanding.
+	standing     fleet.PeerStanding
+	standingSeen bool
 }
 
 // Option configures a Driver.
@@ -248,6 +263,12 @@ func (d *Driver) effectiveDeadline() time.Duration {
 // credential, which only works while every machine accepts the same secret.
 func WithIdentity(token string) Option {
 	return func(d *Driver) { d.identity = token }
+}
+
+// WithSelf names this machine, so the probe can ask the peer whether it lists
+// this machine back (colab-fleet #154).
+func WithSelf(machine fleet.MachineId) Option {
+	return func(d *Driver) { d.self = machine }
 }
 
 func withClock(f func() time.Time) Option { return func(d *Driver) { d.now = f } }
@@ -355,6 +376,13 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 	// not block unboundedly. This is an out-of-band metadata probe made by
 	// an operator at startup, and it honours the caller's context — which is
 	// where the bound belongs for a call whose purpose is to discover bounds.
+	//
+	// Standing goes first (colab-fleet #154): a credential the peer accepts
+	// but grants no read is exactly the misconfiguration it exists to report,
+	// and the /v1/runtimes read below would refuse that credential and return
+	// before anything after it ran.
+	d.refreshStanding(ctx, req)
+
 	var body fleet.Collection[fleet.RuntimeInfo]
 	if err := d.do(ctx, req, http.MethodGet, "/v1/runtimes", nil, &body); err != nil {
 		return err
@@ -387,6 +415,7 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 			d.mu.Lock()
 			d.build = h.Build
 			d.maxInputBytes = h.MaxInputBytes
+			d.labelLimits = h.Labels
 			d.mu.Unlock()
 		}
 		return nil
@@ -402,6 +431,44 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 type peerHealthBody struct {
 	Build         fleet.Build `json:"build"`
 	MaxInputBytes int         `json:"maxInputBytes"`
+	// Labels is absent on a peer that predates session labels (#153).
+	Labels *fleet.LabelLimits `json:"labels"`
+}
+
+// requireLabels refuses a labelled write to a peer that would drop the labels
+// (colab-fleet #153).
+//
+// A peer on an older build decodes a create body with encoding/json, which
+// ignores a field it does not know: it would start the session, answer 201,
+// and keep none of the labels. That is a session bound to nothing that looks
+// bound — so the check runs BEFORE any side effect. Only a positive cached
+// answer is trusted; anything else is asked again, so a peer that has since
+// upgraded is not refused on stale evidence.
+func (d *Driver) requireLabels(ctx context.Context, req fleet.Request) error {
+	d.mu.RLock()
+	limits := d.labelLimits
+	d.mu.RUnlock()
+	if limits != nil {
+		return nil
+	}
+	h, err := d.peerHealth(ctx, req)
+	if err != nil {
+		return fmt.Errorf("remote: could not confirm %s carries session labels, so the labelled request was not sent: %w", d.machine, err)
+	}
+	d.mu.Lock()
+	d.build = h.Build
+	d.maxInputBytes = h.MaxInputBytes
+	d.labelLimits = h.Labels
+	d.mu.Unlock()
+	if h.Labels == nil {
+		return &fleet.Error{
+			Kind: fleet.ErrorUnsupported,
+			Message: fmt.Sprintf("peer %s does not carry session labels (older build); the request was not sent, "+
+				"because that peer would accept it and silently drop the labels", d.machine),
+			Machine: d.machine,
+		}
+	}
+	return nil
 }
 
 // peerHealth reads the subset of the peer's health endpoint this driver
@@ -462,6 +529,80 @@ func (d *Driver) noteSuccessfulContact(req fleet.Request) {
 		_ = d.RefreshCapabilities(ctx, req)
 	}()
 }
+
+// refreshStanding asks the peer what it makes of THIS machine: whether its
+// roster lists us, and what it grants the credential we present (colab-fleet
+// #154). It asks the peer's whoami — authentication only, exempt from read —
+// so a credential the peer accepts but grants nothing still gets an observed
+// answer, and a 401 can only mean the credential matches no principal there.
+//
+// Made only with this machine's own identity. In shared-token mode the
+// credential presented is whichever caller's request triggered the probe, and
+// its grants say nothing about this machine; standing stays assumed there.
+//
+// The mixed-version rule is the whole point of reading the raw key: a peer on
+// a build that predates the field omits `listsYou`, and that must read as
+// assumed — never as false, which would report a registration problem nobody
+// has.
+func (d *Driver) refreshStanding(ctx context.Context, req fleet.Request) {
+	if d.identity == "" || d.self == "" {
+		return
+	}
+	var raw map[string]json.RawMessage
+	err := d.do(ctx, req, http.MethodGet, "/v1/whoami?peer="+url.QueryEscape(string(d.self)), nil, &raw)
+	now := d.now()
+	st := fleet.AssumedPeerStanding()
+	var fe *fleet.Error
+	switch {
+	case err == nil:
+		lists, has := raw["listsYou"]
+		if !has {
+			break // older build: nobody can tell
+		}
+		var listsMeBack *bool
+		var grants []string
+		if json.Unmarshal(lists, &listsMeBack) != nil || json.Unmarshal(raw["grants"], &grants) != nil {
+			return // a malformed answer is not an observation; keep the last one
+		}
+		if grants == nil {
+			grants = []string{}
+		}
+		st = fleet.PeerStanding{ListsMeBack: listsMeBack, GrantsToMe: grants,
+			Source: fleet.CapabilitiesObserved, ObservedAt: &now}
+	case routeMissing(err):
+		// A build that predates whoami itself: still nobody can tell.
+	case errors.As(err, &fe) && fe.Kind == fleet.ErrorUnauthorized:
+		// The peer answered: this credential matches no principal there.
+		st = fleet.PeerStanding{GrantsToMe: []string{}, Source: fleet.CapabilitiesObserved, ObservedAt: &now}
+	default:
+		// Unreached, or a failure that is not an answer: keep what we knew.
+		// PeerStanding decays it to assumed once it is too old to stand on.
+		return
+	}
+	d.mu.Lock()
+	d.standing, d.standingSeen = st, true
+	d.mu.Unlock()
+}
+
+// PeerStanding reports this machine's standing on the peer as last observed.
+// Implements driver.PeerStandingReporter (colab-fleet #154).
+//
+// An observation older than capabilityStaleness degrades to the assumed floor,
+// for #67's reason: a peer may have been reconfigured since, and a stale
+// `observed` is worse than an honest `assumed`.
+func (d *Driver) PeerStanding() fleet.PeerStanding {
+	d.mu.RLock()
+	st, seen := d.standing, d.standingSeen
+	d.mu.RUnlock()
+	if !seen || st.Source != fleet.CapabilitiesObserved ||
+		(st.ObservedAt != nil && d.now().Sub(*st.ObservedAt) > capabilityStaleness) {
+		return fleet.AssumedPeerStanding()
+	}
+	st.GrantsToMe = append([]string{}, st.GrantsToMe...)
+	return st
+}
+
+var _ driver.PeerStandingReporter = (*Driver)(nil)
 
 // Runtime reports the peer's runtime id, empty until the peer has answered.
 func (d *Driver) Runtime() fleet.RuntimeId {
@@ -577,7 +718,7 @@ func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string,
 	// paths capability discovery itself uses — RefreshCapabilities and
 	// peerBuild — so a probe triggered below does not immediately trigger
 	// another one recursively.
-	if path != "/v1/runtimes" && path != "/v1/health" {
+	if path != "/v1/runtimes" && path != "/v1/health" && !strings.HasPrefix(path, "/v1/whoami") {
 		d.noteSuccessfulContact(req)
 	}
 
@@ -591,6 +732,24 @@ func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string,
 		return fmt.Errorf("remote: decoding response from %s: %w", d.machine, err)
 	}
 	return nil
+}
+
+// noEnvelopeFormat is decodeError's message for a status with no envelope.
+// Shared with routeMissing, which is the one caller that must recognise it.
+const noEnvelopeFormat = "peer returned %d with no error envelope"
+
+// routeMissing reports whether err is a peer's router answering that it has
+// no such route at all — a bare 404 or 405 with no error envelope, which is
+// what a build that predates an endpoint answers. Every route this service
+// defines answers failures WITH an envelope, so a bare one on a known route
+// is not "no such session".
+func routeMissing(err error) bool {
+	var fe *fleet.Error
+	if !errors.As(err, &fe) {
+		return false
+	}
+	return fe.Message == fmt.Sprintf(noEnvelopeFormat, http.StatusNotFound) ||
+		fe.Message == fmt.Sprintf(noEnvelopeFormat, http.StatusMethodNotAllowed)
 }
 
 // decodeError turns a peer's error envelope back into a typed error,
@@ -623,7 +782,7 @@ func decodeError(resp *http.Response, machine fleet.MachineId) error {
 	}
 	return &fleet.Error{
 		Kind:    kind,
-		Message: fmt.Sprintf("peer returned %d with no error envelope", resp.StatusCode),
+		Message: fmt.Sprintf(noEnvelopeFormat, resp.StatusCode),
 		Machine: machine,
 	}
 }
@@ -657,6 +816,14 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	if filter.CwdPrefix != "" {
 		q.Set("cwdPrefix", filter.CwdPrefix)
 	}
+	labelKeys := make([]string, 0, len(filter.Labels))
+	for k := range filter.Labels {
+		labelKeys = append(labelKeys, k)
+	}
+	sort.Strings(labelKeys)
+	for _, k := range labelKeys {
+		q.Add("label", k+fleet.LabelSeparator+filter.Labels[k])
+	}
 
 	started := d.now()
 	var out fleet.Collection[fleet.Session]
@@ -671,6 +838,25 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		}
 		_ = started
 		return fleet.NewCollection([]fleet.Session{}, []fleet.SourceStatus{src})
+	}
+	// A peer that predates labels ignores `label=` and answers with every
+	// session it has, none carrying the key (colab-fleet #153). Those are not
+	// matches, and an empty list would claim the peer has none: say instead
+	// that this source could not answer the question. A new build always
+	// writes `labels`, so a nil map can only come from an old one. An old peer
+	// with no sessions at all is indistinguishable — and its true answer is
+	// the same zero, since it cannot hold labels.
+	if len(filter.Labels) > 0 {
+		for _, sess := range out.Items() {
+			if sess.Labels == nil {
+				return fleet.NewCollection([]fleet.Session{}, []fleet.SourceStatus{{
+					Machine:    d.machine,
+					Status:     fleet.SourceDegraded,
+					Error:      "peer does not carry session labels (older build), so a label filter cannot be answered there",
+					ObservedAt: d.now(),
+				}})
+			}
+		}
 	}
 	// Adopted verbatim: out already carries the peer's own sources, and
 	// Collection's decoder recomputed `complete` from them.
@@ -743,6 +929,10 @@ type createBody struct {
 	// the peer or approve one that is not.
 	McpConfig []fleet.AbsolutePath `json:"mcpConfig,omitempty"`
 
+	// Labels travel with the create (colab-fleet #153); Create refuses a peer
+	// that would drop them rather than send them there to be ignored.
+	Labels map[string]string `json:"labels,omitempty"`
+
 	// Marker is the session-type stamp (fleet.SessionSpec.Marker) — dropping
 	// it does not fail the create, it just leaves the peer's copy invisible
 	// to whatever tooling on THAT machine groups sessions by type.
@@ -799,6 +989,12 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		PermissionMode: spec.PermissionMode, Consents: spec.Consents,
 		McpConfig: spec.McpConfig,
 		Marker:    spec.Marker, RemoteControl: spec.RemoteControl,
+		Labels: spec.Labels,
+	}
+	if len(spec.Labels) > 0 {
+		if err := d.requireLabels(ctx, req); err != nil {
+			return fleet.Session{}, err
+		}
 	}
 	var out fleet.Session
 	path := "/v1/machines/" + url.PathEscape(string(d.machine)) + "/sessions"
@@ -1045,6 +1241,40 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 	}
 	return ack, nil
 }
+
+// Labels forwards a label write to the peer (POST …/labels, colab-fleet
+// #153), corroborated by startedAt the way Rename is. Implements
+// driver.LabelRelayer.
+//
+// A peer that predates the route answers with its router's bare 404, which
+// decodeError alone would read as "no such session". It is reported as
+// unsupported instead: the session may be perfectly alive, and the peer
+// simply cannot store labels.
+func (d *Driver) Labels(ctx context.Context, req fleet.Request, ref fleet.SessionRef, patch map[string]*string) (fleet.Session, error) {
+	ctx, cancel := d.bounded(ctx)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/labels",
+		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
+	if want := req.Expect.StartedAt; want != nil {
+		path += "?startedAt=" + url.QueryEscape(want.UTC().Format(time.RFC3339Nano))
+	}
+	body := map[string]map[string]*string{"labels": patch}
+	var out fleet.Session
+	if err := d.do(ctx, req, http.MethodPost, path, body, &out); err != nil {
+		if routeMissing(err) {
+			return fleet.Session{}, &fleet.Error{
+				Kind:    fleet.ErrorUnsupported,
+				Message: fmt.Sprintf("peer %s has no label route (older build)", d.machine),
+				Machine: d.machine,
+			}
+		}
+		return fleet.Session{}, err
+	}
+	return out, nil
+}
+
+var _ driver.LabelRelayer = (*Driver)(nil)
 
 // Respond answers a prompt on a session belonging to the peer (§3).
 //

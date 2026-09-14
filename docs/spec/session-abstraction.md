@@ -79,6 +79,7 @@ SessionSpec {
   effort?    : string
   name?      : string             // human-facing label
   marker?    : string             // session-type stamp appended to the name
+  labels?    : map<string,string> // caller facts about the session, opaque; bounded (see below)
   remoteControl?: boolean         // reachable by remote clients; absent ≠ false
   prompt?    : string             // initial input
   contextRef?: AbsolutePath       // see §5.3 — never inline, never argv
@@ -105,6 +106,17 @@ placed on a command line, and the exact validation each one gets — lives in `s
 `agent`, `model` and `effort` are **hints**, not guarantees. A driver that
 cannot honour one must say so at creation rather than silently substituting a
 default; see §4.3. `remoteControl` is a hint in the same family.
+
+**`labels` are caller facts, not hints and not configuration** (colab-fleet #153). A caller
+attaches what IT knows about a session — the unit of work it serves, the working tree it uses, what
+kind of session it is — and the service stores them, returns them on every read of that session,
+filters on them, and assigns them no meaning, exactly as it assigns none to `marker`. They exist so
+"is any machine already working on X" is answered by reading a fact rather than by pattern-matching
+names, which are mutable, collide across machines (#19) and cannot carry a session's type once a
+marker is creative. Labels are **not** a lock, a claim or a lease: two sessions may carry the same
+pair and the service says nothing about it. Bounded to 16 pairs, keys of 1–128 bytes that do not
+contain `:`, values of at most 128 bytes; a map outside those bounds is refused `invalid` naming the
+limit, never truncated. Labels may also be changed after creation (api-http.md §3.3, `labels`).
 
 **A created session must be the same KIND of session the substrate's own
 launcher produces.** This is normative, and it is the rule the three fields
@@ -995,6 +1007,15 @@ list(req, filter?)             -> Collection<Session>
 subscribe(req, filter?)        -> EventStream
 ```
 
+**Labels are not an operation, and not a driver's concern** (colab-fleet #153). No substrate has a
+place to keep them and no driver observes them, so the service stores them itself, keyed by the
+session's `(runtime, id)` and corroborated by its `startedAt` (§5.4): a new session under a recycled
+id never inherits the old one's labels. They follow a rename, and they are forgotten when the
+session is closed through the service or no longer appears in a complete, unfiltered listing — never
+on a filtered or failed one (§5.7). A `Session` read from a service that stores labels always
+carries `labels`, `{}` when there are none; one read from a service that predates them carries no
+such key, and that absence is how a relaying service tells the two apart.
+
 **`keys` delivers one raw key event** — `Up`/`Down`/`Left`/`Right`/`Enter`/
 `Escape` (api-http.md §3.3, `POST …/keys`) — to the full-screen dialogs
 `respond` cannot answer, corroborated by `SessionState.screenDigest` (§2.3)
@@ -1738,6 +1759,19 @@ second grant a relay needs still has to be learned by asking that machine
 directly: run its own `whoami` there, or read its principal table locally
 (`colab-fleetd principal list` on that machine) — neither of which this
 service can do on a caller's behalf.
+
+**Narrowed by colab-fleet #154: this service's OWN standing on a peer is
+observed.** The paragraph above stays true of a *caller's* credential, which the
+peer does not know. But a service holds exactly one credential every peer does
+know — its own, the one each relayed read and write rides on — and asking about
+it is `whoami` asked by the service about itself, not about anyone else. So the
+peer probe (§4.3, `RefreshCapabilities`) now also calls the peer's
+`whoami?peer=<self>` and caches what comes back: whether that peer's roster lists
+this service, and what it grants the presented credential. `GET /v1/machines`
+reports it per machine as `peer` (api-http.md §3.1), with the same
+observed/assumed provenance, and a peer that cannot answer — unreached, stale, or
+on an older build — is `assumed`, never a negative. This is a report of drift,
+not a fix for it: the roster stays hand-configured (§7.2).
 
 ## 7a. Still open
 

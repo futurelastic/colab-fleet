@@ -21,7 +21,7 @@ open.
 
 **Grants.** With a principal table configured, each caller is a named identity
 with its own credential and its own list of grants: `read`, `create`, `send`,
-`interrupt`, `close`, `rename`, `discard`, `keys`, `relay`. Every grant defaults
+`interrupt`, `close`, `rename`, `discard`, `keys`, `label`, `relay`. Every grant defaults
 to denied. Without a principal table the service runs in single-token mode and
 two booleans stand in: mutations against local sessions, and relaying mutations
 to a peer.
@@ -81,6 +81,7 @@ every configured peer, exactly one hop — peers never recurse.
 | `POST` | `…/{id}/interrupt` | The equivalent of Ctrl-C | `interrupt` | yes |
 | `POST` | `…/{id}/discard` | Clear unsent composer text without sending it | `discard` | yes |
 | `POST` | `…/{id}/rename` | Change the session's id | `rename` | yes |
+| `POST` | `…/{id}/labels` | Set or delete caller-supplied labels | `label` | yes |
 | `DELETE` | `/v1/machines/{machine}/sessions/{id}` | Destroy the session | `close` | yes |
 
 ⚠️ = the specification requires `read`; the implementation does not check it yet.
@@ -91,8 +92,10 @@ every configured peer, exactly one hop — peers never recurse.
 
 ### `GET /v1/health`
 
-Liveness and identity. Returns `{epoch, cursor, startedAt, build, drivers,
-counters}`. The `build` is a version-control stamp: an unknown or
+Liveness and identity. Returns `{epoch, cursor, startedAt, build,
+maxInputBytes, labels, drivers, counters}`. `labels` is the bounds this machine
+enforces on session labels, `{maxKeys, maxKeyBytes, maxValueBytes}`; a service
+that omits it predates labels. The `build` is a version-control stamp: an unknown or
 locally-modified build never compares equal to anything, so "we disagree" stays
 distinguishable from "we are different vintages".
 
@@ -126,8 +129,18 @@ stamps say.
 
 ### `GET /v1/machines`
 
-`{items: [{machine, self, status, observedAt}], sources, complete}`. Always
-probes peers; there is no `scope` here.
+`{items: [{machine, self, status, observedAt, build, maxInputBytes, peer}],
+sources, complete}`. Always probes peers; there is no `scope` here.
+
+`peer` is this service's own standing on each machine:
+`{listsMeBack, grantsToMe, source, observedAt?}` — whether that machine lists
+this one back, and what it grants the credential this machine presents there.
+Read it before relying on a cross-machine write, instead of learning from a
+`403`. `source: "assumed"` with `listsMeBack: null` means nobody could tell
+(unreached, stale, an older build, or no per-peer credential) — not "not
+listed". `observed` with `grantsToMe: []` is a real negative. The `self` item
+reports `listsMeBack: true` and what this machine's own table grants the
+credential it presents to peers. `?verify=1` re-probes every peer first.
 
 ### `GET /v1/runtimes`
 
@@ -137,7 +150,13 @@ rather than failing at the call.
 
 ### `GET /v1/sessions`
 
-Filters: `status`, `agent`, `cwdPrefix`, and `scope`.
+Filters: `status`, `agent`, `cwdPrefix`, `label`, and `scope`.
+
+`label=key:value` keeps sessions carrying that exact pair; repeat it and every
+pair must match. It is the answer to "is any machine already working on X" —
+put X in a label at create and ask for it here, instead of encoding it in the
+name. A peer too old to apply the filter shows up in `sources` as `degraded`
+with no items, so the list is `complete: false` rather than silently wrong.
 
 Returns `{items, sources, complete, feed?}`.
 
@@ -175,7 +194,7 @@ nothing else in the API can explain.
   "runtime": "", "cwd": "/abs/path", "agent": "", "model": "", "effort": "",
   "name": "", "prompt": "", "contextRef": "/abs/path", "marker": "",
   "remoteControl": true, "trustCwd": false, "env": {}, "resume": "",
-  "permissionMode": "", "consents": [], "mcpConfig": []
+  "permissionMode": "", "consents": [], "mcpConfig": [], "labels": {}
 }
 ```
 
@@ -183,6 +202,12 @@ nothing else in the API can explain.
 `mcpConfig` — additionally require the `send` grant on top of `create`, because
 each one hands the new session authority its creator would otherwise have to
 grant interactively.
+
+`labels` is a map of up to 16 caller facts about the session — keys 1–128 bytes
+without `:`, values up to 128 bytes. Opaque to the service: it stores them and
+filters on them, and never interprets them. Over the bounds is a `400` naming
+the limit. Sending them needs only `create`. Relayed to a peer that predates
+labels, the create is refused `unsupported` before anything is started there.
 
 ### `POST …/{id}/input` — send text
 
@@ -306,6 +331,18 @@ stuck composer alone (colab-fleet#136).
 Changes the session's **id**, not a display label. Announced as
 `session.renamed` so subscribers can re-key. `202`.
 
+### `POST …/{id}/labels`
+
+```json
+{ "labels": { "issue": "153", "old": null } }
+```
+
+Merges: a string sets a key, `null` deletes it, anything not named stays. The
+bounds apply to the result. Send `?startedAt=` so a recycled id is refused
+`409` instead of silently labelled. Needs the `label` grant — not `rename`.
+`200` with the whole session. Announced as `session.labels` with the complete
+map. Labels follow a rename and are forgotten when the session closes.
+
 ### `POST …/{id}/interrupt` and `DELETE …/{id}`
 
 Both express intent and return `202`. Confirmation arrives on the event stream,
@@ -320,6 +357,7 @@ not in the response.
   "machine": "machine-b", "id": "s42", "name": "…",
   "runtime": "tmux", "cwd": "/abs/path", "agent": "…", "model": "…",
   "startedAt": "…", "attach": {…}, "conversation": {…}, "resumeOutcome": {…},
+  "labels": { "issue": "153" },
   "state": {
     "status": "waiting_input",
     "confidence": "observed",
@@ -346,6 +384,9 @@ proxied answer never looks more certain than the original.
 **`waitingOn`** — `prompt` (a dialog is attached) or `unsent-input` (the
 composer holds text nobody submitted; do not send to it).
 
+**`labels`** — always present, `{}` when there are none. A session read
+through a peer on an older build has no `labels` key at all.
+
 **Absence is not failure.** A `null` is the service saying nobody looked, which
 is a different fact from a negative answer. `conversation: null` means nothing
 resolved it, not that there is no conversation. This distinction is the
@@ -368,7 +409,7 @@ Filters on both: `session` (repeatable — name the ones you care about),
 `cwdPrefix`, `scope`.
 
 **Kinds:** `session.created`, `session.state`, `session.closed`,
-`session.renamed`, `source.status`, `machine.quota`, `machine.account`,
+`session.renamed`, `session.labels`, `source.status`, `machine.quota`, `machine.account`,
 `control.resync`.
 
 **Cursor and epoch.** The epoch identifies a service *instance*; a restart gets

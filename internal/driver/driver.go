@@ -184,6 +184,26 @@ type ListFilter struct {
 	Status    fleet.Status
 	Agent     fleet.AgentId
 	CwdPrefix string
+
+	// Labels keeps only sessions carrying every pair (colab-fleet #153).
+	// Local drivers ignore it: labels are stored by the service, not by the
+	// driver, so the service applies this itself. The remote driver forwards
+	// it so a peer narrows its own answer.
+	Labels map[string]string
+}
+
+// IsZero reports whether the filter narrows nothing — the one listing whose
+// result is the complete set of a driver's sessions.
+func (f ListFilter) IsZero() bool {
+	return f.Status == "" && f.Agent == "" && f.CwdPrefix == "" && len(f.Labels) == 0
+}
+
+// LabelRelayer is an OPTIONAL capability: a driver fronting a PEER that can
+// forward a label write to it (POST …/labels, colab-fleet #153). Local
+// drivers never implement it — a local session's labels are the service's
+// own to store. A peer driver without it answers unsupported.
+type LabelRelayer interface {
+	Labels(ctx context.Context, req fleet.Request, ref fleet.SessionRef, patch map[string]*string) (fleet.Session, error)
 }
 
 // SubscribeFilter narrows which events a subscription receives (§3, §5.5).
@@ -515,4 +535,19 @@ type BuildReporter interface {
 // effective limit is always positive, so it can never be mistaken for one.
 type MaxInputBytesReporter interface {
 	MaxInputBytes() int
+}
+
+// PeerStandingReporter is another OPTIONAL capability, same shape again: a
+// driver fronting a PEER reports this service's own standing there — whether
+// that peer lists this service back and what it grants the credential this
+// service presents (colab-fleet #154), learned on the same probe as Build.
+// A driver without it reads as fleet.AssumedPeerStanding().
+type PeerStandingReporter interface {
+	PeerStanding() fleet.PeerStanding
+}
+
+// CapabilityRefresher is a driver that can re-probe its peer on demand —
+// what GET /v1/machines?verify=1 asks for, instead of the cached cycle.
+type CapabilityRefresher interface {
+	RefreshCapabilities(ctx context.Context, req fleet.Request) error
 }

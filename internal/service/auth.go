@@ -80,7 +80,22 @@ const (
 	//
 	// Absent means denied, like every other grant, so no existing principal
 	// gains this by upgrading.
-	GrantKeys  Grant = "keys"
+	GrantKeys Grant = "keys"
+	// GrantLabel writes a session's labels after it exists (POST …/labels,
+	// colab-fleet #153).
+	//
+	// Not folded into rename, though both change a session's metadata.
+	// Rename changes the handle every OTHER caller addresses a session by;
+	// a label changes nothing anyone addresses anything by. The practical
+	// difference is who needs it: a session labelling ITSELF once it knows
+	// its work would otherwise need the power to rename every session on the
+	// machine, and a consumer that keeps cross-machine renames switched off
+	// would have to switch them on to bind sessions to work. Labels sent IN a
+	// create body need only create, the same as name and marker.
+	//
+	// Absent means denied, like every other grant, so no existing principal
+	// gains this by upgrading.
+	GrantLabel Grant = "label"
 	GrantRelay Grant = "relay" // have mutations proxied to peers
 )
 
@@ -97,7 +112,7 @@ const (
 func Grants() []Grant {
 	return []Grant{
 		GrantRead, GrantCreate, GrantSend, GrantInterrupt,
-		GrantClose, GrantRename, GrantDiscard, GrantKeys, GrantRelay,
+		GrantClose, GrantRename, GrantDiscard, GrantKeys, GrantLabel, GrantRelay,
 	}
 }
 
@@ -182,6 +197,8 @@ func grantForVerb(r *http.Request) Grant {
 		return GrantDiscard
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/keys"):
 		return GrantKeys
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/labels"):
+		return GrantLabel
 	case r.Method == http.MethodDelete:
 		return GrantClose
 	}

@@ -65,15 +65,20 @@ GET /v1/health
                    "time": "...", "go": "go1.26.5",
                    "version": "v0.1.0-2-g3ce7e27" },  ← null when unstamped
         "maxInputBytes": 1024,
+        "labels": { "maxKeys": 16, "maxKeyBytes": 128, "maxValueBytes": 128 },
         "drivers": [...] }
 
-GET /v1/machines
+GET /v1/machines[?verify=1]
 → 200 { "items": [ { "machine": "...", "self": true, "status": "ok",
                      "observedAt": "...",
                      "build": { "known": true, "revision": "...",
                                 "modified": false, "time": "...",
                                 "go": "go1.26.5" },
-                     "maxInputBytes": 1024 } ],
+                     "maxInputBytes": 1024,
+                     "peer": { "listsMeBack": true,
+                               "grantsToMe": ["read", "send"],
+                               "source": "observed",
+                               "observedAt": "..." } } ],
         "sources": [...], "complete": true }
 
 GET /v1/runtimes
@@ -90,9 +95,9 @@ GET /v1/runtimes
                                        "observedAt": "..." } } ],
         "sources": [...], "complete": true }
 
-GET /v1/whoami[?machine=<id>]
+GET /v1/whoami[?machine=<id>][&peer=<id>]
 → 200 { "principal": "...", "machine": "...", "grants": ["read", "send"],
-        "source": "observed" }
+        "source": "observed", "listsYou": null }
 ```
 
 **`/v1/whoami` reports the presented credential's own grants, and nothing
@@ -106,6 +111,16 @@ reused rather than reinvented, because it is the identical "nobody has told
 me anything" fact. This service has no mechanism to learn what a peer has
 granted a credential (unlike a peer's driver capabilities, which are probed
 and cached), so a peer's real answer must be read from that machine directly.
+
+**`peer=<id>` is how a service asks a machine whether it is listed there**
+(colab-fleet #154). When the report is about this machine and the credential
+holds `read`, `listsYou` is `true` or `false` — whether `<id>` is in this
+machine's own peer roster. Otherwise it is `null`: nothing asked, a report
+about another machine, or a credential without `read`, because the roster is
+this machine's configuration and `read` is what guards it. The key is
+**always present** on a build that has it, so an absent key means only "this
+build predates the field". The id is the caller's assertion; that is
+acceptable because the answer is a report and grants nothing.
 
 Clients **must** consult `/v1/runtimes` before relying on a capability, and
 degrade rather than assume. A driver never emulates (§5.6).
@@ -179,10 +194,62 @@ successful probe learned. Unlike `build`, an unanswered peer's entry needs
 no separate `known` flag — a real effective limit is never zero, so the
 zero value is unambiguous on its own as "not yet observed."
 
+**`peer` on each `/v1/machines` item is this service's own standing on that
+machine** (colab-fleet #154) — the one credential a service holds that a peer
+knows, its own, and whether that peer's roster lists it back. Federation is
+two hand-kept halves of configuration, and before this their disagreement was
+discoverable only by a 403 at the moment of need.
+
+```
+PeerStanding {
+  listsMeBack : boolean | null   // that machine's roster names this service
+  grantsToMe  : string[]         // grants that machine gives the credential this service presents
+  source      : "observed" | "assumed"
+  observedAt? : Timestamp        // this machine's clock; absent under "assumed"
+}
+```
+
+It is gathered on the peer probe that already learns `build` and
+`maxInputBytes`, by calling that peer's `GET /v1/whoami?peer=<self>` with the
+credential this service presents there — so it adds no request class a peer
+has not already accepted, and needs no grant beyond `read` to be read here.
+Three answers **must not** collapse into one another:
+
+- `observed`, `listsMeBack: false` — the peer answered, and does not list this
+  service. Its fleet reads and relays never reach this machine.
+- `observed`, `grantsToMe: []` — the peer answered, and this credential holds
+  nothing there. A `401` from that whoami is this answer: whoami requires only
+  authentication, so the only thing a 401 can mean is that the credential
+  matches no principal there. A real negative.
+- `assumed`, `listsMeBack: null`, `grantsToMe: []` — **nobody could tell**: the
+  peer was never reached; the last answer is older than the capability
+  staleness bound; this service presents no credential of its own there
+  (single-token mode, where the credential is whichever caller's request
+  triggered the probe); or the peer runs a build that predates the field. A
+  whoami answer without `listsYou` **must** read as `assumed`, never as
+  `listsMeBack: false` — that would report a registration problem no one has.
+
+The `self` item reports `listsMeBack: true` and, as `grantsToMe`, what this
+machine's own table grants the credential it presents to its peers —
+`observed`, and `[]` when that credential matches nothing here — so the same
+fact is comparable when read from either machine. `?verify=1` re-probes every
+peer before answering instead of using the cached cycle; concurrent verifies
+are serialized, so a caller holding only `read` cannot multiply probes.
+
+**`labels` on `/v1/health` is the bounds this machine enforces on session
+labels** (colab-fleet #153; §3.3's `labels`), and its presence is how a
+relaying service learns that a peer stores labels at all. A service relaying a
+create that carries labels **must** refuse it `unsupported`, before sending
+anything, to a peer whose health omits this field: that peer would decode the
+body, ignore the field it does not know, and answer `201` for a session bound to
+nothing. Only a positive answer may be cached; a relaying service asks again
+before refusing, so a peer that has since upgraded is not refused on stale
+evidence.
+
 ### 3.2 Sessions
 
 ```
-GET /v1/sessions?scope=fleet|local&machine=&status=&agent=&cwdPrefix=
+GET /v1/sessions?scope=fleet|local&machine=&status=&agent=&cwdPrefix=&label=key:value
 → 200 Collection<Session>
 ```
 
@@ -200,6 +267,20 @@ A `scope=local` response carries exactly one `SourceStatus`. The proxying
 service **adopts** that record rather than synthesizing a fresh one (§13.2) — a
 peer that answers promptly while reporting itself `degraded` must not be
 relayed as `ok`.
+
+**`label=key:value` keeps only sessions carrying that pair** (colab-fleet
+#153). Repeatable, and every pair must match; exact on key and value; the split
+is on the first `:`, which a key may not contain. A pair with no `:`, an invalid
+key, or one key named twice with different values is `400 invalid` — the last
+because it could never match anything. A proxying service forwards the filter
+so each peer narrows its own answer, **and applies it again** to what comes
+back. A peer on a build that predates labels ignores the parameter and returns
+every session it has, none carrying `labels`: the proxying service **must**
+report that source `degraded` with no items, never count its sessions as
+matches and never report it as an empty `ok` — "could not answer this
+question" is a different fact from "has no such session" (§5.7). The fleet
+answer is therefore `complete: false` whenever any machine could not apply the
+filter, exactly as when it could not be reached.
 
 **The envelope may also carry `feed`, and that is how a snapshot becomes a
 mirror:**
@@ -254,7 +335,7 @@ Idempotency-Key: <caller-supplied, required>
   "prompt": "...", "contextRef": "/abs/path", "trustCwd": false,
   "env": {"NAME": "value"}, "resume": "<conversation id>",
   "permissionMode": "bypass", "consents": ["folder-trust"],
-  "mcpConfig": ["/abs/servers.json"] }
+  "mcpConfig": ["/abs/servers.json"], "labels": {"issue": "153"} }
 
 → 201 { "machine": "...", "id": "...", "name": "...", "runtime": "...",
         "runtimeSurface": {"known": null, "evidence": "..."},
@@ -698,8 +779,36 @@ fires more than once per rename** — §4's event-plane section covers what the
 `corroboration` field on each one means, and why waiting for the second is
 worth doing before treating a rename as durable.
 
+```
+POST /v1/machines/{machine}/sessions/{id}/labels?startedAt=&runtime=
+{ "labels": { "issue": "153", "stale-key": null } }
+→ 200 <the whole session, labels included>
+→ 409 if startedAt disagrees with the live session, or is supplied and the
+      live session's start time is unknown
+→ 400 if the merged result exceeds the bounds, or a key is invalid
+```
+
+**Labels change by merge** (colab-fleet #153): a key with a string value is set,
+a key with `null` is deleted, a key not named is left alone. The bounds apply to
+the **merged result**, so a patch that deletes keys can bring a full map back
+under them; a refused write changes nothing. Send `?startedAt=` for rename's
+reason — labelling the wrong session succeeds silently and binds a stranger to
+somebody's work. Without it the write gets the weaker guarantee of the id alone.
+
+It needs the **`label` grant** (§5), not `rename`. Rename changes the handle
+every other caller addresses a session by; a label changes nothing anyone
+addresses anything by, and a session labelling *itself* once it knows its work
+must not need the power to rename every session on its machine. Labels sent in
+a **create** body need only `create`, like `name` and `marker`.
+
+Subscribers receive `session.labels` with the complete map after every change,
+and after a create that carried labels. A peer on a build without this route
+answers with its router's bare `404`; a relaying service **must** report that as
+`unsupported`, never as `not_found` — the session may be alive, and the peer
+simply cannot store labels.
+
 `runtime` is an **optional** query parameter on every single-session endpoint
-(`GET`, `input`, `respond`, `discard`, `rename`, `keys`, `interrupt`,
+(`GET`, `input`, `respond`, `discard`, `rename`, `labels`, `keys`, `interrupt`,
 `DELETE`) and on `POST …/sessions` (`create`, in the JSON body as
 `"runtime"`). A session `id` is scoped to `(machine, runtime)` — not to
 `machine` alone (session-abstraction.md §2.2) — so two runtimes on one
@@ -1047,6 +1156,7 @@ resumption needs no client code. The server honours that header when no
 | `session.state` | ref + `SessionState` — fired on any **material** change, not only a change of `status` |
 | `session.closed` | ref + final state |
 | `session.renamed` | `{ "machine", "from", "to", "startedAt"?, "corroboration" }` — a session's **id** changed (session-abstraction.md §3's `rename`); a subscriber filtering by id must re-key on `to` or it silently stops matching a session that is still alive |
+| `session.labels` | `{ "ref", "startedAt"?, "labels" }` — a session's labels changed, or a create carried some; `labels` is the **whole** map after the change, never the patch (colab-fleet #153). A driver's own `session.created` can be observed before a create's labels are stored and carry `{}`; this event is the guarantee |
 | `source.status` | a machine's reachability changed |
 | `machine.quota` | `{ "machine", "blocked": bool, "quota"? }` — this machine's **account** started or stopped refusing work |
 | `machine.account` | `{ "machine", "generation" }` — this machine's local **credential material** changed |
@@ -1224,8 +1334,8 @@ ordering is wrong rather than handing you a cursor that would skip.
   configuration in which authentication is off — not for loopback, not for
   development.
 - Permissions are **per verb, per machine**. `list` and `state` may be granted
-  broadly; `create`, `input`, `interrupt`, `close`, `rename`, `discard` and
-  `keys` are granted per peer and default to denied. That default is deliberate
+  broadly; `create`, `input`, `interrupt`, `close`, `rename`, `discard`, `keys`
+  and `label` are granted per peer and default to denied. That default is deliberate
   and applies to a fresh deployment as much as an established one — no grant is
   implied by anything else, including a runtime advertising the capability the
   grant gates (§3, `keys`; colab-fleet #68).
