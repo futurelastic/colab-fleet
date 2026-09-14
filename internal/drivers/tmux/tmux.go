@@ -485,6 +485,13 @@ type Driver struct {
 	// opts in. See inbox.go.
 	inboxResolver InboxResolver
 	inboxDial     inboxDialFunc
+
+	// counterSources are counts kept OUTSIDE this driver by something the
+	// composition root wired into it — colab-fleet #163's resolver index
+	// counters are the first. Merged into Counters under their own names.
+	// Nil means none, the same off-by-default contract as every seam above.
+	// See WithCounterSource.
+	counterSources []func() map[string]int64
 }
 
 type observation struct {
@@ -877,12 +884,41 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 // is configured, rather than exposed through a second driver — one map, one
 // reader, and the two registries' names do not collide because trustseed's
 // are all prefixed "trust_seed.".
+//
+// Sources added with WithCounterSource are merged last, and never overwrite a
+// name already present: a collision would silently fold two different facts
+// into one count, so the driver's own number keeps the name and the source's
+// is dropped. A source owns a prefix of its own precisely so that never
+// happens.
 func (d *Driver) Counters() map[string]int64 {
 	out := d.counters.Snapshot()
 	for k, v := range d.trustSeed.Counters() {
 		out[k] = v
 	}
+	for _, src := range d.counterSources {
+		for k, v := range src() {
+			if _, taken := out[k]; !taken {
+				out[k] = v
+			}
+		}
+	}
 	return out
+}
+
+// WithCounterSource adds counts kept outside this driver to what Counters
+// reports — colab-fleet #163. The first caller is the composition root's
+// inbox resolver: an InboxResolver is a bare function, so the counts it keeps
+// about the index it reads have no driver of their own to reach GET
+// /v1/health through, and the resolver only ever runs inside this driver's
+// send path anyway. src is called on every Counters read, must be safe to call
+// concurrently, and should name everything under a prefix of its own (see
+// Counters on collisions). A nil src is ignored.
+func WithCounterSource(src func() map[string]int64) Option {
+	return func(d *Driver) {
+		if src != nil {
+			d.counterSources = append(d.counterSources, src)
+		}
+	}
 }
 
 // bounded applies this driver's declared deadline, or the caller's if the

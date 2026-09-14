@@ -104,13 +104,33 @@ Two things to check on a deploy you expect this path to be live on:
 - the index writer emits `mode_class`, and emits the class the session is
   actually running in — a *wrong* class is held exactly as firmly as a missing
   one, so a writer that guesses is worse than one that omits the field;
-- the resolver's unattestable-entry counter falls to zero as the writer rolls
-  out. It exists precisely because "the field is not being written" and "the fix
-  did not take" are otherwise indistinguishable from outside.
+- the resolver's `inbox_index.unattestable_entry` counter stops growing as the
+  writer rolls out. It exists precisely because "the field is not being
+  written" and "the fix did not take" are otherwise indistinguishable from
+  outside.
 
 `colab-fleetd doctor` counts both from the index itself, as row
 `inbox.mode-class`: entries attestable, entries without a class, entries with
-an unrecognised one.
+an unrecognised one. That is one reading of the index on disk; the counters
+are what the running service actually met.
+
+**The resolver's index counters are read from `GET /v1/health`
+(colab-fleet #163),** under the terminal runtime's entry in `counters`, and
+only on a machine with `FLEET_INBOX_INDEX` set — absent there means the
+resolver is not wired, `0` means wired and not yet hit:
+
+- `inbox_index.unattestable_entry` — resolves that found a live, matching
+  entry with no usable `mode_class` (#148);
+- `inbox_index.start_time_mismatch` — resolves that found an entry for the pid
+  whose `started_at` names a different process run (#147). A value that grows
+  with every send means the writer's start time never matches, which otherwise
+  fails silently: a resolver error reads as "no inbox", and the send goes to the
+  pane.
+
+They are in memory like every other counter here, so "stops growing" means
+between two readings with the same `startedAt`. They count lookups against the
+index, not exits of the send path, so they are named apart from `inbox.*` and
+are not part of the ADR-150 sum below.
 
 **Whether the body rule is worth widening is read from `GET /v1/health`
 (colab-fleet #150).** The terminal runtime's entry under `counters` carries one
