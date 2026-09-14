@@ -252,6 +252,16 @@ type eventStream struct {
 	credentialKnown bool
 	credentialGen   *fleet.Timestamp
 
+	// senders counts the goroutines OTHER than run() that write to out — today
+	// only the lifecycle supervisor. run() owns closing out, and must not do so
+	// while one of them can still send: closing a channel under a concurrent
+	// send is a data race, and outside the race detector the same interleaving
+	// is a send on a closed channel, which panics the whole service rather
+	// than ending one subscription (#162). Every such sender returns once the
+	// stream context is cancelled, and run() itself only returns after that,
+	// so the wait is bounded.
+	senders sync.WaitGroup
+
 	mu      sync.Mutex
 	conns   map[string]ctlConn // session id -> content client
 	closed  bool
@@ -311,7 +321,11 @@ func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver
 		cancel()
 		return nil, fmt.Errorf("subscribe: opening lifecycle client: %w", err)
 	}
-	go s.superviseLifecycle(streamCtx, trigger, life)
+	s.senders.Add(1)
+	go func() {
+		defer s.senders.Done()
+		s.superviseLifecycle(streamCtx, trigger, life)
+	}()
 
 	// Content clients for the sessions this subscription cares about — and
 	// only those. This is where filter granularity turns into cost: one
@@ -512,7 +526,11 @@ func pump(notes <-chan ctlNote, trigger chan<- struct{}, want func(string) bool,
 // run is the stream's engine: wait for a trigger, let a burst settle,
 // enumerate once, diff, emit.
 func (s *eventStream) run(ctx context.Context, trigger <-chan struct{}, known map[string]fleet.Session) {
-	defer close(s.out)
+	// The last writer out closes the channel — see senders.
+	defer func() {
+		s.senders.Wait()
+		close(s.out)
+	}()
 
 	for {
 		select {
