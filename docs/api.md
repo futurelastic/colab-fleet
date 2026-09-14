@@ -345,6 +345,11 @@ for a stronger clear mechanism than the ordinary pass. `force` never relaxes
 residue futile. `DELETE …/{id}` still works but should not be needed for a
 stuck composer alone (colab-fleet#136).
 
+A `409` saying the composer is **taller than the capture window** is different:
+retrying with any `expect` or `force` gets the same refusal, and `input`/`keys`
+refuse the same state. Stop retrying and have a person read or clear the
+composer at the pane (colab-fleet#149).
+
 ### `POST …/{id}/rename`
 
 ```json

@@ -2151,13 +2151,13 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// empty before delivering. Fail closed, the same direction §2.4
 		// already takes for a composer it CAN read and finds busy — the
 		// alternative is concatenating onto text this driver never saw.
+		d.counters.incr(counterComposerClippedRefusedSend)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: "session's composer is taller than this driver's capture window, " +
 				"so it cannot confirm the composer is empty before delivering; " +
-				"sending now risks concatenating onto text it cannot see (§2.4). Wait " +
-				"for the composer to shrink into the capture window, or re-read the " +
-				"session once it has",
+				"sending now risks concatenating onto text it cannot see (§2.4). " +
+				clippedComposerRemedy,
 		}, nil
 	}
 	if composerScanResult == composerFound && pending != "" {
@@ -2709,6 +2709,14 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		// opening fence. Claiming "already clear" here is #134's own false
 		// negative one function over — this driver has not seen enough of
 		// the composer to say that honestly, so it must not.
+		//
+		// colab-fleet#149: and nothing below this point may be tried in its
+		// place — no wider capture, no flag, no caller say-so. None of them is
+		// evidence about the rows this driver cannot see; see
+		// docs/adr/149-a-clipped-composer-has-no-in-driver-proof.md. The
+		// refusal is counted so its rate is readable, which is the evidence
+		// that ADR's reopen condition asks for.
+		d.counters.incr(counterComposerClippedRefusedDiscard)
 		return fleet.Ack{}, discardComposerClipped()
 	}
 	if pending == "" {
@@ -3167,15 +3175,34 @@ func (d *Driver) clearComposerSweep(ctx context.Context, paneID, id, pending str
 // clearComposer is never reached for this scan result). A caller that
 // pattern-matches on either of those substrings to decide what to do next
 // must see neither one here.
+//
+// It used to end "wait for the composer to shrink into the capture window …
+// and retry". On an unattended session with a retrying caller that condition
+// never arrives, so the advice sent callers into a loop that could not end
+// (colab-fleet#149). The message now says what is actually true: retrying
+// changes nothing, and the exit is outside this driver.
 func discardComposerClipped() error {
 	return fmt.Errorf(
-		"%w: discard: this composer is taller than this driver's single capture, so "+
+		"%w: discard: this composer is taller than this driver's capture window, so "+
 			"its content could not be read in full — neither \"already clear\" nor a "+
-			"digest-corroborated clear is honest here. Wait for the composer to shrink "+
-			"into the capture window (fewer on-screen rows), then read the session "+
-			"again and retry",
-		ErrAmbiguousTarget)
+			"digest-corroborated clear is honest here. %s",
+		ErrAmbiguousTarget, clippedComposerRemedy)
 }
+
+// clippedComposerRemedy is the one next-step sentence every clipped-composer
+// refusal carries — discard, send and keys alike — so the three cannot drift
+// into promising different ways out (colab-fleet#149).
+//
+// It deliberately names no API call as the fix. There is no request shape
+// that proves the unseen rows hold nothing worth keeping (ADR 149 walks the
+// candidates: a wider capture, a caller digest, provenance, a force flag),
+// and closing the session is the disproportionate remedy #136 already
+// retired for a stuck composer.
+const clippedComposerRemedy = "Retrying does not change this: the same call, " +
+	"with any expect or force, gets this same refusal while the composer stays " +
+	"taller than the capture window, and nothing this driver can read proves " +
+	"the unseen rows hold nothing worth keeping (colab-fleet#149). The way out " +
+	"is a person reading or clearing the composer at the pane itself"
 
 // discardIncomplete reports a clear that ran out of time without ever
 // emptying the composer, and says which of two situations that is — because

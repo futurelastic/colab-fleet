@@ -168,6 +168,18 @@ const (
 	// only a masked one. See docs/adr/150-count-inbox-fallbacks-before-widening.md.
 	counterInboxAttestChecked       = "inbox.attest_checked"
 	counterInboxAttestBodyLookalike = "inbox.attest_body_lookalike"
+
+	// colab-fleet#149: every refusal of a composer taller than the capture
+	// window (#134's composerClipped), one name per verb. ADR 149 found no
+	// evidence inside this driver that makes acting on such a composer safe,
+	// so these refusals are permanent for as long as the state lasts. What
+	// the ADR can still use is a rate: how often real traffic reaches this
+	// state, and through which verb. That is the measurement its reopen
+	// condition names. Counted at the refusal, not at the classification: a
+	// read that sees a clipped composer and does nothing destroys nothing.
+	counterComposerClippedRefusedDiscard = "composer_clipped.refused_discard"
+	counterComposerClippedRefusedKeys    = "composer_clipped.refused_keys"
+	counterComposerClippedRefusedSend    = "composer_clipped.refused_send"
 )
 
 // confirmLatencyBucket maps an observed confirm latency onto one of the five
