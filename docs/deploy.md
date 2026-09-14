@@ -164,14 +164,26 @@ how much of each pane the driver captures to classify it. The default is
 unchanged if it is unset or non-positive; raise it only if you have hit the
 clipped-composer state, where accumulated notices push a composer out of the
 capture window and the driver correctly refuses to act on what it cannot read.
-It prevents *entering* that state; it does not get a session out of it. A
-composer already past the window stays refused until a person reads or clears
-it at the pane, because nothing the driver reads can prove the unseen rows are
-disposable (`docs/adr/149-a-clipped-composer-has-no-in-driver-proof.md`). It
-also only helps a composer no taller than the visible pane plus the new margin,
-and those extra rows come from scrollback. The
-`composer_clipped.refused_{discard,keys,send}` counters say how often the state
-is actually reached.
+It does not get a session out of that state. A composer already past the window
+stays refused until a person reads or clears it at the pane, because nothing the
+driver reads can prove the unseen rows are disposable
+(`docs/adr/149-a-clipped-composer-has-no-in-driver-proof.md`). Since #169 it
+also no longer makes a tall composer readable: a composer is read only from the
+visible pane, and one whose opening fence sits in the margin above it is clipped
+too, because those margin rows are scrollback
+(`docs/adr/169-a-composer-is-read-from-the-visible-pane.md`). What a wider
+margin still buys is transcript context above the pane for the rest of the
+classification. The `composer_clipped.refused_{discard,keys,send}` counters say
+how often the state is actually reached, and
+`composer_clipped.fence_above_visible_pane` says how many of those refusals the
+visible-pane rule alone caused.
+
+This deploy also changes the capture's argv: each batched capture's marker now
+targets its pane and expands `#{pane_height}`, and the single-pane capture
+chains a `display-message` after `capture-pane`. After deploying, a state read
+of an idle session should still classify exactly as before. A driver that
+cannot parse the height falls back to treating every row as visible, which is
+the pre-#169 behaviour, not a failure.
 
 ## Running it
 

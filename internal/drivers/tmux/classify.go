@@ -124,9 +124,39 @@ type screen struct {
 	// raw keeps the escape sequences, because one signal cannot be read
 	// from the text alone: the composer's placeholder is rendered dim.
 	raw []string
+	// visibleTop is the index of the first row of the VISIBLE pane. Rows
+	// above it came from the `-S -N` history margin: frozen scrollback, which
+	// a runtime redrawing its composer in place cannot update, and which on a
+	// runtime using the alternate screen predates that screen altogether
+	// (colab-fleet#169). Zero means the pane height was not known when the
+	// capture was taken, and every row is treated as it always was.
+	visibleTop int
 }
 
 func newScreen(raw string) screen {
+	return newScreenVisible(raw, 0)
+}
+
+// newScreenVisible is newScreen for a capture whose pane height is known.
+// capture-pane prints one newline-terminated row per pane row, history margin
+// first, so the visible pane is the last paneHeight rows of the output. That
+// boundary is counted BEFORE trailing blank rows are dropped, because dropping
+// them only shortens the tail and never renumbers a row above it.
+func newScreenVisible(raw string, paneHeight int) screen {
+	s := splitScreen(raw)
+	if paneHeight > 0 {
+		rows := strings.Count(raw, "\n")
+		if raw != "" && !strings.HasSuffix(raw, "\n") {
+			rows++
+		}
+		if rows > paneHeight {
+			s.visibleTop = rows - paneHeight
+		}
+	}
+	return s
+}
+
+func splitScreen(raw string) screen {
 	all := strings.Split(raw, "\n")
 	out := make([]string, 0, len(all))
 	raws := make([]string, 0, len(all))
@@ -410,11 +440,13 @@ func composerSpan(s screen) (prompt, last int, scan composerScan) {
 	// composer out (fixtureMenuSelected's own shape: a question line sits
 	// right above the highlighted option, settling it as composerAbsent).
 	ranOffTop := true
+	fence := -1
 	for i := prompt - 1; i >= 0; i-- {
 		if strings.TrimSpace(s.lines[i]) == "" {
 			continue
 		}
 		fenced = isRule(s.lines[i])
+		fence = i
 		ranOffTop = false
 		break
 	}
@@ -424,7 +456,38 @@ func composerSpan(s screen) (prompt, last int, scan composerScan) {
 		}
 		return 0, 0, composerAbsent
 	}
+	// A composer is only read from the VISIBLE pane (colab-fleet#169). When
+	// its opening fence sits in the history margin above the pane, the rows
+	// that settled "this is a fenced composer" are scrollback. They may be an
+	// older frame of this composer, or on an alternate-screen runtime,
+	// output from before the runtime drew anything. Nothing here can tell
+	// which, so this is the same "cannot tell" as a fence above the capture
+	// altogether — clipped, never found, and no digest is published for it
+	// (docs/adr/169-a-composer-is-read-from-the-visible-pane.md). A fence
+	// inside the pane leaves the prompt row and every text row inside it too,
+	// since both sit below the fence.
+	if fence < s.visibleTop {
+		return 0, 0, composerClipped
+	}
 	return prompt, last, composerFound
+}
+
+// clippedOnlyAboveVisiblePane reports whether s reads composerClipped solely
+// because of #169's visible-pane rule: without the pane boundary, the same
+// rows would read composerFound. A refusal site counts this separately, so
+// the rate at which the rule refuses a composer the driver used to read is on
+// record (the check #169 asked for before deciding).
+func clippedOnlyAboveVisiblePane(s screen) bool {
+	if s.visibleTop == 0 {
+		return false
+	}
+	if _, _, scan := composerSpan(s); scan != composerClipped {
+		return false
+	}
+	whole := s
+	whole.visibleTop = 0
+	_, _, scan := composerSpan(whole)
+	return scan == composerFound
 }
 
 // composerText returns the text a human has typed into the input box but
@@ -1275,6 +1338,15 @@ func classifyPaneAged(raw string, captured, alive, young bool) fleet.SessionStat
 // the honest floor, since one capture genuinely cannot settle the ambiguity
 // resolveAmbiguity settles.
 func classifyPaneRemembering(raw string, captured, alive, young bool, prior paneMemory, now time.Time) (fleet.SessionState, string) {
+	return classifyCaptureRemembering(paneCapture{text: raw}, captured, alive, young, prior, now)
+}
+
+// classifyCaptureRemembering is classifyPaneRemembering for a capture that
+// carries its pane height, so the composer is read from the visible pane only
+// (colab-fleet#169). The digest stays a digest of the whole capture: it
+// fingerprints what was read, and the pane boundary changes nothing about that.
+func classifyCaptureRemembering(c paneCapture, captured, alive, young bool, prior paneMemory, now time.Time) (fleet.SessionState, string) {
+	raw := c.text
 	if !captured {
 		// No digest is returned for a failed capture: remembering the
 		// fingerprint of a screen we did not read would make the next
@@ -1284,7 +1356,7 @@ func classifyPaneRemembering(raw string, captured, alive, young bool, prior pane
 			"driver failed to capture this pane's screen; this is a driver "+
 				"malfunction, not an observation about the session"), ""
 	}
-	st, amb := classifyAgedDetail(raw, alive, young)
+	st, amb := classifyAgedDetailVisible(raw, c.height, alive, young)
 	digest := screenDigest(raw)
 	return resolveAmbiguity(st, amb, prior, digest, now), digest
 }
@@ -1546,6 +1618,12 @@ func classifyAged(raw string, alive, young bool) fleet.SessionState {
 }
 
 func classifyAgedDetail(raw string, alive, young bool) (st fleet.SessionState, amb ambiguity) {
+	return classifyAgedDetailVisible(raw, 0, alive, young)
+}
+
+// classifyAgedDetailVisible is classifyAgedDetail with the capture's pane
+// height, 0 when unknown (colab-fleet#169; see screen.visibleTop).
+func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (st fleet.SessionState, amb ambiguity) {
 	if !alive {
 		// §8: dead is terminal. This is the one status this driver can
 		// state without reading a screen, and still it is inferred: the
@@ -1554,7 +1632,7 @@ func classifyAgedDetail(raw string, alive, young bool) (st fleet.SessionState, a
 		return fleet.InferredState(fleet.StatusDead, "pane process not present in process table", nil), ambNone
 	}
 
-	s := newScreen(raw)
+	s := newScreenVisible(raw, paneHeight)
 
 	// Stamped on every path below rather than at each return.
 	//
@@ -1668,8 +1746,8 @@ func classifyAgedDetail(raw string, alive, young bool) (st fleet.SessionState, a
 		// asserting "empty" here is the exact false negative that lets
 		// Discard report an untouched composer already clear.
 		return fleet.UnknownState(fleet.ConfidenceInferred,
-			"turn finished; composer is taller than this driver's capture window, "+
-				"cannot confirm it is empty"), ambNone
+			"turn finished; composer is taller than this driver's capture window "+
+				"or reaches above the visible pane, cannot confirm it is empty"), ambNone
 
 	case foundSpinner && !running:
 		// Idle is the honest status: the session is up and will take input.
@@ -1688,8 +1766,8 @@ func classifyAgedDetail(raw string, alive, young bool) (st fleet.SessionState, a
 		// no-spinner branches below: none of them may assert composer-empty
 		// or composer-absent for a screen this driver could not fully read.
 		return fleet.UnknownState(fleet.ConfidenceInferred,
-			"no spinner line; composer is taller than this driver's capture window, "+
-				"cannot confirm it is empty"), ambNone
+			"no spinner line; composer is taller than this driver's capture window "+
+				"or reaches above the visible pane, cannot confirm it is empty"), ambNone
 
 	case !foundSpinner && hasComposer && pending == "" && young:
 		// A young session with a painted composer, no spinner and nothing

@@ -122,6 +122,8 @@ same verification gap and no scrollback to fall back on.
   the visible pane, but within the margin, gets a digest built partly from
   frozen rows, and raising `FLEET_CAPTURE_LINES` widens that margin. It is a
   separate question from #149 and needs its own issue if it is to be pursued.
+  *Taken up by #169: such a composer is now clipped, not found — see
+  `169-a-composer-is-read-from-the-visible-pane.md`.*
 - **Not yet observed on a live pane:** whether a real runtime's composer grows
   past pane height plus N (ADR 134, Consequences). The argument above does not
   depend on it. The counters answer it.

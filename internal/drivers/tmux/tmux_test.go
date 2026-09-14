@@ -94,6 +94,12 @@ type fakeMux struct {
 	// default) means unbounded, matching every other fakeMux behaviour: a
 	// test only pays for this if it asks for it.
 	capChunkArgWall int
+	// heights is a pane's height, expanded into a batched capture's marker
+	// the way the real multiplexer expands #{pane_height} (colab-fleet#169).
+	// A pane absent here leaves the format literal, which the driver reads as
+	// "height unknown" — so every test that never sets it keeps treating all
+	// captured rows as visible, exactly as before.
+	heights map[string]int
 }
 
 func (f *fakeMux) setCapChunkArgWall(n int) {
@@ -620,9 +626,18 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			}
 			switch g[0] {
 			case "display-message":
+				target := ""
+				for i, a := range g {
+					if a == "-t" && i+1 < len(g) {
+						target = g[i+1]
+					}
+				}
 				for i, a := range g {
 					if a == "-p" && i+1 < len(g) {
 						pendingMark = g[i+1]
+						if h, ok := f.heights[target]; ok {
+							pendingMark = strings.ReplaceAll(pendingMark, paneHeightFormat, itoa(h))
+						}
 					}
 				}
 			case "capture-pane":

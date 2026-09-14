@@ -716,10 +716,11 @@ POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&starte
   (do not retry with the same call shape — see `force`, below), or the
   composer is now damaged (re-read before doing anything else; do not retry
   blind)
-→ 409 also if the composer is taller than the driver's capture window — its
-  content could not be read in full, so neither "already clear" nor a
+→ 409 also if the composer is taller than the driver's capture window, or its
+  opening fence is above the visible pane — its content could not be read in
+  full from rows the driver can trust, so neither "already clear" nor a
   corroborated clear is honest; retrying with any `expect` or `force` gets the
-  same refusal (colab-fleet #149)
+  same refusal (colab-fleet #149, #169)
 ```
 
 Removes unsent composer text without submitting it. `expect` is
@@ -769,7 +770,10 @@ outcomes share that 409, and need three different next steps:
   next legal call needs no extra re-read to learn it.
 
 A composer taller than the driver's capture window (colab-fleet #134) is
-refused before any key is pressed, and that refusal does **not** resolve by
+refused before any key is pressed — and so is one whose opening fence sits
+above the visible pane, because the rows above it are scrollback, not the live
+screen (colab-fleet #169; ADR `169-a-composer-is-read-from-the-visible-pane`).
+Neither refusal resolves by
 retrying: no `expect`, no `force` and no wider read changes it, because nothing
 the driver can read proves the rows it cannot see hold nothing worth keeping
 (ADR `149-a-clipped-composer-has-no-in-driver-proof`). `input` and `keys` refuse

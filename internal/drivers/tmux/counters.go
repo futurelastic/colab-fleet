@@ -180,6 +180,15 @@ const (
 	counterComposerClippedRefusedDiscard = "composer_clipped.refused_discard"
 	counterComposerClippedRefusedKeys    = "composer_clipped.refused_keys"
 	counterComposerClippedRefusedSend    = "composer_clipped.refused_send"
+	// colab-fleet#169: the subset of those refusals that happened ONLY
+	// because the composer's opening fence sat above the visible pane, in the
+	// history margin — the same rows without the pane boundary would have
+	// read as a found composer. Incremented alongside the per-verb counter,
+	// never instead of it. #169 asked that the rule not be adopted before
+	// checking it leaves ordinary tall composers readable; this is that check
+	// kept running, since a snapshot of one fleet cannot speak for every
+	// runtime. See docs/adr/169-a-composer-is-read-from-the-visible-pane.md.
+	counterComposerClippedAboveVisiblePane = "composer_clipped.fence_above_visible_pane"
 )
 
 // confirmLatencyBucket maps an observed confirm latency onto one of the five
