@@ -84,6 +84,22 @@ A fleet layer that learns what an issue is has become a second supervisor, and
 now two components believe they are in charge. Every field in this API is tested
 against that sentence.
 
+What that means for a consumer — a dashboard that claims issues, spawns sessions
+and merges branches, say — is that the dependency runs one way:
+
+- **Work vocabulary is layered above, never pushed down.** A consumer that needs
+  repositories, issues, claims, worktrees, locks or leases keeps them itself. The
+  one place its vocabulary can appear here is inside an opaque, caller-supplied
+  field — `marker` on session create — which the service carries and returns
+  without interpreting.
+- **Consumers feature-detect and degrade.** What a machine can do is read, not
+  assumed: `GET /v1/runtimes` says which runtimes are wired, and `build` on
+  `GET /v1/machines` says which version answers. A consumer that finds a
+  capability missing does less, rather than failing.
+- **This service never calls a consumer back.** It opens connections only to its
+  own runtimes and its peers. A consumer that wants to hear about change
+  subscribes to `GET /v1/events`; nothing here holds a consumer's address.
+
 ---
 
 ## The parts that are unusual
