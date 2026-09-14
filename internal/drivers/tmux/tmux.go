@@ -949,7 +949,7 @@ type paneRow struct {
 // enumerate performs the whole fleet read in one subprocess: one metadata
 // listing followed by one screen capture per session, delimited by a
 // per-call nonce.
-func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, error) {
+func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]paneCapture, error) {
 	nonce := d.nonce()
 	sep := nonce + "F"
 	mark := nonce + "P"
@@ -993,7 +993,7 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 		// already answered, and coupling the verdict to the clock would make
 		// it depend on when it was asked rather than on what was said.
 		if noServerRunning(err) {
-			return nil, map[string]string{}, nil
+			return nil, map[string]paneCapture{}, nil
 		}
 		return nil, nil, fmt.Errorf("enumerate: listing sessions: %w", err)
 	}
@@ -1003,7 +1003,7 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 		return nil, nil, err
 	}
 	if len(rows) == 0 {
-		return nil, map[string]string{}, nil
+		return nil, map[string]paneCapture{}, nil
 	}
 
 	// One invocation per CHUNK, N captures per chunk, nonce-delimited.
@@ -1043,7 +1043,7 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 	// more than half of it, and one empty chunk per enumeration whose slice
 	// expired is retried with a fresh slice. Everything still derives from the
 	// caller's context: no call runs longer than it did before.
-	byIndex := make(map[string]string, len(rows))
+	byIndex := make(map[string]paneCapture, len(rows))
 	chunks := chunkPaneRows(rows)
 	retryUnused := true
 	for chunkIdx, chunkRows := range chunks {
@@ -1143,10 +1143,10 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]string, e
 			byIndex[k] = v
 		}
 	}
-	captures := make(map[string]string, len(rows))
+	captures := make(map[string]paneCapture, len(rows))
 	for i, r := range rows {
-		if text, ok := byIndex[strconv.Itoa(i)]; ok {
-			captures[r.paneID] = text
+		if c, ok := byIndex[strconv.Itoa(i)]; ok {
+			captures[r.paneID] = c
 		}
 	}
 	return rows, captures, nil
@@ -1194,8 +1194,8 @@ type captureAttempt struct {
 // The slice is a child of ctx, never a replacement for it: a caller's own
 // deadline or cancellation still ends the invocation at once, and nothing
 // here can make a call run longer than its declared deadline (§4.4).
-func (d *Driver) captureChunk(ctx context.Context, chunkRows []indexedPaneRow, mark string, pending int) (map[string]string, captureAttempt) {
-	capArgs := make([]string, 0, len(chunkRows)*8)
+func (d *Driver) captureChunk(ctx context.Context, chunkRows []indexedPaneRow, mark string, pending int) (map[string]paneCapture, captureAttempt) {
+	capArgs := make([]string, 0, len(chunkRows)*14)
 	for j, r := range chunkRows {
 		if j > 0 {
 			capArgs = append(capArgs, ";")
@@ -1205,7 +1205,11 @@ func (d *Driver) captureChunk(ctx context.Context, chunkRows []indexedPaneRow, m
 		// typed input only by being rendered dim, and stripping colour here
 		// would discard the one signal separating "nobody typed anything"
 		// from "do not overwrite me".
-		capArgs = append(capArgs, "display-message", "-p", mark+strconv.Itoa(r.index), ";")
+		// The marker names the pane explicitly (-t) because it now expands a
+		// format: without a target, display-message reads the CURRENT pane,
+		// not the one about to be captured (colab-fleet#169).
+		capArgs = append(capArgs, "display-message", "-t", r.paneID, "-p",
+			mark+strconv.Itoa(r.index)+" "+paneHeightFormat, ";")
 		capArgs = append(capArgs, classifyCaptureArgs(r.paneID, d.captureLines)...)
 	}
 
@@ -1320,14 +1324,16 @@ func chunkPaneRows(rows []paneRow) [][]indexedPaneRow {
 	curArgs, curBytes := 0, 0
 
 	// Per-row argument count and a byte estimate, matching the shape built
-	// in enumerate(): [";"] "display-message" "-p" <marker> ";" "capture-pane"
-	// "-p" "-e" "-t" <paneID> "-S" <lines> — 11 args for the first row in a
-	// chunk (no leading ";"), 12 for every row after it.
-	const fixedArgs = 11  // without the leading separator
-	const fixedBytes = 60 // "display-message" + "-p" + ";" + "capture-pane" + "-p" "-e" "-t" "-S" "-24" + separators, rounded up
+	// in captureChunk(): [";"] "display-message" "-t" <paneID> "-p"
+	// <marker+index+" #{pane_height}"> ";" "capture-pane" "-p" "-e" "-t"
+	// <paneID> "-S" <lines> — 13 args for the first row in a chunk (no
+	// leading ";"), 14 for every row after it. The pane id appears twice
+	// since colab-fleet#169 targets the marker too.
+	const fixedArgs = 13  // without the leading separator
+	const fixedBytes = 80 // "display-message" "-t" "-p" " #{pane_height}" ";" "capture-pane" "-p" "-e" "-t" "-S" "-24" + separators, rounded up
 	for i, r := range rows {
 		rowArgs := fixedArgs
-		rowBytes := fixedBytes + len(r.paneID) + 12 /* room for the marker+index */
+		rowBytes := fixedBytes + 2*len(r.paneID) + 12 /* room for the marker+index */
 		if len(cur) > 0 {
 			rowArgs++ // the leading ";"
 			rowBytes += 2
@@ -1337,7 +1343,7 @@ func chunkPaneRows(rows []paneRow) [][]indexedPaneRow {
 			cur = nil
 			curArgs, curBytes = 0, 0
 			rowArgs = fixedArgs // this row now starts a fresh chunk, no leading ";"
-			rowBytes = fixedBytes + len(r.paneID) + 12
+			rowBytes = fixedBytes + 2*len(r.paneID) + 12
 		}
 		cur = append(cur, indexedPaneRow{paneRow: r, index: i})
 		curArgs += rowArgs
@@ -1376,19 +1382,46 @@ func parseRows(out, sep string) ([]paneRow, error) {
 
 // splitCaptures divides one concatenated capture stream into per-pane text
 // using the nonce marker emitted before each capture.
-func splitCaptures(out, mark string) map[string]string {
-	res := map[string]string{}
+func splitCaptures(out, mark string) map[string]paneCapture {
+	res := map[string]paneCapture{}
 	parts := strings.Split(out, mark)
 	for _, p := range parts[1:] { // parts[0] is anything before the first marker
 		nl := strings.Index(p, "\n")
 		if nl < 0 {
 			continue
 		}
-		paneID := strings.TrimSpace(p[:nl])
-		res[paneID] = p[nl+1:]
+		// The marker line is "<index> <pane height>" (colab-fleet#169). A
+		// height that does not parse leaves 0, which reads every row as it
+		// always was rather than guessing a boundary.
+		header := strings.Fields(p[:nl])
+		if len(header) == 0 {
+			continue
+		}
+		c := paneCapture{text: p[nl+1:]}
+		if len(header) > 1 {
+			if h, err := strconv.Atoi(header[1]); err == nil && h > 0 {
+				c.height = h
+			}
+		}
+		res[header[0]] = c
 	}
 	return res
 }
+
+// paneCapture is one pane's classify capture and the pane's height when it was
+// taken. The height is what tells the visible pane apart from the `-S -N`
+// history margin above it (colab-fleet#169); 0 means unknown.
+type paneCapture struct {
+	text   string
+	height int
+}
+
+// screen parses the capture with its visible-pane boundary.
+func (c paneCapture) screen() screen { return newScreenVisible(c.text, c.height) }
+
+// paneHeightFormat is appended to the marker a capture is introduced by, so
+// the height arrives in the same invocation as the rows it describes.
+const paneHeightFormat = "#{pane_height}"
 
 // List returns every session in one call (§3, and driver.Driver.List's
 // contract). The returned Collection always carries exactly one
@@ -1490,9 +1523,9 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	gen := d.credentialGeneration()
 	d.mu.Lock()
 	for _, r := range rows {
-		text, captured := captures[r.paneID]
+		c, captured := captures[r.paneID]
 		young := now.Sub(r.created) < startingWindow
-		raw, digest := classifyPaneRemembering(text, captured, !r.dead, young, d.memoryLocked(r.session), now)
+		raw, digest := classifyCaptureRemembering(c, captured, !r.dead, young, d.memoryLocked(r.session), now)
 		st, carried := d.stampSinceLocked(r.session, raw, now)
 		st.CredentialGeneration = gen
 		// Published so a caller can quote it back on a raw key (keys.go). It
@@ -1935,9 +1968,9 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 			continue
 		}
 		now := d.now()
-		text, captured := captures[r.paneID]
+		c, captured := captures[r.paneID]
 		d.mu.Lock()
-		raw, digest := classifyPaneRemembering(text, captured, !r.dead,
+		raw, digest := classifyCaptureRemembering(c, captured, !r.dead,
 			now.Sub(r.created) < startingWindow, d.memoryLocked(r.session), now)
 		st, carried := d.stampSinceLocked(r.session, raw, now)
 		st.CredentialGeneration = d.credentialGeneration() // #12, same as List's per-session stamp
@@ -2168,7 +2201,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// escapes and so read the composer's dim placeholder as text a human had
 	// typed — refusing delivery to any idle session showing a hint, and
 	// blaming an operator who did not exist.
-	screenNow := newScreen(captures[target.paneID])
+	screenNow := captures[target.paneID].screen()
 	if sc, ok := d.captureForClassify(ctx, target.paneID); ok {
 		screenNow = sc
 	}
@@ -2192,9 +2225,13 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// already takes for a composer it CAN read and finds busy — the
 		// alternative is concatenating onto text this driver never saw.
 		d.counters.incr(counterComposerClippedRefusedSend)
+		if clippedOnlyAboveVisiblePane(screenNow) {
+			d.counters.incr(counterComposerClippedAboveVisiblePane)
+		}
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
-			Reason: "session's composer is taller than this driver's capture window, " +
+			Reason: "session's composer is taller than this driver's capture window " +
+				"or reaches above the visible pane, " +
 				"so it cannot confirm the composer is empty before delivering; " +
 				"sending now risks concatenating onto text it cannot see (§2.4). " +
 				clippedComposerRemedy,
@@ -2742,7 +2779,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 			ErrAmbiguousTarget, ref.ID, live.created.Format(time.RFC3339), want.Format(time.RFC3339))
 	}
 
-	sc := newScreen(captures[live.paneID])
+	sc := captures[live.paneID].screen()
 	pending, scan := composerText(sc)
 	if scan == composerClipped {
 		// colab-fleet#134: this driver's capture ended above the composer's
@@ -2757,6 +2794,9 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		// refusal is counted so its rate is readable, which is the evidence
 		// that ADR's reopen condition asks for.
 		d.counters.incr(counterComposerClippedRefusedDiscard)
+		if clippedOnlyAboveVisiblePane(sc) {
+			d.counters.incr(counterComposerClippedAboveVisiblePane)
+		}
 		return fleet.Ack{}, discardComposerClipped()
 	}
 	if pending == "" {
@@ -3223,7 +3263,8 @@ func (d *Driver) clearComposerSweep(ctx context.Context, paneID, id, pending str
 // changes nothing, and the exit is outside this driver.
 func discardComposerClipped() error {
 	return fmt.Errorf(
-		"%w: discard: this composer is taller than this driver's capture window, so "+
+		"%w: discard: this composer is taller than this driver's capture window "+
+			"or reaches above the visible pane, so "+
 			"its content could not be read in full — neither \"already clear\" nor a "+
 			"digest-corroborated clear is honest here. %s",
 		ErrAmbiguousTarget, clippedComposerRemedy)
@@ -3240,7 +3281,8 @@ func discardComposerClipped() error {
 // retired for a stuck composer.
 const clippedComposerRemedy = "Retrying does not change this: the same call, " +
 	"with any expect or force, gets this same refusal while the composer stays " +
-	"taller than the capture window, and nothing this driver can read proves " +
+	"taller than the capture window or reaches above the visible pane (rows above " +
+	"it are scrollback, colab-fleet#169), and nothing this driver can read proves " +
 	"the unseen rows hold nothing worth keeping (colab-fleet#149). The way out " +
 	"is a person reading or clearing the composer at the pane itself"
 
@@ -3957,7 +3999,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: "session process has exited"}, nil
 	}
 
-	screenNow := newScreen(captures[target.paneID])
+	screenNow := captures[target.paneID].screen()
 	before := parsePrompt(screenNow)
 	if before == nil {
 		// colab-fleet #64: this refusal fires whenever the screen has no
@@ -4563,7 +4605,7 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) readinessCheck 
 			return readinessCheck{checked: true,
 				reason: "the session's process has already exited"}
 		}
-		sc := newScreen(captures[r.paneID])
+		sc := captures[r.paneID].screen()
 		if p := parsePrompt(sc); p != nil {
 			p.Kind = classifyPromptKind(p)
 			reason := "parked on a prompt this driver does not recognise; " +
@@ -4585,7 +4627,8 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) readinessCheck 
 			// direction WaitingUnsentInput already means: something may be
 			// sitting there this call cannot see.
 			return readinessCheck{checked: true, present: true,
-				reason: "the composer is taller than this driver's capture window; " +
+				reason: "the composer is taller than this driver's capture window " +
+					"or reaches above the visible pane; " +
 					"cannot confirm it is empty before placing this prompt",
 				waitingOn: fleet.WaitingUnsentInput}
 		}
@@ -6069,11 +6112,37 @@ func classifyCaptureArgs(paneID string, lines int) []string {
 }
 
 func (d *Driver) captureForClassify(ctx context.Context, paneID string) (screen, bool) {
-	out, err := d.run(ctx, d.bin, classifyCaptureArgs(paneID, d.captureLines)...)
+	// The pane height rides in the same invocation, AFTER the capture, as a
+	// marker-prefixed last line (colab-fleet#169). After, so the capture
+	// argv still begins with capture-pane; marker-prefixed, so a pane whose
+	// own last row happens to be a bare number is never read as a height.
+	mark := d.nonce() + "H"
+	args := append(classifyCaptureArgs(paneID, d.captureLines),
+		";", "display-message", "-t", paneID, "-p", mark+paneHeightFormat)
+	out, err := d.run(ctx, d.bin, args...)
 	if err != nil {
 		// Fail closed, and let the caller decide what that means. An
 		// unreadable pane is not an empty one.
 		return screen{}, false
 	}
-	return newScreen(string(out)), true
+	return splitHeightTrailer(string(out), mark).screen(), true
+}
+
+// splitHeightTrailer separates captureForClassify's output into the capture
+// and the pane height printed after it. Only the output's LAST line is ever
+// considered: the capture comes first, so a row inside it that looks like the
+// trailer is pane content. No trailer, or one that does not parse, leaves the
+// whole output as the capture with height 0 (unknown).
+func splitHeightTrailer(out, mark string) paneCapture {
+	body := strings.TrimSuffix(out, "\n")
+	nl := strings.LastIndex(body, "\n")
+	last := body[nl+1:]
+	if !strings.HasPrefix(last, mark) {
+		return paneCapture{text: out}
+	}
+	c := paneCapture{text: body[:nl+1]}
+	if h, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(last, mark))); err == nil && h > 0 {
+		c.height = h
+	}
+	return c
 }

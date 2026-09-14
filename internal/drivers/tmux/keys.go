@@ -106,7 +106,8 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: "session process has exited"}, nil
 	}
 
-	text, captured := captures[live.paneID]
+	capture, captured := captures[live.paneID]
+	text := capture.text
 	if !captured {
 		// Not a refusal and not a success: this driver could not read the
 		// screen, which is a statement about the driver rather than about the
@@ -143,7 +144,7 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// real — "the caller saw this exact, possibly-ambiguous screen" — the
 	// same property screenDigest already proves for every other composer
 	// state that is not "found, holding text".
-	screen := newScreen(text)
+	screen := capture.screen()
 	pending, scan := composerText(screen)
 	composerHoldsText := scan == composerFound && strings.TrimSpace(pending) != ""
 
@@ -195,7 +196,7 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// have handed the caller a prompt and its nonce.
 	now := d.now()
 	d.mu.Lock()
-	resolved, _ := classifyPaneRemembering(text, true, true,
+	resolved, _ := classifyCaptureRemembering(capture, true, true,
 		now.Sub(live.created) < startingWindow, d.memoryLocked(live.session), now)
 	d.mu.Unlock()
 	if resolved.Prompt != nil {
@@ -215,9 +216,13 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// than one it read and found busy.
 	if scan == composerClipped {
 		d.counters.incr(counterComposerClippedRefusedKeys)
+		if clippedOnlyAboveVisiblePane(screen) {
+			d.counters.incr(counterComposerClippedAboveVisiblePane)
+		}
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
-			Reason: "this composer is taller than this driver's capture window, so its " +
+			Reason: "this composer is taller than this driver's capture window or " +
+				"reaches above the visible pane, so its " +
 				"content could not be read in full; a key delivered now could submit " +
 				"text nobody has seen, and discard refuses for the same reason. " +
 				clippedComposerRemedy,
@@ -257,7 +262,7 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	deadline := d.now().Add(keyConfirmWindow)
 	for {
 		if _, afterCaptures, err := d.enumerate(ctx); err == nil {
-			if afterText, reread := afterCaptures[live.paneID]; reread && screenDigest(afterText) != before {
+			if after, reread := afterCaptures[live.paneID]; reread && screenDigest(after.text) != before {
 				return fleet.DeliveryReceipt{
 					Outcome: fleet.OutcomeSubmitted,
 					Reason:  "sent " + string(key) + "; the screen changed in response",

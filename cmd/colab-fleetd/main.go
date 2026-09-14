@@ -151,7 +151,12 @@
 //	                       driver correctly refuses to act on what it cannot
 //	                       see (#134) and an operator's only exit was to
 //	                       attach to the multiplexer by hand. This is the
-//	                       lever that was missing.
+//	                       lever that was missing. colab-fleet #169: a
+//	                       composer is now read only from the visible
+//	                       pane, so a wider margin no longer makes a tall
+//	                       composer readable; it widens the transcript
+//	                       context above the pane for the rest of the
+//	                       classification.
 //
 // # Subcommands
 //
