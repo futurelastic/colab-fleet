@@ -20,7 +20,8 @@ import (
 type fakeCtl struct {
 	session string
 	notes   chan ctlNote
-	closed  bool
+	closed  bool // reaped: Close was called
+	dead    bool // exited on its own: notes closed, Close NOT called
 	mu      sync.Mutex
 }
 
@@ -30,10 +31,27 @@ func (c *fakeCtl) Close() error {
 	defer c.mu.Unlock()
 	if !c.closed {
 		c.closed = true
-		close(c.notes)
+		if !c.dead {
+			close(c.notes)
+		}
 	}
 	return nil
 }
+
+// die simulates the client exiting because its host session went away: the
+// notification channel ends, but nobody has reaped it. Keeping this distinct
+// from Close is the whole point — a real client that dies still has to be
+// waited on, and a fake that conflates dying with being reaped cannot show a
+// driver forgetting to do so.
+func (c *fakeCtl) die() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.dead && !c.closed {
+		c.dead = true
+		close(c.notes)
+	}
+}
+
 func (c *fakeCtl) isClosed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -57,6 +75,12 @@ func (r *ctlRegistry) dial(ctx context.Context, bin, session string) (ctlConn, e
 	c := &fakeCtl{session: session, notes: make(chan ctlNote, 16)}
 	r.opened = append(r.opened, c)
 	return c, nil
+}
+
+func (r *ctlRegistry) at(i int) *fakeCtl {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.opened[i]
 }
 
 func (r *ctlRegistry) count() int {
@@ -806,5 +830,69 @@ func TestClosingDuringLifecycleReattachDoesNotRaceTheEngine(t *testing.T) {
 			}
 		}
 		cancel()
+	}
+}
+
+// A lifecycle client that died with its host session must still be reaped.
+//
+// For the real transport Close is the only place the client subprocess is
+// waited on, so a supervisor that re-attaches without closing the client it
+// lost leaves one zombie per host-session death, per live subscription — on
+// a long-running service over sessions that come and go, without bound.
+// Every replaced client must report closed, and the live one must not.
+func TestLifecycleClientThatLostItsHostIsReaped(t *testing.T) {
+	f := twoSessions()
+	r := &ctlRegistry{}
+	d := newSubDriver(f, r)
+
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The supervisor announces each loss on the stream and blocks until
+	// someone reads it, so read everything until the stream ends.
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for {
+			if _, err := s.Next(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Index 0 is the first lifecycle client; every client dialled after the
+	// content clients is a replacement lifecycle client.
+	base := r.count()
+	lifecycle := []*fakeCtl{r.at(0)}
+
+	const deaths = 3
+	for n := 0; n < deaths; n++ {
+		lifecycle[n].die()
+
+		deadline := time.Now().Add(3 * time.Second)
+		for r.count() < base+n+1 {
+			if time.Now().After(deadline) {
+				t.Fatalf("death %d: no re-attach, still %d clients", n+1, r.count())
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		lifecycle = append(lifecycle, r.at(base+n))
+	}
+
+	for i, c := range lifecycle[:deaths] {
+		if !c.isClosed() {
+			t.Errorf("lifecycle client %d lost its host and was replaced but never closed; "+
+				"for a real client that is a subprocess nobody waits on", i)
+		}
+	}
+	if lifecycle[deaths].isClosed() {
+		t.Error("the live replacement lifecycle client was closed while the stream is open")
+	}
+
+	_ = s.Close()
+	<-drained
+	if !r.allClosed() {
+		t.Error("clients left open after Close")
 	}
 }

@@ -456,6 +456,18 @@ func (s *eventStream) superviseLifecycle(ctx context.Context, trigger chan<- str
 		default:
 		}
 
+		// Reap the client that died before replacing it. Its notifications
+		// ending does not mean its process was waited on: for the real
+		// transport Close is the only place that happens, and this client is
+		// about to be overwritten in s.conns, so the stream's own Close will
+		// never see it. Skipping this leaves one unreaped process per
+		// host-session death, per live subscription, for the life of the
+		// service. Close is idempotent, so a stream Close racing this one is
+		// harmless. It comes after the announcement because Close may wait
+		// briefly for a client that has not fully exited, and a subscriber
+		// should not learn it is degraded late because of that.
+		_ = conn.Close()
+
 		next, err := s.reattachLifecycle(ctx)
 		if err != nil {
 			return
