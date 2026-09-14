@@ -98,11 +98,8 @@ type inboxIndexEntry struct {
 // #147's own "also worth fixing while here": a mismatch that happens on
 // every call and is never surfaced is indistinguishable from one that never
 // happens, the same reasoning internal/drivers/tmux/counters.go already
-// gives for identity.process_unresolved. Deliberately the smallest thing
-// that makes the rate readable (a test, an operator running the process
-// with a debugger, or a future `colab-fleetd` status surface) — not wired to
-// an HTTP endpoint here, matching that file's own precedent for landing a
-// counter before its surface exists.
+// gives for identity.process_unresolved. Readable in GET /v1/health as
+// counterIndexStartTimeMismatch, through inboxResolverCounters (#163).
 var indexStartTimeMismatches atomic.Int64
 
 // indexStartTimeMismatchCount reports indexStartTimeMismatches' current
@@ -120,13 +117,39 @@ func indexStartTimeMismatchCount() int64 { return indexStartTimeMismatches.Load(
 // yet. A condition true on every call and never surfaced is indistinguishable
 // from one that never happens — which is exactly how #147's own permanent,
 // silent mismatch survived. An operator rolling the writer out needs to watch
-// this fall to zero; without a counter the only observable difference between
+// this stop growing; without a counter the only observable difference between
 // "the field is not being written" and "the fix did not take" is neither.
+// Readable in GET /v1/health as counterIndexUnattestableEntry (#163).
 var indexUnattestableEntries atomic.Int64
 
 // indexUnattestableEntryCount reports indexUnattestableEntries' current value.
 // Exported as a function for the same reason its sibling is.
 func indexUnattestableEntryCount() int64 { return indexUnattestableEntries.Load() }
+
+// The names the two counters above carry in GET /v1/health. colab-fleet #163:
+// until then both were atomics only a test could read, while the deploy notes
+// told an operator to watch one of them.
+//
+// "inbox_index.", deliberately not "inbox.": the terminal driver's inbox.*
+// names are one counter per exit of the send path and sum to its attempts
+// (docs/adr/150-count-inbox-fallbacks-before-widening.md), and a send that
+// never tried the inbox must leave no inbox.* name at all. These count
+// lookups against the index, a different fact with a different denominator.
+const (
+	counterIndexStartTimeMismatch = "inbox_index.start_time_mismatch"
+	counterIndexUnattestableEntry = "inbox_index.unattestable_entry"
+)
+
+// inboxResolverCounters is the tmux.WithCounterSource main.go wires beside
+// the resolver. Both names are always present, zero included: it is only ever
+// wired when FLEET_INBOX_INDEX is set, so a zero here is a measurement — the
+// resolver ran or could have — and never a claim about a machine without one.
+func inboxResolverCounters() map[string]int64 {
+	return map[string]int64{
+		counterIndexStartTimeMismatch: indexStartTimeMismatchCount(),
+		counterIndexUnattestableEntry: indexUnattestableEntryCount(),
+	}
+}
 
 // newFileInboxResolver returns a tmux.InboxResolver that answers from one
 // JSON file per pid under dir: "<dir>/<pid>.json". dir is never empty here —

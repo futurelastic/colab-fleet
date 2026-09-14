@@ -137,6 +137,9 @@
 //	                       unrecognised value is rejected outright rather
 //	                       than guessed at, because the receiving runtime
 //	                       holds a wrong class as firmly as a missing one.
+//	                       colab-fleet #163: setting this also adds the
+//	                       resolver's inbox_index.* counters to the terminal
+//	                       runtime's counters in GET /v1/health.
 //	FLEET_CAPTURE_LINES    how many lines of each pane this driver captures
 //	                       to classify it. Absent, or not a positive
 //	                       integer, means the built-in default is used and
@@ -371,6 +374,11 @@ func main() {
 		// and why its shape is not the real runtime's own convention.
 		if dir := os.Getenv("FLEET_INBOX_INDEX"); dir != "" {
 			opts = append(opts, tmux.WithInboxResolver(newFileInboxResolver(dir)))
+			// colab-fleet #163: the resolver's own index counters join the
+			// terminal driver's counters in GET /v1/health. Wired only here,
+			// beside the resolver, so a machine with no index reports no
+			// inbox_index.* name at all rather than a zero it never measured.
+			opts = append(opts, tmux.WithCounterSource(inboxResolverCounters))
 			// The path itself is not logged — same discipline FLEET_TRUST_ROOTS
 			// and FLEET_CREDENTIAL_PATH already follow above: this process's
 			// own stdout is not the place machine-local filesystem layout
