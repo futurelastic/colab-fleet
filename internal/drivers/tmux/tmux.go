@@ -4024,18 +4024,47 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	// fault, which is itself corroboration. Escape is left alone: what was
 	// measured is the Enter case, and guessing past the measurement is how the
 	// wrong key ends up shipped.
+	//
+	// # A choice is the digit ALONE — the confirm is a fallback, not a pair
+	//
+	// colab-fleet#168. This branch used to send the digit and C-m together,
+	// on the belief that the C-m either confirmed the digit or landed
+	// harmlessly. Measured live on the runtime, a digit alone already commits
+	// the answer on every numbered menu tried: a tabbed question of a
+	// multi-question dialog (it also ADVANCES to the next tab), that dialog's
+	// review confirm widget, and a single-question menu. So the C-m never
+	// confirmed anything, and on a tabbed dialog it did harm: sent as one
+	// burst on the second of three questions, the pair recorded that question
+	// as its highlighted DEFAULT rather than the digit, left the third
+	// unanswered, and landed on the review screen — while the nonce changed,
+	// so this function reported success for an answer that was not given.
+	//
+	// So the digit goes alone, once, and nothing follows it. A same-prompt-
+	// still-up result is reported as unknown, never retried here: re-sending
+	// the digit spends the caller's answer twice, and the second lands in
+	// whatever replaced the question the moment the first repaints (see
+	// TestTrustConsentIsSpentOnce); a lone C-m confirms the HIGHLIGHTED
+	// option, which on a menu where the digit changed nothing is not the one
+	// chosen. Both would be a guess past the measurement. The caller holds
+	// the unknown receipt and the screen, and can decide.
 	keys := []string{"Space", "C-m"}
 	switch {
 	case resp.Cancel:
 		keys = []string{"Escape"}
 	case resp.Choice > 0:
-		keys = []string{strconv.Itoa(resp.Choice), "C-m"}
+		keys = []string{strconv.Itoa(resp.Choice)}
 	}
 	args := []string{"send-keys", "-t", target.paneID}
 	args = append(args, keys...)
 	if _, err := d.run(ctx, d.bin, args...); err != nil {
 		return fleet.DeliveryReceipt{}, fmt.Errorf("respond: %w", err)
 	}
+
+	// Confirm the prompt actually went away. A keypress a prompt swallows
+	// leaves the session exactly as stuck as before, and reporting success
+	// there is how a supervisor concludes it has cleared something it has
+	// not.
+	cleared := d.promptCleared(ctx, target.paneID, before.Nonce)
 
 	answered := "accepted the highlighted option"
 	switch {
@@ -4054,11 +4083,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 			"had not changed since it was read"
 	}
 
-	// Confirm the prompt actually went away. A keypress a prompt swallows
-	// leaves the session exactly as stuck as before, and reporting success
-	// there is how a supervisor concludes it has cleared something it has
-	// not.
-	if d.promptCleared(ctx, target.paneID, before.Nonce) {
+	if cleared {
 		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeSubmitted, Reason: answered}, nil
 	}
 	return fleet.DeliveryReceipt{
