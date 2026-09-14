@@ -472,6 +472,24 @@ type Session struct {
 	// IdentityAssertion.Drifted false.
 	IdentityAssertion *IdentityAssertion `json:"identityAssertion,omitempty"`
 
+	// Marker is the session-type marker this session's create carried and
+	// the resolved name ended in (colab-fleet #165; see SessionSpec.Marker).
+	// It is a fact the driver recorded at the instant it applied the marker,
+	// so a consumer grouping sessions by type reads it here instead of
+	// running a suffix test on Name — the test #90 and #96 measured as
+	// ambiguous whenever a marker shares the name body's alphabet.
+	//
+	// Read-only. No endpoint writes it, and it is not a label: the label
+	// namespace stays entirely the caller's (ADR 153), and a label keyed
+	// `marker` is just a label. It survives a rename, because a rename
+	// changes what a session is called and not what kind of session it is.
+	//
+	// Empty means this machine has no such record — no marker was asked for,
+	// the name kept a different marker it already carried, the driver does
+	// not record markers, or the session predates the field. It is never a
+	// claim that the session is untyped.
+	Marker string `json:"marker,omitempty"`
+
 	// Labels are the caller-supplied facts attached to this session, at
 	// create or later through POST …/labels (colab-fleet #153; see
 	// SessionSpec.Labels). They are stored by the service, not observed by

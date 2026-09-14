@@ -795,6 +795,14 @@ humans all see. The driver carries a marker and never stacks one: a name that
 already ends in a marker keeps the one it has. What a marker *means* is yours;
 the service has no vocabulary of its own.
 
+**Group by `marker` on the session, not by the end of `name`.** Every read
+returns `marker` — the marker your create applied — so you never need a suffix
+test that cannot tell a marker from a name that merely ends in the same
+characters. It is read-only, it is not a label, and it survives a rename.
+Absent means the machine holds no record of one (no marker sent, the name kept
+a different marker it already had, or the session predates the field) — not
+that the session has no type.
+
 **`name` may be rewritten, and this is when it matters.** The driver sanitises
 it, and numbers it if a session of that name is already live — so asking twice
 for `alpha` gives you `alpha` and then something else. That is the reason the

@@ -338,6 +338,7 @@ Idempotency-Key: <caller-supplied, required>
   "mcpConfig": ["/abs/servers.json"], "labels": {"issue": "153"} }
 
 → 201 { "machine": "...", "id": "...", "name": "...", "runtime": "...",
+        "marker": "...",
         "runtimeSurface": {"known": null, "evidence": "..."},
         "promptDelivery": {"outcome": null, "evidence": "..."},
         "identityAssertion": {"asserted": "...", "drifted": null, "evidence": "..."},
@@ -564,6 +565,7 @@ GET /v1/machines/{machine}/sessions/{id}?runtime=
                            "evidence": "..." },
         "identityAssertion": { "asserted": "...", "drifted": false,
                                "evidence": "..." },
+        "marker": "...",
         "state": { "status": "working", "confidence": "inferred",
                    "evidence": "...", "since": "..." } }
 ```
@@ -603,6 +605,14 @@ means the runtime carries it as of this read; `drifted: true` carries
 `carried`, naming what it holds instead. The repair, when this machine
 attempts one, lands on the *next* read, not this one — a single
 `drifted: true` is not a permanent condition.
+
+`marker` (session-abstraction.md §2.1) is the marker the session's `create`
+applied — sent as `marker` and ending the resolved name — so a caller groups
+sessions by type without a suffix test on `name` (colab-fleet #165). It is
+read-only: no route writes it, and `POST …/labels` cannot touch it, because it
+is not a label. A rename keeps it. It travels through a peer relay like every
+other field on the session. Absent means this machine holds no such record,
+never that the session is untyped.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/input

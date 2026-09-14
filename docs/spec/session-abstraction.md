@@ -118,6 +118,17 @@ pair and the service says nothing about it. Bounded to 16 pairs, keys of 1–128
 contain `:`, values of at most 128 bytes; a map outside those bounds is refused `invalid` naming the
 limit, never truncated. Labels may also be changed after creation (api-http.md §3.3, `labels`).
 
+**`marker` is also reported back, read-only, as `marker` on `Session`** (colab-fleet #165). It is
+the marker this session's create carried **and** the resolved name ended in, recorded by the driver
+at the instant it applied it, so a consumer grouping sessions by type reads a fact instead of running
+a suffix test on the name — the test #90 and #96 found ambiguous whenever a marker shares the name
+body's alphabet. No operation writes it. It is **not a label**: the label namespace stays entirely
+the caller's, and a label keyed `marker` is only a label. It survives a rename, because a rename
+changes what a session is called and not what kind of session it is. Absent means this machine has
+no such record — no marker was asked for, the name kept a *different* marker it already carried, the
+driver does not record markers, or the session predates the field. It is never a claim that the
+session is untyped.
+
 **A created session must be the same KIND of session the substrate's own
 launcher produces.** This is normative, and it is the rule the three fields
 above exist to make satisfiable. A service that creates a second-class session

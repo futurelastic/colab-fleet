@@ -385,6 +385,7 @@ not in the response.
   "machine": "machine-b", "id": "s42", "name": "…",
   "runtime": "tmux", "cwd": "/abs/path", "agent": "…", "model": "…",
   "startedAt": "…", "attach": {…}, "conversation": {…}, "resumeOutcome": {…},
+  "marker": "…",
   "labels": { "issue": "153" },
   "state": {
     "status": "waiting_input",
