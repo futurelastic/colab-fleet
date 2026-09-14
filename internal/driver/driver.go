@@ -184,6 +184,26 @@ type ListFilter struct {
 	Status    fleet.Status
 	Agent     fleet.AgentId
 	CwdPrefix string
+
+	// Labels keeps only sessions carrying every pair (colab-fleet #153).
+	// Local drivers ignore it: labels are stored by the service, not by the
+	// driver, so the service applies this itself. The remote driver forwards
+	// it so a peer narrows its own answer.
+	Labels map[string]string
+}
+
+// IsZero reports whether the filter narrows nothing — the one listing whose
+// result is the complete set of a driver's sessions.
+func (f ListFilter) IsZero() bool {
+	return f.Status == "" && f.Agent == "" && f.CwdPrefix == "" && len(f.Labels) == 0
+}
+
+// LabelRelayer is an OPTIONAL capability: a driver fronting a PEER that can
+// forward a label write to it (POST …/labels, colab-fleet #153). Local
+// drivers never implement it — a local session's labels are the service's
+// own to store. A peer driver without it answers unsupported.
+type LabelRelayer interface {
+	Labels(ctx context.Context, req fleet.Request, ref fleet.SessionRef, patch map[string]*string) (fleet.Session, error)
 }
 
 // SubscribeFilter narrows which events a subscription receives (§3, §5.5).

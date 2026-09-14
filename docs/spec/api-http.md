@@ -65,6 +65,7 @@ GET /v1/health
                    "time": "...", "go": "go1.26.5",
                    "version": "v0.1.0-2-g3ce7e27" },  ← null when unstamped
         "maxInputBytes": 1024,
+        "labels": { "maxKeys": 16, "maxKeyBytes": 128, "maxValueBytes": 128 },
         "drivers": [...] }
 
 GET /v1/machines
@@ -179,10 +180,20 @@ successful probe learned. Unlike `build`, an unanswered peer's entry needs
 no separate `known` flag — a real effective limit is never zero, so the
 zero value is unambiguous on its own as "not yet observed."
 
+**`labels` on `/v1/health` is the bounds this machine enforces on session
+labels** (colab-fleet #153; §3.3's `labels`), and its presence is how a
+relaying service learns that a peer stores labels at all. A service relaying a
+create that carries labels **must** refuse it `unsupported`, before sending
+anything, to a peer whose health omits this field: that peer would decode the
+body, ignore the field it does not know, and answer `201` for a session bound to
+nothing. Only a positive answer may be cached; a relaying service asks again
+before refusing, so a peer that has since upgraded is not refused on stale
+evidence.
+
 ### 3.2 Sessions
 
 ```
-GET /v1/sessions?scope=fleet|local&machine=&status=&agent=&cwdPrefix=
+GET /v1/sessions?scope=fleet|local&machine=&status=&agent=&cwdPrefix=&label=key:value
 → 200 Collection<Session>
 ```
 
@@ -200,6 +211,20 @@ A `scope=local` response carries exactly one `SourceStatus`. The proxying
 service **adopts** that record rather than synthesizing a fresh one (§13.2) — a
 peer that answers promptly while reporting itself `degraded` must not be
 relayed as `ok`.
+
+**`label=key:value` keeps only sessions carrying that pair** (colab-fleet
+#153). Repeatable, and every pair must match; exact on key and value; the split
+is on the first `:`, which a key may not contain. A pair with no `:`, an invalid
+key, or one key named twice with different values is `400 invalid` — the last
+because it could never match anything. A proxying service forwards the filter
+so each peer narrows its own answer, **and applies it again** to what comes
+back. A peer on a build that predates labels ignores the parameter and returns
+every session it has, none carrying `labels`: the proxying service **must**
+report that source `degraded` with no items, never count its sessions as
+matches and never report it as an empty `ok` — "could not answer this
+question" is a different fact from "has no such session" (§5.7). The fleet
+answer is therefore `complete: false` whenever any machine could not apply the
+filter, exactly as when it could not be reached.
 
 **The envelope may also carry `feed`, and that is how a snapshot becomes a
 mirror:**
@@ -254,7 +279,7 @@ Idempotency-Key: <caller-supplied, required>
   "prompt": "...", "contextRef": "/abs/path", "trustCwd": false,
   "env": {"NAME": "value"}, "resume": "<conversation id>",
   "permissionMode": "bypass", "consents": ["folder-trust"],
-  "mcpConfig": ["/abs/servers.json"] }
+  "mcpConfig": ["/abs/servers.json"], "labels": {"issue": "153"} }
 
 → 201 { "machine": "...", "id": "...", "name": "...", "runtime": "...",
         "runtimeSurface": {"known": null, "evidence": "..."},
@@ -698,8 +723,36 @@ fires more than once per rename** — §4's event-plane section covers what the
 `corroboration` field on each one means, and why waiting for the second is
 worth doing before treating a rename as durable.
 
+```
+POST /v1/machines/{machine}/sessions/{id}/labels?startedAt=&runtime=
+{ "labels": { "issue": "153", "stale-key": null } }
+→ 200 <the whole session, labels included>
+→ 409 if startedAt disagrees with the live session, or is supplied and the
+      live session's start time is unknown
+→ 400 if the merged result exceeds the bounds, or a key is invalid
+```
+
+**Labels change by merge** (colab-fleet #153): a key with a string value is set,
+a key with `null` is deleted, a key not named is left alone. The bounds apply to
+the **merged result**, so a patch that deletes keys can bring a full map back
+under them; a refused write changes nothing. Send `?startedAt=` for rename's
+reason — labelling the wrong session succeeds silently and binds a stranger to
+somebody's work. Without it the write gets the weaker guarantee of the id alone.
+
+It needs the **`label` grant** (§5), not `rename`. Rename changes the handle
+every other caller addresses a session by; a label changes nothing anyone
+addresses anything by, and a session labelling *itself* once it knows its work
+must not need the power to rename every session on its machine. Labels sent in
+a **create** body need only `create`, like `name` and `marker`.
+
+Subscribers receive `session.labels` with the complete map after every change,
+and after a create that carried labels. A peer on a build without this route
+answers with its router's bare `404`; a relaying service **must** report that as
+`unsupported`, never as `not_found` — the session may be alive, and the peer
+simply cannot store labels.
+
 `runtime` is an **optional** query parameter on every single-session endpoint
-(`GET`, `input`, `respond`, `discard`, `rename`, `keys`, `interrupt`,
+(`GET`, `input`, `respond`, `discard`, `rename`, `labels`, `keys`, `interrupt`,
 `DELETE`) and on `POST …/sessions` (`create`, in the JSON body as
 `"runtime"`). A session `id` is scoped to `(machine, runtime)` — not to
 `machine` alone (session-abstraction.md §2.2) — so two runtimes on one
@@ -1047,6 +1100,7 @@ resumption needs no client code. The server honours that header when no
 | `session.state` | ref + `SessionState` — fired on any **material** change, not only a change of `status` |
 | `session.closed` | ref + final state |
 | `session.renamed` | `{ "machine", "from", "to", "startedAt"?, "corroboration" }` — a session's **id** changed (session-abstraction.md §3's `rename`); a subscriber filtering by id must re-key on `to` or it silently stops matching a session that is still alive |
+| `session.labels` | `{ "ref", "startedAt"?, "labels" }` — a session's labels changed, or a create carried some; `labels` is the **whole** map after the change, never the patch (colab-fleet #153). A driver's own `session.created` can be observed before a create's labels are stored and carry `{}`; this event is the guarantee |
 | `source.status` | a machine's reachability changed |
 | `machine.quota` | `{ "machine", "blocked": bool, "quota"? }` — this machine's **account** started or stopped refusing work |
 | `machine.account` | `{ "machine", "generation" }` — this machine's local **credential material** changed |
@@ -1224,8 +1278,8 @@ ordering is wrong rather than handing you a cursor that would skip.
   configuration in which authentication is off — not for loopback, not for
   development.
 - Permissions are **per verb, per machine**. `list` and `state` may be granted
-  broadly; `create`, `input`, `interrupt`, `close`, `rename`, `discard` and
-  `keys` are granted per peer and default to denied. That default is deliberate
+  broadly; `create`, `input`, `interrupt`, `close`, `rename`, `discard`, `keys`
+  and `label` are granted per peer and default to denied. That default is deliberate
   and applies to a fresh deployment as much as an established one — no grant is
   implied by anything else, including a runtime advertising the capability the
   grant gates (§3, `keys`; colab-fleet #68).

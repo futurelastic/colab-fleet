@@ -105,7 +105,8 @@ func grantsForRequest(cfg Config, r *http.Request) []string {
 	if cfg.AllowLocalMutations {
 		out = append(out,
 			string(GrantCreate), string(GrantSend), string(GrantInterrupt),
-			string(GrantClose), string(GrantRename), string(GrantDiscard), string(GrantKeys))
+			string(GrantClose), string(GrantRename), string(GrantDiscard), string(GrantKeys),
+			string(GrantLabel))
 	}
 	if cfg.AllowPeerRelay {
 		out = append(out, string(GrantRelay))

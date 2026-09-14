@@ -93,6 +93,10 @@ type Service struct {
 
 	state *state.Store
 
+	// labels is where caller-supplied session labels live (colab-fleet
+	// #153) — see labels.go for why the service stores them, not a driver.
+	labels *labelStore
+
 	// events is the service-wide event plane: §7.3's cursor and epoch live
 	// here because they are per service instance, not per driver.
 	events *hub
@@ -146,6 +150,9 @@ func NewWithState(self fleet.MachineId, st *state.Store) (*Service, error) {
 	if st == nil {
 		return svc, nil
 	}
+	if err := svc.labels.load(st); err != nil {
+		return nil, err
+	}
 
 	var seq eventSequence
 	found, err := st.Load("events", &seq)
@@ -183,6 +190,7 @@ func newService(self fleet.MachineId) *Service {
 		local:     make(map[fleet.RuntimeId]driver.Driver),
 		peers:     make(map[fleet.MachineId]driver.Driver),
 		events:    newHub(self, now.UTC().Format(time.RFC3339Nano)),
+		labels:    newLabelStore(),
 		// #130: every instance starts with the shipped default in force,
 		// not a zero value a caller could mistake for "no limit" — see the
 		// field's own doc comment.
@@ -404,8 +412,25 @@ func (s *Service) ListSessions(ctx context.Context, req fleet.Request, scope Sco
 	var items []fleet.Session
 	var sources []fleet.SourceStatus
 
-	for _, d := range s.localDrivers() {
+	// Local drivers are walked with their runtime, because a session's labels
+	// are keyed by (runtime, id) — colab-fleet #153.
+	s.mu.RLock()
+	local := make(map[fleet.RuntimeId]driver.Driver, len(s.local))
+	for rt, d := range s.local {
+		local[rt] = d
+	}
+	s.mu.RUnlock()
+	for rt, d := range local {
+		listedAt := time.Now()
 		its, srcs := s.callList(ctx, req, s.self, d, filter, callerDeadline)
+		// Only a complete, unfiltered answer may prune: anything narrower
+		// proves nothing about which sessions are gone (§5.7).
+		if filter.IsZero() && allSourcesOK(srcs) {
+			s.labels.retain(rt, its, listedAt)
+		}
+		for i := range its {
+			its[i].Labels = s.labels.get(rt, its[i].ID, its[i].StartedAt)
+		}
 		items = append(items, its...)
 		sources = append(sources, srcs...)
 	}
@@ -418,6 +443,21 @@ func (s *Service) ListSessions(ctx context.Context, req fleet.Request, scope Sco
 		}
 	}
 
+	// Applied to EVERY item, peers' included. A peer on a build that
+	// predates labels ignores the parameter and answers with everything it
+	// has; the remote driver already turns that into a degraded source, and
+	// filtering again here is what keeps any such answer from ever being
+	// counted as a match.
+	if len(filter.Labels) > 0 {
+		kept := items[:0]
+		for _, it := range items {
+			if fleet.MatchesLabels(it.Labels, filter.Labels) {
+				kept = append(kept, it)
+			}
+		}
+		items = kept
+	}
+
 	if len(sources) == 0 {
 		// No drivers registered at all for this scope. Still must not
 		// return a bare, sourceless Collection (§9) — the service itself
@@ -426,6 +466,35 @@ func (s *Service) ListSessions(ctx context.Context, req fleet.Request, scope Sco
 	}
 
 	return fleet.NewCollection(items, sources)
+}
+
+// allSourcesOK reports whether a listing's sources all answered ok.
+func allSourcesOK(srcs []fleet.SourceStatus) bool {
+	if len(srcs) == 0 {
+		return false
+	}
+	for _, src := range srcs {
+		if src.Status != fleet.SourceOK {
+			return false
+		}
+	}
+	return true
+}
+
+// publishLabels announces a session's complete label map (session.labels,
+// colab-fleet #153).
+func (s *Service) publishLabels(machine fleet.MachineId, sess fleet.Session) {
+	ref := sess.SessionRef
+	if ref.Machine == "" {
+		ref.Machine = machine
+	}
+	s.events.publish(fleet.Event{
+		Machine: machine,
+		Kind:    fleet.EventSessionLabels,
+		Payload: fleet.SessionLabelsPayload{
+			Ref: ref, StartedAt: sess.StartedAt, Labels: fleet.CopyLabels(sess.Labels),
+		},
+	})
 }
 
 // callList invokes one driver's List and folds its result into the

@@ -512,7 +512,12 @@ func doctorPeers(getenv func(string) string, cfg *fileConfig) ([]doctorPeer, err
 func supervisorGrants() []service.Grant {
 	var out []service.Grant
 	for _, g := range service.Grants() {
-		if g != service.GrantRelay {
+		// label (colab-fleet #153) is left out for the same kind of reason
+		// relay is: binding a session to its work after the fact is something
+		// a supervisor MAY do, not a verb it needs to drive sessions at all.
+		// Counting it would turn every existing full supervisor into a warning
+		// the day this build lands.
+		if g != service.GrantRelay && g != service.GrantLabel {
 			out = append(out, g)
 		}
 	}

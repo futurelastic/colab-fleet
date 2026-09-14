@@ -79,6 +79,7 @@ SessionSpec {
   effort?    : string
   name?      : string             // human-facing label
   marker?    : string             // session-type stamp appended to the name
+  labels?    : map<string,string> // caller facts about the session, opaque; bounded (see below)
   remoteControl?: boolean         // reachable by remote clients; absent ≠ false
   prompt?    : string             // initial input
   contextRef?: AbsolutePath       // see §5.3 — never inline, never argv
@@ -105,6 +106,17 @@ placed on a command line, and the exact validation each one gets — lives in `s
 `agent`, `model` and `effort` are **hints**, not guarantees. A driver that
 cannot honour one must say so at creation rather than silently substituting a
 default; see §4.3. `remoteControl` is a hint in the same family.
+
+**`labels` are caller facts, not hints and not configuration** (colab-fleet #153). A caller
+attaches what IT knows about a session — the unit of work it serves, the working tree it uses, what
+kind of session it is — and the service stores them, returns them on every read of that session,
+filters on them, and assigns them no meaning, exactly as it assigns none to `marker`. They exist so
+"is any machine already working on X" is answered by reading a fact rather than by pattern-matching
+names, which are mutable, collide across machines (#19) and cannot carry a session's type once a
+marker is creative. Labels are **not** a lock, a claim or a lease: two sessions may carry the same
+pair and the service says nothing about it. Bounded to 16 pairs, keys of 1–128 bytes that do not
+contain `:`, values of at most 128 bytes; a map outside those bounds is refused `invalid` naming the
+limit, never truncated. Labels may also be changed after creation (api-http.md §3.3, `labels`).
 
 **A created session must be the same KIND of session the substrate's own
 launcher produces.** This is normative, and it is the rule the three fields
@@ -994,6 +1006,15 @@ keys(req, ref, key, expect)    -> DeliveryReceipt
 list(req, filter?)             -> Collection<Session>
 subscribe(req, filter?)        -> EventStream
 ```
+
+**Labels are not an operation, and not a driver's concern** (colab-fleet #153). No substrate has a
+place to keep them and no driver observes them, so the service stores them itself, keyed by the
+session's `(runtime, id)` and corroborated by its `startedAt` (§5.4): a new session under a recycled
+id never inherits the old one's labels. They follow a rename, and they are forgotten when the
+session is closed through the service or no longer appears in a complete, unfiltered listing — never
+on a filtered or failed one (§5.7). A `Session` read from a service that stores labels always
+carries `labels`, `{}` when there are none; one read from a service that predates them carries no
+such key, and that absence is how a relaying service tells the two apart.
 
 **`keys` delivers one raw key event** — `Up`/`Down`/`Left`/`Right`/`Enter`/
 `Escape` (api-http.md §3.3, `POST …/keys`) — to the full-screen dialogs

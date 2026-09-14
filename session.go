@@ -62,6 +62,18 @@ type SessionSpec struct {
 	// marker MEANS is the caller's business.
 	Marker string `json:"marker,omitempty"`
 
+	// Labels are caller-supplied facts about what this session is FOR —
+	// the unit of work it serves, the working tree it uses, the kind of
+	// session it is (colab-fleet #153). Opaque to the service exactly as
+	// Marker is: the service assigns no vocabulary and attaches no meaning,
+	// and two sessions carrying the same pair is not a conflict it reports.
+	//
+	// They exist so a consumer asking "is any machine already working on X"
+	// reads a fact rather than parsing it back out of a name — names are
+	// mutable, collide across machines, and a creative marker makes even a
+	// session's type unrecoverable from them. Bounded by ValidateLabels.
+	Labels map[string]string `json:"labels,omitempty"`
+
 	// RemoteControl requests that the session be reachable by remote
 	// clients rather than only from a terminal on the machine running it.
 	//
@@ -459,6 +471,18 @@ type Session struct {
 	// It is never a claim that the identity agrees; that claim is
 	// IdentityAssertion.Drifted false.
 	IdentityAssertion *IdentityAssertion `json:"identityAssertion,omitempty"`
+
+	// Labels are the caller-supplied facts attached to this session, at
+	// create or later through POST …/labels (colab-fleet #153; see
+	// SessionSpec.Labels). They are stored by the service, not observed by
+	// the driver, which is why they survive a rename.
+	//
+	// Always present on the wire: a session with none encodes as `{}`, never
+	// `null` and never absent (Session.MarshalJSON). "No labels" is a real
+	// answer, and a DECODED Session whose map is nil therefore came from a
+	// service that predates labels — which is how a relaying service tells an
+	// older peer that ignored a label filter from a newer one that applied it.
+	Labels map[string]string `json:"labels"`
 
 	State SessionState `json:"state"`
 }
