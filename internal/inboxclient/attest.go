@@ -69,6 +69,20 @@ const openLookalikes = "<" +
 	"＜﹤〈⟨〈‹˂ᐸ" +
 	"❬❮❰⧼≮≺⋖"
 
+// BodyAttestable reports whether text can be wrapped with a guaranteed
+// byte-identical rebuild on the receiving side — the body half of Attest's
+// refusal, and the only place that rule lives.
+//
+// Contract, pinned by a test: Attest(text, class, name) returns ok exactly
+// when class.Valid() && BodyAttestable(text), for every name. That is what
+// lets a caller say WHICH half refused a send without Attest growing a second
+// return value (colab-fleet #150, which counts the two apart before anyone
+// decides whether this rule is worth widening). A widened rule changes this
+// function, and every count keyed on it follows automatically.
+func BodyAttestable(text string) bool {
+	return !strings.ContainsAny(text, openLookalikes)
+}
+
 // Attest wraps text in the envelope that carries class to the receiving
 // runtime, returning ok=false when it cannot do so in a form guaranteed to
 // survive intact.
@@ -122,7 +136,7 @@ func Attest(text string, class ModeClass, name string) (string, bool) {
 	if !class.Valid() {
 		return "", false
 	}
-	if strings.ContainsAny(text, openLookalikes) {
+	if !BodyAttestable(text) {
 		return "", false
 	}
 	var b strings.Builder

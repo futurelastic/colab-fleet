@@ -136,6 +136,38 @@ const (
 	counterCaptureRetryRecovered   = "capture.retry_recovered"
 	counterCaptureRetryFailed      = "capture.retry_failed"
 	counterEnumerateSlowInvocation = "enumerate.slow_invocation"
+
+	// colab-fleet#150: the inbox send path's exits. sendViaInbox reports
+	// every fallback as the same ok=false, and a fallback costs only
+	// latency, so nothing outside this driver can tell the reasons apart —
+	// the same laundering #44 names. attempted counts every call that had a
+	// resolver to try; each such call then ends in exactly one of the ten
+	// exits below it, so attempted equals their sum and a health read checks
+	// itself. A machine with no inbox configured counts nothing at all: a
+	// zero there would claim a measurement that was never taken.
+	//
+	// written, not delivered: nothing observes delivery on this path (#144).
+	counterInboxAttempted                  = "inbox.attempted"
+	counterInboxFallbackIdentityUnresolved = "inbox.fallback_identity_unresolved"
+	counterInboxErrorIdentityResolve       = "inbox.error_identity_resolve"
+	counterInboxFallbackResolverError      = "inbox.fallback_resolver_error"
+	counterInboxFallbackResolverDeclined   = "inbox.fallback_resolver_declined"
+	counterInboxRefusedIdentityUnverified  = "inbox.refused_identity_unverified"
+	counterInboxFallbackNoModeClass        = "inbox.fallback_no_mode_class"
+	counterInboxFallbackBodyUnattestable   = "inbox.fallback_body_unattestable"
+	counterInboxFallbackDialFailed         = "inbox.fallback_dial_failed"
+	counterInboxFallbackWriteFailed        = "inbox.fallback_write_failed"
+	counterInboxWritten                    = "inbox.written"
+
+	// The number #150's decision reads. attest_checked counts every call
+	// that reached attestation; attest_body_lookalike counts those whose
+	// body the current rule refuses, WHETHER OR NOT the class was also
+	// missing. Attest checks the class first, so while an index still omits
+	// classes a body refusal hides behind the class one, and
+	// fallback_body_unattestable alone would read as a clean rate that is
+	// only a masked one. See docs/adr/150-count-inbox-fallbacks-before-widening.md.
+	counterInboxAttestChecked       = "inbox.attest_checked"
+	counterInboxAttestBodyLookalike = "inbox.attest_body_lookalike"
 )
 
 // confirmLatencyBucket maps an observed confirm latency onto one of the five
