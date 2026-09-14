@@ -744,6 +744,50 @@ func promptFooterPresent(s screen) bool {
 	return false
 }
 
+// reviewQuestion and reviewOptions are the fixed chrome of the last screen of
+// every multi-question dialog: after the tabbed questions, the runtime shows
+// the answers given and asks for a final confirmation (#159). Both strings
+// were read out of the runtime's own binary, where they are literals — the
+// confirm and cancel labels of one confirm widget, and the line rendered
+// directly above it — not sampled from a capture.
+const reviewQuestion = "Ready to submit your answers?"
+
+var reviewOptions = []string{"Submit answers", "Cancel"}
+
+// reviewScreenPrompt reports whether a parsed prompt is a multi-question
+// dialog's review screen.
+//
+// # Why this is corroboration, not a kind
+//
+// That screen renders no footer — the question tabs before it do, which is
+// why they classified immediately — so without this it fell into #58's
+// uncorroborated-structural hold, and it is the last step of EVERY
+// multi-question dialog. What corroborates it is the same class of evidence
+// a footer is: fixed runtime vocabulary nothing about the session varies.
+// All three must hold: exactly these two options in this order, and the
+// question ending on the runtime's own confirmation line, which sits
+// immediately above them and so is always inside the scanned window.
+//
+// It deliberately does NOT get a PromptKind. A kind is what a client filters
+// on before auto-answering, and "submit the answers somebody else chose" is
+// not a question a client should be answering unattended. Recognised enough
+// to report at once; not recognised enough to automate.
+//
+// An agent's OWN question cannot reach this shape: the runtime appends its
+// free-text and chat affordances to every agent-asked menu (see
+// classifyPromptKind), so such a menu never has exactly two options.
+func reviewScreenPrompt(p *fleet.SessionPrompt) bool {
+	if p == nil || len(p.Options) != len(reviewOptions) {
+		return false
+	}
+	for i, o := range reviewOptions {
+		if p.Options[i] != o {
+			return false
+		}
+	}
+	return p.Question == reviewQuestion || strings.HasSuffix(p.Question, " "+reviewQuestion)
+}
+
 // promptNonce is a digest of what is being asked. It changes whenever the
 // question or the options change, which is what makes a stale answer
 // detectable rather than silently applied to a different menu.
@@ -1556,7 +1600,8 @@ func classifyAgedDetail(raw string, alive, young bool) (st fleet.SessionState, a
 		// is unaffected — the footer, or the recognised kind, is already
 		// independent corroboration and this driver has trusted either one
 		// immediately since before #58.
-		if st.Prompt != nil && st.Prompt.Kind == "" && !promptFooterPresent(s) {
+		if st.Prompt != nil && st.Prompt.Kind == "" && !promptFooterPresent(s) &&
+			!reviewScreenPrompt(st.Prompt) {
 			return st, ambUnrecognisedPrompt
 		}
 		return st, ambNone

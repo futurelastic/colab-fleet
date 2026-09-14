@@ -1072,6 +1072,12 @@ the honest price of three corroborated keypresses.
 - the session is at a prompt the driver DID recognise — answer it through
   `respond`, which verifies a nonce and can say which option it chose. Falling
   back to a blind arrow key is a downgrade dressed as a capability.
+  "Recognised" means exactly what a state read of the same screen publishes:
+  this refusal fires if and only if that read would hand the caller a `prompt`
+  and its `nonce`, never on a screen the read still reports without one. Two
+  endpoints classifying one screen differently leave a caller with no verified
+  move — `respond` has no nonce to quote, `keys` refuses — so a driver must
+  decide both from one classification (colab-fleet #159).
 
 **`submitted` means the screen changed under the key.** A key a dialog swallows
 leaves the session exactly as stuck as before, so an unchanged screen is

@@ -363,7 +363,15 @@ POST /v1/machines/{machine}/sessions/{id}/respond
   that misclassified ordinary transcript text as a menu and refused input to a
   healthy session. A `waiting_input` with no `kind` may therefore lag its first
   appearance by a couple of seconds — poll again rather than treating the
-  interim `unknown` as a dead end.
+  interim `unknown` as a dead end. The window runs from when that screen
+  first appeared, not from your previous read, so polling faster never delays
+  it, and once reported an unchanged screen stays reported. While it is held,
+  `keys` accepts that screen too; it refuses only once a read has given you
+  the prompt and its nonce.
+- The review screen that ends every multi-question dialog ("Ready to submit
+  your answers?" over `Submit answers` / `Cancel`) is recognised by that fixed
+  chrome and reported at once — still with no `kind`, because submitting answers
+  somebody else chose is not a question to automate.
 - **Never blindly accept the default.** A real prompt in the wild highlights
   `No, exit` — a client that reflexively confirms would kill the session it was
   trying to start. That is why `options` and `selected` are both on the wire.

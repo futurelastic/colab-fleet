@@ -1391,3 +1391,84 @@ func TestComposerSpanTellsClippedApartFromAbsent(t *testing.T) {
 		})
 	}
 }
+
+// fixtureReviewScreen is the last screen of a multi-question dialog (#159):
+// the tab bar, the answers given, the runtime's own confirmation line, and a
+// two-option confirm widget. It renders NO footer — the question tabs before
+// it do — which is what used to leave it in #58's corroboration hold.
+const fixtureReviewScreen = "  ←  ☒ First  ☒ Second  ✔ Submit  →\n" + rule + "\n" +
+	"  Review your answers\n\n" +
+	"   ● Which approach?\n     → The first one\n" +
+	"   ● And the name?\n     → Keep it\n\n" +
+	"  Ready to submit your answers?\n\n" +
+	"  ❯ 1. Submit answers\n" +
+	"    2. Cancel\n"
+
+// #159 asks 2 and 3: the review screen is a prompt on EVERY read — first
+// sighting, a memory too young to corroborate anything, a memory of a
+// different screen — with the same options and the same nonce each time, and
+// the respond path's own parse produces that nonce too. It carries no kind:
+// recognised enough to report at once, never enough to automate.
+func TestReviewScreenIsAFirstClassPrompt(t *testing.T) {
+	t0 := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
+	digest := screenDigest(fixtureReviewScreen)
+	memories := []paneMemory{
+		{},
+		{known: true, digest: digest, at: t0},
+		{known: true, digest: "a-different-screen", at: t0.Add(-time.Hour)},
+	}
+	var nonce string
+	for i := 0; i < 30; i++ {
+		now := t0.Add(time.Duration(i) * 300 * time.Millisecond)
+		for m, prior := range memories {
+			st, _ := classifyPaneRemembering(fixtureReviewScreen, true, true, false, prior, now)
+			if st.Status != fleet.StatusWaitingInput {
+				t.Fatalf("read %d, memory %d: status = %s, want waiting_input (%s)", i, m, st.Status, st.Evidence)
+			}
+			if st.WaitingOn != fleet.WaitingPrompt {
+				t.Fatalf("read %d, memory %d: waitingOn = %q, want %q", i, m, st.WaitingOn, fleet.WaitingPrompt)
+			}
+			p := st.Prompt
+			if p == nil || len(p.Options) != 2 || p.Options[0] != "Submit answers" || p.Options[1] != "Cancel" {
+				t.Fatalf("read %d, memory %d: prompt = %+v, want options [Submit answers Cancel]", i, m, p)
+			}
+			if p.Selected != 1 {
+				t.Errorf("read %d, memory %d: selected = %d, want 1", i, m, p.Selected)
+			}
+			if p.Kind != "" {
+				t.Errorf("read %d, memory %d: kind = %q; submitting somebody else's answers "+
+					"must not be a kind a client can filter on and automate", i, m, p.Kind)
+			}
+			if nonce == "" {
+				nonce = p.Nonce
+			} else if p.Nonce != nonce {
+				t.Fatalf("read %d, memory %d: nonce = %s, want the stable %s", i, m, p.Nonce, nonce)
+			}
+		}
+	}
+	if p := parsePrompt(newScreen(fixtureReviewScreen)); p == nil || p.Nonce != nonce {
+		t.Errorf("respond's parse = %+v; it must verify against the nonce the read published (%s)", p, nonce)
+	}
+}
+
+// The corroboration is the whole shape, not any one string of it. Each of
+// these is one step away from the review screen and must still be held on a
+// first sighting like any other unrecognised structural prompt (#58).
+func TestReviewScreenLookalikesStayHeld(t *testing.T) {
+	t0 := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
+	cases := map[string]string{
+		"an agent's own menu with the same first two options": strings.Replace(fixtureReviewScreen,
+			"    2. Cancel\n", "    2. Cancel\n    3. Type something.\n", 1),
+		"the same options under a different question": strings.Replace(fixtureReviewScreen,
+			"  Ready to submit your answers?\n", "  Ship it now?\n", 1),
+		"the options reordered": strings.Replace(fixtureReviewScreen,
+			"  ❯ 1. Submit answers\n    2. Cancel\n", "  ❯ 1. Cancel\n    2. Submit answers\n", 1),
+	}
+	for name, screen := range cases {
+		st, _ := classifyPaneRemembering(screen, true, true, false, paneMemory{}, t0)
+		if st.Status == fleet.StatusWaitingInput || st.Prompt != nil {
+			t.Errorf("%s: first sighting = %s with prompt %+v; only the exact review screen is "+
+				"corroborated by its chrome", name, st.Status, st.Prompt)
+		}
+	}
+}

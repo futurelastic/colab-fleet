@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
 )
@@ -273,4 +274,90 @@ func TestKeysSendsEnterAsControlM(t *testing.T) {
 		}
 	}
 	t.Error("no key was sent at all")
+}
+
+// fixtureUncorroboratedPrompt is a structural prompt with no footer, no chrome
+// and no kind — #58's hold applies to it, so a read withholds it until the
+// same screen has been seen unchanged past spinnerPaintGrace.
+const fixtureUncorroboratedPrompt = "  A question nobody has written a matcher for\n" +
+	"❯ 1. Do the risky thing\n" +
+	"  2. Do the safe thing"
+
+// #159 ask 1: keys and the state read consult one classification. Reads come
+// every 700ms — faster than spinnerPaintGrace, the cadence a polling client
+// produces — against a screen that never changes. On every read the keys
+// gate must refuse exactly when that read handed out a prompt, and once a
+// prompt has been handed out an unchanged screen must never withdraw it.
+//
+// Before the fix both failed: keys asked parsePrompt directly and refused
+// while the read published no prompt, and the hold measured "unchanged" from
+// the previous READ, so at this cadence an unrecognised prompt was never
+// corroborated at all (and at a mixed cadence it flapped).
+func TestKeysAndStateReadAgreeOnEveryReadOfOneScreen(t *testing.T) {
+	cases := []struct {
+		name         string
+		screen       string
+		promptAtOnce bool
+	}{
+		{"review screen", fixtureReviewScreen, true},
+		{"uncorroborated structural prompt", fixtureUncorroboratedPrompt, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := dialogMux()
+			f.captures["%1"] = tc.screen
+			clock := time.Unix(1785760000, 0)
+			d := New("testbox",
+				withExec(f.exec),
+				withNonce(func() string { return testNonce }),
+				withClock(func() time.Time { return clock }),
+			)
+			ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+			ctx := context.Background()
+
+			sawPrompt := false
+			nonce := ""
+			for i := 0; i < 10; i++ {
+				st, err := d.State(ctx, testCaller, ref)
+				if err != nil {
+					t.Fatalf("read %d: State: %v", i, err)
+				}
+				switch {
+				case st.Prompt != nil:
+					if nonce != "" && st.Prompt.Nonce != nonce {
+						t.Fatalf("read %d: nonce %s, want the stable %s", i, st.Prompt.Nonce, nonce)
+					}
+					nonce, sawPrompt = st.Prompt.Nonce, true
+				case sawPrompt:
+					t.Fatalf("read %d: status %s with no prompt, on the same screen an earlier "+
+						"read reported as a prompt (%s)", i, st.Status, st.Evidence)
+				}
+				if i == 0 && (st.Prompt != nil) != tc.promptAtOnce {
+					t.Errorf("first read: prompt present = %v, want %v (%s)",
+						st.Prompt != nil, tc.promptAtOnce, st.Evidence)
+				}
+
+				got, err := d.Keys(ctx, testCaller, ref, fleet.KeyDown, st.ScreenDigest)
+				if err != nil {
+					t.Fatalf("read %d: Keys: %v", i, err)
+				}
+				refusedForPrompt := got.Outcome == fleet.OutcomeRefused && strings.Contains(got.Reason, "respond")
+				if refusedForPrompt != (st.Prompt != nil) {
+					t.Errorf("read %d: the read published prompt=%v but keys answered %s (%s) — "+
+						"one screen, two classifications", i, st.Prompt != nil, got.Outcome, got.Reason)
+				}
+
+				// A delivered key repaints the fake dialog; put the unchanged
+				// screen back so every read in this loop sees one screen.
+				f.mu.Lock()
+				f.captures["%1"] = tc.screen
+				f.mu.Unlock()
+				clock = clock.Add(700 * time.Millisecond)
+			}
+			if !sawPrompt {
+				t.Error("an unchanged prompt read every 700ms for 7s was never reported; " +
+					"how long a screen has held must not depend on how often it is read")
+			}
+		})
+	}
 }

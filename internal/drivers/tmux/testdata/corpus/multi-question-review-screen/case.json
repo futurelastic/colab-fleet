@@ -1,0 +1,13 @@
+{
+  "name": "multi-question-review-screen",
+  "for": "The last screen of every multi-question dialog: after the tabbed questions, the runtime lists the answers given and asks for a final confirmation over a two-option confirm widget. Unlike the question tabs before it, this screen renders no footer, so it fell into #58's uncorroborated-structural hold, and that hold measured 'unchanged' from the previous READ rather than from when the screen appeared. Measured consequence (#159): with a poller reading the session, one unchanged screen (same screenDigest on every read) answered waiting_input to roughly one read in three and unknown with no prompt to the rest, while the keys gate, which asked parsePrompt directly, refused because 'a prompt exists'. A client had no verified move: respond had no nonce, keys refused. This case pins that the screen is a prompt from the first observation onward, at a cadence faster than spinnerPaintGrace, corroborated by its fixed runtime chrome (the confirmation line directly above exactly the options 'Submit answers' / 'Cancel') rather than by waiting. See TestReviewScreenIsAFirstClassPrompt and TestKeysAndStateReadAgreeOnEveryReadOfOneScreen.",
+  "source": "#159",
+  "redactedFrom": "reconstructed, not captured: the review screen's layout and its literals (the confirmation line, the two option labels, the section title) were read from the runtime's own binary, and the answers and question text are placeholders that the redactor discards anyway. Scoped to the SHAPE #159 recorded, not claimed as a byte-for-byte capture",
+  "alive": true,
+  "observations": [
+    { "afterSeconds": 0, "young": false, "want": "waiting_input" },
+    { "afterSeconds": 1, "young": false, "want": "waiting_input" },
+    { "afterSeconds": 2, "young": false, "want": "waiting_input" },
+    { "afterSeconds": 30, "young": false, "want": "waiting_input" }
+  ]
+}

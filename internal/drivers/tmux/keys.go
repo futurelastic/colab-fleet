@@ -183,12 +183,27 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// nonce, chooses by index, and names the option it took in the receipt;
 	// arrow keys can do none of that, so accepting the fallback here would let
 	// a caller silently trade all three away.
-	if p := parsePrompt(screen); p != nil {
+	//
+	// "Recognised" means what a state read of THIS screen publishes, decided by
+	// the same function with the same remembered screen history — never a
+	// second, stricter reading of its own (#159). This used to ask parsePrompt
+	// directly, which knows nothing of #58's corroboration hold: for a screen
+	// the read was still holding at `unknown` (prompt null, no nonce), keys
+	// refused because "a prompt exists" while respond had no nonce to verify
+	// against. The documented contract then left a caller no verified move.
+	// One classifier, one answer: the refusal fires exactly when a read would
+	// have handed the caller a prompt and its nonce.
+	now := d.now()
+	d.mu.Lock()
+	resolved, _ := classifyPaneRemembering(text, true, true,
+		now.Sub(live.created) < startingWindow, d.memoryLocked(live.session), now)
+	d.mu.Unlock()
+	if resolved.Prompt != nil {
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: "this session is at a prompt the driver recognises; answer it " +
 				"through respond, which verifies a nonce and can say which option " +
-				"it chose",
+				"it chose (read the session again for the prompt and its nonce)",
 		}, nil
 	}
 

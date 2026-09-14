@@ -129,6 +129,13 @@ func redactLine(raw string) string {
 		return leading + responseBullet + " " + placeholderToken
 	}
 
+	// The review screen's confirmation line (#159) is a runtime literal and
+	// is what reviewScreenPrompt corroborates on, so a corpus case must keep
+	// it to replay — exact match only, never a line merely containing it.
+	if content == reviewQuestion {
+		return stripped
+	}
+
 	// A known footer is fixed runtime vocabulary end to end — nothing in
 	// any of these strings varies with what a session was doing.
 	if isKnownFooter(content) {
@@ -258,6 +265,14 @@ var knownOptionPhrases = []string{
 }
 
 func redactOption(n int, text string) string {
+	// The review screen's two options (#159) match EXACTLY, not by prefix:
+	// "Cancel" as a prefix would keep any agent-written option that merely
+	// begins with the word.
+	for _, exact := range reviewOptions {
+		if strings.TrimSpace(text) == exact {
+			return strconv.Itoa(n) + ". " + exact
+		}
+	}
 	lower := strings.ToLower(strings.TrimSpace(text))
 	for _, phrase := range knownOptionPhrases {
 		if strings.HasPrefix(lower, phrase) {

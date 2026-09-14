@@ -520,6 +520,21 @@ type observation struct {
 	// settles "idle or a turn that has not painted yet", which is otherwise
 	// the largest source of unknown in a real fleet.
 	digest string
+
+	// digestSince is when this pane was first seen showing digest, carried
+	// forward across every read that finds the same digest again (#159).
+	//
+	// `at` cannot stand in for it, and for a while it did: `at` is the time of
+	// the LAST read, and every State or List call overwrites it. The
+	// resolutions that ask "has this screen held for spinnerPaintGrace" were
+	// therefore really asking "how long since anybody last looked" — so with a
+	// poller reading every second or so, one unchanged screen answered
+	// waiting_input to a read that happened to land 2s after the previous one
+	// and unknown to one that landed sooner. Measured on a multi-question
+	// dialog's review screen: roughly one read in three, same screenDigest
+	// throughout. A screen's age is a property of the screen, not of the
+	// reader's cadence.
+	digestSince time.Time
 }
 
 // Option configures a Driver.
@@ -1460,6 +1475,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since, digest: digest,
+			digestSince:   d.digestSinceLocked(r.session, digest, now),
 			sinceRestored: carried,
 		}
 		started := r.created
@@ -1889,6 +1905,7 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since, digest: digest,
+			digestSince:   d.digestSinceLocked(r.session, digest, now),
 			sinceRestored: carried,
 		}
 		d.mu.Unlock()
@@ -5550,7 +5567,25 @@ func (d *Driver) memoryLocked(id string) paneMemory {
 	if !ok || prior.digest == "" {
 		return paneMemory{}
 	}
-	return paneMemory{known: true, digest: prior.digest, at: prior.at}
+	at := prior.digestSince
+	if at.IsZero() {
+		at = prior.at
+	}
+	return paneMemory{known: true, digest: prior.digest, at: at}
+}
+
+// digestSinceLocked returns when id's pane was first seen showing digest:
+// the remembered time if the previous observation already showed it, or now
+// if this read is the first to see it (#159 — see observation.digestSince).
+// Call it BEFORE overwriting d.observed[id]. Caller holds d.mu.
+func (d *Driver) digestSinceLocked(id, digest string, now time.Time) time.Time {
+	if prior, ok := d.observed[id]; ok && digest != "" && prior.digest == digest {
+		if !prior.digestSince.IsZero() {
+			return prior.digestSince
+		}
+		return prior.at
+	}
+	return now
 }
 
 // restoredWaitingInputSince reports whether the CURRENT waiting_input status
