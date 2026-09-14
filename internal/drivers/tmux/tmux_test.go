@@ -79,6 +79,10 @@ type fakeMux struct {
 	// so a pane without this models the opposite case — a screen that
 	// swallowed the key — and both need to be reachable from a test.
 	keyRepaint map[string]bool
+	// dialog models a numbered menu that COMMITS on a digit, as measured on
+	// the runtime (#168): see fakeDialog. Only for panes a test armed; every
+	// other pane keeps the send-keys behaviour below.
+	dialog map[string]*fakeDialog
 	// renameNoop models a rename-session call that reports success without
 	// actually moving anything — colab-fleet #97's "never reached the
 	// runtime at all" hypothesis, as distinct from a real rename that later
@@ -409,6 +413,14 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		}
 		return nil, errors.New("can't find session")
 	case "send-keys":
+		if g := f.dialog[sendKeysPane(args)]; g != nil {
+			pane := sendKeysPane(args)
+			for _, k := range sentKeys(args) {
+				g.press(k)
+			}
+			f.captures[pane] = g.screen()
+			return nil, nil
+		}
 		// Model the two keys clearComposer's press loop can send: C-u
 		// (unix-line-discard) for an ordinary row, and — colab-fleet#132 —
 		// Backspace for a row that is already blank, which C-u cannot
@@ -1537,18 +1549,9 @@ func TestEverySubmitCarriesAPrintableWakeKeyBeforeTheNewline(t *testing.T) {
 				return err
 			},
 		},
-		{
-			// Never affected — it leads with a printable digit — and that is
-			// exactly why it corroborates the diagnosis. Pinned so a later
-			// tidy-up cannot quietly remove the wake key that is already there.
-			name: "respond/by-choice",
-			mux:  prompted(),
-			act: func(d *Driver) error {
-				_, err := d.Respond(context.Background(), testCaller,
-					fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.Response{Choice: 2})
-				return err
-			},
-		},
+		// respond by choice used to be a case here too, as a digit+C-m pair.
+		// Since #168 it sends the digit alone and no newline at all, so it is
+		// no longer a submit; respond_dialog_test.go pins that instead.
 	}
 
 	for _, tc := range cases {
