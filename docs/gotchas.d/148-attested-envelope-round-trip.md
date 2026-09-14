@@ -25,7 +25,9 @@ terminal; the notices accumulate; once they push the composer past the capture
 window the driver can no longer read it, correctly refuses to act on what it
 cannot see, and the documented escape — wait for the composer to shrink back —
 never arrives on an unattended session with a retrying caller. Holds blind the
-driver, and a blinded driver cannot clear the holds.
+driver, and a blinded driver cannot clear the holds. (#149 later confirmed that
+no in-driver proof gets a session out of that state: the refusal now says a
+person at the pane is the exit, and counts each time it fires.)
 
 ## The rule going forward
 

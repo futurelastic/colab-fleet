@@ -985,6 +985,13 @@ func TestSendRefusesDeliveryIntoAClippedComposer(t *testing.T) {
 				t.Errorf("payload reached a command line despite the refusal: %v", c)
 			}
 		}
+		if len(c) > 0 && (c[0] == "send-keys" || c[0] == "paste-buffer") {
+			t.Errorf("nothing may be typed or pasted into a clipped composer; saw %v", c)
+		}
+	}
+	assertClippedRemedy(t, got.Reason)
+	if n := d.Counters()[counterComposerClippedRefusedSend]; n != 1 {
+		t.Errorf("%s = %d, want 1", counterComposerClippedRefusedSend, n)
 	}
 }
 
@@ -2453,6 +2460,85 @@ func TestDiscardRefusesAClippedComposerRatherThanClaimingSuccess(t *testing.T) {
 				"corroborated, so clearComposer must never run; saw %v", call)
 		}
 	}
+	assertClippedRemedy(t, err.Error())
+	if got := d.Counters()[counterComposerClippedRefusedDiscard]; got != 1 {
+		t.Errorf("%s = %d, want 1: the refusal's rate is the evidence ADR 149's reopen condition reads", counterComposerClippedRefusedDiscard, got)
+	}
+	assertNoWidenedCapture(t, f)
+}
+
+// assertClippedRemedy pins colab-fleet#149's message contract for every
+// clipped-composer refusal: it carries the one shared remedy, and it no longer
+// tells the caller to wait for the composer to shrink — the advice that sent
+// unattended callers into a retry loop that could not end.
+func assertClippedRemedy(t *testing.T, msg string) {
+	t.Helper()
+	if !strings.Contains(msg, clippedComposerRemedy) {
+		t.Errorf("refusal must carry the shared clipped-composer remedy; got %q", msg)
+	}
+	if strings.Contains(msg, "shrink") {
+		t.Errorf("refusal still promises the composer will shrink back — that never arrives on an unattended session (#149): %q", msg)
+	}
+}
+
+// assertNoWidenedCapture pins ADR 149's rejection of a wider read as a way
+// out: every capture this driver issued used the configured window, never a
+// full-scrollback start or a larger one reached for because the first read
+// came back clipped.
+func assertNoWidenedCapture(t *testing.T, f *fakeMux) {
+	t.Helper()
+	want := fmt.Sprintf("-%d", defaultCaptureLines)
+	for _, call := range f.callsSnapshot() {
+		for i, a := range call {
+			if a == "-S" && (i+1 >= len(call) || call[i+1] != want) {
+				t.Errorf("a capture started somewhere other than the configured window (want -S %s): %v", want, call)
+			}
+		}
+	}
+}
+
+// colab-fleet#149: no call shape moves a clipped-composer discard. Not an
+// empty expect, not a digest the caller happens to hold, and not force —
+// force authorises a stronger clear once corroboration has PASSED (#136), and
+// here there is nothing to corroborate against. Each attempt refuses the same
+// way, presses nothing, and is counted.
+func TestDiscardClippedRefusalIsIndependentOfExpectAndForce(t *testing.T) {
+	f := twoSessions()
+	f.captures["%2"] = clippedComposerFixture()
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
+
+	attempts := []struct {
+		name   string
+		expect string
+		opts   driver.DiscardOptions
+	}{
+		{"no expect", "", driver.DiscardOptions{}},
+		{"some expect", "x", driver.DiscardOptions{}},
+		{"expect and force", "x", driver.DiscardOptions{Force: true}},
+	}
+	var first string
+	for _, a := range attempts {
+		_, err := d.Discard(context.Background(), testCaller, ref, a.expect, a.opts)
+		if !errors.Is(err, fleet.ErrAmbiguousTarget) {
+			t.Fatalf("%s: want ErrAmbiguousTarget, got %v", a.name, err)
+		}
+		if first == "" {
+			first = err.Error()
+		} else if err.Error() != first {
+			t.Errorf("%s: refusal changed with the call shape, which would read as a way out:\n got %q\nwant %q", a.name, err.Error(), first)
+		}
+		assertClippedRemedy(t, err.Error())
+	}
+	for _, call := range f.callsSnapshot() {
+		if len(call) > 0 && call[0] == "send-keys" {
+			t.Errorf("no call shape may press against a clipped composer; saw %v", call)
+		}
+	}
+	if got := d.Counters()[counterComposerClippedRefusedDiscard]; got != int64(len(attempts)) {
+		t.Errorf("%s = %d, want %d", counterComposerClippedRefusedDiscard, got, len(attempts))
+	}
+	assertNoWidenedCapture(t, f)
 }
 
 // The happy path: the digest the caller read is the digest that gets cleared,

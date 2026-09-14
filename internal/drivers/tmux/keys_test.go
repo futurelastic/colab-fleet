@@ -181,6 +181,10 @@ func TestKeysRefusesOnAClippedComposer(t *testing.T) {
 			t.Errorf("a clipped composer must never be pressed against; saw %v", call)
 		}
 	}
+	assertClippedRemedy(t, got.Reason)
+	if n := d.Counters()[counterComposerClippedRefusedKeys]; n != 1 {
+		t.Errorf("%s = %d, want 1", counterComposerClippedRefusedKeys, n)
+	}
 }
 
 // The bug this whole change exists for: GET's ScreenDigest and ComposerDigest

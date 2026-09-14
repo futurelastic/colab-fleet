@@ -382,8 +382,11 @@ func main() {
 		// past the window cannot be classified, #134's guard then correctly
 		// refuses to send a key it cannot reason about, and the documented
 		// way out ("wait for the composer to shrink") never arrives on an
-		// unattended session. Off by default — an absent or non-positive
-		// value calls nothing and leaves the built-in default in place.
+		// unattended session. This lever keeps a composer from crossing the
+		// window; it does not recover one already past it — #149 found no
+		// in-driver proof that would, and the refusal now says so. Off by
+		// default — an absent or non-positive value calls nothing and leaves
+		// the built-in default in place.
 		if raw := os.Getenv("FLEET_CAPTURE_LINES"); raw != "" {
 			n, err := strconv.Atoi(raw)
 			if err != nil || n <= 0 {

@@ -706,6 +706,10 @@ POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&starte
   (do not retry with the same call shape — see `force`, below), or the
   composer is now damaged (re-read before doing anything else; do not retry
   blind)
+→ 409 also if the composer is taller than the driver's capture window — its
+  content could not be read in full, so neither "already clear" nor a
+  corroborated clear is honest; retrying with any `expect` or `force` gets the
+  same refusal (colab-fleet #149)
 ```
 
 Removes unsent composer text without submitting it. `expect` is
@@ -753,6 +757,15 @@ outcomes share that 409, and need three different next steps:
   caller saw nor nothing — worse than either extreme, and not safe to retry
   blind. The message carries the residue's current digest, so the caller's
   next legal call needs no extra re-read to learn it.
+
+A composer taller than the driver's capture window (colab-fleet #134) is
+refused before any key is pressed, and that refusal does **not** resolve by
+retrying: no `expect`, no `force` and no wider read changes it, because nothing
+the driver can read proves the rows it cannot see hold nothing worth keeping
+(ADR `149-a-clipped-composer-has-no-in-driver-proof`). `input` and `keys` refuse
+the same state with the same remedy, and the exit is a person reading or
+clearing the composer at the pane itself. A driver counts each such refusal, per
+verb, so how often real traffic reaches the state can be read afterwards.
 
 A single call also stops pressing early once it has clear evidence a pass has
 stalled — movement observed, then several presses in a row that changed

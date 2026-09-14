@@ -214,13 +214,13 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// guards below, just for a composer this driver could not read rather
 	// than one it read and found busy.
 	if scan == composerClipped {
+		d.counters.incr(counterComposerClippedRefusedKeys)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: "this composer is taller than this driver's capture window, so its " +
 				"content could not be read in full; a key delivered now could submit " +
-				"text nobody has seen. Wait for the composer to shrink into the " +
-				"capture window before sending a key — discard will refuse for the " +
-				"same reason until it does",
+				"text nobody has seen, and discard refuses for the same reason. " +
+				clippedComposerRemedy,
 		}, nil
 	}
 
