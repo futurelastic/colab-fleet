@@ -89,9 +89,10 @@ and merges branches, say — is that the dependency runs one way:
 
 - **Work vocabulary is layered above, never pushed down.** A consumer that needs
   repositories, issues, claims, worktrees, locks or leases keeps them itself. The
-  one place its vocabulary can appear here is inside an opaque, caller-supplied
-  field — `marker` on session create — which the service carries and returns
-  without interpreting.
+  only places its vocabulary can appear here are opaque, caller-supplied fields —
+  `marker` on session create, and a session's `labels`, set at create or changed
+  later — which the service bounds in size, carries and returns without
+  interpreting.
 - **Consumers feature-detect and degrade.** What a machine can do is read, not
   assumed: `GET /v1/runtimes` says which runtimes are wired, and `build` on
   `GET /v1/machines` says which version answers. A consumer that finds a
