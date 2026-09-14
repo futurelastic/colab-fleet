@@ -112,6 +112,16 @@ Two things to check on a deploy you expect this path to be live on:
 `inbox.mode-class`: entries attestable, entries without a class, entries with
 an unrecognised one.
 
+**Whether the body rule is worth widening is read from `GET /v1/health`
+(colab-fleet #150).** The terminal runtime's entry under `counters` carries one
+`inbox.*` counter per exit of the inbox send path; the full list, and how they
+sum, is in `docs/adr/150-count-inbox-fallbacks-before-widening.md`. The number
+that decision needs is `inbox.attest_body_lookalike / inbox.attest_checked`,
+summed across machines — independent of whether the index carries classes yet.
+The counters are in memory: a reading covers only the window since that
+machine's `startedAt`. `inbox.fallback_no_mode_class` is the same class rollout
+seen per send rather than per index entry.
+
 **One check this script — and `doctor` — cannot perform: whether the sender
 label actually renders (colab-fleet #158).** `/input`'s optional `from` object
 reaches the receiving side either as the envelope's sender-name attribute

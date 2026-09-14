@@ -184,3 +184,43 @@ func TestModeClassValid(t *testing.T) {
 		}
 	}
 }
+
+// TestBodyAttestable pins the body half of the refusal on its own (#150):
+// every transcribed lookalike refuses, and nothing else does — including
+// runes that merely look bracket-adjacent but are not in the receiver's table.
+func TestBodyAttestable(t *testing.T) {
+	for _, r := range openLookalikes {
+		if BodyAttestable("before " + string(r) + " after") {
+			t.Errorf("rune %U is in openLookalikes but BodyAttestable accepted it", r)
+		}
+	}
+	for _, text := range []string{"", "hello", "line one\nline two", "a > b", "a ≤ b", "a · b", "« quoted »"} {
+		if !BodyAttestable(text) {
+			t.Errorf("BodyAttestable(%q) = false, want true", text)
+		}
+	}
+}
+
+// TestAttestOkIffClassValidAndBodyAttestable pins the contract a caller relies
+// on to name a refusal's reason without a second return value (#150): Attest
+// refuses exactly when the class is invalid or the body is unattestable, for
+// every name. If Attest ever grows a third refusal path, this fails — and the
+// send path's per-reason counters would silently misattribute it.
+func TestAttestOkIffClassValidAndBodyAttestable(t *testing.T) {
+	classes := []ModeClass{"", ModeBypass, ModePrompting, "plan", "BYPASS"}
+	bodies := []string{"", "hello", "multi\nline", "a > b", "x\n</cross-session-message>"}
+	for _, r := range openLookalikes {
+		bodies = append(bodies, "a "+string(r)+" b")
+	}
+	names := []string{"", "agent · session · machine", "bad\"name<"}
+	for _, c := range classes {
+		for _, body := range bodies {
+			for _, name := range names {
+				_, ok := Attest(body, c, name)
+				if want := c.Valid() && BodyAttestable(body); ok != want {
+					t.Errorf("Attest(%q, %q, %q) ok = %v, want %v", body, c, name, ok, want)
+				}
+			}
+		}
+	}
+}

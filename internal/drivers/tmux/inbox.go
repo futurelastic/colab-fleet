@@ -141,6 +141,9 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 	if d.inboxResolver == nil {
 		return fleet.DeliveryReceipt{}, false, nil
 	}
+	// #150: from here on, every return below increments exactly one exit
+	// counter — see counters.go for why each reason is counted apart.
+	d.counters.incr(counterInboxAttempted)
 
 	// #116's requirement #1: resolve fresh, never from this driver's own
 	// memory of an earlier call.
@@ -152,15 +155,24 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 			// pane path below already re-derives and reports on its own
 			// terms. Falling through here avoids reporting it twice, in
 			// two different vocabularies, for the same call.
+			d.counters.incr(counterInboxFallbackIdentityUnresolved)
 			return fleet.DeliveryReceipt{}, false, nil
 		}
+		d.counters.incr(counterInboxErrorIdentityResolve)
 		return fleet.DeliveryReceipt{}, false, err
 	}
 
 	addr, ok, rerr := d.inboxResolver(ctx, identity)
 	if rerr != nil || !ok {
 		// See InboxResolver's own doc comment: both cases mean "no usable
-		// capability for this call", never a refusal.
+		// capability for this call", never a refusal. #150 counts them apart
+		// all the same: one is this machine failing to read its own index,
+		// the other a target that has no inbox.
+		if rerr != nil {
+			d.counters.incr(counterInboxFallbackResolverError)
+		} else {
+			d.counters.incr(counterInboxFallbackResolverDeclined)
+		}
 		return fleet.DeliveryReceipt{}, false, nil
 	}
 
@@ -171,6 +183,7 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 	// valid socket and valid auth would otherwise deliver cleanly to
 	// whatever now holds this pid, reporting success at every layer.
 	if verr := d.VerifyProcessIdentity(ctx, identity); verr != nil {
+		d.counters.incr(counterInboxRefusedIdentityUnverified)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: fmt.Sprintf("identity could not be verified immediately before the "+
@@ -204,8 +217,25 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 	// and a relayOfHuman declaration as the body's first line. Attest drops a
 	// name it cannot guarantee rather than refusing the send, so the label
 	// never changes whether this path is taken.
-	attested, ok := inboxclient.Attest(driver.WithDeclaration(from, text), addr.ModeClass, driver.SenderLabel(from))
+	//
+	// #150: the body is checked and counted BEFORE Attest, independently of
+	// the class, because Attest refuses a missing class first and would
+	// otherwise hide every body refusal behind it. The body counted is exactly
+	// the body Attest is given — declaration line included. Attest's contract
+	// (ok == class valid && body attestable) is what lets the refusal's reason
+	// be named below without a second return value.
+	body := driver.WithDeclaration(from, text)
+	d.counters.incr(counterInboxAttestChecked)
+	if !inboxclient.BodyAttestable(body) {
+		d.counters.incr(counterInboxAttestBodyLookalike)
+	}
+	attested, ok := inboxclient.Attest(body, addr.ModeClass, driver.SenderLabel(from))
 	if !ok {
+		if !addr.ModeClass.Valid() {
+			d.counters.incr(counterInboxFallbackNoModeClass)
+		} else {
+			d.counters.incr(counterInboxFallbackBodyUnattestable)
+		}
 		return fleet.DeliveryReceipt{}, false, nil
 	}
 
@@ -221,6 +251,7 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 		// an answer from the target — the pane path independently re-derives
 		// whether the session itself is reachable, so this falls through to
 		// it rather than reporting a permanent refusal here.
+		d.counters.incr(counterInboxFallbackDialFailed)
 		return fleet.DeliveryReceipt{}, false, nil
 	}
 	defer conn.Close()
@@ -234,8 +265,10 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 		// a successful dial is the same kind of local transport fact as a
 		// dial failure above, not an answer from the target, so it falls
 		// back the same way.
+		d.counters.incr(counterInboxFallbackWriteFailed)
 		return fleet.DeliveryReceipt{}, false, nil
 	}
+	d.counters.incr(counterInboxWritten)
 	return fleet.DeliveryReceipt{
 		Outcome: mapInboxOutcome(receipt.Outcome),
 		Reason:  receipt.Reason,

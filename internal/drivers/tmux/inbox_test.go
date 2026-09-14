@@ -120,6 +120,7 @@ func TestSend_NoInboxResolverConfigured_BehavesExactlyAsBeforeIssue119(t *testin
 	if got.Outcome != fleet.OutcomeQueued {
 		t.Errorf("outcome = %q, want queued (pane path, unchanged)", got.Outcome)
 	}
+	assertNoInboxCounters(t, d)
 }
 
 func TestSend_InboxCapabilityAbsent_FallsBackToPane(t *testing.T) {
@@ -140,6 +141,7 @@ func TestSend_InboxCapabilityAbsent_FallsBackToPane(t *testing.T) {
 	if got.Outcome != fleet.OutcomeQueued {
 		t.Errorf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
 	}
+	assertInboxExit(t, d, counterInboxFallbackResolverDeclined, 0, 0)
 }
 
 func TestSend_InboxResolverError_TreatedAsCapabilityAbsent(t *testing.T) {
@@ -160,6 +162,7 @@ func TestSend_InboxResolverError_TreatedAsCapabilityAbsent(t *testing.T) {
 	if got.Outcome != fleet.OutcomeQueued {
 		t.Errorf("outcome = %q, want queued — a resolver error is capability-absent, not a refusal", got.Outcome)
 	}
+	assertInboxExit(t, d, counterInboxFallbackResolverError, 0, 0)
 }
 
 // TestSend_InboxIdentityVerificationFails_RefusesWithoutTouchingThePane is
@@ -200,6 +203,7 @@ func TestSend_InboxIdentityVerificationFails_RefusesWithoutTouchingThePane(t *te
 			t.Fatalf("identity-refused delivery must never touch the pane, saw: %v", c)
 		}
 	}
+	assertInboxExit(t, d, counterInboxRefusedIdentityUnverified, 0, 0)
 }
 
 // TestMapInboxOutcome_EveryValueSurfacesDistinctly is #119's own central
@@ -271,6 +275,7 @@ func TestSend_InboxDeliverySucceeds_ReportsDeliveredWithoutTouchingPane(t *testi
 			t.Fatalf("an inbox delivery must never also touch the pane, saw: %v", c)
 		}
 	}
+	assertInboxExit(t, d, counterInboxWritten, 1, 0)
 }
 
 // TestSend_InboxDialFails_FallsBackToPane is #144's fix for the gap #143's
@@ -284,7 +289,13 @@ func TestSend_InboxDialFails_FallsBackToPane(t *testing.T) {
 	ps.set(100, time.Now())
 	ps.set(200, time.Now())
 	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
-		return InboxAddress{Network: "unix", Socket: "/irrelevant", Token: "tok"}, true, nil
+		// #150: a class is required to reach the dial at all — since #148,
+		// without one this fixture fell back on the class check instead, and
+		// passed only because both fallbacks land on the pane.
+		return InboxAddress{
+			Network: "unix", Socket: "/irrelevant", Token: "tok",
+			ModeClass: inboxclient.ModeBypass,
+		}, true, nil
 	}
 	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
 		return nil, errors.New("connection refused")
@@ -299,6 +310,7 @@ func TestSend_InboxDialFails_FallsBackToPane(t *testing.T) {
 	if got.Outcome != fleet.OutcomeQueued {
 		t.Fatalf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
 	}
+	assertInboxExit(t, d, counterInboxFallbackDialFailed, 1, 0)
 }
 
 // TestSend_InboxWriteFails_FallsBackToPane covers #143's other half of the
@@ -310,7 +322,13 @@ func TestSend_InboxWriteFails_FallsBackToPane(t *testing.T) {
 	ps.set(100, time.Now())
 	ps.set(200, time.Now())
 	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
-		return InboxAddress{Network: "unix", Socket: "/irrelevant", Token: "tok"}, true, nil
+		// #150: a class is required to reach the write at all — since #148,
+		// without one this fixture fell back on the class check instead, and
+		// passed only because both fallbacks land on the pane.
+		return InboxAddress{
+			Network: "unix", Socket: "/irrelevant", Token: "tok",
+			ModeClass: inboxclient.ModeBypass,
+		}, true, nil
 	}
 	d := newInboxTestDriver(f, ps, resolver, pipeDialer(t, closeBeforeReading))
 
@@ -322,6 +340,7 @@ func TestSend_InboxWriteFails_FallsBackToPane(t *testing.T) {
 	if got.Outcome != fleet.OutcomeQueued {
 		t.Fatalf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
 	}
+	assertInboxExit(t, d, counterInboxFallbackWriteFailed, 1, 0)
 }
 
 // TestSend_InboxSkippedForPaneOnlyShapes proves inboxEligible's own three
@@ -358,6 +377,7 @@ func TestSend_InboxSkippedForPaneOnlyShapes(t *testing.T) {
 			if called {
 				t.Errorf("%s: the inbox resolver was called; #119 excludes this shape entirely", tc.name)
 			}
+			assertNoInboxCounters(t, d)
 		})
 	}
 }
@@ -387,6 +407,7 @@ func TestSend_InboxNoSuchSession_FallsThroughToTheSamePaneRefusal(t *testing.T) 
 	if called {
 		t.Error("the inbox resolver was called for an identity #116 never resolved")
 	}
+	assertInboxExit(t, d, counterInboxFallbackIdentityUnresolved, 0, 0)
 }
 
 // TestSend_InboxWithoutModeClass_FallsBackToPane is colab-fleet #148's own
@@ -433,6 +454,7 @@ func TestSend_InboxWithoutModeClass_FallsBackToPane(t *testing.T) {
 	if got.Outcome != fleet.OutcomeQueued {
 		t.Errorf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
 	}
+	assertInboxExit(t, d, counterInboxFallbackNoModeClass, 1, 0)
 }
 
 // TestSend_InboxUnattestableText_FallsBackToPane covers the second half of
@@ -473,6 +495,7 @@ func TestSend_InboxUnattestableText_FallsBackToPane(t *testing.T) {
 	if got.Outcome != fleet.OutcomeQueued {
 		t.Errorf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
 	}
+	assertInboxExit(t, d, counterInboxFallbackBodyUnattestable, 1, 1)
 }
 
 // TestSend_InboxAttestedEnvelopeReachesTheWire proves the bytes that leave this
@@ -666,4 +689,136 @@ func TestSend_SenderLabelDoesNotDefuseTheRuntimeSyntaxGuard(t *testing.T) {
 	if got.Outcome != fleet.OutcomeRefused {
 		t.Errorf("outcome = %q, want refused — the label must not carry runtime syntax past the guard", got.Outcome)
 	}
+}
+
+// inboxExitCounters is every exit of sendViaInbox past the nil-resolver check
+// (#150). Each call that increments counterInboxAttempted must end in exactly
+// one of these, which is what assertInboxExit checks.
+var inboxExitCounters = []string{
+	counterInboxFallbackIdentityUnresolved,
+	counterInboxErrorIdentityResolve,
+	counterInboxFallbackResolverError,
+	counterInboxFallbackResolverDeclined,
+	counterInboxRefusedIdentityUnverified,
+	counterInboxFallbackNoModeClass,
+	counterInboxFallbackBodyUnattestable,
+	counterInboxFallbackDialFailed,
+	counterInboxFallbackWriteFailed,
+	counterInboxWritten,
+}
+
+// assertInboxExit checks that one inbox attempt was counted, that it ended in
+// exactly the exit want and no other, and what the two measurement counters
+// #150's decision reads came to. It reads Counters(), the same map the health
+// response serves.
+func assertInboxExit(t *testing.T, d *Driver, want string, checked, lookalike int64) {
+	t.Helper()
+	got := d.Counters()
+	if got[counterInboxAttempted] != 1 {
+		t.Errorf("%s = %d, want 1", counterInboxAttempted, got[counterInboxAttempted])
+	}
+	for _, name := range inboxExitCounters {
+		var n int64
+		if name == want {
+			n = 1
+		}
+		if got[name] != n {
+			t.Errorf("%s = %d, want %d (expected exit: %s)", name, got[name], n, want)
+		}
+	}
+	if got[counterInboxAttestChecked] != checked {
+		t.Errorf("%s = %d, want %d", counterInboxAttestChecked, got[counterInboxAttestChecked], checked)
+	}
+	if got[counterInboxAttestBodyLookalike] != lookalike {
+		t.Errorf("%s = %d, want %d", counterInboxAttestBodyLookalike, got[counterInboxAttestBodyLookalike], lookalike)
+	}
+}
+
+// assertNoInboxCounters checks that a send which never tried the inbox left no
+// inbox.* key at all — a zero would claim a measurement that was never taken.
+func assertNoInboxCounters(t *testing.T, d *Driver) {
+	t.Helper()
+	for name, n := range d.Counters() {
+		if strings.HasPrefix(name, "inbox.") {
+			t.Errorf("%s = %d present, but this send never tried the inbox path", name, n)
+		}
+	}
+}
+
+// TestSend_InboxNoClassAndLookalikeBody_CountsBothFacts is the reason the body
+// is counted apart from the class (#150): Attest refuses the missing class
+// first, so a count keyed only on the refusal reason would never see this
+// body's lookalike, and the rate #150 reads would come out clean while the
+// index still omits classes.
+func TestSend_InboxNoClassAndLookalikeBody_CountsBothFacts(t *testing.T) {
+	f := twoSessions()
+	ps := &fakePS{}
+	ps.set(100, time.Now())
+	ps.set(200, time.Now())
+	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
+		return InboxAddress{Network: "unix", Socket: "/irrelevant", Token: "tok"}, true, nil
+	}
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		return nil, errors.New("this dial must never happen")
+	}
+	d := newInboxTestDriver(f, ps, resolver, dial)
+
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "compare a < b first", driver.SendOptions{Submit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeQueued {
+		t.Errorf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
+	}
+	assertInboxExit(t, d, counterInboxFallbackNoModeClass, 1, 1)
+}
+
+// TestSend_InboxRelayDeclaration_DoesNotCountAsLookalike proves the body the
+// counter inspects is the body Attest is given — the #158 declaration line
+// included — so a relayed plain message is not miscounted as unattestable.
+func TestSend_InboxRelayDeclaration_DoesNotCountAsLookalike(t *testing.T) {
+	f := twoSessions()
+	ps := &fakePS{}
+	ps.set(100, time.Now())
+	ps.set(200, time.Now())
+	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
+		return InboxAddress{
+			Network: "unix", Socket: "/irrelevant", Token: "tok",
+			ModeClass: inboxclient.ModeBypass,
+		}, true, nil
+	}
+	d := newInboxTestDriver(f, ps, resolver, pipeDialer(t, readTwoLinesNoReply))
+
+	from := &fleet.MessageFrom{Agent: "agent-a", Session: "s-150", Machine: "entrybox", RelayOfHuman: true}
+	got, err := d.Send(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true, From: from})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != fleet.OutcomeDelivered {
+		t.Fatalf("outcome = %q, want delivered", got.Outcome)
+	}
+	assertInboxExit(t, d, counterInboxWritten, 1, 0)
+}
+
+// TestSendViaInbox_IdentityResolveError_Counted covers the one exit that
+// returns an error rather than falling back: the multiplexer itself failing
+// while identity is resolved. Called directly because Send's own earlier
+// multiplexer use would fail first and never reach this branch.
+func TestSendViaInbox_IdentityResolveError_Counted(t *testing.T) {
+	f := twoSessions()
+	f.failList = true
+	ps := &fakePS{}
+	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
+		t.Error("the resolver was called although identity never resolved")
+		return InboxAddress{}, false, nil
+	}
+	d := newInboxTestDriver(f, ps, resolver, nil)
+
+	_, ok, err := d.sendViaInbox(context.Background(), fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", nil)
+	if err == nil {
+		t.Fatalf("sendViaInbox err = nil (ok=%v), want the multiplexer failure", ok)
+	}
+	assertInboxExit(t, d, counterInboxErrorIdentityResolve, 0, 0)
 }
