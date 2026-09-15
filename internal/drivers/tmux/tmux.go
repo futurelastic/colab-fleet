@@ -4000,7 +4000,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	}
 
 	screenNow := captures[target.paneID].screen()
-	before := parsePrompt(screenNow)
+	before, unnumbered := parsePromptMenu(screenNow)
 	if before == nil {
 		// colab-fleet #64: this refusal fires whenever the screen has no
 		// structured prompt this driver recognises — which is right and
@@ -4089,10 +4089,33 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	// option, which on a menu where the digit changed nothing is not the one
 	// chosen. Both would be a guess past the measurement. The caller holds
 	// the unknown receipt and the screen, and can decide.
+	//
+	// # A menu with no numbers is walked to, then confirmed
+	//
+	// colab-fleet#171, measured on the runtime's unnumbered folder-trust
+	// menu: a digit changed nothing (the screen stayed byte-identical), Down
+	// moved the highlight, Space changed nothing, and C-m confirmed the
+	// highlighted row. So there the choice is delivered as arrow presses,
+	// then a READ proving the highlight sits on the chosen row, and only
+	// then C-m. If the highlight did not arrive, nothing is confirmed: C-m
+	// would accept whichever row it did stop on, which is not the one chosen.
+	// A choice that is already highlighted needs no walk and takes the
+	// accept-highlighted keys, since Space is measured inert there.
 	keys := []string{"Space", "C-m"}
 	switch {
 	case resp.Cancel:
 		keys = []string{"Escape"}
+	case resp.Choice > 0 && unnumbered:
+		if resp.Choice != before.Selected {
+			arrived, reason, err := d.walkHighlight(ctx, target.paneID, before, resp.Choice)
+			if err != nil {
+				return fleet.DeliveryReceipt{}, fmt.Errorf("respond: %w", err)
+			}
+			if !arrived {
+				return fleet.DeliveryReceipt{Outcome: fleet.OutcomeUnknown, Reason: reason}, nil
+			}
+			keys = []string{"C-m"}
+		}
 	case resp.Choice > 0:
 		keys = []string{strconv.Itoa(resp.Choice)}
 	}
@@ -5870,6 +5893,56 @@ func (d *Driver) persistedRecord(id string) (sessionRecord, bool) {
 // "Still the same prompt" is the only outcome that means the keypress did not
 // register; a different prompt counts as cleared, because the session moved on
 // and the caller's answer had its effect.
+// walkHighlight moves an unnumbered menu's highlight from its current row to
+// choice with arrow keys, and reports whether a fresh read shows it there
+// (colab-fleet#171). It never confirms anything itself.
+//
+// Arrival is read, not assumed from the key count: a press the menu swallows
+// leaves the highlight short of the chosen row, and confirming then would
+// answer with a row nobody chose. The prompt's nonce is checked on every
+// read too — it covers the question and options but not the highlight, so
+// it holds still while the highlight moves and changes only if the question
+// itself was replaced mid-walk.
+func (d *Driver) walkHighlight(ctx context.Context, paneID string, before *fleet.SessionPrompt, choice int) (bool, string, error) {
+	key, n := "Down", choice-before.Selected
+	if n < 0 {
+		key, n = "Up", -n
+	}
+	args := []string{"send-keys", "-t", paneID}
+	for i := 0; i < n; i++ {
+		args = append(args, key)
+	}
+	if _, err := d.run(ctx, d.bin, args...); err != nil {
+		return false, "", err
+	}
+	target := "option " + strconv.Itoa(choice) + " (" + before.Options[choice-1] + ")"
+	deadline := d.now().Add(promptClearWindow)
+	for {
+		if sc, ok := d.captureForClassify(ctx, paneID); ok {
+			now, _ := parsePromptMenu(sc)
+			if now == nil || now.Nonce != before.Nonce {
+				return false, "pressed " + key + " to move the highlight toward " + target +
+					" on a menu without numbers, and the prompt changed before anything " +
+					"was confirmed; no confirm key was sent", nil
+			}
+			if now.Selected == choice {
+				return true, "", nil
+			}
+		}
+		if d.now().After(deadline) || ctx.Err() != nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(promptClearInterval):
+		}
+	}
+	return false, "pressed " + key + " " + strconv.Itoa(n) + " time(s) to reach " + target +
+		" on a menu without numbers, but the highlight did not arrive there; no " +
+		"confirm key was sent, so the prompt is still up and unanswered, with the " +
+		"highlight possibly moved", nil
+}
+
 func (d *Driver) promptCleared(ctx context.Context, paneID, was string) bool {
 	deadline := d.now().Add(promptClearWindow)
 	for {

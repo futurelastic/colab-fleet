@@ -117,6 +117,20 @@ func redactLine(raw string) string {
 		}
 		return leading + prefix + redactOption(n, text)
 	}
+	// An UNNUMBERED menu row (colab-fleet#171) has no index to key on, so
+	// it is kept only when its whole text is one of the runtime's own option
+	// phrases — an exact match, never a prefix: without a number marking the
+	// row as an option, a prefix would keep any transcript line that merely
+	// opens with "No, exit". The highlighted row keeps its marker so the
+	// menu still replays as one; an unmatched row falls through to the
+	// ordinary redaction below, which preserves its indentation, and the
+	// indentation is what unnumberedMenu reads.
+	if knownOptionExact(body) {
+		if selected {
+			return leading + composerRuneMarker + " " + body
+		}
+		return leading + body
+	}
 	if selected {
 		return leading + redactComposerLine(raw)
 	}
@@ -262,6 +276,18 @@ var knownOptionPhrases = []string{
 	"resume full session as-is",
 	"chat about this",
 	"type something",
+}
+
+// knownOptionExact reports whether text, whole, is one of the runtime's
+// option phrases — see the unnumbered-row branch of redactLine.
+func knownOptionExact(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	for _, phrase := range knownOptionPhrases {
+		if lower == phrase {
+			return true
+		}
+	}
+	return false
 }
 
 func redactOption(n int, text string) string {

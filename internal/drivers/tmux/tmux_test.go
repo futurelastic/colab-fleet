@@ -82,7 +82,7 @@ type fakeMux struct {
 	// dialog models a numbered menu that COMMITS on a digit, as measured on
 	// the runtime (#168): see fakeDialog. Only for panes a test armed; every
 	// other pane keeps the send-keys behaviour below.
-	dialog map[string]*fakeDialog
+	dialog map[string]keyedScreen
 	// renameNoop models a rename-session call that reports success without
 	// actually moving anything — colab-fleet #97's "never reached the
 	// runtime at all" hypothesis, as distinct from a real rename that later
