@@ -108,9 +108,9 @@ func sendKeysPane(argv []string) string {
 	return ""
 }
 
-func armDialog(f *fakeMux, pane string, g *fakeDialog) {
+func armDialog(f *fakeMux, pane string, g keyedScreen) {
 	if f.dialog == nil {
-		f.dialog = map[string]*fakeDialog{}
+		f.dialog = map[string]keyedScreen{}
 	}
 	f.dialog[pane] = g
 	f.captures[pane] = g.screen()

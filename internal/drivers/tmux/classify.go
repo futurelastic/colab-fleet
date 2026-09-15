@@ -650,8 +650,26 @@ func awaitingSelection(s screen) bool {
 // Options are recognised by their leading "N." rather than by any wording, so
 // a new prompt from a future release is enumerated without a new matcher —
 // which is the failure mode a sibling project named explicitly: "chasing them
-// individually means a new matcher every time the CLI adds a screen".
+// individually means a new matcher every time the CLI adds a screen". A menu
+// that paints no numbers at all is recognised by its shape instead — see
+// unnumberedMenu (colab-fleet#171).
 func parsePrompt(s screen) *fleet.SessionPrompt {
+	p, _ := parsePromptMenu(s)
+	return p
+}
+
+// parsePromptMenu is parsePrompt plus the one fact about a menu's shape that
+// ANSWERING it depends on: whether its options carry numbers.
+//
+// colab-fleet#171 measured the difference on the runtime. On a numbered menu
+// a digit commits the answer (#168). On the unnumbered folder-trust menu a
+// digit does nothing at all — the screen stayed byte-identical — and only
+// arrow keys move the highlight, which Enter then confirms. A caller's
+// Choice is the same 1-based index on both, but the keys that deliver it are
+// not, so Respond has to know which kind of menu it is answering. The flag
+// stays out of fleet.SessionPrompt: it is how this substrate delivers an
+// answer, not something a caller answers differently.
+func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 	// Detection is STRUCTURAL, not footer-based.
 	//
 	// Four footers have been seen on one runtime — "Enter to select · Tab/Arrow
@@ -663,7 +681,7 @@ func parsePrompt(s screen) *fleet.SessionPrompt {
 	// What every one of them has is the thing being asked: a run of numbered
 	// options near the bottom of the screen with exactly one marked as
 	// highlighted. That is the question, and it is what a caller has to answer.
-	p := &fleet.SessionPrompt{}
+	p = &fleet.SessionPrompt{}
 	footer := false
 	var question []string
 	from := 0
@@ -733,9 +751,19 @@ func parsePrompt(s screen) *fleet.SessionPrompt {
 	// deliberately NOT held to the contiguity rule above — see
 	// TestMenuWithScrolledOffMarkerStillCounts — because the footer is
 	// itself the corroboration this branch has instead.
+	if len(p.Options) == 0 && footer {
+		// No numbered option anywhere in the window, but a runtime footer
+		// is. That is the one situation an unnumbered menu can be in, and
+		// the footer is what licenses looking for one (colab-fleet#171).
+		if menu := unnumberedMenu(s.lines[from:]); menu != nil {
+			menu.Nonce = promptNonce(menu)
+			return menu, true
+		}
+		return nil, false
+	}
 	structural := len(p.Options) >= 2 && p.Selected > 0 && optionsAreContiguous(p.Options)
 	if !structural && !(footer && len(p.Options) >= 1) {
-		return nil
+		return nil, false
 	}
 	// Keep the question short: the last couple of lines before the options
 	// are the ask; everything above is transcript.
@@ -744,6 +772,120 @@ func parsePrompt(s screen) *fleet.SessionPrompt {
 	}
 	p.Question = strings.Join(question, " ")
 	p.Nonce = promptNonce(p)
+	return p, false
+}
+
+// unnumberedMenu recognises a select menu whose options carry no numbers
+// (colab-fleet#171). Measured on the runtime's folder-trust question in a
+// directory it had never seen:
+//
+//	Security guide
+//
+//	❯ No, exit
+//	  Yes, I trust this folder
+//
+//	Enter to confirm · Esc to cancel
+//
+// Without numbers, the only structure left is layout, and every piece of it
+// is required, because each one alone is something ordinary transcript can
+// paint:
+//
+//   - a runtime footer, with only blank rows between it and the options —
+//     the corroboration the numbered path gets from its digits;
+//   - a single block of two or more non-blank rows directly above it, ended
+//     by a blank row or a rule;
+//   - exactly one row in that block carrying the highlight marker;
+//   - every other row indented to exactly the column where the marked row's
+//     text starts, so the option labels line up.
+//
+// Anything that fails one of these is not read as a menu at all. The cost of
+// a wrapped option label, or a layout this has not seen, is the pre-#171
+// behaviour (no prompt recognised), never a guessed option list: Respond
+// answers by index, and an index into a misread list is an answer to a
+// question nobody asked.
+func unnumberedMenu(lines []string) *fleet.SessionPrompt {
+	footer := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if strings.Contains(line, selectFooter) || strings.Contains(line, confirmFooter) ||
+			strings.Contains(line, amendFooter) {
+			footer = i
+			break
+		}
+	}
+	if footer < 0 {
+		return nil
+	}
+	end := footer - 1
+	for end >= 0 && strings.TrimSpace(lines[end]) == "" {
+		end--
+	}
+	if end < 0 {
+		return nil
+	}
+	start := end
+	for start > 0 && strings.TrimSpace(lines[start-1]) != "" && !isRule(lines[start-1]) {
+		start--
+	}
+	block := lines[start : end+1]
+	if len(block) < 2 || len(block) > maxPromptOptions {
+		return nil
+	}
+
+	marker, textCol := -1, -1
+	for i, raw := range block {
+		rest := strings.TrimLeft(raw, " ")
+		if !strings.HasPrefix(rest, composerRuneMarker) {
+			continue
+		}
+		if marker >= 0 {
+			return nil // two highlights is not one menu
+		}
+		after := strings.TrimPrefix(rest, composerRuneMarker)
+		gap := len(after) - len(strings.TrimLeft(after, " "))
+		if gap == 0 {
+			return nil
+		}
+		marker = i
+		// Columns, not bytes: the marker is one cell wide and three bytes long.
+		textCol = (len(raw) - len(rest)) + 1 + gap
+	}
+	if marker < 0 {
+		return nil
+	}
+
+	p := &fleet.SessionPrompt{Selected: marker + 1}
+	for i, raw := range block {
+		if isRule(raw) {
+			return nil
+		}
+		text := strings.TrimSpace(raw)
+		if i == marker {
+			text = strings.TrimSpace(strings.TrimPrefix(text, composerRuneMarker))
+		} else if len(raw)-len(strings.TrimLeft(raw, " ")) != textCol {
+			return nil
+		}
+		if text == "" {
+			return nil
+		}
+		if _, _, numbered := numberedOption(text); numbered {
+			return nil // parsePromptMenu's numbered path owns this shape
+		}
+		p.Options = append(p.Options, text)
+	}
+
+	// The question: the last few non-blank rows above the block, stopping at
+	// a rule — the same "last couple of lines" parsePrompt keeps.
+	var question []string
+	for i := start - 1; i >= 0 && len(question) < 3; i-- {
+		if isRule(lines[i]) {
+			break
+		}
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			question = append([]string{line}, question...)
+		}
+	}
+	p.Question = strings.Join(question, " ")
 	return p
 }
 

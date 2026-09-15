@@ -310,6 +310,13 @@ changes whenever the prompt changes. Send it always. If it no longer matches,
 the driver refuses rather than applying your answer by index to a question that
 has changed underneath you — which is the entire reason it exists.
 
+On a numbered menu the choice is delivered as its digit. On a menu whose options
+carry no numbers (the runtime paints the folder-trust question that way), a digit
+is inert, so the highlight is moved with arrow keys, re-read, and confirmed only
+once it sits on the chosen row. If the highlight does not arrive, the receipt is
+`unknown`, nothing is confirmed, and the prompt stays up (the highlight may have
+moved).
+
 `respond` refuses when it sees no prompt it recognises. That refusal is its
 safety property, and it is why raw keys are a separate endpoint rather than a
 flag here.

@@ -3608,6 +3608,35 @@ once age stops making "still starting" the likely story.
 > sent whoever read it looking at the pane instead of at the screen it was
 > actually showing.
 
+**F60 · A menu without numbers was a menu nobody could answer.** Every prompt
+the detector had recognised since F37 was found by its numbered options. The
+folder-trust question, on a session created in a directory outside every
+trust root, now paints with none (`❯ No, exit` / `Yes, I trust this folder`
+under `Enter to confirm`), and in the reverse order from the numbered form
+this driver's fixtures held.
+
+Measured through the service, not a bare multiplexer (#171): the state read
+said `unknown` (the dialog's top rule, with no marker row above it, read as a
+clipped composer), `respond` refused because nothing was being asked, and
+`keys` refused on the clipped composer. All three verbs were closed at once,
+so a caller that had consented to trust sat on the screen until a person
+cleared it at the pane. Pressing keys into a scratch session answered the
+second half of the question: a digit changed nothing (the screen digest was
+identical), `Down` moved the highlight, `Space` changed nothing, and `C-m`
+confirmed the highlighted row.
+
+So an unnumbered menu is now recognised by layout (a runtime footer, one
+block of two or more rows directly above it, exactly one highlighted, the
+rest indented to its text column), and every piece is required, because each
+alone is paintable by transcript. `respond` delivers the same 1-based choice
+differently there: arrow presses, then a read proving the highlight arrived,
+then `C-m`. If the highlight does not arrive, nothing is confirmed.
+
+> **An answer's index is part of the contract; the keys that deliver it are
+> not.** #168 had just measured that a digit commits on a numbered menu. The
+> same digit on this menu is inert, so a delivery rule measured on one shape
+> of menu is evidence about that shape only.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

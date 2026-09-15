@@ -1,0 +1,11 @@
+{
+  "name": "folder-trust-unnumbered-menu",
+  "for": "The folder-trust question as the runtime paints it for a session created through the service in a directory outside every trust root: a select menu whose options carry NO numbers (decline first, then 'Yes, I trust this folder'), under the 'Enter to confirm' footer. parsePrompt recognised menus only by numbered options, so before #171 this screen read unknown (the dialog's top rule, with no marker row above it, read as a clipped composer), respond refused with 'not waiting on a prompt' and keys refused on the clipped composer: the service had no path off the screen at all, and a caller that consented to trust sat on it. This case pins that the screen is a waiting_input prompt from the first observation onward, corroborated by its footer and its aligned option rows rather than by numbers. See TestUnnumberedTrustMenuIsAPrompt, and TestRespondWalksAnUnnumberedMenuThenConfirms for how it is answered (arrows, a read proving the highlight arrived, then C-m; a digit was measured to do nothing on this menu).",
+  "source": "#171",
+  "redactedFrom": "real capture through the service on the runtime's current release, redacted by corpus-redact; the two option rows are kept because each is, whole, one of the runtime's own option phrases",
+  "alive": true,
+  "observations": [
+    { "afterSeconds": 0, "young": false, "want": "waiting_input" },
+    { "afterSeconds": 30, "young": false, "want": "waiting_input" }
+  ]
+}
