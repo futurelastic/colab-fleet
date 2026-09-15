@@ -5888,11 +5888,6 @@ func (d *Driver) persistedRecord(id string) (sessionRecord, bool) {
 	return rec, ok
 }
 
-// promptCleared waits briefly for the answered prompt to leave the screen.
-//
-// "Still the same prompt" is the only outcome that means the keypress did not
-// register; a different prompt counts as cleared, because the session moved on
-// and the caller's answer had its effect.
 // walkHighlight moves an unnumbered menu's highlight from its current row to
 // choice with arrow keys, and reports whether a fresh read shows it there
 // (colab-fleet#171). It never confirms anything itself.
@@ -5943,6 +5938,11 @@ func (d *Driver) walkHighlight(ctx context.Context, paneID string, before *fleet
 		"highlight possibly moved", nil
 }
 
+// promptCleared waits briefly for the answered prompt to leave the screen.
+//
+// "Still the same prompt" is the only outcome that means the keypress did not
+// register; a different prompt counts as cleared, because the session moved on
+// and the caller's answer had its effect.
 func (d *Driver) promptCleared(ctx context.Context, paneID, was string) bool {
 	deadline := d.now().Add(promptClearWindow)
 	for {
