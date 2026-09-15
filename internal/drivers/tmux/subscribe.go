@@ -375,7 +375,7 @@ func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver
 		s.conns[r.session] = conn
 		s.mu.Unlock()
 		opened++
-		go pump(conn.Notes(), trigger, isContentNote, streamCtx)
+		go s.pumpContent(streamCtx, r.session, conn)
 	}
 	s.mu.Lock()
 	s.conns[lifecycleKey] = life
@@ -733,12 +733,58 @@ func (s *eventStream) attachContent(ctx context.Context, sess fleet.Session) {
 	s.conns[sess.ID] = conn
 	// Content notifications share the same trigger path; this stream's
 	// engine is already draining it.
-	go pump(conn.Notes(), s.triggerFor(), isContentNote, ctx)
+	go s.pumpContent(ctx, sess.ID, conn)
 }
 
-// triggerFor exists so attachContent can feed the same coalescing channel
-// the engine reads. It is set once in Subscribe.
-func (s *eventStream) triggerFor() chan<- struct{} { return s.trigger }
+// pumpContent drains one content client and, when it dies on its own, reaps
+// it.
+//
+// A content client exits with the session it is attached to. Its
+// notifications ending does not mean its process was waited on: for the real
+// transport Close is the only place that happens. That is the lifecycle
+// supervisor's defect over again, on the content side — dying is not being
+// reaped.
+//
+// The engine's diff covers the plain case: a read that finds the session
+// gone calls detachContent, which closes the client. It covers nothing a read
+// does not SEE. A session that exits and is re-created under the same id
+// between two reads is never observed to close, so its dead client stayed in
+// s.conns — a zombie process until the subscription itself closed (measured
+// on a real multiplexer: the kill-only case was already reaped, the
+// kill-and-recreate case was not). Only this goroutine knows the client died,
+// so the reap belongs here rather than in the diff.
+//
+// Bounded where the lifecycle one was not (at most maxContentClients per
+// subscription), but not harmless: a dead entry also holds one of those
+// slots.
+//
+// Cancellation is not a death: the stream's own Close cancels first and then
+// reaps every client it holds, so returning here avoids a second Close on the
+// same shutdown path. Every other return — the session exited, or
+// detachContent already closed the client — removes the entry only if it
+// still points at THIS client, since the session may have been re-attached
+// under the same id in between, and closes it. Close is idempotent on both
+// transports, so detachContent having got there first is harmless.
+func (s *eventStream) pumpContent(ctx context.Context, session string, conn ctlConn) {
+	pump(conn.Notes(), s.trigger, isContentNote, ctx)
+	if ctx.Err() != nil {
+		return
+	}
+	s.mu.Lock()
+	if cur, ok := s.conns[session]; ok && cur == conn {
+		delete(s.conns, session)
+	}
+	s.mu.Unlock()
+	_ = conn.Close()
+
+	// A trigger too: the session this client was attached to has demonstrably
+	// changed. The lifecycle client normally reports the same exit, but it may
+	// itself have been hosted by this session and be mid re-attach.
+	select {
+	case s.trigger <- struct{}{}:
+	default:
+	}
+}
 
 func (s *eventStream) detachContent(id string) {
 	s.mu.Lock()

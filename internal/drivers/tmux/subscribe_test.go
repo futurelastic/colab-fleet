@@ -896,3 +896,80 @@ func TestLifecycleClientThatLostItsHostIsReaped(t *testing.T) {
 		t.Error("clients left open after Close")
 	}
 }
+
+// A content client whose session exited must be reaped while the subscription
+// stays open.
+//
+// A content client exits with the session it is attached to, and for the real
+// transport Close is the only place its process is waited on. The fake
+// multiplexer here still lists the session afterwards, which is exactly the
+// shape the engine's diff cannot see: a session re-created under the same id
+// between two reads is never observed to close, so nothing but the pump knows
+// its client died. Left in the stream's client map, each one is a zombie for
+// the life of the subscription and holds a maxContentClients slot besides.
+// die(), not Close(), is what the test drives: a fake that conflated the two
+// could not show the reap missing.
+func TestContentClientWhoseSessionExitedIsReaped(t *testing.T) {
+	f := twoSessions()
+	r := &ctlRegistry{}
+	d := newSubDriver(f, r)
+
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for {
+			if _, err := s.Next(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+
+	dead, live := r.contentFor("beta"), r.contentFor("alpha💬")
+	if dead == nil || live == nil {
+		t.Fatalf("expected a content client per session, opened %d", r.count())
+	}
+	dead.die()
+
+	es := s.(*eventStream)
+	held := func() bool {
+		es.mu.Lock()
+		defer es.mu.Unlock()
+		_, ok := es.conns["beta"]
+		return ok
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for (!dead.isClosed() || held()) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !dead.isClosed() {
+		t.Error("content client exited with its session but was never closed; " +
+			"for a real client that is a subprocess nobody waits on")
+	}
+	if held() {
+		t.Error("the dead content client is still held by the stream, occupying a client slot")
+	}
+
+	// The subscription itself is untouched.
+	es.mu.Lock()
+	closed := es.closed
+	es.mu.Unlock()
+	if closed {
+		t.Error("a content client dying closed the whole subscription")
+	}
+	if live.isClosed() {
+		t.Error("the other session's content client was closed")
+	}
+	if r.at(0).isClosed() {
+		t.Error("the lifecycle client was closed")
+	}
+
+	_ = s.Close()
+	<-drained
+	if !r.allClosed() {
+		t.Error("clients left open after Close")
+	}
+}
