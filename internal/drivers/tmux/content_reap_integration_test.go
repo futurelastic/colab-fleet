@@ -4,8 +4,6 @@ import (
 	"context"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -26,38 +24,10 @@ func TestLiveContentClientOfARecreatedSessionIsNotLeftAZombie(t *testing.T) {
 	if os.Getenv("FLEET_TMUX_INTEGRATION") != "1" {
 		t.Skip("set FLEET_TMUX_INTEGRATION=1 to run against a real multiplexer")
 	}
-	bin, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("no multiplexer on PATH")
-	}
-
-	dir := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		dir = resolved
-	}
-	// Outside the temp dir: a unix socket path is capped at ~104 bytes, and
-	// the per-test temp directory alone overruns it.
-	socket := filepath.Join("/tmp", "fl-"+randomNonce())
-	t.Cleanup(func() { _ = os.Remove(socket) })
-
-	wrapper := filepath.Join(dir, "mux")
-	script := "#!/bin/sh\nexec " + bin + " -S " + socket + " \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Two sessions: one the probe, one that outlives it so the server does
-	// not exit with the probe and take every client down with it.
-	if out, err := exec.Command(wrapper, "new-session", "-d", "-s", "keeper", "-c", "/", "sleep", "600").CombinedOutput(); err != nil {
-		t.Skipf("could not start a private multiplexer server: %v (%s)", err, out)
-	}
-	t.Cleanup(func() { _ = exec.Command(wrapper, "kill-server").Run() })
-	probeDir := filepath.Join(dir, "probe")
-	if err := os.Mkdir(probeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := exec.Command(wrapper, "new-session", "-d", "-s", "probe", "-c", probeDir, "sleep", "600").CombinedOutput(); err != nil {
-		t.Fatalf("could not create the probe session: %v (%s)", err, out)
-	}
+	// The private server, the keeper session and the probe are the same setup
+	// every integration test in this package needs; it lives in one place so a
+	// second test cannot drift from it. See privateMux.
+	wrapper, probeDir := privateMux(t)
 
 	d := New("testbox", WithBinary(wrapper))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -95,9 +65,7 @@ func TestLiveContentClientOfARecreatedSessionIsNotLeftAZombie(t *testing.T) {
 	if out, err := exec.Command(wrapper, "kill-session", "-t", "probe").CombinedOutput(); err != nil {
 		t.Fatalf("kill-session: %v (%s)", err, out)
 	}
-	if out, err := exec.Command(wrapper, "new-session", "-d", "-s", "probe", "-c", probeDir, "sleep", "600").CombinedOutput(); err != nil {
-		t.Fatalf("could not re-create the probe session: %v (%s)", err, out)
-	}
+	startProbe(t, wrapper, probeDir)
 
 	// A process that has exited and been waited on is gone from the table; one
 	// that has exited and not been waited on reads as a zombie for as long as
@@ -105,10 +73,7 @@ func TestLiveContentClientOfARecreatedSessionIsNotLeftAZombie(t *testing.T) {
 	stat := ""
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		out, err := exec.Command("ps", "-o", "stat=", "-p", itoa(pid)).Output()
-		stat = strings.TrimSpace(string(out))
-		if err != nil || stat == "" {
-			stat = ""
+		if stat = procStat(pid); stat == "" {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)

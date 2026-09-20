@@ -112,6 +112,27 @@ type ctlConn interface {
 // everything else on the machine.
 const maxContentClients = 16
 
+// maxFutileReattach bounds how many times ONE subscription re-dials a content
+// client for the same session id without the client it opened ever delivering a
+// notification.
+//
+// The re-attach this bounds is driven by a client's death (#172), and a client
+// that attaches and dies at once produces one death per attempt — so "re-attach
+// once per death" is not by itself a bound: a session that keeps enumerating but
+// whose attachment never survives would be re-dialled every coalesce window,
+// forever, with a full enumeration behind each one. That is the re-dial storm the
+// rejected option was rejected for, arriving by a different route, so it is
+// bounded here rather than argued away.
+//
+// The budget is renewable, and what renews it is the only evidence available
+// without consulting a clock: a client that delivered at least one notification
+// demonstrably worked, so its eventual death is an ordinary session exit and
+// costs nothing. Only CONSECUTIVE silent attempts count against the budget.
+// Exhausting it is said out loud and then stops — the session keeps its
+// fleet-wide triggers and loses only its own push latency, which is exactly the
+// behaviour it had before #172 was fixed, for that one session.
+const maxFutileReattach = 3
+
 // ctlDialer opens a control-mode client attached to one session. Injected
 // so tests can drive subscription logic without spawning a multiplexer.
 type ctlDialer func(ctx context.Context, bin, session string) (ctlConn, error)
@@ -262,10 +283,34 @@ type eventStream struct {
 	// so the wait is bounded.
 	senders sync.WaitGroup
 
-	mu      sync.Mutex
-	conns   map[string]ctlConn // session id -> content client
-	closed  bool
-	closeCh chan struct{}
+	mu    sync.Mutex
+	conns map[string]ctlConn // session id -> content client
+	// reattach holds the re-attach bookkeeping for session ids whose content
+	// client died on its own (#172). Written by the content pumps, read and
+	// cleared by run(), under mu.
+	reattach map[string]reattachState
+	closed   bool
+	closeCh  chan struct{}
+}
+
+// reattachState is one session id's re-attach bookkeeping (#172).
+//
+// It exists because the engine's diff cannot see the case it covers. A content
+// client dies with its session; a session that exits and is re-created under the
+// same id between two reads is never observed to close, so the id never leaves
+// `known` and the diff never takes its !had branch — the only branch that opens a
+// content client. The pump that died is the only thing that knows, so it leaves a
+// mark here and the next read acts on it.
+type reattachState struct {
+	// pending is set by a pump whose client died while the stream still
+	// believed that client was the live one for this id. Spent by the next
+	// read, whether or not it re-attaches: one attempt per observed death,
+	// never one per pass.
+	pending bool
+	// futile counts CONSECUTIVE re-dials for this id whose client delivered no
+	// notification at all before dying. Reset by any client that delivered
+	// one. See maxFutileReattach.
+	futile int
 }
 
 // Subscribe opens a live event stream (§3, §5.5).
@@ -301,15 +346,16 @@ func (d *Driver) Subscribe(ctx context.Context, req fleet.Request, filter driver
 
 	streamCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	s := &eventStream{
-		d:       d,
-		req:     req,
-		filter:  filter,
-		cancel:  cancel,
-		out:     make(chan fleet.Event, 64),
-		errc:    make(chan error, 1),
-		conns:   map[string]ctlConn{},
-		closeCh: make(chan struct{}),
-		trigger: make(chan struct{}, 1),
+		d:        d,
+		req:      req,
+		filter:   filter,
+		cancel:   cancel,
+		out:      make(chan fleet.Event, 64),
+		errc:     make(chan error, 1),
+		conns:    map[string]ctlConn{},
+		reattach: map[string]reattachState{},
+		closeCh:  make(chan struct{}),
+		trigger:  make(chan struct{}, 1),
 	}
 
 	trigger := s.trigger
@@ -515,15 +561,24 @@ func (s *eventStream) reattachLifecycle(ctx context.Context) (ctlConn, error) {
 
 // pump forwards interesting notifications to the trigger channel, coalescing
 // by virtue of the channel holding at most one pending trigger.
-func pump(notes <-chan ctlNote, trigger chan<- struct{}, want func(string) bool, ctx context.Context) {
+//
+// It reports whether it consumed ANY notification — interesting or not — which
+// is the only clock-free evidence that the client on the other end ever worked.
+// Deliberately not "forwarded a trigger": a client's own filter decides what is
+// interesting, and a client that spoke and was ignored is still a client that
+// attached successfully. Callers with nothing to decide from it ignore it; see
+// maxFutileReattach for the one that does not.
+func pump(notes <-chan ctlNote, trigger chan<- struct{}, want func(string) bool, ctx context.Context) bool {
+	spoke := false
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return spoke
 		case n, ok := <-notes:
 			if !ok {
-				return
+				return spoke
 			}
+			spoke = true
 			if !want(n.Name) {
 				continue
 			}
@@ -670,6 +725,20 @@ func (s *eventStream) run(ctx context.Context, trigger <-chan struct{}, known ma
 					Payload: fleet.SessionStatePayload{Ref: sess.SessionRef, State: sess.State},
 				})
 			}
+			// A content client that died on its own leaves a mark (#172), and
+			// neither branch of the switch above can act on it: !had is false,
+			// because a session re-created under the same id between two reads
+			// is never observed to close and so never left `known`. Without
+			// this the id keeps its place in the diff and silently loses its
+			// push triggers for the life of the subscription.
+			//
+			// One attempt per observed death, bounded — see maxFutileReattach.
+			// The mark is spent here whether or not an attempt follows, which is
+			// also what keeps a session that lists but cannot be attached from
+			// being re-dialled on every pass.
+			if s.takeReattach(sess.ID) {
+				s.attachContent(ctx, sess)
+			}
 			known[sess.ID] = sess
 		}
 		for id, prev := range known {
@@ -687,6 +756,14 @@ func (s *eventStream) run(ctx context.Context, trigger <-chan struct{}, known ma
 			})
 			delete(known, id)
 			s.detachContent(id)
+			// The session is gone, so any re-attach mark for it is stale, and
+			// its futile count must not be carried into a future incarnation.
+			//
+			// Order matters: this comes AFTER detachContent, not before. A pump
+			// only marks an id while the stream still holds its client, so once
+			// detachContent has removed that entry no new mark can appear —
+			// while clearing first would lose a mark a pump sets in the gap.
+			s.clearReattach(id)
 		}
 	}
 }
@@ -699,6 +776,50 @@ func drain(c <-chan struct{}) {
 			return
 		}
 	}
+}
+
+// takeReattach reports whether a content client should be re-dialled for id
+// now, spending the mark either way (#172).
+//
+// Spending it unconditionally is the whole bound on the cheap axis: the mark is
+// set once per observed death, so an attempt costs one dial per death rather
+// than one per enumeration pass. The futile budget bounds the other axis, where
+// the deaths themselves are what repeats.
+func (s *eventStream) takeReattach(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.reattach[id]
+	if !ok || !st.pending {
+		return false
+	}
+	st.pending = false
+	if st.futile == 0 {
+		// The ordinary case — a session that restarted and whose previous
+		// client had been working — leaves no residue in the map at all.
+		delete(s.reattach, id)
+	} else {
+		s.reattach[id] = st
+	}
+	if st.futile > maxFutileReattach {
+		// Said out loud rather than retried forever or dropped in silence.
+		// This stops on its own: with no client dialled there is no further
+		// death, so no further mark, so this line is printed once per id.
+		log.Printf("tmux: giving up re-attaching a content client session=%s after %d "+
+			"consecutive attempts that delivered nothing; its state changes are still "+
+			"detected fleet-wide (notifications are triggers, not data), only its own "+
+			"push latency is lost", id, maxFutileReattach)
+		return false
+	}
+	return true
+}
+
+// clearReattach forgets a session id's re-attach bookkeeping. Called when the
+// session is observed gone, so a later incarnation of the same id starts with a
+// full budget.
+func (s *eventStream) clearReattach(id string) {
+	s.mu.Lock()
+	delete(s.reattach, id)
+	s.mu.Unlock()
 }
 
 // attachContent opens a content client for a session that appeared after
@@ -723,6 +844,14 @@ func (s *eventStream) attachContent(ctx context.Context, sess fleet.Session) {
 	// accumulated history — and the leak would simply arrive more slowly.
 	//
 	// conns includes the lifecycle client, hence the +1.
+	//
+	// Since #172 a slot freed by a client's death can be refilled, by the
+	// session that vacated it, on the next read. That is a deliberate change to
+	// what the cap means over the life of a subscription — it bounds live
+	// clients rather than total dials — and it is the reading the descriptor
+	// budget behind the number actually cares about. It does not open the cap to
+	// new competition: only a marked id re-attaches, never every matching
+	// session on every pass.
 	if len(s.conns) >= maxContentClients+1 {
 		return
 	}
@@ -754,6 +883,14 @@ func (s *eventStream) attachContent(ctx context.Context, sess fleet.Session) {
 // kill-and-recreate case was not). Only this goroutine knows the client died,
 // so the reap belongs here rather than in the diff.
 //
+// Reaping alone left the second half of that case open (#172): the id stays in
+// the engine's `known` map, so the diff's !had branch — the only thing that opens
+// a content client — never fires for the new incarnation, and the session keeps
+// its place in the feed while silently losing its own push triggers. Before the
+// reap this was invisible, because the dead client sat in s.conns and the gap
+// looked like a live attachment. So this goroutine also leaves the re-attach mark
+// the next read acts on; see reattachState.
+//
 // Bounded where the lifecycle one was not (at most maxContentClients per
 // subscription), but not harmless: a dead entry also holds one of those
 // slots.
@@ -766,13 +903,31 @@ func (s *eventStream) attachContent(ctx context.Context, sess fleet.Session) {
 // under the same id in between, and closes it. Close is idempotent on both
 // transports, so detachContent having got there first is harmless.
 func (s *eventStream) pumpContent(ctx context.Context, session string, conn ctlConn) {
-	pump(conn.Notes(), s.trigger, isContentNote, ctx)
+	spoke := pump(conn.Notes(), s.trigger, isContentNote, ctx)
 	if ctx.Err() != nil {
 		return
 	}
 	s.mu.Lock()
 	if cur, ok := s.conns[session]; ok && cur == conn {
 		delete(s.conns, session)
+		// This client died while the stream still believed it was the live one
+		// for this id, so the session may well still be there — re-created
+		// under the same id (#172). Mark it for one re-attach on the next read.
+		//
+		// Marking only inside this branch is load-bearing twice over. The entry
+		// having already moved on means either detachContent closed this client
+		// because the engine saw the session gone, or a re-attach replaced it
+		// under the same id; in both cases somebody else already decided, and in
+		// the first the engine is about to clear this id's bookkeeping — so a
+		// mark set outside this branch could be one nothing ever clears.
+		st := s.reattach[session]
+		st.pending = true
+		if spoke {
+			st.futile = 0
+		} else {
+			st.futile++
+		}
+		s.reattach[session] = st
 	}
 	s.mu.Unlock()
 	_ = conn.Close()
@@ -834,6 +989,7 @@ func (s *eventStream) Close() error {
 		conns = append(conns, c)
 	}
 	s.conns = map[string]ctlConn{}
+	s.reattach = map[string]reattachState{}
 	s.mu.Unlock()
 
 	s.cancel()
