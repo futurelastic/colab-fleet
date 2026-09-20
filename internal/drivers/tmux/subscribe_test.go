@@ -64,6 +64,14 @@ type ctlRegistry struct {
 	mu      sync.Mutex
 	opened  []*fakeCtl
 	failFor map[string]bool
+	// dieFor names sessions whose attachment "succeeds" and then exits at once,
+	// without ever delivering a notification. Distinct from failFor on purpose:
+	// a dial that fails opens no client and so can never die, while this one
+	// produces a death per attempt — the shape a re-attach budget has to bound
+	// and a failing dial does not. Scoped per session so the lifecycle client,
+	// which lives on an arbitrary session, can stay healthy while a watched
+	// session flaps.
+	dieFor map[string]bool
 }
 
 func (r *ctlRegistry) dial(ctx context.Context, bin, session string) (ctlConn, error) {
@@ -74,7 +82,28 @@ func (r *ctlRegistry) dial(ctx context.Context, bin, session string) (ctlConn, e
 	}
 	c := &fakeCtl{session: session, notes: make(chan ctlNote, 16)}
 	r.opened = append(r.opened, c)
+	if r.dieFor[session] {
+		c.die()
+	}
 	return c, nil
+}
+
+// dialsFor counts the CONTENT clients ever opened for a session — including the
+// ones that have since died. Index 0 is the lifecycle client, skipped for the
+// reason contentFor gives.
+func (r *ctlRegistry) dialsFor(name string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for i, c := range r.opened {
+		if i == 0 {
+			continue
+		}
+		if c.session == name {
+			n++
+		}
+	}
+	return n
 }
 
 func (r *ctlRegistry) at(i int) *fakeCtl {
@@ -935,21 +964,27 @@ func TestContentClientWhoseSessionExitedIsReaped(t *testing.T) {
 	dead.die()
 
 	es := s.(*eventStream)
-	held := func() bool {
+	// Asserted by IDENTITY, not by absence. Since #172 the stream re-attaches a
+	// fresh client for a session whose client died while the session is still
+	// listed, so "no entry for beta" is true for one coalesce window and then
+	// stops being true — an absence assertion here would be a test racing a
+	// timer. What must never be true again is that THIS client, the dead one, is
+	// still the stream's client for beta.
+	heldDead := func() bool {
 		es.mu.Lock()
 		defer es.mu.Unlock()
-		_, ok := es.conns["beta"]
-		return ok
+		cur, ok := es.conns["beta"]
+		return ok && cur == ctlConn(dead)
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for (!dead.isClosed() || held()) && time.Now().Before(deadline) {
+	for (!dead.isClosed() || heldDead()) && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if !dead.isClosed() {
 		t.Error("content client exited with its session but was never closed; " +
 			"for a real client that is a subprocess nobody waits on")
 	}
-	if held() {
+	if heldDead() {
 		t.Error("the dead content client is still held by the stream, occupying a client slot")
 	}
 
@@ -972,4 +1007,259 @@ func TestContentClientWhoseSessionExitedIsReaped(t *testing.T) {
 	if !r.allClosed() {
 		t.Error("clients left open after Close")
 	}
+}
+
+// currentContent reads the client the stream considers live for a session,
+// which is the only thing that can answer "did it re-attach": the registry
+// records every client ever opened, and contentFor returns the first match —
+// after a re-attach that is the DEAD one.
+func currentContent(es *eventStream, id string) *fakeCtl {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	c, _ := es.conns[id].(*fakeCtl)
+	return c
+}
+
+// A session killed and re-created under the same id must get a NEW content
+// client while the subscription stays open (#172).
+//
+// Follow-up to #170, and only observable because of it. A content client dies
+// with its session; a session that exits and comes back under the same id
+// between two reads is never seen to close, so the engine's diff never takes
+// the one branch that opens a content client — the id never left `known`.
+// Before #170 the dead client sat in the stream's map and the gap looked like a
+// live attachment; after it, the state is a matching session in `known` with no
+// client at all, and this is the test that it does not stay that way.
+//
+// The fake multiplexer listing the session throughout IS the re-creation: from
+// the driver's side an incarnation it never saw leave is indistinguishable from
+// one that never left, which is exactly why the pump's mark is needed.
+func TestRecreatedSessionGetsANewContentClient(t *testing.T) {
+	f := twoSessions()
+	r := &ctlRegistry{}
+	d := newSubDriver(f, r)
+
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	es := s.(*eventStream)
+
+	dead := r.contentFor("beta")
+	if dead == nil {
+		t.Fatalf("expected a content client for beta, opened %d", r.count())
+	}
+	// The session exited: its client's notifications end, and nobody reaped it.
+	dead.die()
+
+	var fresh *fakeCtl
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if c := currentContent(es, "beta"); c != nil && c != dead {
+			fresh = c
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if fresh == nil {
+		t.Fatalf("the session is still listed and its content client died, but no new client was "+
+			"dialled for it (%d clients opened in total); its state changes have silently "+
+			"stopped being pushed for the life of the subscription", r.count())
+	}
+	if fresh.isClosed() {
+		t.Fatal("the replacement content client was closed on arrival")
+	}
+
+	// Present in the map is not the claim — being WIRED is. A client whose
+	// notifications do not reach the engine's trigger would satisfy every
+	// assertion above and still leave the session's push latency broken.
+	f.setCapture("%2", fixtureWorking)
+	fire(fresh, "output")
+
+	ev, ok := nextWithin(t, s, 3*time.Second)
+	if !ok {
+		t.Fatal("the replacement content client's notification drove no re-read; it is attached " +
+			"to the stream's map but not to its trigger")
+	}
+	if ev.Kind != fleet.EventSessionState {
+		t.Fatalf("want session.state, got %q", ev.Kind)
+	}
+	p, ok := ev.Payload.(fleet.SessionStatePayload)
+	if !ok {
+		t.Fatalf("payload type %T, want SessionStatePayload", ev.Payload)
+	}
+	if p.Ref.ID != "beta" || p.State.Status != fleet.StatusWorking {
+		t.Errorf("got %q -> %q, want beta -> working", p.Ref.ID, p.State.Status)
+	}
+
+	// The rest of the subscription is untouched by any of it.
+	if r.at(0).isClosed() {
+		t.Error("the lifecycle client was closed")
+	}
+	if c := r.contentFor("alpha💬"); c == nil || c.isClosed() {
+		t.Error("the other session's content client was disturbed")
+	}
+}
+
+// Re-attaching must be bounded, not merely rate-limited (#172).
+//
+// The re-attach is driven by a death, so a session that keeps enumerating while
+// every attachment to it dies at once produces a death per attempt: without a
+// budget that is one dial plus one full enumeration every coalesce window, for
+// as long as the subscription lives. This is the same re-dial storm that
+// disqualified re-attaching every matching session on every pass, reached from
+// the other direction, so the bound is measured here rather than assumed.
+//
+// A dial that FAILS is deliberately not this case and needs no budget: it opens
+// no client, so nothing dies and nothing marks the id.
+func TestReattachGivesUpOnAContentClientThatNeverWorks(t *testing.T) {
+	f := twoSessions()
+	// The lifecycle client attaches to the first enumerated session, so scoping
+	// the flap to beta leaves the supervisor out of it.
+	r := &ctlRegistry{dieFor: map[string]bool{"beta": true}}
+	d := newSubDriver(f, r)
+
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Registration order matters, and it is LIFO: the wait is registered first
+	// so that Close runs before it. A test that waits for the drain first hangs
+	// on every exit path, because at that point nothing has ended the stream.
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for {
+			if _, err := s.Next(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+	defer func() { <-drained }()
+	defer s.Close()
+
+	// One dial at subscribe time, then at most maxFutileReattach replacements.
+	want := 1 + maxFutileReattach
+	deadline := time.Now().Add(10 * time.Second)
+	for r.dialsFor("beta") < want && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := r.dialsFor("beta"); got != want {
+		t.Fatalf("dialled %d content clients for a session whose attachment always dies, want %d "+
+			"(one initial + %d re-attaches)", got, want, maxFutileReattach)
+	}
+
+	// And then it stops. Several coalesce windows with no growth is the bound;
+	// an unbounded implementation adds one dial per window.
+	time.Sleep(5 * coalesceWindow)
+	if got := r.dialsFor("beta"); got != want {
+		t.Errorf("still re-dialling after the budget was spent: %d clients, want %d — a session "+
+			"that lists but cannot be held costs one enumeration per coalesce window forever",
+			got, want)
+	}
+
+	// Giving up is scoped to that session. The subscription and everything else
+	// on it stay live.
+	es := s.(*eventStream)
+	es.mu.Lock()
+	closed := es.closed
+	es.mu.Unlock()
+	if closed {
+		t.Error("giving up on one session's content client closed the whole subscription")
+	}
+	if c := r.contentFor("alpha💬"); c == nil || c.isClosed() {
+		t.Error("the other session's content client was disturbed")
+	}
+	if r.at(0).isClosed() {
+		t.Error("the lifecycle client was closed")
+	}
+}
+
+// A session observed to close must not carry its futile count into a later
+// incarnation of the same id (#172).
+//
+// Session ids are reused — a launcher re-creating the same named session is the
+// ordinary case, not an exotic one. A budget that was never cleared would make a
+// subscription progressively deafer to one name the longer it ran, and the
+// symptom would be latency: the hardest kind of bug to attribute to a counter
+// nobody reset.
+func TestReattachBudgetResetsWhenTheSessionIsObservedGone(t *testing.T) {
+	f := twoSessions()
+	r := &ctlRegistry{}
+	d := newSubDriver(f, r)
+
+	s, err := d.Subscribe(context.Background(), testCaller, driver.SubscribeFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := s.(*eventStream)
+	// Registration order matters, and it is LIFO: the wait is registered first
+	// so that Close runs before it. A test that waits for the drain first hangs
+	// on every exit path, because at that point nothing has ended the stream.
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for {
+			if _, err := s.Next(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+	defer func() { <-drained }()
+	defer s.Close()
+
+	// A session this stream can watch appear and disappear, so the whole
+	// lifecycle runs through the engine's own diff rather than being arranged.
+	f.addSession(fakeSession{
+		name: "gamma", paneID: "%9", cwd: "/work/gamma", pid: 300, created: 1785600002,
+	}, idleFixtureFor("gamma"))
+	fire(r.at(0), "sessions-changed")
+
+	var born *fakeCtl
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if c := currentContent(es, "gamma"); c != nil {
+			born = c
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if born == nil {
+		t.Fatal("a session appeared and matched the filter but got no content client")
+	}
+
+	// It dies having said nothing, which spends one unit of the budget.
+	born.die()
+	spent := func() int {
+		es.mu.Lock()
+		defer es.mu.Unlock()
+		return es.reattach["gamma"].futile
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for spent() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if spent() == 0 {
+		t.Fatal("a content client died without delivering anything and nothing was counted " +
+			"against the re-attach budget")
+	}
+
+	// Now the session really goes away, and the engine sees it go: everything
+	// the stream remembers about that id is stale, the counter included.
+	f.dropLastSession()
+	fire(r.at(0), "sessions-changed")
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		es.mu.Lock()
+		_, held := es.reattach["gamma"]
+		es.mu.Unlock()
+		if !held {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("gamma closed but its re-attach bookkeeping survived (futile=%d); a reused session "+
+		"id would start its next life with a spent budget", spent())
 }
