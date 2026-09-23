@@ -1,0 +1,21 @@
+{
+  "name": "multi-select-first-of-two",
+  "for": "The first, multi-select, question of a two-question dialog, captured live with nothing ticked. Differs from multi-select-question in the tab bar (two question tabs before Submit), the in-menu row (Next rather than Submit) and the footer (the tabbed dialog's). Pins that multiSelect is recognised inside a multi-question dialog too, where respond's choices moves the dialog on to the next question rather than to the review screen (#176).",
+  "source": "#176",
+  "redactedFrom": "real capture, redacted by corpus-redact (one runtime build, 2026-09-23)",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "waiting_input",
+      "wantMultiSelect": true
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "waiting_input",
+      "wantMultiSelect": true
+    }
+  ]
+}

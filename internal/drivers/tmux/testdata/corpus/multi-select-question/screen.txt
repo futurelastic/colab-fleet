@@ -1,0 +1,40 @@
+
+ [redacted]
+[redacted]
+  [redacted]
+
+
+❯ <input>
+  [redacted]
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ [redacted]  ✔ Submit  →
+
+[redacted]
+
+❯ 1. [✔] [redacted]
+         [redacted]
+  2. [ ] [redacted]
+         [redacted]
+  3. [✔] [redacted]
+         [redacted]
+  4. [ ] Type something
+     [redacted]
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

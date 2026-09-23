@@ -500,6 +500,7 @@ SessionPrompt {
   selected?: number        // the highlighted option
   nonce    : string        // changes when the prompt changes
   kind?    : PromptKind    // what the driver thinks is being asked; advisory, fails to absent
+  multiSelect? : boolean   // the leading options are checkboxes; answer with Response.choices
 }
 
 PromptKind =
@@ -557,6 +558,20 @@ Deciding what to answer stays a caller's judgement; see `prompt.go`'s
 is deliberately unreachable by option matching. (Was undocumented in this
 block until colab-fleet issue #57; see api-http.md §3.3 for its wire history.)
 
+**`multiSelect` says a question is answered with a set, not an index**
+(colab-fleet issue #176). On a multi-select question the leading options are
+checkboxes, their tick state painted into the option text itself, and a single
+index flips one box rather than answering anything. So a driver that can
+corroborate the shape sets `multiSelect`, and the caller answers with
+`Response.choices` (§2.7a). Like `kind` it fails to absent: `false` means "not
+recognised as multi-select", and a caller must never send `choices` to a prompt
+that does not carry it. That rule also makes the field the capability signal —
+a driver that predates `choices` never reports `multiSelect` either, so a caller
+following it cannot send a set to a driver that would ignore the set and read
+the rest of the body as "accept the highlighted option". Because the tick state
+is part of the option text, it is part of what `nonce` digests: an answer to a
+tick state that has since changed is refused like any other stale answer.
+
 **A directory-trust question can also be pre-answered, standing outside a
 create request entirely.** `Consents`/`TrustCwd` scope a caller's answer to
 the one session it is creating — the caller named that directory in the same
@@ -583,9 +598,10 @@ sessions hold it open.
 
 ```
 Response {
-  choice? : number     // 1-based option; absent means the highlighted default
-  cancel? : boolean    // dismiss rather than answer
-  nonce?  : string     // the SessionPrompt.nonce being answered
+  choice?  : number     // 1-based option; absent means the highlighted default
+  choices? : number[]   // multi-select only: exactly the options to leave ticked
+  cancel?  : boolean    // dismiss rather than answer
+  nonce?   : string     // the SessionPrompt.nonce being answered
 }
 ```
 
@@ -605,6 +621,25 @@ on screen, and a driver that answers unchecked must say so in the receipt.
 (Undocumented in this block until colab-fleet issue #57 — it was already on
 the wire, api-http.md §3.3's `respond`, and on `response.go`'s `Response`
 since before this block was last touched.)
+
+**`choices` answers a multi-select question with a set** (colab-fleet issue
+#176), and only a prompt carrying `multiSelect` (§2.7). It names the END state
+— these boxes ticked, every other box clear — so the driver flips only the
+boxes that differ from the screen, and sending the same set twice asks for the
+same result twice; a sequence of toggles would not have that property, since a
+resent toggle undoes itself. With a nonce, a resend after the first call
+succeeded is refused outright: the question has moved on. After a partial
+failure the tick state has changed, so a resend is refused too, and the caller
+reads the state again and sends the same set with the new nonce.
+
+`choices` then moves the dialog ONE step on — to the next question, or to the
+dialog's review screen — and stops. It never confirms that review screen:
+handing the answers over is its own prompt with its own nonce, answered with
+`choice`, so the step that commits is never taken on the strength of an
+earlier read. `choices` cannot be combined with `choice` or `cancel`, and
+cannot be empty — an empty set, marshalled onward with `omitempty`, would
+reach the next hop as an empty body, which means "accept the highlighted
+option". Those are faults in the request, rejected before any driver sees it.
 
 ### 2.8 AttachHint
 
@@ -3636,6 +3671,38 @@ then `C-m`. If the highlight does not arrive, nothing is confirmed.
 > not.** #168 had just measured that a digit commits on a numbered menu. The
 > same digit on this menu is inert, so a delivery rule measured on one shape
 > of menu is evidence about that shape only.
+
+**F61 · A multi-select question could be ticked but never answered.** On a
+question asking for several options, `respond` with a `choice` flipped one
+checkbox and reported `submitted` — the flipped tick changed the option text,
+so the nonce changed, and "the prompt changed" read as "the prompt cleared".
+The control that finishes the question is not an option at all: a `Submit`
+tab in the dialog's tab bar, reached by arrow key. The question stayed open
+until a person pressed keys into the pane (#176).
+
+Measured live, on a single-question and a two-question dialog: the boxes
+paint as `[ ] Label` / `[✔] Label`, and the free-text row carries a box too; a
+digit flips that box without moving the highlight or advancing; `C-m` flips
+the highlighted box; `Right` moves to the next tab with the ticks kept, and
+after the last question that tab is the same review screen #159
+recognised, whose `1` hands the answers over. And one trap: `Right` is
+swallowed while the highlight sits on the free-text row, the unnumbered
+`Submit` row below it, or the chat row — the text field keeps focus — and so
+is a digit, which is TYPED into that field instead of flipping a box. The
+unit model missed the second half; the live end-to-end run caught it, and
+the per-key read-back turned it into an `unknown` with nothing further sent.
+So the driver first walks the highlight up onto a checkbox, one press at a
+time, before any other key.
+
+So a multi-select question is now reported (`multiSelect`), answered with a
+set (`choices`) that names the end state rather than the moves, and advanced
+one step — never confirmed. A single `choice` on a checkbox, and accepting
+the highlighted row, are refused instead of reported as answers.
+
+> **A changed nonce proves the screen changed, not that the question was
+> answered.** `respond` read "different prompt" as "cleared", which is right
+> when a digit commits and wrong when it toggles. The receipt was built on the
+> first kind of menu and trusted on the second.
 
 ### The pattern worth naming
 

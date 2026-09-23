@@ -1,0 +1,21 @@
+{
+  "name": "multi-select-question",
+  "for": "A single-question multi-select dialog, captured live with two of three boxes ticked and the highlight on the first. Before #176 it classified correctly as waiting_input and still could not be answered: respond's choice flipped one box and reported submitted, and the control that finishes the question is a tab reached by arrow key, not an option. This case pins that the screen is read whole — checkbox glyphs kept in the option text (so a tick change is a nonce change), the tab bar that corroborates the shape, the boxed free-text row counted as an escape row rather than a choice — and reported as multiSelect, which is what licenses respond's choices keystroke sequence.",
+  "source": "#176",
+  "redactedFrom": "real capture, redacted by corpus-redact (one runtime build, 2026-09-23)",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "waiting_input",
+      "wantMultiSelect": true
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "waiting_input",
+      "wantMultiSelect": true
+    }
+  ]
+}

@@ -4054,6 +4054,40 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		}, nil
 	}
 
+	// colab-fleet#176: a multi-select question is answered with a set, and
+	// only a multi-select question is. Everything here is decided from the
+	// screen already read, before any key is sent.
+	if err := resp.Validate(); err != nil {
+		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: err.Error()}, nil
+	}
+	boxes := 0
+	if before.MultiSelect && !unnumbered {
+		boxes = multiSelectBoxes(before)
+	}
+	switch {
+	case len(resp.Choices) > 0 && boxes == 0:
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "choices answers a multi-select question, and this prompt is not " +
+				"recognised as one (prompt.multiSelect is not set); answer it with choice",
+		}, nil
+	case len(resp.Choices) > 0:
+		return d.answerMultiSelect(ctx, target.paneID, before, boxes, resp)
+	case boxes > 0 && !resp.Cancel && resp.Choice <= boxes:
+		// Measured: on a checkbox row a digit flips that one box and C-m
+		// flips the highlighted one, and neither moves the dialog on. So a
+		// single choice — or "accept the highlighted option" — answers
+		// nothing, and before this refusal it was reported as submitted,
+		// because the flipped tick changed the nonce.
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "this is a multi-select question (prompt.multiSelect): a single " +
+				"choice, or accepting the highlighted row, would only flip one checkbox " +
+				"and answer nothing. Send choices with every option that should end up " +
+				"ticked",
+		}, nil
+	}
+
 	// C-m rather than Enter — see confirmLanded for the measurement behind
 	// this. A prompt that swallows the keypress leaves the session blocked,
 	// which is the failure this operation exists to end.
@@ -5911,31 +5945,279 @@ func (d *Driver) walkHighlight(ctx context.Context, paneID string, before *fleet
 		return false, "", err
 	}
 	target := "option " + strconv.Itoa(choice) + " (" + before.Options[choice-1] + ")"
+	verdict, _ := d.awaitPrompt(ctx, paneID, func(now *fleet.SessionPrompt) promptVerdict {
+		switch {
+		case now == nil || now.Nonce != before.Nonce:
+			return promptDiverged
+		case now.Selected == choice:
+			return promptArrived
+		}
+		return promptPending
+	})
+	switch verdict {
+	case promptArrived:
+		return true, "", nil
+	case promptDiverged:
+		return false, "pressed " + key + " to move the highlight toward " + target +
+			" on a menu without numbers, and the prompt changed before anything " +
+			"was confirmed; no confirm key was sent", nil
+	}
+	return false, "pressed " + key + " " + strconv.Itoa(n) + " time(s) to reach " + target +
+		" on a menu without numbers, but the highlight did not arrive there; no " +
+		"confirm key was sent, so the prompt is still up and unanswered, with the " +
+		"highlight possibly moved", nil
+}
+
+// promptVerdict is what one read of the pane says about a key just sent.
+type promptVerdict int
+
+const (
+	// promptPending: not there yet — read again until the window closes.
+	promptPending promptVerdict = iota
+	// promptArrived: the screen shows what the key was sent to produce.
+	promptArrived
+	// promptDiverged: the screen shows something else entirely; waiting
+	// longer cannot turn it into the expected result.
+	promptDiverged
+)
+
+// awaitPrompt re-reads the pane until judge says the key it follows has
+// either landed or gone somewhere else, or promptClearWindow runs out
+// (reported as promptPending, with the last prompt read). It is the one
+// read-after-keypress loop the respond paths share, so every key they send is
+// corroborated the same way rather than each path growing its own timing.
+func (d *Driver) awaitPrompt(ctx context.Context, paneID string, judge func(*fleet.SessionPrompt) promptVerdict) (promptVerdict, *fleet.SessionPrompt) {
 	deadline := d.now().Add(promptClearWindow)
+	var last *fleet.SessionPrompt
 	for {
 		if sc, ok := d.captureForClassify(ctx, paneID); ok {
-			now, _ := parsePromptMenu(sc)
-			if now == nil || now.Nonce != before.Nonce {
-				return false, "pressed " + key + " to move the highlight toward " + target +
-					" on a menu without numbers, and the prompt changed before anything " +
-					"was confirmed; no confirm key was sent", nil
-			}
-			if now.Selected == choice {
-				return true, "", nil
+			last, _ = parsePromptMenu(sc)
+			if v := judge(last); v != promptPending {
+				return v, last
 			}
 		}
 		if d.now().After(deadline) || ctx.Err() != nil {
-			break
+			return promptPending, last
 		}
 		select {
 		case <-ctx.Done():
 		case <-time.After(promptClearInterval):
 		}
 	}
-	return false, "pressed " + key + " " + strconv.Itoa(n) + " time(s) to reach " + target +
-		" on a menu without numbers, but the highlight did not arrive there; no " +
-		"confirm key was sent, so the prompt is still up and unanswered, with the " +
-		"highlight possibly moved", nil
+}
+
+// sameMultiSelectQuestion reports whether b is still the multi-select question
+// a was: the same option labels with the checkboxes set aside, and the same
+// question text with the tab bar's per-question ☐/☒ set aside (ticking the
+// first box flips this question's own tab from ☐ to ☒). Tick state is what
+// the caller is changing, so it is exactly what this comparison ignores.
+func sameMultiSelectQuestion(a, b *fleet.SessionPrompt) bool {
+	if a == nil || b == nil || !b.MultiSelect || len(a.Options) != len(b.Options) {
+		return false
+	}
+	for i := range a.Options {
+		la, _, _ := checkboxLabel(a.Options[i])
+		lb, _, _ := checkboxLabel(b.Options[i])
+		if la != lb {
+			return false
+		}
+	}
+	unbox := strings.NewReplacer("☒", "☐")
+	return unbox.Replace(a.Question) == unbox.Replace(b.Question)
+}
+
+// answerMultiSelect answers a multi-select question with a set
+// (colab-fleet#176): it flips exactly the boxes whose tick differs from the
+// set, then moves the dialog on ONE step — to the next question, or to the
+// review screen #159 recognises — and stops there. It never confirms the
+// review screen; that is the caller's own choice on its own nonce.
+//
+// # What was measured, and what each step reuses
+//
+// Live, on one runtime build, on a single-question and a two-question
+// dialog:
+//
+//   - a digit flips that box and nothing else — the highlight does not move
+//     and the dialog does not advance — so it is #168's digit-alone keypress,
+//     sent once per box, never as a burst (#168 measured a burst losing a
+//     digit), and each flip is read back before the next is sent;
+//   - Right moves to the next tab, ticks kept — and after the last question
+//     that tab is the review screen, "Ready to submit your answers?" over
+//     Submit answers / Cancel, the exact chrome reviewScreenPrompt matches;
+//   - off the checkboxes — on the free-text row, the unnumbered Submit row
+//     below it, or the chat row — the free-text field has focus: Right moves
+//     its cursor and the dialog stays put, and a digit is TYPED into it
+//     rather than flipping a box (found by the live end-to-end run, after
+//     the unit model had missed it). Up from any of them walks back one row
+//     at a time to the last checkbox. So before any other key the highlight
+//     is moved onto a checkbox row, one Up at a time, each read back.
+//
+// Every key is followed by a read (awaitPrompt). A key that did not land
+// stops the sequence there: nothing further is sent, and the receipt says
+// which boxes were already flipped. Resending the same set with the fresh
+// nonce is then safe, because the set names the end state, not the moves.
+func (d *Driver) answerMultiSelect(ctx context.Context, paneID string, before *fleet.SessionPrompt, boxes int, resp fleet.Response) (fleet.DeliveryReceipt, error) {
+	for _, c := range resp.Choices {
+		if c > boxes {
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason: "option " + strconv.Itoa(c) + " is not a checkbox on this " +
+					"question; its checkboxes are options 1-" + strconv.Itoa(boxes),
+			}, nil
+		}
+	}
+	if boxes > 9 {
+		// A digit is one keypress for 1-9 only; this shape has not been
+		// seen with more boxes, and guessing its keys is not answering.
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason:  "this question has more checkboxes than one digit can reach",
+		}, nil
+	}
+	want := make([]bool, boxes)
+	for _, c := range resp.Choices {
+		want[c-1] = true
+	}
+	have := promptTicks(before, boxes)
+
+	label := func(i int) string {
+		l, _, _ := checkboxLabel(before.Options[i-1])
+		return strconv.Itoa(i) + " (" + l + ")"
+	}
+	var done []string
+	progress := func() string {
+		if len(done) == 0 {
+			return "no box was flipped"
+		}
+		return "flipped " + strings.Join(done, ", ")
+	}
+	resend := "; nothing further was sent. Read the state again and resend the same " +
+		"choices with the new nonce: the set names the end state, so the boxes " +
+		"already flipped are not flipped twice"
+	unknown := func(what string) (fleet.DeliveryReceipt, error) {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeUnknown,
+			Reason:  progress() + "; " + what + resend,
+		}, nil
+	}
+
+	cur := before
+	// The highlight goes onto a checkbox FIRST, before any digit. Off the
+	// checkboxes the free-text field has focus (measured): a digit is typed
+	// into it instead of flipping a box, and Right moves its cursor instead
+	// of the dialog. Each Up is read back; the bound is the rows below the
+	// boxes, plus the unnumbered Submit row.
+	for press := 0; cur.Selected < 1 || cur.Selected > boxes; press++ {
+		if press > len(cur.Options)-boxes+1 {
+			return unknown("the highlight could not be moved onto a checkbox row, " +
+				"where the key that moves the dialog on is not swallowed")
+		}
+		if _, err := d.run(ctx, d.bin, "send-keys", "-t", paneID, "Up"); err != nil {
+			return fleet.DeliveryReceipt{}, fmt.Errorf("respond: %w", err)
+		}
+		prev := cur
+		verdict, now := d.awaitPrompt(ctx, paneID, func(now *fleet.SessionPrompt) promptVerdict {
+			switch {
+			case !sameMultiSelectQuestion(prev, now):
+				return promptDiverged
+			case now.Selected != prev.Selected:
+				return promptArrived
+			}
+			return promptPending
+		})
+		if verdict != promptArrived {
+			return unknown("the highlight did not move off a row where the key " +
+				"that moves the dialog on is swallowed")
+		}
+		cur = now
+	}
+
+	for i := 1; i <= boxes; i++ {
+		if want[i-1] == have[i-1] {
+			continue
+		}
+		if _, err := d.run(ctx, d.bin, "send-keys", "-t", paneID, strconv.Itoa(i)); err != nil {
+			return fleet.DeliveryReceipt{}, fmt.Errorf("respond: %w", err)
+		}
+		prev := cur
+		verdict, now := d.awaitPrompt(ctx, paneID, func(now *fleet.SessionPrompt) promptVerdict {
+			if !sameMultiSelectQuestion(prev, now) {
+				return promptDiverged
+			}
+			got := promptTicks(now, boxes)
+			old := promptTicks(prev, boxes)
+			for j := range got {
+				if (j == i-1) == (got[j] == old[j]) {
+					return promptPending
+				}
+			}
+			return promptArrived
+		})
+		switch verdict {
+		case promptDiverged:
+			return unknown("the question changed after option " + label(i) +
+				" was pressed, so it was not confirmed flipped")
+		case promptPending:
+			return unknown("option " + label(i) + " did not read back as flipped")
+		}
+		cur = now
+		done = append(done, label(i))
+	}
+
+	if _, err := d.run(ctx, d.bin, "send-keys", "-t", paneID, "Right"); err != nil {
+		return fleet.DeliveryReceipt{}, fmt.Errorf("respond: %w", err)
+	}
+	prev := cur
+	verdict, next := d.awaitPrompt(ctx, paneID, func(now *fleet.SessionPrompt) promptVerdict {
+		switch {
+		case now == nil:
+			return promptPending // a repaint mid-frame, or the dialog closed: read on
+		case sameMultiSelectQuestion(prev, now):
+			return promptPending
+		}
+		return promptArrived
+	})
+
+	var ticked []string
+	for i := 1; i <= boxes; i++ {
+		if want[i-1] {
+			ticked = append(ticked, label(i))
+		}
+	}
+	answered := "ticked " + strings.Join(ticked, ", ")
+	if len(done) > 0 {
+		answered += " (" + progress() + ")"
+	} else {
+		answered += " (already ticked exactly so; no box was flipped)"
+	}
+	if resp.Nonce == "" {
+		answered += "; answered without a nonce, so nothing verified the prompt " +
+			"had not changed since it was read"
+	}
+	switch {
+	case verdict == promptArrived && reviewScreenPrompt(next):
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeSubmitted,
+			Reason: answered + ", and moved on to the dialog's review screen. The " +
+				"answers are NOT handed over yet: answer that screen with choice 1 " +
+				"(Submit answers) and its own nonce",
+		}, nil
+	case verdict == promptArrived:
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeSubmitted,
+			Reason:  answered + ", and moved on to the next question of the dialog",
+		}, nil
+	case next == nil:
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeSubmitted,
+			Reason:  answered + ", and the question left the screen with no prompt in its place",
+		}, nil
+	}
+	return fleet.DeliveryReceipt{
+		Outcome: fleet.OutcomeUnknown,
+		Reason: answered + ", but the dialog did not move on: the question is still " +
+			"on screen with those ticks. Read the state again before answering further",
+	}, nil
 }
 
 // promptCleared waits briefly for the answered prompt to leave the screen.

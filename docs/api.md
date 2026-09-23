@@ -317,6 +317,25 @@ once it sits on the chosen row. If the highlight does not arrive, the receipt is
 `unknown`, nothing is confirmed, and the prompt stays up (the highlight may have
 moved).
 
+**Multi-select questions** report `prompt.multiSelect: true`; their leading
+options are checkboxes, painted `[ ] Label` / `[✔] Label`. Answer them with a set
+instead of `choice`:
+
+```json
+{ "choices": [1, 3], "nonce": "…" }
+```
+
+The driver ticks exactly those boxes and clears the rest, flipping only the
+ones that differ and reading each flip back, then moves the dialog one step on
+— to the next question, or to its review screen — and stops there. The answers
+are handed over only when you answer that review screen (`Ready to submit your
+answers?`) with `{"choice": 1, "nonce": "…"}` and its own nonce. `choice` on a
+checkbox row, and accepting the highlighted row, are refused on a multi-select
+question: each would flip one box and answer nothing. `choices` is a `400` when
+empty, repeated, below 1, or combined with `choice` or `cancel`. Send it only to
+a prompt reporting `multiSelect` — an older peer never reports the field, and
+would read the rest of the body as "accept the highlighted option".
+
 `respond` refuses when it sees no prompt it recognises. That refusal is its
 safety property, and it is why raw keys are a separate endpoint rather than a
 flag here.
