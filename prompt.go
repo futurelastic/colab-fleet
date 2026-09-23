@@ -168,6 +168,20 @@ type SessionPrompt struct {
 	// confirmation would accept. Never assume it is the safe one.
 	Selected int `json:"selected,omitempty"`
 
+	// MultiSelect reports that this is a multi-select question: its first
+	// options are checkboxes, painted with their tick state in the option
+	// text ("[ ] …" clear, "[✔] …" ticked, on the one runtime measured), and
+	// a single Choice would flip one box rather than answer anything. Answer
+	// it with Response.Choices instead.
+	//
+	// False means "not recognised as multi-select", not "known to be
+	// single-select": a driver sets it only on a shape it can corroborate,
+	// and a caller must never send Choices to a prompt without it. An older
+	// peer that has never heard of Choices never reports this field either,
+	// so the field doubles as the capability signal — a caller that follows
+	// the rule cannot send Choices to a driver that would ignore it.
+	MultiSelect bool `json:"multiSelect,omitempty"`
+
 	// Kind is what the driver thinks is being asked, or empty when it does
 	// not recognise the question. Advisory — see PromptKind. Empty must never
 	// be read as "safe to answer".

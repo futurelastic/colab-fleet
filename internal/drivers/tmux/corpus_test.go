@@ -42,6 +42,13 @@ type corpusObservation struct {
 	// classified to a perfectly correct `idle`, and the whole defect was the
 	// second fact nothing carried.
 	WantControlChannel string `json:"wantControlChannel,omitempty"`
+	// WantMultiSelect, when present, is what the observation's prompt must
+	// report as multiSelect (#176) — true for a checkbox question, false for
+	// a screen that must not read as one. Absent means the case does not
+	// speak to it, same as WantControlChannel. A true expectation with no
+	// prompt at all is a failure: the flag licenses a keystroke sequence, so
+	// the case exists to prove the screen that carries it is read whole.
+	WantMultiSelect *bool `json:"wantMultiSelect,omitempty"`
 }
 
 // corpusCase is one testdata/corpus/<name>/case.json.
@@ -150,6 +157,13 @@ func TestCorpusReplaysToItsStatedState(t *testing.T) {
 					case string(got.ControlChannel.State) != obs.WantControlChannel:
 						t.Errorf("observation %d (t+%ds): control channel = %q, want %q",
 							i, obs.AfterSeconds, got.ControlChannel.State, obs.WantControlChannel)
+					}
+				}
+				if obs.WantMultiSelect != nil {
+					gotMS := got.Prompt != nil && got.Prompt.MultiSelect
+					if gotMS != *obs.WantMultiSelect {
+						t.Errorf("observation %d (t+%ds): prompt multiSelect = %v, want %v (prompt: %+v)",
+							i, obs.AfterSeconds, gotMS, *obs.WantMultiSelect, got.Prompt)
 					}
 				}
 				want := fleet.Status(obs.Want)

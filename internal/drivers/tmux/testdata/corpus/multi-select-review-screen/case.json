@@ -1,0 +1,21 @@
+{
+  "name": "multi-select-review-screen",
+  "for": "The review screen a multi-select question moves on to, captured live (#176) after ticking two boxes and pressing Right — the first real capture of this screen in the corpus; multi-question-review-screen was reconstructed from the runtime's binary. It carries the same tab bar as the question before it, so this case pins that the tab bar alone does not make a prompt multi-select: this screen must stay an ordinary two-option prompt that respond answers with choice 1, never a target for choices.",
+  "source": "#176",
+  "redactedFrom": "real capture, redacted by corpus-redact (one runtime build, 2026-09-23)",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "waiting_input",
+      "wantMultiSelect": false
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "waiting_input",
+      "wantMultiSelect": false
+    }
+  ]
+}

@@ -372,6 +372,18 @@ POST /v1/machines/{machine}/sessions/{id}/respond
   your answers?" over `Submit answers` / `Cancel`) is recognised by that fixed
   chrome and reported at once — still with no `kind`, because submitting answers
   somebody else chose is not a question to automate.
+- A **multi-select** question reports `multiSelect: true`, and its checkbox
+  options carry their tick in the text (`[ ] Apple`, `[✔] Cherry`). Answer it
+  with a set, never with `choice`:
+  ```
+  { "choices": [1, 3], "nonce": "…" }   → submitted, "…moved on to the dialog's review screen…"
+  { "choice": 1, "nonce": "<the review screen's nonce>" }   → submitted: now it is answered
+  ```
+  The first call leaves exactly those boxes ticked and moves the dialog one step
+  on; the answers reach the agent only on the second. Re-read state between the
+  two — the review screen is a new prompt with a new nonce. On `unknown`, read
+  again and resend the SAME set with the new nonce: it names the end state, so
+  nothing gets flipped twice. Send `choices` only when `multiSelect` is true.
 - **Never blindly accept the default.** A real prompt in the wild highlights
   `No, exit` — a client that reflexively confirms would kill the session it was
   trying to start. That is why `options` and `selected` are both on the wire.

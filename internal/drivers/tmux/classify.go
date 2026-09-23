@@ -683,6 +683,7 @@ func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 	// highlighted. That is the question, and it is what a caller has to answer.
 	p = &fleet.SessionPrompt{}
 	footer := false
+	tabBar := false
 	var question []string
 	from := 0
 	if len(s.lines) > promptScanDepth {
@@ -726,6 +727,9 @@ func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 			strings.Contains(line, amendFooter) {
 			footer = true
 			continue
+		}
+		if len(p.Options) == 0 && isDialogTabBar(line) {
+			tabBar = true
 		}
 		if len(p.Options) == 0 && !isRule(line) {
 			question = append(question, line)
@@ -772,7 +776,112 @@ func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 	}
 	p.Question = strings.Join(question, " ")
 	p.Nonce = promptNonce(p)
+	p.MultiSelect = tabBar && multiSelectBoxes(p) > 0
 	return p, false
+}
+
+// The checkbox glyphs a multi-select question paints in front of each option
+// label (colab-fleet#176), measured live on one runtime build: a clear box and
+// a ticked one. They stay in the option text — that text is what the nonce
+// digests, so a changed tick is a changed prompt, which is exactly what makes
+// an answer to a stale tick state refusable.
+const (
+	checkboxClear  = "[ ] "
+	checkboxTicked = "[✔] "
+)
+
+// checkboxLabel splits an option into its label and its checkbox, if it has
+// one.
+func checkboxLabel(o string) (label string, ticked, box bool) {
+	switch {
+	case strings.HasPrefix(o, checkboxClear):
+		return strings.TrimPrefix(o, checkboxClear), false, true
+	case strings.HasPrefix(o, checkboxTicked):
+		return strings.TrimPrefix(o, checkboxTicked), true, true
+	}
+	return o, false, false
+}
+
+// isEscapeAffordance reports whether an option label, whole, is one of the
+// two rows the runtime appends to every agent-asked question: the free-text
+// row and the chat row. Whole-label, not prefix: an agent's own option that
+// merely begins with the words is still the agent's option.
+func isEscapeAffordance(label string) bool {
+	l := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(label)), ".")
+	return l == "type something" || l == "chat about this"
+}
+
+// isDialogTabBar recognises the tab row above a question in the runtime's
+// question dialog: `←  ☐ <header>  ✔ Submit  →`, one `☐`/`☒` per question.
+// Measured on a single-question multi-select dialog and a two-question one
+// (colab-fleet#176); the same row #168 modelled for tabbed dialogs.
+func isDialogTabBar(line string) bool {
+	return strings.HasPrefix(line, "←") && strings.HasSuffix(line, "→") &&
+		strings.Contains(line, "✔ Submit")
+}
+
+// multiSelectBoxes returns how many of a parsed prompt's options are the
+// question's own checkboxes — the options a Response.Choices may name — or 0
+// when the prompt is not recognised as multi-select at all.
+//
+// # What was measured (colab-fleet#176, one runtime build, live)
+//
+//	←  ☒ Fruit  ✔ Submit  →
+//	Which fruits do you like?
+//	❯ 1. [✔] Apple
+//	  2. [ ] Banana
+//	  3. [✔] Cherry
+//	  4. [ ] Type something
+//	     Submit
+//	────────────────
+//	  5. Chat about this
+//	Enter to select · ↑/↓ to navigate · Esc to cancel
+//
+// The free-text row carries a box too, and is NOT a choice: selecting it
+// opens a text field. So the answerable run is the leading boxed options up
+// to the first escape affordance, and everything after that run must be one
+// of the runtime's two escape rows. The unnumbered "Submit" row (or "Next",
+// inside a multi-question dialog) is not an option at all and never parses
+// as one.
+//
+// Every condition is required, and failing one yields 0 — "not recognised",
+// never a guess. The tab-bar requirement is checked by the caller, from the
+// raw lines: it is what keeps an agent's own `[ ] todo` checklist, painted
+// into a transcript above an ordinary menu, from reading as a multi-select
+// question.
+func multiSelectBoxes(p *fleet.SessionPrompt) int {
+	if p == nil || !optionsAreContiguous(p.Options) {
+		return 0
+	}
+	boxes := 0
+	for _, o := range p.Options {
+		label, _, box := checkboxLabel(o)
+		if !box || isEscapeAffordance(label) {
+			break
+		}
+		boxes++
+	}
+	if boxes == 0 || boxes == len(p.Options) {
+		// No boxes, or no escape row after them: not the measured shape.
+		return 0
+	}
+	for _, o := range p.Options[boxes:] {
+		label, _, _ := checkboxLabel(o)
+		if !isEscapeAffordance(label) {
+			return 0
+		}
+	}
+	return boxes
+}
+
+// promptTicks reports which of a multi-select question's first boxes options
+// are ticked, 0-based.
+func promptTicks(p *fleet.SessionPrompt, boxes int) []bool {
+	out := make([]bool, boxes)
+	for i := 0; i < boxes && i < len(p.Options); i++ {
+		_, out[i], _ = checkboxLabel(p.Options[i])
+	}
+	return out
 }
 
 // unnumberedMenu recognises a select menu whose options carry no numbers
@@ -1226,7 +1335,14 @@ func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
 	}
 	lower := make([]string, 0, len(p.Options))
 	for _, o := range p.Options {
-		lower = append(lower, strings.ToLower(o))
+		// A multi-select question paints a checkbox in front of every label,
+		// the free-text row's included (colab-fleet#176). Stripped here so
+		// the agent-question guard below still sees "type something" at the
+		// start of that row — with the box left on, the guard missed, and an
+		// agent's checkbox option reading "allow this" could be labelled a
+		// tool permission.
+		label, _, _ := checkboxLabel(o)
+		lower = append(lower, strings.ToLower(label))
 	}
 	// Agent-authored question → not a runtime dialog, whatever it resembles.
 	for _, o := range lower {

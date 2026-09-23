@@ -127,3 +127,25 @@ func TestRedactRuleLineWithLabelIsAFixedPoint(t *testing.T) {
 		t.Errorf("not a fixed point: first pass %q, second pass %q", once, twice)
 	}
 }
+
+// colab-fleet#176: a multi-select question's checkbox glyphs and its dialog
+// tab bar are what corroborate the shape, so redaction keeps them — and only
+// them: the labels and question headers are the agent's words.
+func TestRedactKeepsMultiSelectChromeAndNothingElse(t *testing.T) {
+	cases := map[string]string{
+		"  1. [✔] A private label":             "  1. [✔] " + placeholderToken,
+		"❯ 2. [ ] Another private label":       "❯ 2. [ ] " + placeholderToken,
+		"  4. [ ] Type something":              "  4. [ ] Type something",
+		"←  ☒ Secret  ☐ Other  ✔ Submit  →":    "←  ☒ " + placeholderToken + "  ☐ " + placeholderToken + "  ✔ Submit  →",
+		"←  ☐ Header with spaces  ✔ Submit  →": "←  ☐ " + placeholderToken + "  ✔ Submit  →",
+	}
+	for in, want := range cases {
+		got := redactLine(in)
+		if got != want {
+			t.Errorf("redactLine(%q) = %q, want %q", in, got, want)
+		}
+		if again := redactLine(got); again != got {
+			t.Errorf("redactLine is not a fixed point on %q: second pass gave %q", got, again)
+		}
+	}
+}

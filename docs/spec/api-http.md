@@ -954,8 +954,11 @@ POST /v1/machines/{machine}/sessions/{id}/respond?runtime=
 { "choice": 1, "nonce": "<SessionPrompt.nonce>" }
                          // or {"nonce": "..."} to accept the highlighted option
                          // or {"cancel": true, "nonce": "..."} to dismiss
+                         // or {"choices": [1, 3], "nonce": "..."} on a prompt
+                         //    reporting multiSelect: tick exactly these, move on one step
 
 → 200 { "outcome": "queued" | "refused", "reason": "..." }
+→ 400 invalid   // choices empty, repeated, < 1, or combined with choice/cancel
 ```
 
 `state.waitingOn` discriminates `waiting_input`, which carries two situations
@@ -1024,6 +1027,36 @@ what you cannot read eventually kills the session you meant to rescue. The
 service deliberately does not choose for you — deciding what to answer is a
 supervisor's judgement, and a session service that made it would have become
 one.
+
+`state.prompt.multiSelect` — when true — says the prompt is a multi-select
+question: its leading options are checkboxes, painted as `[ ] Label` /
+`[✔] Label` in `options` on the one runtime measured, and answering it means
+sending a SET (colab-fleet issue #176). A `choice` there would only flip one
+box, so a driver refuses `choice` on a checkbox row, and refuses accepting the
+highlighted row, rather than report a flipped box as an answer. The rows after
+the checkboxes (free text, chat) still take `choice` as before. Absent means
+not recognised as multi-select (§5.7), never "known single-select".
+
+Answer it with `{"choices": [...], "nonce": "..."}`: exactly the options that
+must end up ticked, every other checkbox clear. The driver flips only the boxes
+that differ from the screen, reading each flip back, and then moves the dialog
+ONE step on — to the next question, or to the dialog's review screen — and
+stops. **The answers are not handed over yet**: the review screen is its own
+prompt, with its own nonce, answered with `{"choice": 1, "nonce": "..."}` like
+any other. So a client answering a one-question multi-select dialog makes two
+calls, and the receipt of the first says which screen it reached.
+
+Send `choices` **only** to a prompt reporting `multiSelect: true`. That is not
+style: a peer built before `choices` existed never reports `multiSelect`,
+would ignore the field, and would read the remaining `{"nonce": ...}` as
+"accept the highlighted option". Following the rule makes the field its own
+capability check.
+
+A resend of the same `choices` with the same nonce after success is refused:
+the question has moved on. After an `unknown` receipt — a flip that did not
+read back — the tick state has changed, so the old nonce is refused too; read
+the state again and send the same set with the new nonce. The set names the
+end state, so boxes already flipped are not flipped twice.
 
 **Send `nonce`.** It is `SessionPrompt.nonce` from the state you read, and it
 is the whole of the protection: a caller reads a prompt, shows it to a human,

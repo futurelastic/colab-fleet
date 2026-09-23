@@ -1256,6 +1256,14 @@ func handleRespond(svc *Service) http.HandlerFunc {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "malformed body: " + err.Error()})
 			return
 		}
+		// Before any driver sees it, local or peer: a contradictory body is
+		// the caller's fault, and an empty choices set would be marshalled
+		// away on the way to a peer and arrive there as "accept the
+		// highlighted option" (see fleet.Response.Validate).
+		if err := body.Validate(); err != nil {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error()})
+			return
+		}
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()

@@ -1,5 +1,10 @@
 package fleet
 
+import (
+	"errors"
+	"fmt"
+)
+
 // Response answers a prompt a session is blocked on (§3).
 //
 // # Why this is not just send()
@@ -37,6 +42,33 @@ type Response struct {
 	// what a human pressing Enter would get.
 	Choice int `json:"choice,omitempty"`
 
+	// Choices answers a multi-select question (SessionPrompt.MultiSelect):
+	// the 1-based options that must be ticked when the answer is handed on,
+	// and — by omission — every other checkbox, which must be clear. It
+	// cannot be combined with Choice or Cancel, and it cannot be empty
+	// (see Validate).
+	//
+	// # Why a set and not a toggle
+	//
+	// On a multi-select question a single index does not answer anything: it
+	// flips one box. A caller that answered by toggling would need one call
+	// per box, each one unsafe to resend — a retried toggle undoes itself —
+	// and a sequence that failed half-way would leave a tick state nobody
+	// chose. A set names the END state, so the driver works out which boxes
+	// differ from what is on screen and flips only those. Sending the same
+	// set twice asks for the same result twice.
+	//
+	// # Why it stops short of submitting
+	//
+	// Choices sets the boxes and then moves the dialog ONE step on, exactly
+	// as a digit does on a single-select tab of a multi-question dialog: to
+	// the next question, or — after the last one — to the dialog's review
+	// screen. It never confirms that review screen. "Submit the answers" is
+	// its own prompt with its own nonce, answered with Choice like any other,
+	// so the step that actually hands the answers to the agent is never taken
+	// on the strength of an earlier read.
+	Choices []int `json:"choices,omitempty"`
+
 	// Cancel dismisses the prompt instead of answering it. A caller that
 	// does not like any of the options needs a way to say so that is not
 	// "pick one anyway".
@@ -55,4 +87,44 @@ type Response struct {
 	// always send it; a human at a terminal answering immediately reasonably
 	// may not.
 	Nonce string `json:"nonce,omitempty"`
+}
+
+// Validate reports a Response whose fields contradict each other — a fault in
+// the request, as opposed to a refusal, which is a fact about the session.
+//
+// # Why an empty Choices is refused here and not left to a driver
+//
+// `"choices": []` decodes to an empty, non-nil slice, and a driver that
+// forwards the Response to a peer marshals it with omitempty — which drops
+// the field. The peer then receives `{}`, and `{}` means "accept whatever is
+// highlighted": a request to submit NOTHING would arrive as a request to
+// submit something nobody chose. The only place that can still tell the two
+// apart is the one that decoded the caller's own bytes, so the check lives
+// here, where every receiving handler calls it.
+func (r Response) Validate() error {
+	if r.Choices == nil {
+		return nil
+	}
+	if len(r.Choices) == 0 {
+		return errors.New("choices is empty; to leave every box clear is not supported, " +
+			"and an empty set must not be read as \"accept the highlighted option\"")
+	}
+	if r.Choice != 0 {
+		return errors.New("choices and choice cannot be combined: choices answers a " +
+			"multi-select question, choice a single-select one")
+	}
+	if r.Cancel {
+		return errors.New("choices and cancel cannot be combined")
+	}
+	seen := make(map[int]bool, len(r.Choices))
+	for _, c := range r.Choices {
+		if c <= 0 {
+			return fmt.Errorf("choices: %d is not an option index (they are 1-based)", c)
+		}
+		if seen[c] {
+			return fmt.Errorf("choices: %d is listed twice", c)
+		}
+		seen[c] = true
+	}
+	return nil
 }

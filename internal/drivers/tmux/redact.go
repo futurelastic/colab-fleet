@@ -143,6 +143,14 @@ func redactLine(raw string) string {
 		return leading + responseBullet + " " + placeholderToken
 	}
 
+	// The question dialog's tab bar (#176) is what corroborates a
+	// multi-select question, so a corpus case must keep its shape to replay
+	// as one: the arrows, each question's ☐/☒, and "✔ Submit" are runtime
+	// chrome; each question's header is the agent's own words.
+	if isDialogTabBar(content) {
+		return leading + redactTabBar(content)
+	}
+
 	// The review screen's confirmation line (#159) is a runtime literal and
 	// is what reviewScreenPrompt corroborates on, so a corpus case must keep
 	// it to replay — exact match only, never a line merely containing it.
@@ -290,7 +298,41 @@ func knownOptionExact(text string) bool {
 	return false
 }
 
+// redactTabBar keeps a dialog tab bar's chrome and discards each question's
+// header: `←  ☒ Fruit  ☐ Size  ✔ Submit  →` becomes
+// `←  ☒ [redacted]  ☐ [redacted]  ✔ Submit  →`. A fixed point by
+// construction — the placeholder is not itself chrome.
+func redactTabBar(content string) string {
+	var tabs []string
+	for _, tab := range strings.Split(content, "  ") {
+		tab = strings.TrimSpace(tab)
+		switch {
+		case tab == "" || tab == "←" || tab == "→" || tab == "✔ Submit":
+			if tab != "" {
+				tabs = append(tabs, tab)
+			}
+		case strings.HasPrefix(tab, "☐ "):
+			tabs = append(tabs, "☐ "+placeholderToken)
+		case strings.HasPrefix(tab, "☒ "):
+			tabs = append(tabs, "☒ "+placeholderToken)
+		default:
+			tabs = append(tabs, placeholderToken)
+		}
+	}
+	return strings.Join(tabs, "  ")
+}
+
 func redactOption(n int, text string) string {
+	// A multi-select checkbox (#176) is runtime chrome in front of the
+	// label: keep it, and redact the label exactly as if it stood alone.
+	if label, ticked, box := checkboxLabel(text); box {
+		glyph := checkboxClear
+		if ticked {
+			glyph = checkboxTicked
+		}
+		red := redactOption(n, label)
+		return strconv.Itoa(n) + ". " + glyph + strings.TrimPrefix(red, strconv.Itoa(n)+". ")
+	}
 	// The review screen's two options (#159) match EXACTLY, not by prefix:
 	// "Cancel" as a prefix would keep any agent-written option that merely
 	// begins with the word.
