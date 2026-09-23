@@ -82,6 +82,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -209,6 +210,11 @@ func WithHTTPClient(c *http.Client) Option {
 //
 // It is a floor rather than the value because a proxy's deadline is not its
 // own to choose freely — see effectiveDeadline.
+//
+// It is a floor for this driver's own choice only. A caller may still shorten
+// any single call below it with Fleet-Deadline-Ms (§4.4); a call that misses
+// such a shortened deadline is logged with both values (budget and bound), so
+// a cliff below the floor is traceable to the caller that set it (#174).
 func WithDeadline(dur time.Duration) Option {
 	return func(d *Driver) {
 		if dur > 0 {
@@ -703,13 +709,7 @@ func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string,
 		// not answer, so nothing at all is known about the session
 		// (api-http.md §2: "the single most important line in this
 		// document").
-		return &fleet.Error{
-			Kind: fleet.ErrorUnreachable,
-			Message: fmt.Sprintf("no answer from %s after %s: %v",
-				d.machine, d.now().Sub(started).Round(time.Millisecond), err),
-			Machine:   d.machine,
-			Retryable: true,
-		}
+		return d.transportFailure(ctx, method, path, behalf, started, err)
 	}
 	defer resp.Body.Close()
 
@@ -825,7 +825,6 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		q.Add("label", k+fleet.LabelSeparator+filter.Labels[k])
 	}
 
-	started := d.now()
 	var out fleet.Collection[fleet.Session]
 	if err := d.do(ctx, req, http.MethodGet, "/v1/sessions?"+q.Encode(), nil, &out); err != nil {
 		// §5.7: a failed read is never an empty list. The peer contributes a
@@ -836,7 +835,6 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			Error:      err.Error(),
 			ObservedAt: d.now(),
 		}
-		_ = started
 		return fleet.NewCollection([]fleet.Session{}, []fleet.SourceStatus{src})
 	}
 	// A peer that predates labels ignores `label=` and answers with every
@@ -1010,6 +1008,71 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	return out, nil
 }
 
+// transportFailure turns a call the peer never answered into the error both
+// do and doWithKey return, and logs it on the way out (colab-fleet #174).
+//
+// # Why it logs
+//
+// A failed read is folded into a SourceStatus by List and handed upward as
+// data, which is correct for the envelope (§5.7) and left the requesting
+// daemon with no record of its own at all. Measured: a consumer counted
+// dozens of partial polls an hour while the daemon that produced them logged
+// one line in a day — and that one came from the startup capability probe,
+// not the read path. The frequency could only be read off the consumers.
+//
+// So every miss is logged here, once per failed call, with no suppression:
+// suppression is exactly what hid it. A response of any status is a domain
+// answer and never reaches this function, so a healthy fleet logs nothing.
+//
+// # What the line carries
+//
+// after is the measured latency. budget is the deadline that actually fired,
+// measured from the same start; bound is this driver's own limit. They are
+// printed side by side because they differ in the case that matters: a
+// caller may shorten a deadline below this driver's floor (§4.4), and
+// "budget=2s bound=32s" says in one line that the cliff is the caller's own
+// Fleet-Deadline-Ms, not a constant here to be tuned. on_behalf_of names the
+// principal that asked, which is how that caller is found.
+//
+// A caller that hung up is not a peer miss — the requester went away, the
+// peer may well have been answering — so it returns the same error but is
+// not logged, rather than logged as the peer's fault.
+func (d *Driver) transportFailure(ctx context.Context, method, path, behalf string, started time.Time, err error) *fleet.Error {
+	after := d.now().Sub(started).Round(time.Millisecond)
+	ferr := &fleet.Error{
+		Kind:      fleet.ErrorUnreachable,
+		Message:   fmt.Sprintf("no answer from %s after %s: %v", d.machine, after, err),
+		Machine:   d.machine,
+		Retryable: true,
+	}
+	if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+		return ferr
+	}
+	budget := "none"
+	if dl, ok := ctx.Deadline(); ok {
+		budget = dl.Sub(started).Round(time.Millisecond).String()
+	}
+	kind := "transport"
+	if errors.Is(err, context.DeadlineExceeded) {
+		kind = "deadline"
+	}
+	// The route, never the query: label filters carry caller-supplied values.
+	// The transport's own error repeats the whole URL, query included, so
+	// only its cause is logged; the route is already in op.
+	route, _, _ := strings.Cut(path, "?")
+	cause := err
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		cause = uerr.Err
+	}
+	if behalf == "" {
+		behalf = "-"
+	}
+	log.Printf("remote: peer call failed machine=%s op=%q after=%s budget=%s bound=%s on_behalf_of=%s kind=%s err=%v",
+		d.machine, method+" "+route, after, budget, d.effectiveDeadline(), behalf, kind, cause)
+	return ferr
+}
+
 // doWithKey is do() plus the Idempotency-Key header.
 func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path string, body any, key string, out any) error {
 	token, behalf, ok := d.bearerFor(req)
@@ -1039,12 +1102,7 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 	started := d.now()
 	resp, err := d.client.Do(httpReq)
 	if err != nil {
-		return &fleet.Error{
-			Kind: fleet.ErrorUnreachable,
-			Message: fmt.Sprintf("no answer from %s after %s: %v",
-				d.machine, d.now().Sub(started).Round(time.Millisecond), err),
-			Machine: d.machine, Retryable: true,
-		}
+		return d.transportFailure(ctx, method, path, behalf, started, err)
 	}
 	defer resp.Body.Close()
 

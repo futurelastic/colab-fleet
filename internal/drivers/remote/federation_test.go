@@ -279,3 +279,38 @@ func TestFederatedListOfRealSessionsThroughARemoteDriver(t *testing.T) {
 	t.Logf("federated fleet view: %d sessions from %q, source=%q (%d cross-checked)",
 		len(viaFleet.Items()), peerSrc.Machine, peerSrc.Status, checked)
 }
+
+// colab-fleet #174, end to end: on a fleet read the budget that fires is the
+// caller's own Fleet-Deadline-Ms whenever it is shorter than this driver's
+// bound, and the requesting daemon's log now says so — budget and bound side
+// by side — instead of recording nothing while consumers count the misses.
+func TestFederatedPeerMissIsLoggedWithTheCallersBudget(t *testing.T) {
+	const token = "federation-token"
+	buf := captureLog(t)
+	srv := hungPeer(t)
+	rd := New("fedmissbox", srv.URL, WithDeadline(5*time.Second))
+	svcA := homeService(t, "homebox", "fedmissbox", rd)
+
+	got, err := svcA.ListSessions(context.Background(), fleetCaller(token), service.ScopeFleet,
+		driver.ListFilter{}, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("one slow peer must not fail a fleet-wide query: %v", err)
+	}
+	if got.Complete() {
+		t.Error("a peer that missed its deadline must leave the envelope incomplete")
+	}
+
+	lines := missLines(buf, "fedmissbox")
+	if len(lines) != 1 {
+		t.Fatalf("want exactly one miss line, got:\n%s", buf.String())
+	}
+	if budget := mustDur(t, lines[0][4]); budget < 150*time.Millisecond || budget > 250*time.Millisecond {
+		t.Errorf("budget = %s, want the caller's ~200ms", budget)
+	}
+	if lines[0][5] != "5s" {
+		t.Errorf("bound = %q, want the driver's own 5s — the caller shortened it", lines[0][5])
+	}
+	if lines[0][7] != "deadline" {
+		t.Errorf("kind = %q", lines[0][7])
+	}
+}
