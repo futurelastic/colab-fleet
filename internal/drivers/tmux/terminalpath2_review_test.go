@@ -553,6 +553,18 @@ func TestResolveTranscriptSourceDetectsCacheDisagreementWithLiveIdentity(t *test
 	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
 	target := &paneRow{session: "alpha💬", paneID: "%1", cwd: cwd, pid: 707070, created: time.Unix(1785600000, 0)}
 
+	// The cache is populated BEFORE the runtime regenerates its id, which is
+	// what makes it a stale cache rather than a first lookup: an earlier
+	// lookup, made while the name still named the only possible record,
+	// remembered conv-1 for the life of the pane. (Since #182 a FIRST lookup
+	// that finds these two sources disagreeing reports the conflict itself and
+	// never reaches the cache — TestResolveTranscriptSourceUsesLiveIdentityWhenSourcesConflict.)
+	seeded := d.conversations.lookup(conversationKey{pane: target.paneID, created: target.created},
+		target.cwd, ref.ID, target.created, nil)
+	if seeded == nil || !seeded.Known || seeded.ID != "conv-1" {
+		t.Fatalf("setup: the cache should hold conv-1, got %+v", seeded)
+	}
+
 	src, ok := d.resolveTranscriptSource(context.Background(), ref, target)
 	if !ok {
 		t.Fatal("resolveTranscriptSource did not resolve at all")

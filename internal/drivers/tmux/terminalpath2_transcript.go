@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -582,28 +584,98 @@ func parseProcessSessionRecordStartTime(s string) (time.Time, error) {
 // a partial answer has no safe use for it (§5.4: never resume/verify
 // identity on a guess).
 func (d *Driver) readProcessSessionRecord(pid int) (processSessionRecord, bool) {
+	rec, why := d.readProcessSessionRecordWhy(pid)
+	return rec, why == ""
+}
+
+// readProcessSessionRecordWhy is readProcessSessionRecord that says why it
+// declined (#182): why is empty exactly when the record is complete and
+// well-formed. The sentence carries no filesystem path — it ends up in a
+// session's conversation evidence, which a client reads.
+func (d *Driver) readProcessSessionRecordWhy(pid int) (processSessionRecord, string) {
 	if d.processSessionsRoot == "" {
-		return processSessionRecord{}, false
+		return processSessionRecord{}, "no per-process record root is configured"
 	}
 	b, err := os.ReadFile(filepath.Join(d.processSessionsRoot, fmt.Sprintf("%d.json", pid)))
 	if err != nil {
-		return processSessionRecord{}, false
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			err = pe.Err
+		}
+		if errors.Is(err, fs.ErrNotExist) {
+			return processSessionRecord{}, fmt.Sprintf("the runtime has written no per-process record for pid %d", pid)
+		}
+		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d could not be read: %v", pid, err)
 	}
 	var rec processSessionRecord
 	if err := json.Unmarshal(b, &rec); err != nil {
-		return processSessionRecord{}, false
+		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d is not readable JSON", pid)
 	}
 	if rec.PID != pid || rec.SessionID == "" || rec.CWD == "" || rec.ProcStart == "" {
-		return processSessionRecord{}, false
+		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d is incomplete or names another process", pid)
 	}
 	// #180 L5: the session id becomes part of a path. Anything but the
 	// runtime's own UUID shape is refused, so "../../elsewhere" never
 	// resolves outside the record root.
 	if !uuidShaped(rec.SessionID) {
 		d.counters.incr(counterProcessSessionRecordRejected)
-		return processSessionRecord{}, false
+		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d carries a conversation id that is not UUID-shaped", pid)
 	}
-	return rec, true
+	return rec, ""
+}
+
+// processRecordFor is the half of the per-process check that needs no
+// question put to the OS: the record for pid is read, and must name the
+// working directory this session is in (#182). why is empty exactly when the
+// record may go on to be corroborated.
+//
+// Split from corroborateProcessRecord so a caller holding many sessions can
+// stop at a missing record without paying for the `ps` that corroboration
+// needs — most of a fleet's listing cost is such questions.
+func (d *Driver) processRecordFor(pid int, cwd string) (processSessionRecord, string) {
+	rec, why := d.readProcessSessionRecordWhy(pid)
+	if why != "" {
+		return processSessionRecord{}, why
+	}
+	if rec.CWD != cwd {
+		// §5.4: a record naming a different working directory is not
+		// evidence about THIS session, whatever else it says — refuse
+		// rather than guess it is merely stale.
+		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d names a different working directory than this session's", pid)
+	}
+	return rec, ""
+}
+
+// corroborateProcessRecord is the other half: the record's own start time
+// must equal the start time of the process that is running now under that
+// pid. Exact equality, because both sides are whole-second text in the same
+// layout — the record's own resolution is one second, so there is nothing
+// finer for a tolerance to absorb, and any wider tolerance would only be a
+// window in which a reused pid's stale record could pass. why is empty
+// exactly when it corroborated.
+//
+// parseProcessSessionRecordStartTime, NOT ParseProcessStartTime — see
+// processSessionRecord.ProcStart's own doc comment for the review fix this is
+// (the field crosses a process boundary and is measured to be rendered in UTC;
+// parsing it as local silently broke this whole check on any machine not
+// itself running in UTC).
+func corroborateProcessRecord(rec processSessionRecord, identity ProcessIdentity) (liveProcessIdentity, string) {
+	recordedStart, err := parseProcessSessionRecordStartTime(rec.ProcStart)
+	if err != nil {
+		return liveProcessIdentity{}, fmt.Sprintf("the per-process record for pid %d carries a start time that does not parse", identity.PID)
+	}
+	if !recordedStart.Equal(identity.StartedAt) {
+		// The pid was recycled since this file was written (or the file is
+		// simply malformed) — VerifyProcessIdentity's own reasoning, applied
+		// here instead of duplicated as a second check against the OS.
+		return liveProcessIdentity{}, fmt.Sprintf("the per-process record for pid %d was written by a process that started at a "+
+			"different time than the one running under that pid now (a reused pid, or a record an earlier process left)", identity.PID)
+	}
+	return liveProcessIdentity{
+		sessionID: rec.SessionID,
+		evidence: fmt.Sprintf("process-sessions file for pid %d (verified same process generation), "+
+			"sessionId %s", identity.PID, rec.SessionID),
+	}, ""
 }
 
 // transcriptSource is what resolveTranscriptSource found: enough to poll a
@@ -644,33 +716,15 @@ func (d *Driver) resolveLiveProcessSessionID(ctx context.Context, ref fleet.Sess
 	if err != nil {
 		return liveProcessIdentity{}, false
 	}
-	rec, ok := d.readProcessSessionRecord(identity.PID)
-	if !ok {
+	rec, why := d.processRecordFor(identity.PID, target.cwd)
+	if why != "" {
 		return liveProcessIdentity{}, false
 	}
-	if rec.CWD != target.cwd {
-		// §5.4: a record naming a different working directory is not
-		// evidence about THIS session, whatever else it says — refuse
-		// rather than guess it is merely stale.
+	live, why := corroborateProcessRecord(rec, identity)
+	if why != "" {
 		return liveProcessIdentity{}, false
 	}
-	// parseProcessSessionRecordStartTime, NOT ParseProcessStartTime — see
-	// processSessionRecord.ProcStart's own doc comment for the review fix
-	// this is (the field crosses a process boundary and is measured to be
-	// rendered in UTC; parsing it as local silently broke this whole check
-	// on any machine not itself running in UTC).
-	recordedStart, err := parseProcessSessionRecordStartTime(rec.ProcStart)
-	if err != nil || !recordedStart.Equal(identity.StartedAt) {
-		// The pid was recycled since this file was written (or the file is
-		// simply malformed) — VerifyProcessIdentity's own reasoning, applied
-		// here instead of duplicated as a second check against the OS.
-		return liveProcessIdentity{}, false
-	}
-	return liveProcessIdentity{
-		sessionID: rec.SessionID,
-		evidence: fmt.Sprintf("process-sessions file for pid %d (verified same process generation), "+
-			"sessionId %s", identity.PID, rec.SessionID),
-	}, true
+	return live, true
 }
 
 // resolveTranscriptSource is D6's own two-step identity chain: try the
@@ -704,6 +758,16 @@ func (d *Driver) resolveLiveProcessSessionID(ctx context.Context, ref fleet.Sess
 // common case and costs one extra, already-cheap file read; disagreement
 // means the cache is stale, and the live identity wins.
 //
+// # Since #182 the lookup consults the per-process record too
+//
+// The lookup in the first step is no longer name-only: handed the per-process
+// answer resolved just above, it reconciles the two (conversationprocess.go).
+// A session the name cannot answer now resolves THERE, and one where the two
+// sources name different conversations comes back unresolved — which lands in
+// the fallback below, on the live process's own answer. The stale-cache check
+// above is unchanged: it is about a success remembered BEFORE the runtime
+// regenerated its id, which a first lookup cannot be.
+//
 // ok=false means neither step produced a file this driver could confirm is
 // the right one — the caller's own responsibility from there is to fall back
 // to the screen-based confirmSubmitted, per this file's own top comment.
@@ -712,7 +776,8 @@ func (d *Driver) resolveTranscriptSource(ctx context.Context, ref fleet.SessionR
 
 	if d.conversations != nil {
 		key := conversationKey{pane: target.paneID, created: target.created}
-		if conv := d.conversations.lookup(key, target.cwd, ref.ID, target.created); conv != nil && conv.Known {
+		if conv := d.conversations.lookup(key, target.cwd, ref.ID, target.created,
+			d.liveConversationFrom(live, liveOK)); conv != nil && conv.Known {
 			if !liveOK || live.sessionID == "" || live.sessionID == conv.ID {
 				p := d.conversations.recordPath(target.cwd, conv.ID)
 				if info, err := os.Stat(p); err == nil {

@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"time"
@@ -172,11 +173,12 @@ func (d *Driver) controlReasonFor(s fleet.Session) (controlDisconnectFact, bool)
 // explain), or no record store is configured, or the record cannot be
 // matched, or it has no matching entry — in every one of those cases Reason
 // is left exactly as classify.go built it: empty.
-func (d *Driver) upgradeControlChannelFromRecord(st fleet.SessionState, cwd, name string, created time.Time, paneID string) fleet.SessionState {
+func (d *Driver) upgradeControlChannelFromRecord(ctx context.Context, st fleet.SessionState, cwd, name string, created time.Time, paneID string, pid int) fleet.SessionState {
 	if st.ControlChannel == nil || st.ControlChannel.State != fleet.ControlChannelFailed || d.conversations == nil {
 		return st
 	}
-	ref := d.conversations.lookup(conversationKey{pane: paneID, created: created}, cwd, name, created)
+	ref := d.conversations.lookup(conversationKey{pane: paneID, created: created}, cwd, name, created,
+		d.liveConversationSource(ctx, pid, cwd))
 	if ref == nil || !ref.Known {
 		return st
 	}
