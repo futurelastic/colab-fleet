@@ -498,6 +498,13 @@ func main() {
 		}
 		log.Printf("colab-fleetd: input length limit %d bytes configured (#130)", cfgFile.MaxInputBytes)
 	}
+	if cfgFile != nil && cfgFile.ClosedRetentionDays != 0 {
+		if cfgFile.ClosedRetentionDays < 0 {
+			log.Fatalf("colab-fleetd: closedRetentionDays must be positive, got %d", cfgFile.ClosedRetentionDays)
+		}
+		svc.SetClosedRetention(time.Duration(cfgFile.ClosedRetentionDays) * 24 * time.Hour)
+		log.Printf("colab-fleetd: closed-session records kept %d days (#179)", cfgFile.ClosedRetentionDays)
+	}
 
 	// --- peers ---------------------------------------------------------
 	//
@@ -624,6 +631,15 @@ func main() {
 				log.Printf("colab-fleetd:   vanished %q (%s)", s.ID, s.State.Evidence)
 			}
 		}
+	}
+
+	// Sessions that ended while this service was down are found missing by
+	// one complete local read, and get their closed-session record (#179).
+	// Runs for every runtime, reconciling driver or not.
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		svc.SweepLocal(ctx)
+		cancel()
 	}
 
 	// Bind narrowly by default (§6.1: "Default to loopback. Exposure

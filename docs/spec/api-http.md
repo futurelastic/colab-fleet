@@ -308,6 +308,42 @@ the fleet keeps moving, so a number handed out then would look resumable and
 would silently skip everything before the first subscription. A client that
 finds no `feed` has its ordering backwards: **watch first, list second.**
 
+#### Closed sessions
+
+```
+GET /v1/sessions/closed?scope=fleet|local&since=<RFC3339>
+→ 200 Collection<ClosedSession>
+```
+
+A service keeps **one record per local session that ended**, for a configured
+retention period, across restarts (colab-fleet #179). It is deliberately not a
+persisted event window: the record carries only the metadata the live record
+already carried as last seen (`machine`, `id`, `name`, `runtime`, `cwd`,
+`startedAt`, and `conversation` when it was known), never content, plus
+`lastSeenAt`, `closedAt`, `closedBy` and `evidence`.
+
+`closedBy` separates observation from inference (session-abstraction.md §5.2):
+
+- `close` — a close through this service was accepted by the driver;
+  `closedAt` is that moment. Withdrawn if a later read finds the same session
+  (same id and `startedAt`) still running.
+- `absent` — the session was missing from a **complete, unfiltered** read of
+  its runtime, or its id now names a session with a different `startedAt`
+  (§5.4). `closedAt` is when the absence was observed; the end lies after
+  `lastSeenAt`. A filtered or partial read never ends anything (§5.7).
+
+A session missing under its old id while exactly one newly-seen session of the
+same runtime carries its `startedAt` is a **rename**, not an end; with more than
+one such candidate nothing is carried and the old id is recorded as ended —
+guessing would attribute one session's history to another.
+
+Records older than the retention period are neither returned nor kept. `since`
+keeps records with `closedAt` at or after it; a malformed value is
+`400 invalid`. `scope` has the live list's meaning and the same one-hop rule
+(§13.1). A peer whose router has no such route answers a bare `404`; the
+proxying service **must** report that source `degraded` with no items, never as
+an `ok` peer with nothing closed.
+
 ### 3.3 Deadlines
 
 Every request carries an effective deadline:

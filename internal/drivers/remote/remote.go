@@ -861,6 +861,40 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	return out, nil
 }
 
+// ListClosed reads the peer's own closed-session records (colab-fleet #179),
+// asking for its LOCAL view only (§13.1) and adopting the SourceStatus it
+// returns (§13.2) — List's two rules, for the same reasons.
+//
+// A peer on a build that predates the route answers with its router's bare
+// 404. That is reported as a source that cannot answer this question, never
+// as a peer with nothing closed: an empty list from it would be a claim it
+// never made.
+func (d *Driver) ListClosed(ctx context.Context, req fleet.Request, since time.Time) (fleet.Collection[fleet.ClosedSession], error) {
+	ctx, cancel := d.bounded(ctx)
+	defer cancel()
+
+	q := url.Values{}
+	q.Set("scope", "local") // §13.1 — never "fleet"
+	if !since.IsZero() {
+		q.Set("since", since.UTC().Format(time.RFC3339))
+	}
+	var out fleet.Collection[fleet.ClosedSession]
+	if err := d.do(ctx, req, http.MethodGet, "/v1/sessions/closed?"+q.Encode(), nil, &out); err != nil {
+		src := fleet.SourceStatus{
+			Machine:    d.machine,
+			Status:     sourceStateFor(err),
+			Error:      err.Error(),
+			ObservedAt: d.now(),
+		}
+		if routeMissing(err) {
+			src.Status = fleet.SourceDegraded
+			src.Error = "peer does not keep closed-session records (older build)"
+		}
+		return fleet.NewCollection([]fleet.ClosedSession{}, []fleet.SourceStatus{src})
+	}
+	return out, nil
+}
+
 // sourceStateFor maps a transport-level failure onto the closed SourceState
 // set (§9). Note that unauthorized is kept distinct from unreachable: "the
 // peer refused me" and "the peer never answered" are different operational

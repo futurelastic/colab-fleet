@@ -81,6 +81,7 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux.HandleFunc("GET /v1/machines", withAuth(cfg, reading(handleMachines(svc))))
 	mux.HandleFunc("GET /v1/runtimes", withAuth(cfg, reading(handleRuntimes(svc))))
 	mux.HandleFunc("GET /v1/sessions", withAuth(cfg, reading(handleListSessions(svc))))
+	mux.HandleFunc("GET /v1/sessions/closed", withAuth(cfg, reading(handleListClosedSessions(svc))))
 	mux.HandleFunc("GET /v1/sessions/watch", withAuth(cfg, reading(handleWatchSessions(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions", withAuth(cfg, mutating(svc, cfg, handleCreateSession(svc))))
 	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}", withAuth(cfg, reading(handleGetSession(svc))))
@@ -545,6 +546,39 @@ func handleListSessions(svc *Service) http.HandlerFunc {
 		}
 		if resumable {
 			col = col.WithFeed(cursor, epoch)
+		}
+		writeJSON(w, http.StatusOK, col)
+	}
+}
+
+// handleListClosedSessions answers GET /v1/sessions/closed (colab-fleet
+// #179): the records this service keeps of sessions that ended, for a bounded
+// retention period. `since` (RFC 3339) keeps records that closed at or after
+// it; `scope` has the live list's meaning.
+func handleListClosedSessions(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		scope := Scope(q.Get("scope"))
+		if scope == "" {
+			scope = ScopeFleet
+		}
+		if scope != ScopeLocal && scope != ScopeFleet {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "scope must be 'local' or 'fleet'"})
+			return
+		}
+		var since time.Time
+		if raw := q.Get("since"); raw != "" {
+			t, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "since must be an RFC 3339 timestamp"})
+				return
+			}
+			since = t
+		}
+		col, err := svc.ListClosedSessions(r.Context(), requestFrom(r), scope, since, parseDeadline(r))
+		if err != nil {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error()})
+			return
 		}
 		writeJSON(w, http.StatusOK, col)
 	}
@@ -1028,6 +1062,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 		// Labels (colab-fleet #153). A local session's are this service's to
 		// store; a relayed create's are the peer's, and arrive on its answer.
 		if via != resolvedPeer {
+			svc.history.created(resolvedRuntime, sess)
 			stored, added := svc.labels.setIfAbsent(resolvedRuntime, sess.ID, sess.StartedAt, body.Labels)
 			sess.Labels = stored
 			if added {
@@ -1329,6 +1364,7 @@ func handleClose(svc *Service) http.HandlerFunc {
 		}
 		if via != resolvedPeer {
 			svc.labels.remove(resolvedRuntime, id)
+			svc.history.closedByRequest(resolvedRuntime, id)
 		}
 		writeJSON(w, http.StatusAccepted, ack)
 	}
@@ -1415,6 +1451,7 @@ func handleRename(svc *Service) http.HandlerFunc {
 		// rename that later reverts is caught by the label store's retain.
 		if via != resolvedPeer {
 			svc.labels.rekey(resolvedRuntime, id, body.Name)
+			svc.history.renamed(resolvedRuntime, id, body.Name)
 		}
 		writeJSON(w, http.StatusAccepted, ack)
 	}
