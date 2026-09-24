@@ -1226,6 +1226,8 @@ POST /v1/machines/{machine}/sessions/{id}/keys?expect=<screenDigest>&startedAt=&
 Delivers ONE raw key event to a session's screen. It exists for the full-screen
 dialogs a driver does not recognise — navigated with arrow keys, confirmed with
 a bare Enter — which `respond` cannot answer and `input` must never learn to.
+It also carries one key that is not a dialog key at all: `BTab`, which cycles the
+runtime's permission mode from an idle composer (below, and colab-fleet #188).
 
 **It is not a flag on `respond`.** `respond` refuses whenever the driver sees no
 prompt, and that refusal is the whole of its safety: a keypress delivered to a
@@ -1248,13 +1250,52 @@ read that returned it would make every listing a transcript leak. It is not
 comparable across drivers or across restarts — quote it back, never compute one.
 
 **Vocabulary, closed:** `Up` `Down` `Left` `Right` `Enter` `Escape` — move,
-accept, dismiss. Anything else is `invalid`, rejected before any driver is
-consulted. Absent by design: every character key, which is `input`'s job and
-whose guarantee is that a message never becomes a keystroke; and every control
-key — `C-c` is `interrupt`, `C-u` is `discard` — each of which has corroboration
-and confirmation a blind keypress cannot offer. An endpoint accepting arbitrary
-key names would quietly become a second, unreviewed way to do everything else
-here.
+accept, dismiss — and `BTab` (Shift+Tab, spelled as the multiplexer spells it),
+admitted by ruling rather than by that argument; see the next section. Anything
+else is `invalid`, rejected before any driver is consulted, plain `Tab` and
+every other spelling of Shift+Tab included: names are matched exactly. Absent by
+design: every character key, which is `input`'s job and whose guarantee is that
+a message never becomes a keystroke; and every control key — `C-c` is
+`interrupt`, `C-u` is `discard` — each of which has corroboration and
+confirmation a blind keypress cannot offer. An endpoint accepting arbitrary key
+names would quietly become a second, unreviewed way to do everything else here.
+
+**`BTab` changes what the session may do (colab-fleet #188).** On an idle
+composer the runtime cycles its permission mode on Shift+Tab (default, accept
+edits, plan, auto…), and for most of those modes that is the only way to reach
+them: a client with no terminal in front of it can move a live session between
+modes through this route and no other. Some of those modes let the agent act
+unattended with less asking, so a press can **escalate** a session — and which
+mode a press lands in is the runtime's own cycle, which this service neither
+reads nor chooses.
+
+The decision, recorded so no reader has to infer it: `BTab` is under the
+**existing `keys` grant**. There is no grant of its own for changing a mode and
+none that separates escalating from de-escalating, so **any principal holding
+`keys` can escalate any session it can reach** — granting `keys` is granting
+that. A deployment that wants the arrow keys without the escalation cannot have
+it from this version; that is a change to the grants table (§5) and is a new
+ruling, not a configuration.
+
+What `BTab` promises, and what it does not:
+
+- It is **not a mode setter.** One request is one press. `submitted` means the
+  screen changed under the key — not that the mode changed, and not which mode
+  the session is now in. `state` publishes no permission mode, and this route
+  never claims to know it. A client that wants a named mode reads the mode from
+  somewhere else and repeats, re-reading `state` for a fresh `screenDigest`
+  between presses.
+- It is **exempt from one refusal the arrows have**: the arrow keys are refused
+  on an idle, empty composer because there they drive the runtime's own
+  interface (measured: `Left` opens its agent view); an idle, empty composer is
+  the one place `BTab` is meant to be pressed.
+- It is **subject to every other refusal**, unchanged — `expect` required and
+  current, a composer holding unsent text, a composer taller than the capture
+  window, a recognised prompt (answered through `respond`). It waits for the
+  session's composer lock like every key but `Escape`.
+- A service that predates it answers `400` naming the keys it does deliver;
+  across a peer relay the machine that runs the session decides, so a caller
+  sees that `400` from the far end.
 
 **One key per request**, and no sequence field. After the first key the screen
 is different, so every later key in a batch would be delivered against a digest
@@ -1286,7 +1327,8 @@ would mean claiming to know what the dialog is.
 It requires its own **`keys` grant** (§6), not `send`. `respond` shares `send`
 on a same-blast-radius argument that does not survive here: `respond` is gated
 by a recognised prompt and this deliberately is not, so an operator may permit
-one and withhold the other. Absent means denied, so no existing principal gains
+one and withhold the other — and, since `BTab` (above), `keys` is also the grant
+that can escalate a session. Absent means denied, so no existing principal gains
 it by upgrading — which means a fresh deployment cannot press a key until an
 operator explicitly grants it, on purpose, not as an oversight (colab-fleet
 #68). `deliversRawKeys: true` on a runtime is a statement about the DRIVER;
@@ -1542,6 +1584,11 @@ ordering is wrong rather than handing you a cursor that would skip.
   and applies to a fresh deployment as much as an established one — no grant is
   implied by anything else, including a runtime advertising the capability the
   grant gates (§3, `keys`; colab-fleet #68).
+- **`keys` is the grant that can escalate a session (colab-fleet #188).** The
+  key vocabulary includes `BTab`, which cycles the runtime's permission mode
+  (§3, `keys`), so any principal holding `keys` can move any session it can reach
+  into a looser mode. It was ruled to stay under `keys` rather than take a grant
+  of its own; a reader deciding whom to grant `keys` is deciding that.
 - **`human-relay` is not a verb; it is a statement about the caller** (colab-fleet
   #180, #184). A principal holding it is a human-facing relay: what it sends is a
   person's own message, so `route: auto` carries it through the terminal,

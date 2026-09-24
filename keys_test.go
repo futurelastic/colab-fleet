@@ -2,7 +2,6 @@ package fleet
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -26,7 +25,11 @@ func TestKeyName_JSONRoundTrip(t *testing.T) {
 // never defined must not reach a substrate whose own key vocabulary is far
 // larger — that is how a narrow endpoint becomes a second way to do everything.
 func TestKeyName_RejectsAnythingOutsideTheVocabulary(t *testing.T) {
-	for _, raw := range []string{`"C-c"`, `"C-u"`, `"a"`, `"F1"`, `"enter"`, `""`} {
+	// "Tab", "btab" and "S-Tab" are here on purpose (#188): BTab was admitted
+	// for the one thing it does, and neighbours that merely LOOK like it —
+	// plain Tab, a wrong-case spelling, the other multiplexer spelling — must
+	// stay outside a vocabulary that is matched exactly.
+	for _, raw := range []string{`"C-c"`, `"C-u"`, `"a"`, `"F1"`, `"enter"`, `""`, `"Tab"`, `"btab"`, `"S-Tab"`, `"ShiftTab"`} {
 		var got KeyName
 		if err := json.Unmarshal([]byte(raw), &got); err == nil {
 			t.Errorf("Unmarshal(%s) was accepted as %q", raw, got)
@@ -46,17 +49,42 @@ func TestKeyName_MarshalRejectsAnInvalidValue(t *testing.T) {
 // keys, each of which has an operation of its own that carries corroboration a
 // blind keypress cannot.
 func TestKeyNames_ExcludesWhatOtherOperationsOwn(t *testing.T) {
-	joined := ""
+	// Exact-name comparison, not a substring scan: this used to be
+	// strings.Contains over the joined names, which "BTab" (#188) trips on
+	// "Tab" even though plain Tab is still, correctly, outside the set.
+	have := map[string]bool{}
 	for _, k := range KeyNames() {
-		joined += string(k) + " "
+		have[string(k)] = true
 	}
 	for _, forbidden := range []string{"C-c", "C-u", "C-d", "Tab"} {
-		if strings.Contains(joined, forbidden) {
+		if have[forbidden] {
 			t.Errorf("%q is in the vocabulary; interrupt, discard and input own those", forbidden)
 		}
 	}
-	if len(KeyNames()) != 6 {
-		t.Errorf("vocabulary has %d keys; it is deliberately six", len(KeyNames()))
+	if len(KeyNames()) != 7 {
+		t.Errorf("vocabulary has %d keys; it is deliberately seven "+
+			"(move, accept, dismiss, and BTab by the #188 ruling)", len(KeyNames()))
+	}
+}
+
+// BTab is the one member of the vocabulary that is not a dialog key: it cycles
+// the runtime's permission mode. It is pinned by name so that dropping it, or
+// renaming it on the wire, is a deliberate edit to this test and not a quiet
+// side effect of tidying the list (#188).
+func TestKeyName_BTabIsAdmittedAndSpelledAsTheMultiplexerSpellsIt(t *testing.T) {
+	if !KeyBTab.Valid() {
+		t.Fatal("KeyBTab must be a valid key (ruled on #188)")
+	}
+	if string(KeyBTab) != "BTab" {
+		t.Errorf("wire spelling is %q; it is deliberately the multiplexer's own name, BTab", KeyBTab)
+	}
+	var got KeyName
+	if err := json.Unmarshal([]byte(`"BTab"`), &got); err != nil || got != KeyBTab {
+		t.Errorf(`Unmarshal("BTab") = %q, %v; want KeyBTab`, got, err)
+	}
+	b, err := json.Marshal(KeyBTab)
+	if err != nil || string(b) != `"BTab"` {
+		t.Errorf("Marshal(KeyBTab) = %s, %v", b, err)
 	}
 }
 

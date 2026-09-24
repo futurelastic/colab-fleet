@@ -22,9 +22,11 @@ open.
 **Grants.** With a principal table configured, each caller is a named identity
 with its own credential and its own list of grants: `read`, `create`, `send`,
 `interrupt`, `close`, `rename`, `discard`, `keys`, `label`, `relay`. Every grant defaults
-to denied. Without a principal table the service runs in single-token mode and
-two booleans stand in: mutations against local sessions, and relaying mutations
-to a peer.
+to denied. ⚠️ `keys` is the one that can **escalate** a session (it delivers
+`BTab`, which cycles the permission mode — see `POST …/keys` below), so grant it
+as that, not as "arrow keys". Without a principal table the service runs in
+single-token mode and two booleans stand in: mutations against local sessions,
+and relaying mutations to a peer.
 
 **Relaying.** A mutation aimed at a machine other than the one you are talking
 to requires the `relay` grant on the service you called *and* the verb grant on
@@ -79,7 +81,7 @@ every configured peer, exactly one hop — peers never recurse.
 | `GET` | `…/{id}/environment` | What environment the process actually got | — ⚠️ | yes |
 | `POST` | `…/{id}/input` | Deliver text to the composer | `send` | yes |
 | `POST` | `…/{id}/respond` | Answer a prompt the session is blocked on | `send` | yes |
-| `POST` | `…/{id}/keys` | Deliver one raw key to the screen | `keys` | yes |
+| `POST` | `…/{id}/keys` | Deliver one raw key to the screen (incl. `BTab`: cycles the permission mode) | `keys` ⚠️ | yes |
 | `POST` | `…/{id}/interrupt` | The equivalent of Ctrl-C | `interrupt` | yes |
 | `POST` | `…/{id}/discard` | Clear unsent composer text without sending it | `discard` | yes |
 | `POST` | `…/{id}/rename` | Change the session's id | `rename` | yes |
@@ -480,8 +482,8 @@ flag here.
 { "key": "Down" }
 ```
 
-One of `Up`, `Down`, `Left`, `Right`, `Enter`, `Escape` — anything else is a
-`400` that names the valid set. Requires `?expect=<digest>` from a prior read; a
+One of `Up`, `Down`, `Left`, `Right`, `Enter`, `Escape`, `BTab` — anything else
+is a `400` that names the valid set. Requires `?expect=<digest>` from a prior read; a
 stale digest is a `409`. Which digest depends on what the composer holds **right
 now**, decided before the check runs: `?expect=<composerDigest>` when the
 composer holds unsent text (the same value a read publishes as
@@ -492,6 +494,38 @@ wrong one back is indistinguishable from a genuine race — both fail the same
 reports for the composer's current state, not whichever one you last happened to
 have. For full-screen dialogs `respond` cannot classify. Its own grant,
 deliberately not folded into `send`.
+
+**`BTab` — Shift+Tab — changes what the session may do, and any principal
+holding `keys` can send it.** On an idle composer the runtime uses it to cycle
+its permission mode (default, accept edits, plan, auto…), which is the only way
+to reach most of them without a person at the terminal (colab-fleet #188). Some
+of those modes let the agent act **unattended** with less asking, so pressing
+`BTab` can *escalate* a session, and which mode a press lands in is the
+runtime's own cycle — this service neither reads nor chooses it. There is
+deliberately **no separate grant** for it, and none that tells escalating from
+de-escalating: `keys` is the whole permission. Grant `keys` only to a principal
+you would trust to loosen any session it can reach — over a peer relay that is
+the principal holding `keys` on the machine that runs the session.
+
+What to expect from a `BTab`, since it is not a dialog key:
+
+- **It is not a mode setter.** One request is one press. `submitted` means the
+  screen changed under the key — not that the mode changed, and not which mode
+  the session is in now; this service does not read the mode, and `state`
+  publishes no permission mode. `unknown` means the screen did not change (the
+  press was swallowed, or there was nothing to cycle). To reach a named mode a
+  client must read the mode from somewhere else and repeat, re-reading `state`
+  for a fresh digest between presses.
+- **It is not refused on an idle, empty composer** — unlike the four arrow keys,
+  which are, because there they drive the runtime's own interface. An idle
+  composer is exactly where `BTab` is for.
+- **Every other refusal applies to it**, unchanged: a composer holding unsent
+  text (the refusal is by screen state, not by which key could do harm there),
+  a prompt `respond` can answer, a composer taller than the capture window, a
+  missing or stale `expect`. A prompt is answered through `respond`, so a mode
+  is never reached by pressing `BTab` at a prompt this service recognises.
+- **An older service answers `400`** for `BTab` and names the keys it does
+  deliver — across a peer relay, the machine that runs the session decides.
 
 ### `POST …/{id}/discard`
 

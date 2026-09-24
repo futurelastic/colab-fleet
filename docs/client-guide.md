@@ -420,9 +420,10 @@ POST /v1/machines/{machine}/sessions/{id}/keys?expect=<screenDigest>
 - **`expect` is required**, and it is `state.screenDigest` from the read you
   just did. It does the nonce's job: if the screen moved since you looked, you
   get a `409` rather than a key applied to a screen you never saw.
-- **Six keys**: `Up` `Down` `Left` `Right` `Enter` `Escape`. Nothing else — no
-  characters (that is `input`), no control keys (`C-c` is `interrupt`, `C-u` is
-  `discard`).
+- **Seven keys**: `Up` `Down` `Left` `Right` `Enter` `Escape` `BTab`. Nothing
+  else — no characters (that is `input`), no control keys (`C-c` is `interrupt`,
+  `C-u` is `discard`), no plain `Tab`. `BTab` is Shift+Tab, and it is not a dialog
+  key: see *Changing a session's permission mode* below.
 - **One key per request.** `Down Down Enter` is three calls with a read between
   each, because after the first key your digest describes a screen that no
   longer exists.
@@ -436,6 +437,34 @@ POST /v1/machines/{machine}/sessions/{id}/keys?expect=<screenDigest>
 Prefer `respond` whenever a `prompt` is present. It verifies a nonce, picks by
 index, and tells you which option it took; arrow keys can do none of that, and
 the endpoint refuses rather than let you trade it away by accident.
+
+### Changing a session's permission mode
+
+On an idle composer the runtime cycles its permission mode on Shift+Tab, and
+`BTab` is how you press it (colab-fleet #188). Read this before you build a mode
+dropdown on it:
+
+- **It is one press, not "go to mode X".** `POST …/keys` with `{"key":"BTab"}`
+  presses once. The service does not read the mode, `state` publishes no
+  permission mode, and the receipt never says which mode the session is in
+  afterwards. `submitted` means the screen changed under the key; `unknown` means
+  it did not (the press was swallowed, or there was nothing to cycle). A control
+  that must land on a named mode has to learn the current mode from a source of
+  its own and press until it sees the one it wants — re-reading `state` for a
+  fresh `screenDigest` before **each** press, the same one-key-per-request rule
+  as every other key.
+- **It can escalate the session, and so can anyone holding `keys`.** Accept-edits
+  and auto let the agent act unattended with less asking; the runtime's cycle
+  order decides whether a press loosens or tightens, and this API does not
+  separate the two. Do not put a `BTab` control in front of anyone you would not
+  trust with `keys`, and do not hand `keys` out as if it were only about arrow
+  keys.
+- **Where it works.** An idle, empty composer — the one place the arrow keys are
+  refused. It is refused where any key is: unsent text in the composer, a prompt
+  `respond` can answer, a composer taller than the capture window. A screen you
+  did not just read (`expect` missing or stale) is a `409`.
+- **An older service answers `400`** and names the keys it does deliver. Treat
+  that as "this machine cannot do it yet", not as a fault to retry.
 
 ## 7. Driving a session
 

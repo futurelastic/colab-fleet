@@ -87,7 +87,7 @@ func TestKeys_RejectsAKeyOutsideTheVocabularyBeforeTheDriver(t *testing.T) {
 	srv := httptest.NewServer(NewMux(svc, Config{Token: testToken, AllowLocalMutations: true}))
 	defer srv.Close()
 
-	for _, body := range []string{`{"key":"C-c"}`, `{"key":"a"}`, `{}`} {
+	for _, body := range []string{`{"key":"C-c"}`, `{"key":"a"}`, `{}`, `{"key":"Tab"}`, `{"key":"btab"}`} {
 		resp := keyRequest(t, srv, testToken, body, "?expect=abc")
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s returned %d, want 400", body, resp.StatusCode)
@@ -100,6 +100,65 @@ func TestKeys_RejectsAKeyOutsideTheVocabularyBeforeTheDriver(t *testing.T) {
 		if d.gotKey != "" {
 			t.Fatalf("an invalid key reached the driver as %q", d.gotKey)
 		}
+	}
+}
+
+// #188 (ruled option A): BTab rides the EXISTING `keys` grant. It cycles the
+// runtime's permission mode, so this is the test that pins the consequence the
+// docs state — a principal holding `keys` and nothing else can send it, a
+// principal holding `send` and every other grant but `keys` cannot — and that
+// no separate grant was slipped in. If a later ruling gives mode changes a
+// grant of their own, this test is the one that should fail first.
+func TestKeys_BTabTravelsUnderTheKeysGrantAlone(t *testing.T) {
+	svc := New("testbox")
+	d := &keySender{
+		Driver:  stub.Driver{DeadlineMs: 1000},
+		receipt: fleet.DeliveryReceipt{Outcome: fleet.OutcomeSubmitted, Reason: "sent BTab"},
+	}
+	if err := svc.RegisterLocalDriver("fake", d); err != nil {
+		t.Fatal(err)
+	}
+	// Computed from the one list of grants, so a grant added later is included
+	// here automatically and this stays "every grant except keys".
+	var allButKeys []Grant
+	for _, g := range Grants() {
+		if g != GrantKeys {
+			allButKeys = append(allButKeys, g)
+		}
+	}
+	srv := httptest.NewServer(NewMux(svc, Config{
+		Token: testToken,
+		Principals: []Principal{
+			{Name: "keyer", Token: "tok-keys", Grants: []Grant{GrantRead, GrantKeys}},
+			{Name: "everything-but-keys", Token: "tok-other", Grants: allButKeys},
+		},
+	}))
+	defer srv.Close()
+
+	resp := keyRequest(t, srv, "tok-other", `{"key":"BTab"}`, "?expect=abc")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("a principal without `keys` reached BTab: %d %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), string(GrantKeys)) {
+		t.Errorf("refusal did not name the missing grant: %s", body)
+	}
+	if d.gotKey != "" {
+		t.Fatalf("a refused BTab reached the driver as %q", d.gotKey)
+	}
+
+	resp = keyRequest(t, srv, "tok-keys", `{"key":"BTab"}`, "?expect=abc")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("the keys grant did not admit BTab: %d %s", resp.StatusCode, body)
+	}
+	if d.gotKey != fleet.KeyBTab {
+		t.Errorf("driver got key %q, want BTab", d.gotKey)
+	}
+	if d.gotExpect != "abc" {
+		t.Errorf("driver got expect %q; the caller's digest must reach it unchanged", d.gotExpect)
 	}
 }
 
