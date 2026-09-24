@@ -282,17 +282,10 @@ func (d *Driver) confirmLandedV2(ctx context.Context, paneID, text string, befor
 // session's lock through the whole window would keep a respond to that very
 // dialog waiting.
 func (d *Driver) landV2(ctx context.Context, paneID, text string, c landCheck) landing {
-	needle := strings.TrimSpace(text)
-	if needle == "" {
+	if strings.TrimSpace(text) == "" {
 		return landing{ok: true}
 	}
-	if idx := strings.LastIndexByte(needle, '\n'); idx >= 0 {
-		needle = needle[idx+1:]
-	}
-	if len(needle) > 24 {
-		needle = needle[len(needle)-24:]
-	}
-	allowSuffix := !c.strict || c.digestVerified
+	needle, allowSuffix := landArgs(text, c)
 
 	deadline := d.now().Add(submitConfirmWindow)
 	for {
@@ -318,6 +311,88 @@ func (d *Driver) landV2(ctx context.Context, paneID, text string, c landCheck) l
 	}
 }
 
+// landArgs derives the tail needle (the last line's last 24 bytes) and
+// whether the suffix rule is allowed for a check.
+func landArgs(text string, c landCheck) (needle string, allowSuffix bool) {
+	needle = strings.TrimSpace(text)
+	if idx := strings.LastIndexByte(needle, '\n'); idx >= 0 {
+		needle = needle[idx+1:]
+	}
+	if len(needle) > 24 {
+		needle = needle[len(needle)-24:]
+	}
+	return needle, !c.strict || c.digestVerified
+}
+
+// preSubmit is the verdict of the last look before Enter.
+type preSubmit int
+
+const (
+	preSubmitOK preSubmit = iota
+	// preSubmitDialog: a selection menu is showing; Enter would answer it.
+	preSubmitDialog
+	// preSubmitNotHeld: no composer is positively showing this delivery —
+	// a half-painted dialog, a screen with no composer, a composer showing
+	// something else. Enter would go somewhere this driver cannot name.
+	preSubmitNotHeld
+	// preSubmitNotRuntime: the pane's foreground process is not the
+	// runtime (foreground.go) — a shell, say, under a composer frame the
+	// runtime left behind. Enter would run the text as a command.
+	preSubmitNotRuntime
+)
+
+// preSubmitCheck is the last look before the submit keystroke (#180 M6):
+// one fresh capture must POSITIVELY show a composer holding this delivery,
+// by the same evidence the landed check accepted — not merely fail to show a
+// recognised menu. Anything else refuses and the stranded record is kept.
+func (d *Driver) preSubmitCheck(ctx context.Context, paneID, text string, c landCheck) preSubmit {
+	sc, ok := d.captureForClassify(ctx, paneID)
+	if !ok {
+		return preSubmitNotHeld
+	}
+	if awaitingSelection(sc) {
+		d.counters.incr(counterSendRefusedDialogRacePreSubmit)
+		return preSubmitDialog
+	}
+	needle, allowSuffix := landArgs(text, c)
+	if _, held := d.landedOn(sc, text, needle, allowSuffix, c); !held {
+		d.counters.incr(counterSendRefusedNotHeldPreSubmit)
+		return preSubmitNotHeld
+	}
+	return preSubmitOK
+}
+
+// preSubmitReason words a refusal of the last look before Enter. resumed says
+// whether this was a resume of an earlier strand.
+func preSubmitReason(v preSubmit, resumed bool) string {
+	lead := "text landed in the composer and was attributed to this delivery, but "
+	tail := " It is sitting there unsent; retry the same send with resumeIfStranded to submit it"
+	if resumed {
+		lead = "resumed a delivery this driver had stranded earlier and confirmed it landed, but "
+		tail = " The record is kept — retry the same send with resumeIfStranded again"
+	}
+	switch v {
+	case preSubmitDialog:
+		return lead + "a selection menu appeared on this pane in the moment before submit would " +
+			"have been pressed; pressing Enter now would answer that menu instead of submitting " +
+			"this message, so it was not pressed." + tail
+	case preSubmitNotRuntime:
+		return lead + "in the moment before submit this pane's foreground process was no longer " +
+			"the agent runtime; pressing Enter could run the text as a command, so it was not " +
+			"pressed." + tail
+	}
+	return lead + "in the moment before submit the composer no longer positively showed this " +
+		"delivery — something else was painting the screen; pressing Enter into a screen this " +
+		"driver cannot read could answer a dialog, so it was not pressed." + tail
+}
+
+// markerLinesFit reports whether a collapsed-paste marker's "+L lines" fits
+// text: L is the number of newlines in the text (measured on the runtime),
+// with or without trailing ones.
+func markerLinesFit(lines int, text string) bool {
+	return lines == strings.Count(text, "\n") || lines == strings.Count(strings.TrimRight(text, "\n"), "\n")
+}
+
 // landedOn is one landed check against one capture.
 func (d *Driver) landedOn(sc screen, text, needle string, allowSuffix bool, c landCheck) (landing, bool) {
 	if matched, _ := composerRegionMatch(sc, text, allowSuffix); matched {
@@ -326,12 +401,21 @@ func (d *Driver) landedOn(sc screen, text, needle string, allowSuffix bool, c la
 	}
 	rows, scan := composerRegion(sc)
 	if c.strict {
-		if c.ownMarkerOK && scan == composerFound {
+		// #180 H1: the runtime collapses a long or many-line paste to one
+		// "[Pasted text #N +L lines]" marker, which no text comparison can
+		// read back. A resume accepts a composer holding exactly one such
+		// marker, and nothing else, when it is provably this driver's own:
+		// the marker the record says the paste landed as, or any marker when
+		// the composer's digest already matches the record. Its "+L lines"
+		// must fit the text either way.
+		if scan == composerFound && (c.ownMarkerOK || c.digestVerified) {
 			if segs, _ := composerSegments(sc); len(segs) == 1 {
-				if got := markerCounts(composerRuneMarker + " " + segs[0]); len(got) == 1 && got[c.ownMarker] == 1 {
-					if _, isMarker := parsePastedTextMarker(segs[0]); isMarker {
-						d.counters.incr(counterLandConfirmByOwnMarker)
-						return landing{ok: true, by: landedByOwnMarker, key: c.ownMarker, atCount: 1}, true
+				if _, isMarker := parsePastedTextMarker(segs[0]); isMarker {
+					for key, n := range markerCounts(composerRuneMarker + " " + segs[0]) {
+						if n == 1 && markerLinesFit(key.lines, text) && (c.digestVerified || key == c.ownMarker) {
+							d.counters.incr(counterLandConfirmByOwnMarker)
+							return landing{ok: true, by: landedByOwnMarker, key: key, atCount: 1}, true
+						}
 					}
 				}
 			}

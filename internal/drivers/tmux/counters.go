@@ -307,6 +307,9 @@ const (
 	// first-attempt path and its resumeIfStranded completion), specifically
 	// to close that gap.
 	counterSendRefusedDialogRacePreSubmit = "land_confirm.refused_dialog_race_presubmit"
+	// counterSendRefusedNotHeldPreSubmit (#180 M6): the last look before
+	// Enter did not positively show a composer holding this delivery.
+	counterSendRefusedNotHeldPreSubmit = "land_confirm.refused_not_held_presubmit"
 
 	// counterSendRefusedResumeNoRecord counts resumeIfStranded (without
 	// replaceIfStranded) landing on a busy composer this driver holds no

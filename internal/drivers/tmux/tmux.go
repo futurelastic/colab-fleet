@@ -2518,10 +2518,11 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			// reproduces) — every other fallback strict=true disables stays
 			// disabled regardless.
 			digestVerified := resumeRecord.ComposerDigest != ""
-			land := d.landV2(ctx, target.paneID, text, landCheck{
+			resumeCheck := landCheck{
 				strict: true, digestVerified: digestVerified,
 				ownMarker: resumeRecord.pasteKey(), ownMarkerOK: resumeRecord.PasteLanded,
-			})
+			}
+			land := d.landV2(ctx, target.paneID, text, resumeCheck)
 			key, atCount, landed := land.key, land.atCount, land.ok
 			if !landed {
 				return fleet.DeliveryReceipt{
@@ -2556,16 +2557,10 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			// before send-keys, closes it: refuse (keep the record) rather
 			// than press Enter into a screen this driver has not looked at
 			// since resolving the transcript source.
-			if d.refuseIfDialogAppeared(ctx, target.paneID) {
-				d.counters.incr(counterSendRefusedDialogRacePreSubmit)
+			if v := d.preSubmitCheck(ctx, target.paneID, text, resumeCheck); v != preSubmitOK {
 				return fleet.DeliveryReceipt{
 					Outcome: fleet.OutcomeUnknown,
-					Reason: d.withRestartNoteReason(ref.ID, "resumed a delivery this driver had "+
-						"stranded earlier and confirmed it landed, but a selection menu appeared on "+
-						"this pane in the moment before submit would have been pressed; pressing "+
-						"Enter now would answer that menu instead of submitting this message, so it "+
-						"was not pressed. The record is kept — retry the same send with "+
-						"resumeIfStranded again"),
+					Reason:  d.withRestartNoteReason(ref.ID, preSubmitReason(v, true)),
 				}, nil
 			}
 			if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "Space", "C-m"); err != nil {
@@ -2858,16 +2853,11 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// source, exactly as the timeout path just above does) rather than
 	// pressing Enter into a screen this driver has not looked at since
 	// resolveTranscriptSource's own list-panes/`ps`/file-read window opened.
-	if d.refuseIfDialogAppeared(ctx, target.paneID) {
-		d.counters.incr(counterSendRefusedDialogRacePreSubmit)
+	if v := d.preSubmitCheck(ctx, target.paneID, text, landCheck{before: before}); v != preSubmitOK {
 		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
-			Reason: d.withRestartNoteReason(ref.ID, "text landed in the composer and was attributed "+
-				"to this delivery, but a selection menu appeared on this pane in the moment before "+
-				"submit would have been pressed; pressing Enter now would answer that menu instead "+
-				"of submitting this message, so it was not pressed. It is sitting there unsent; "+
-				"retry the same send with resumeIfStranded to submit it"),
+			Reason:  d.withRestartNoteReason(ref.ID, preSubmitReason(v, false)),
 		}, nil
 	}
 	if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "Space", "C-m"); err != nil {
@@ -6666,77 +6656,6 @@ func (d *Driver) awaitReceptive(ctx context.Context, paneID string) (ready, bloc
 		case <-time.After(sendReceptiveInterval):
 		}
 	}
-}
-
-// confirmSubmitted reports whether the submit registered, attributed to the
-// delivery confirmLanded identified — `key` is its marker, `atCount` the
-// count `confirmLanded` observed for that marker at the moment it confirmed
-// landing.
-//
-// This is the fail-closed half. Everything before it is inference about
-// whether the runtime would accept a keystroke; this is evidence about whether
-// it did.
-//
-// Two independent kinds of evidence, because residue changes what "the
-// composer emptied" can mean:
-//
-//   - the composer is fully empty. Unambiguous, and it works whether or not
-//     this delivery ever produced a marker of its own — a wholly dim
-//     composer counts as empty too, because that is the runtime's own
-//     placeholder hint drawn into an EMPTY box, and reading it as leftover
-//     text is the mistake that produced a round of false evidence on this
-//     repo's tracker.
-//   - the attributed key's count has fallen below `atCount`. Evidence that
-//     THIS block left, even while some other block — somebody else's
-//     residue, present before this delivery ever started — still occupies
-//     the composer line and keeps it from ever reading empty. This is the
-//     branch that did not exist before: the composer was watched for
-//     emptying as the ONLY signal, so a submit that plainly registered still
-//     reported unknown whenever residue happened to share the line. Measured
-//     on a live session, twice consecutively, while the agent had already
-//     received and was acting on the text.
-//
-// `atCount == 0` means confirmLanded attributed no marker at all — the
-// literal single-line case — and the second branch can never fire for it:
-// counts do not go negative. That degrades to exactly the old "composer
-// emptied" check, which was always right for that case: a literal delivery
-// leaves nothing else on the composer line to be confused with.
-//
-// colab-fleet #104: which branch fired, and how long this call waited before
-// it did, are both recorded on the way out — see counters.go's
-// counterSubmitConfirmed* / counterSubmitConfirmLatency* doc comments for why.
-// Recorded here, at the one place both are known, rather than pushed onto
-// the callers: there are two of them (an ordinary send and the
-// resumeIfStranded path), and duplicating this at each would risk exactly
-// the drift #104 is trying to make observable.
-// refuseIfDialogAppeared is the review-safety fix for the dialog-race window
-// resolveTranscriptSource itself opens between a landed check returning
-// (confirmLandedV2, terminalpath2.go — which already refuses the SAME race
-// during its own poll, via awaitingSelection on the capture that produced a
-// match) and the submit keystroke a caller presses a few lines later. That
-// call resolves the transcript's identity chain — a pane re-list plus a
-// batched capture, then possibly `ps`, then file reads — measured at
-// 26.8-52.9ms on a private 25-pane tmux server; before this fix nothing
-// re-checked whether a selection menu appeared on the pane during that gap,
-// so a modal painted there received Enter as its own approval instead of
-// this delivery's submit.
-//
-// One more capture, taken immediately before send-keys at both submit sites
-// (Send's first-attempt path and its resumeIfStranded completion), closes
-// it — not the whole gap (a dialog could still appear in the handful of
-// instructions between THIS capture and the send-keys call itself), but the
-// much larger window resolveTranscriptSource opened.
-//
-// true means "do not press Enter" — covering both an actually-showing
-// selection menu AND an unreadable capture (!ok): a caller that cannot even
-// take this cheap a look must not treat that as licence to press Enter
-// regardless (§5.6, degrade rather than emulate).
-func (d *Driver) refuseIfDialogAppeared(ctx context.Context, paneID string) bool {
-	sc, ok := d.captureForClassify(ctx, paneID)
-	if !ok {
-		return true
-	}
-	return awaitingSelection(sc)
 }
 
 func (d *Driver) confirmSubmitted(ctx context.Context, paneID string, key pasteKey, atCount int) bool {

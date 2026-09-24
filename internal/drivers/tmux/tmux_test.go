@@ -123,6 +123,12 @@ type fakeMux struct {
 	// pasteLog is every payload delivered through the paste buffer, in
 	// order, whatever became of it on screen afterwards.
 	pasteLog []string
+	// collapsePastes models the runtime collapsing a paste of five or more
+	// lines, or over 800 bytes, to one "[Pasted text #N +L lines]" marker
+	// (bare "[Pasted text #N]" for a single long line) inside the composer.
+	// N counts per pane; L is the paste's newline count, as measured.
+	collapsePastes bool
+	pasteSeq       map[string]int
 }
 
 // renderInComposer models what the runtime does with a paste: the text
@@ -419,6 +425,17 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			f.pasteLog = append(f.pasteLog, content)
 		}
 		if pane != "" && !f.noEcho {
+			if f.collapsePastes && (strings.Count(content, "\n") >= 4 || len(content) > 800) {
+				if f.pasteSeq == nil {
+					f.pasteSeq = map[string]int{}
+				}
+				f.pasteSeq[pane]++
+				if n := strings.Count(content, "\n"); n > 0 {
+					content = fmt.Sprintf("[Pasted text #%d +%d lines]", f.pasteSeq[pane], n)
+				} else {
+					content = fmt.Sprintf("[Pasted text #%d]", f.pasteSeq[pane])
+				}
+			}
 			f.pasted[pane] += content
 		}
 		return nil, nil
