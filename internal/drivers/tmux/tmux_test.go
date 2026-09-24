@@ -129,6 +129,9 @@ type fakeMux struct {
 	// N counts per pane; L is the paste's newline count, as measured.
 	collapsePastes bool
 	pasteSeq       map[string]int
+	// currentCommand is a pane's #{pane_current_command} (#180 H2): the
+	// name of its foreground process. Absent means the runtime.
+	currentCommand map[string]string
 }
 
 // renderInComposer models what the runtime does with a paste: the text
@@ -708,6 +711,25 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		}
 		return nil, nil
 	case "display-message":
+		// #180 H2: foregroundIsRuntime's own query. A live runtime pane
+		// reports the runtime's process title (its version string), so
+		// that is the default; a test arms currentCommand to model a
+		// shell. The tty is deliberately not a real device name, so an
+		// un-faked ps finds nothing there.
+		if len(args) == 5 && args[4] == paneForegroundFormat {
+			pane := args[3]
+			cmd := "2.1.281"
+			if c, ok := f.currentCommand[pane]; ok {
+				cmd = c
+			}
+			pid := 0
+			for _, s := range f.sessions {
+				if s.paneID == pane {
+					pid = s.pid
+				}
+			}
+			return []byte(itoa(pid) + "|/dev/fake-tty" + strings.TrimPrefix(pane, "%") + "|" + cmd + "\n"), nil
+		}
 		// Terminal path v2: pasteBracketed's own standalone probe
 		// (`display-message -p -t <pane> "#{bracket_paste_flag}"`) — never
 		// chained with anything else, unlike every other display-message

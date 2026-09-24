@@ -2557,7 +2557,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			// before send-keys, closes it: refuse (keep the record) rather
 			// than press Enter into a screen this driver has not looked at
 			// since resolving the transcript source.
-			if v := d.preSubmitCheck(ctx, target.paneID, text, resumeCheck); v != preSubmitOK {
+			if v := d.preSubmitCheck(ctx, target, text, resumeCheck); v != preSubmitOK {
 				return fleet.DeliveryReceipt{
 					Outcome: fleet.OutcomeUnknown,
 					Reason:  d.withRestartNoteReason(ref.ID, preSubmitReason(v, true)),
@@ -2732,6 +2732,16 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// took. Everything confirmLandedV2 and confirmSubmittedV2 attribute to
 	// THIS delivery is a CHANGE relative to this snapshot; see markerCounts
 	// for why the presence of a marker was never enough on its own.
+	// #180 H2: the pane's foreground process must be the runtime before
+	// anything is pasted — a shell under a composer frame the runtime left
+	// behind reads as an empty composer, and would receive the text.
+	if ok, why := d.foregroundIsRuntime(ctx, target); !ok {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason:  why + "; nothing was pasted",
+		}, nil
+	}
+
 	before := map[pasteKey]int{}
 	if sc, ok := d.captureForClassify(ctx, target.paneID); ok {
 		before = composerMarkers(sc)
@@ -2853,7 +2863,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// source, exactly as the timeout path just above does) rather than
 	// pressing Enter into a screen this driver has not looked at since
 	// resolveTranscriptSource's own list-panes/`ps`/file-read window opened.
-	if v := d.preSubmitCheck(ctx, target.paneID, text, landCheck{before: before}); v != preSubmitOK {
+	if v := d.preSubmitCheck(ctx, target, text, landCheck{before: before}); v != preSubmitOK {
 		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,

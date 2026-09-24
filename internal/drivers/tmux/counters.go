@@ -311,6 +311,17 @@ const (
 	// Enter did not positively show a composer holding this delivery.
 	counterSendRefusedNotHeldPreSubmit = "land_confirm.refused_not_held_presubmit"
 
+	// foreground.* (#180 H2): who was in the pane's foreground when this
+	// driver was about to paste or press Enter (foreground.go). verified: a
+	// foreground process's own session record matched; unverified: nothing
+	// contradicted the runtime but nothing proved it either; shell: refused,
+	// a shell was in the foreground; unanswered: refused, the multiplexer
+	// could not say.
+	counterForegroundVerified   = "foreground.verified"
+	counterForegroundUnverified = "foreground.unverified"
+	counterForegroundShell      = "foreground.refused_shell"
+	counterForegroundUnanswered = "foreground.refused_unanswered"
+
 	// counterSendRefusedResumeNoRecord counts resumeIfStranded (without
 	// replaceIfStranded) landing on a busy composer this driver holds no
 	// stranded record for — review-safety's own fix: #135 originally treated

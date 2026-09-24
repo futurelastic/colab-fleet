@@ -119,11 +119,14 @@ func (d *Driver) bracketPasteFlag(ctx context.Context, paneID string) (enabled, 
 // because #{bracket_paste_flag} said no. Round-1's own measurement is that
 // every live Claude Code pane sampled reported bracket_paste_flag=1, so this
 // refusal is expected to fire on live traffic approximately never; it exists
-// for the pane that is not yet running Claude Code, or is running something
-// else in the same slot (a shell before the agent starts, e.g.) — a case
-// where guessing which delivery shape is safe is exactly the guess this
-// driver's own §2.4/§5.6 discipline (fail closed, never emulate) refuses
-// elsewhere.
+// for a pane whose occupant never asked for bracketed mode — a case where
+// guessing which delivery shape is safe is exactly the guess this driver's
+// own §2.4/§5.6 discipline (fail closed, never emulate) refuses elsewhere.
+//
+// It is NOT protection against a shell: an interactive shell turns bracketed
+// paste on at its own prompt (measured, #180 H2), so the flag reads 1 there
+// too. What stops a paste reaching a shell is foregroundIsRuntime
+// (foreground.go), checked before this is ever called.
 //
 // The alternative considered and rejected: keep the old call as a fallback
 // gated on flag=0. Rejected because nothing in this codebase, before this
@@ -345,8 +348,11 @@ const (
 // one fresh capture must POSITIVELY show a composer holding this delivery,
 // by the same evidence the landed check accepted — not merely fail to show a
 // recognised menu. Anything else refuses and the stranded record is kept.
-func (d *Driver) preSubmitCheck(ctx context.Context, paneID, text string, c landCheck) preSubmit {
-	sc, ok := d.captureForClassify(ctx, paneID)
+func (d *Driver) preSubmitCheck(ctx context.Context, target *paneRow, text string, c landCheck) preSubmit {
+	if ok, _ := d.foregroundIsRuntime(ctx, target); !ok {
+		return preSubmitNotRuntime
+	}
+	sc, ok := d.captureForClassify(ctx, target.paneID)
 	if !ok {
 		return preSubmitNotHeld
 	}
