@@ -298,14 +298,25 @@ func TestClient_OversizeResponseLineHarmless(t *testing.T) {
 	if c.Generation() != 1 || f.Starts() != 1 || r.Count("exited") != 0 {
 		t.Errorf("an oversize line must not cost the connection: generation=%d starts=%d exited=%d", c.Generation(), f.Starts(), r.Count("exited"))
 	}
-	waitFor(t, c.Usable, 3*time.Second, "the suspicion the missed attach raised to clear")
-	n := 0
-	for _, l := range r.Logs() {
-		if strings.Contains(l, "dropped a response line over") {
-			n++
+	waitFor(t, c.Usable, 10*time.Second, "the suspicion the missed attach raised to clear")
+	// The fake builds each 5 MiB answer in its own goroutine, so on a slow
+	// machine an answer can reach the reader AFTER the request that followed it
+	// has already returned. Wait for the reader to have seen one, give the second
+	// a moment to arrive, and only then count: it must not be logged again. (If
+	// the second is still on its way, the count is one either way — this can only
+	// pass vacuously, never fail spuriously.)
+	oversizeLogs := func() int {
+		n := 0
+		for _, l := range r.Logs() {
+			if strings.Contains(l, "dropped a response line over") {
+				n++
+			}
 		}
+		return n
 	}
-	if n != 1 {
+	waitFor(t, func() bool { return oversizeLogs() >= 1 }, 15*time.Second, "the reader to log the dropped line")
+	time.Sleep(400 * time.Millisecond)
+	if n := oversizeLogs(); n != 1 {
 		t.Errorf("the oversize line was logged %d times, want once per child: %q", n, r.Logs())
 	}
 }
