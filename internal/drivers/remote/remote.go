@@ -225,6 +225,10 @@ func WithDeadline(dur time.Duration) Option {
 
 // WithTransitMargin sets the allowance added to a peer's declared deadline to
 // cover the network. Default 2s.
+//
+// The margin lengthens how long this driver waits. The transit reserve
+// (announcedDeadlineMs) shortens the bound it announces. Both make room for
+// the network, from opposite ends of the same call.
 func WithTransitMargin(dur time.Duration) Option {
 	return func(d *Driver) {
 		if dur > 0 {
@@ -252,6 +256,10 @@ func WithTransitMargin(dur time.Duration) Option {
 // long as the peer said it might take, plus transit. Before they are known it
 // falls back to the configured floor — and that gap is one more consequence
 // of §14 D3, capability declaration being unable to say "not yet known".
+//
+// The same confusion has a second source: announcing to the peer the exact
+// bound this driver enforces, so the peer's honest answer is still on the
+// wire when the timer fires. announcedDeadlineMs covers that side (#175).
 func (d *Driver) effectiveDeadline() time.Duration {
 	d.mu.RLock()
 	seen, peerMs := d.capsSeen, d.caps.DeadlineMs
@@ -651,6 +659,61 @@ func (d *Driver) CapabilitiesKnown() bool {
 	return d.capsSeen
 }
 
+// The transit reserve: how much of the bound this driver enforces is held
+// back from the bound it announces to the peer (#175).
+//
+// transitReserveMax caps it on a long bound, and transitReserveShare caps it
+// on a short one (at most 1/share of what remains), so a caller-shortened
+// budget keeps most of itself for the peer's work instead of being reduced
+// to nothing.
+const (
+	transitReserveMax   = 250 * time.Millisecond
+	transitReserveShare = 5
+)
+
+// announcedDeadlineMs is the Fleet-Deadline-Ms to send a peer when this
+// driver has `remaining` left before it gives up.
+//
+// # Why announce less than we enforce
+//
+// Announcing the full remaining budget makes the peer's local deadline and
+// this driver's timer expire at the same instant. A peer whose local source
+// is slow would answer honestly — "my source was slow", in its own
+// SourceStatus — but that answer is still on the wire when the timer fires,
+// so this driver records it as unreachable and logs a miss (#174) that is
+// indistinguishable from a peer that is down. That is effectiveDeadline's
+// "a machine that answered, described as one that did not", reached from the
+// announcing side. Holding a reserve back gives the answer time to travel.
+//
+// # Why the result is never below 1
+//
+// A caller may shorten a call below this driver's floor (WithDeadline), so
+// the remaining budget can be tiny or already spent. A non-positive value
+// would have to be dropped, and a request with no header tells the peer
+// there is no bound at all — strictly worse than one that is too small. 1ms
+// is the smallest value the peer still reads as a bound (§3.3), so it fails
+// fast with its own report.
+//
+// This is not the transit margin (WithTransitMargin): that is added upward
+// to how long this driver waits; this is taken downward from what it
+// announces. They are kept separate so neither can cancel the other.
+func announcedDeadlineMs(remaining time.Duration) int64 {
+	reserve := min(transitReserveMax, remaining/transitReserveShare)
+	if ms := (remaining - reserve).Milliseconds(); ms >= 1 {
+		return ms
+	}
+	return 1
+}
+
+// announceDeadline sets Fleet-Deadline-Ms from ctx's deadline, if it has
+// one. It is the only place that header is set, so every construction site
+// holds the same reserve.
+func announceDeadline(ctx context.Context, h http.Header) {
+	if dl, ok := ctx.Deadline(); ok {
+		h.Set("Fleet-Deadline-Ms", strconv.FormatInt(announcedDeadlineMs(time.Until(dl)), 10))
+	}
+}
+
 // bounded applies this driver's declared deadline, or the caller's if
 // shorter (§4.4: "a req may supply a shorter deadline; never a longer
 // one").
@@ -693,14 +756,10 @@ func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string,
 	if body != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
-	// Tell the peer the bound we are enforcing, so it can fail fast rather
-	// than working on a request we have already given up on (§3.3).
-	if dl, ok := ctx.Deadline(); ok {
-		ms := time.Until(dl).Milliseconds()
-		if ms > 0 {
-			httpReq.Header.Set("Fleet-Deadline-Ms", strconv.FormatInt(ms, 10))
-		}
-	}
+	// Tell the peer a bound slightly inside the one we are enforcing, so it
+	// can fail fast rather than working on a request we have already given
+	// up on (§3.3) — and so its own answer still reaches us (#175).
+	announceDeadline(ctx, httpReq.Header)
 
 	started := d.now()
 	resp, err := d.client.Do(httpReq)
@@ -1127,11 +1186,7 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Idempotency-Key", key)
-	if dl, ok := ctx.Deadline(); ok {
-		if ms := time.Until(dl).Milliseconds(); ms > 0 {
-			httpReq.Header.Set("Fleet-Deadline-Ms", strconv.FormatInt(ms, 10))
-		}
-	}
+	announceDeadline(ctx, httpReq.Header)
 
 	started := d.now()
 	resp, err := d.client.Do(httpReq)

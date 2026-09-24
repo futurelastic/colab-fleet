@@ -1204,6 +1204,11 @@ A peer that misses its deadline **degrades the envelope** — that machine is
 marked `unreachable` in `sources` — rather than failing your whole query. One
 slow machine never takes down a fleet-wide read.
 
+When your service relays the call to a peer, it announces a slightly shorter
+deadline than yours, so a peer that is up but slow can still get its own
+report back to you. The peer's source then carries the peer's own status and
+error text, often `degraded`, instead of the relay's "no answer from …".
+
 ## 12. When the service itself is down
 
 Your program must distinguish "no sessions" from "I cannot see any sessions".

@@ -358,6 +358,17 @@ expiry the service returns the envelope with that source marked
 not a 5xx for the whole call. One unresponsive peer degrades an envelope; it
 never fails a fleet-wide query.
 
+A service relaying a call to a peer announces *less* than it enforces: its
+remaining budget minus a transit reserve (the smaller of 250 ms and one fifth
+of what remains), never below 1 ms. The peer therefore sees a smaller value
+than the original caller sent. This is deliberate: a peer told the exact bound
+the relay enforces runs out at the same instant the relay does, so its own
+answer — often an honest `degraded` or `unreachable` report about its local
+source — is still in transit when the relay gives up, and the relay reports a
+machine that answered as one that did not. A relayed call whose context has a
+deadline always carries the header; a remaining budget too small to announce
+is sent as 1 ms rather than dropped, because no header means no bound at all.
+
 Absent the header, the driver's declared `deadlineMs` applies. There is no
 configuration in which a call has no deadline: measured against a stopped peer,
 an undeadlined request was still blocked after seven seconds with no result,
