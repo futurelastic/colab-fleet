@@ -818,3 +818,115 @@ func TestSingleSessionReadReturnsAWholeSession(t *testing.T) {
 		t.Error("startedAt missing — §5.4's corroboration cannot be invoked without it")
 	}
 }
+
+// terminal path v2 / D7: "route" is a closed set of one value. An
+// unrecognised non-empty value must be rejected before any driver is ever
+// resolved — the same "caller error about the request's own shape" pattern
+// TestSendInput_OverLongTextIs400 above already proves for `text`.
+func TestSendInput_UnrecognisedRouteIs400(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"text":  "hello",
+		"route": "carrier-pigeon",
+	})
+	req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions/some-id/input", body)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for an unrecognised route value", resp.StatusCode)
+	}
+	env := decodeError(t, resp)
+	if env.Error.Kind != fleet.ErrorInvalid {
+		t.Fatalf("error kind = %q, want %q", env.Error.Kind, fleet.ErrorInvalid)
+	}
+	if !strings.Contains(env.Error.Message, "route") || !strings.Contains(env.Error.Message, "terminal") {
+		t.Fatalf("message = %q, want it to name the field and the accepted value", env.Error.Message)
+	}
+}
+
+// The empty value is accepted with no further condition; "terminal" is
+// accepted once a `from` label is present (#180 review fix, below — a
+// caller with no principal table configured here at all, the shape this
+// test's own newTestServer sets up, is not a human relay either) — proven by
+// their NOT getting a 400 for this reason (the stub driver still returns 501
+// for ErrUnsupported once resolution proceeds, which is a different, already
+// -covered failure mode, not this one).
+func TestSendInput_RouteTerminalAndEmptyAreAccepted(t *testing.T) {
+	_, srv := newTestServer(t)
+	bodies := []map[string]interface{}{
+		{"text": "hello", "route": ""},
+		{"text": "hello", "route": "terminal", "from": map[string]interface{}{"agent": "alex"}},
+	}
+	for _, b := range bodies {
+		body, _ := json.Marshal(b)
+		req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions/some-id/input", body)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusBadRequest {
+			t.Errorf("route %q (from=%v) was rejected with 400; it must be accepted", b["route"], b["from"])
+		}
+	}
+}
+
+// TestSendInput_RouteTerminalWithoutFromOrHumanRelayGrantIs400 is the
+// #180 review fix itself: route:"terminal" from a caller that is neither
+// configured as a human relay NOR carries a `from` label must be rejected —
+// otherwise an agent could opt an unlabelled delivery out of the (paused
+// today, "for agents only" tomorrow) inbox path and have it recorded as
+// human-typed input, undoing the separation D7 exists to create.
+func TestSendInput_RouteTerminalWithoutFromOrHumanRelayGrantIs400(t *testing.T) {
+	_, srv := newTestServer(t)
+	body, _ := json.Marshal(map[string]interface{}{"text": "hello", "route": "terminal"})
+	req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions/some-id/input", body)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for route:terminal with no from label and no human-relay grant", resp.StatusCode)
+	}
+	env := decodeError(t, resp)
+	if !strings.Contains(env.Error.Message, "human relay") && !strings.Contains(env.Error.Message, "from") {
+		t.Fatalf("message = %q, want it to name the human-relay grant or the from requirement", env.Error.Message)
+	}
+}
+
+// TestSendInput_RouteTerminalHumanRelayPrincipalNeedsNoFrom pins the other
+// half: a principal explicitly configured with GrantHumanRelay may set
+// route:"terminal" with no `from` at all — its own channel is the
+// human-identifying fact.
+func TestSendInput_RouteTerminalHumanRelayPrincipalNeedsNoFrom(t *testing.T) {
+	svc := New("test-machine")
+	if err := svc.RegisterLocalDriver("stub", &stub.Driver{DeadlineMs: 200}); err != nil {
+		t.Fatalf("RegisterLocalDriver: %v", err)
+	}
+	mux := NewMux(svc, Config{
+		AllowLocalMutations: true,
+		Principals: []Principal{
+			{Name: "human-relay", Token: testToken, Grants: []Grant{GrantSend, GrantHumanRelay}},
+		},
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	body, _ := json.Marshal(map[string]interface{}{"text": "hello", "route": "terminal"})
+	req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions/some-id/input", body)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusBadRequest {
+		env := decodeError(t, resp)
+		t.Fatalf("a human-relay principal's route:terminal with no from was rejected: %s", env.Error.Message)
+	}
+}

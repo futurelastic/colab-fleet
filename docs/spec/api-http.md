@@ -664,6 +664,7 @@ never that the session is untyped.
 ```
 POST /v1/machines/{machine}/sessions/{id}/input
 { "text": "...", "submit": true, "resumeIfStranded": false, "replaceIfStranded": false,
+  "expect": "<composerDigest>",
   "from": { "agent": "...", "session": "...", "relayOfHuman": false } }
 ```
 
@@ -739,18 +740,35 @@ human was typing:
   delivering anything.
 - **no matching record exists at all** — with *neither* flag set, this is
   still the original, unchanged answer: the composer may hold a person's own
-  unsent draft, and this service will not guess otherwise. **With either flag
-  set, colab-fleet #135 closes this case too**, on different corroboration:
-  there is no record to compare a digest against, so the service reads the
-  composer's own current content and clears it using that same read as the
-  proof nothing changed between "look" and "clear" — the property `discard`'s
-  own `?expect=` digest enforces, folded into this one call instead of
-  requiring the caller to make a separate round trip to supply it by hand.
-  Both flags converge on the identical action here (clear, then deliver THIS
-  call's text) — there is nothing recorded to distinguish "finish it" from
-  "replace it" once there is no "it" to begin with. The response still
-  carries a refusal, never the foreign text delivered, if the clear itself
-  does not fully succeed (a `#87`-proven-futile residue, or a partial clear).
+  unsent draft, and this service will not guess otherwise. With either flag
+  set, the **draft rule** below decides.
+
+**The draft rule (#180).** The service never clears or submits text sitting in
+a composer unless (a) its own record proves the text is its own stranded
+delivery, or (b) the call carries `expect`, the composer's current digest
+(`composerDigest` on a session read), proving the caller saw what it asks to
+have cleared. Otherwise it refuses and the text stays. Concretely:
+
+- `resumeIfStranded` submits a stranded delivery only while the service's
+  record matches the composer — by the digest it took at strand time, by the
+  text itself read back row by row, or, for a paste the runtime collapsed to a
+  `[Pasted text #N +L lines]` summary, by the marker it saw that paste land as.
+- A record that lapsed (after `strandedRetention`, 30 minutes) or was
+  replaced by a newer strand is kept longer as proof only: when the composer
+  still holds exactly that text, either flag clears it and delivers this
+  call's text — colab-fleet #135's case.
+- For any other composer text, either flag needs `expect`; with a matching
+  `expect` the service clears exactly that content and delivers this call's
+  text. A non-matching `expect` refuses — the composer changed after it was
+  read.
+- `replaceIfStranded` on the service's own stranded delivery whose content
+  has since changed (a person may have edited it) needs `expect` too.
+
+Every refusal under the rule carries the composer's current digest and both
+ways forward (`replaceIfStranded` with that `expect`, or `discard`). The
+response still carries a refusal, never the foreign text delivered, if a
+permitted clear does not fully succeed (a `#87`-proven-futile residue, or a
+partial clear). `expect` has no effect without one of the two flags.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&startedAt=&force=

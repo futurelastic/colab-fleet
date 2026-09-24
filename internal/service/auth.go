@@ -97,6 +97,29 @@ const (
 	// gains this by upgrading.
 	GrantLabel Grant = "label"
 	GrantRelay Grant = "relay" // have mutations proxied to peers
+	// GrantHumanRelay marks a principal as a HUMAN relay for terminal-path
+	// routing (colab-fleet round-3 #180 review fix): route:"terminal" on
+	// POST …/input forces the pane/composer delivery path even on a call
+	// that would otherwise be eligible for the capability-detected inbox
+	// path (colab-fleet #119) — see http.go's own handling of body.Route.
+	// Absent this grant, route:"terminal" still works, but ONLY when the
+	// request also carries a `from` label: while the inbox path stays
+	// paused fleet-wide this changes nothing observable, but once it comes
+	// back "for agents only" (D7's own stated intent), an agent able to set
+	// route:"terminal" without holding this grant could opt a delivery out
+	// of the inbox path and have it recorded as unlabelled, human-typed
+	// input — undoing the very separation D7 exists to create. A principal
+	// configured with this grant (the one human-facing relay
+	// today) may set route:"terminal" with no `from` at all: its own
+	// channel IS the human-identifying fact.
+	//
+	// Absent means denied, like every other grant, so no existing principal
+	// gains this by upgrading — every route:"terminal" call already in the
+	// field either goes unauthenticated (no principal table configured
+	// here at all) or already sets `from`, so this only tightens the one
+	// combination — unauthenticated-as-human AND unlabelled — nothing
+	// legitimate currently relies on.
+	GrantHumanRelay Grant = "human-relay"
 )
 
 // Grants is every grant this service defines, in the order an operator would
@@ -113,6 +136,7 @@ func Grants() []Grant {
 	return []Grant{
 		GrantRead, GrantCreate, GrantSend, GrantInterrupt,
 		GrantClose, GrantRename, GrantDiscard, GrantKeys, GrantLabel, GrantRelay,
+		GrantHumanRelay,
 	}
 }
 
@@ -231,6 +255,40 @@ func grantForVerb(r *http.Request) Grant {
 // authority must travel and its mechanism only worked because every machine
 // shared a secret.
 const onBehalfOfHeader = "Fleet-On-Behalf-Of"
+
+// humanRelayHeader carries, across a peer relay, the entering machine's
+// finding that the call relays a human's own message (#180 L3). On the
+// entering machine that is a grant (GrantHumanRelay); on the owning machine
+// the request authenticates as the relaying PEER, which holds no such grant,
+// so the fact has to travel as an assertion — trusted exactly as far as an
+// on-behalf-of assertion is (relayTrusted).
+const humanRelayHeader = "Fleet-Human-Relay"
+
+// relayTrusted reports whether this request's relay assertions — the
+// on-behalf-of principal, the human-relay fact — may be honoured (#180 M8).
+// With no principal table every caller presents the one shared token and
+// nothing tells a relay from anyone else, so the assertion is honoured as it
+// always was. With a table, only a principal that is one of this service's
+// configured peers relays: any other caller setting these headers is
+// asserting authority it was never given, and the headers are ignored.
+func (svc *Service) relayTrusted(r *http.Request) bool {
+	p, ok := principalOf(r)
+	if !ok {
+		return true
+	}
+	_, isPeer := svc.peerDrivers()[fleet.MachineId(p.Name)]
+	return isPeer
+}
+
+// humanRelay reports whether this /input call relays a human's own message:
+// the caller holds GrantHumanRelay here, or a trusted relay asserted that the
+// original caller held it where the request entered the fleet.
+func (svc *Service) humanRelay(r *http.Request) bool {
+	if p, ok := principalOf(r); ok && p.Allows(GrantHumanRelay) {
+		return true
+	}
+	return r.Header.Get(onBehalfOfHeader) != "" && r.Header.Get(humanRelayHeader) == "1" && svc.relayTrusted(r)
+}
 
 // callerFor builds the Request a resolved principal makes.
 func callerFor(p Principal, r *http.Request) fleet.Caller {

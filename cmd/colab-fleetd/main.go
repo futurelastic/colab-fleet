@@ -316,6 +316,16 @@ func main() {
 		} else if home, err := os.UserHomeDir(); err == nil {
 			opts = append(opts, tmux.WithRecordRoot(filepath.Join(home, ".claude", "projects")))
 		}
+		// Terminal path v2 (item c / D6): the runtime's per-process identity
+		// directory, consulted only when the record-root lookup above cannot
+		// resolve a session's conversation by name (a resumed session, most
+		// often). Same override/off pattern as FLEET_RECORD_ROOT immediately
+		// above — FLEET_PROCESS_SESSIONS_ROOT set empty turns it off.
+		if root, ok := os.LookupEnv("FLEET_PROCESS_SESSIONS_ROOT"); ok {
+			opts = append(opts, tmux.WithProcessSessionsRoot(root))
+		} else if home, err := os.UserHomeDir(); err == nil {
+			opts = append(opts, tmux.WithProcessSessionsRoot(filepath.Join(home, ".claude", "sessions")))
+		}
 		// Where the runtime keeps its own local credential material —
 		// stat'ed, never read, to answer #12 (SessionState.CredentialGeneration,
 		// EventMachineAccount). Same off-by-default reasoning as
@@ -424,6 +434,11 @@ func main() {
 			}
 		}
 		d := tmux.New(self, opts...)
+		// #180: this machine's own sessionEnv may not name a variable the
+		// delivery module reserves either — the module is the sole setter.
+		if err := d.ValidateSessionEnvReserved(); err != nil {
+			log.Fatalf("colab-fleetd: %v", err)
+		}
 		// An unreadable key table is surfaced, never absorbed: continuing
 		// with an empty one is exactly the behaviour §10 calls a disaster.
 		if err := d.StateError(); err != nil {

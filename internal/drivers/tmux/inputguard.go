@@ -1,6 +1,9 @@
 package tmux
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // The refusal seam for text this driver's runtime does not treat as a
 // message (#53).
@@ -51,6 +54,45 @@ type nonMessageInput struct {
 	reason  string
 }
 
+// runtimeTrimCutset reports whether r is a rune the runtime's own trim
+// (JavaScript's `String.prototype.trim()`) removes from the front of a
+// string before reading its first character.
+//
+// # Why this is wider than " \t\r\n"
+//
+// The original cutset covered the four bytes #53 measured directly. A
+// review found the gap that leaves open: this guard's OWN trim ran on
+// bytes that a LATER step (pasteBracketed's sanitizer, terminalpath2.go)
+// still had to strip for an unrelated reason — bracket-escape injection —
+// and the two trim sets disagreed. `"\v!id"` is not trimmed to `"!id"` by
+// " \t\r\n" alone, so the guard saw `"\v!id"` and let it through; the
+// sanitizer then dropped the \v anyway and pasted `"!id"` — the exact
+// shell-command hazard this guard exists to refuse, reaching the pane
+// having never been refused at all.
+//
+// Sanitising before this guard runs (see Send's own ordering, tmux.go) closes
+// that specific hole structurally: the guard now sees whatever text will
+// actually be pasted, not an earlier draft of it. This cutset is kept wider
+// than " \t\r\n" anyway, as a second, independent line of defence for any
+// byte JavaScript's own trim() strips that this driver's sanitiser has no
+// occasion to touch — a leading NBSP (U+00A0) or BOM (U+FEFF) is not a
+// control byte, so pasteBracketed never removes it, but the runtime reading
+// the pasted text still trims it before deciding whether the first
+// character is "!". unicode.IsSpace already covers the ASCII whitespace,
+// U+0085 (NEL), U+00A0 (NBSP) and the Zs (space-separator) runes JavaScript's
+// own WhiteSpace/LineTerminator production names; U+FEFF (BOM) is added
+// explicitly because Go's unicode tables do not classify it as space.
+func runtimeTrimCutset(r rune) bool {
+	// #180 M7: skip everything that renders as nothing before deciding what
+	// the first visible character is — whitespace, control characters (C0
+	// and C1), format characters (zero-width space, joiner, soft hyphen,
+	// the byte-order mark) and the rest of Unicode's default-ignorables. A
+	// runtime that drops any of them before its own "!" check would
+	// otherwise see a "!" this guard never did.
+	return unicode.IsSpace(r) || unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) ||
+		unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) || unicode.Is(unicode.Variation_Selector, r)
+}
+
 // nonMessagePatterns is what THIS driver's runtime — the one it actually
 // drives, not any runtime a future driver might — reads as something other
 // than a message.
@@ -78,12 +120,53 @@ var nonMessagePatterns = []nonMessageInput{
 // refuseAsRuntimeSyntax reports the reason for the first declared pattern
 // that text matches, if any — checked against the SAME leading-whitespace
 // trim the runtime applies, per the package comment above.
-func refuseAsRuntimeSyntax(text string) (reason string, refused bool) {
-	trimmed := strings.TrimLeft(text, " \t\r\n")
+//
+// The caller (Send) is required to pass already-sanitised text — see this
+// function's own note on runtimeTrimCutset for why relying on this trim
+// alone, against text a later step will still mutate, is exactly the gap
+// that made the bypass possible.
+func refuseAsRuntimeSyntax(text string, humanRelay bool) (reason string, refused bool) {
+	trimmed := strings.TrimLeftFunc(text, runtimeTrimCutset)
 	for _, p := range nonMessagePatterns {
 		if p.matches(trimmed) {
 			return p.reason, true
 		}
 	}
+	if reason, refused := refuseSlashCommand(trimmed, humanRelay); refused {
+		return reason, true
+	}
 	return "", false
+}
+
+// sessionSlashCommands are the slash commands any caller holding the send
+// grant may deliver (#180 L6): they manage the session itself — its name,
+// its remote-control link — and a consumer that is not a human relay already
+// sends them. Every other command is refused unless the caller relays a
+// human (driver.SendOptions.HumanRelay).
+var sessionSlashCommands = map[string]bool{
+	"/rename":         true,
+	"/rc":             true,
+	"/remote-control": true,
+}
+
+// refuseSlashCommand is #180 L6: a message beginning with "/" is read by
+// this runtime as a command — /clear, /exit, or a custom command whose
+// template runs whatever it says — not delivered as a message. trimmed has
+// already been through the same trim the "!" guard uses.
+func refuseSlashCommand(trimmed string, humanRelay bool) (reason string, refused bool) {
+	if !strings.HasPrefix(trimmed, "/") || humanRelay {
+		return "", false
+	}
+	name, _, _ := strings.Cut(trimmed, " ")
+	if i := strings.IndexAny(name, "\n\t"); i >= 0 {
+		name = name[:i]
+	}
+	if sessionSlashCommands[name] {
+		return "", false
+	}
+	return "this runtime reads a message beginning with \"/\" as a command (" + name + "), not " +
+		"as a message — refusing rather than delivering it (#180). Only the session-management " +
+		"commands /rename, /rc and /remote-control are delivered for any caller; others need a " +
+		"caller holding the human-relay grant. Rephrase so the message does not begin with \"/\" " +
+		"if a message was intended", true
 }

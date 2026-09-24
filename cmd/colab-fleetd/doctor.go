@@ -526,7 +526,16 @@ func supervisorGrants() []service.Grant {
 		// a supervisor MAY do, not a verb it needs to drive sessions at all.
 		// Counting it would turn every existing full supervisor into a warning
 		// the day this build lands.
-		if g != service.GrantRelay && g != service.GrantLabel {
+		//
+		// human-relay (round-3 #180 review fix) is excluded the same way:
+		// it names a caller's own claim to BE a human-facing relay for
+		// route:"terminal" labelling, not a verb that drives sessions at
+		// all — a principal can fully create/send/interrupt/close/rename/
+		// discard/keys a session without ever being the one relay this
+		// grant exists for, and requiring it here would turn every existing
+		// full supervisor into a warning the day this build lands, same as
+		// label/relay would.
+		if g != service.GrantRelay && g != service.GrantLabel && g != service.GrantHumanRelay {
 			out = append(out, g)
 		}
 	}

@@ -38,6 +38,8 @@ type capture struct {
 	idem   string
 	dline  string
 	body   string
+	// humanRelay is the #180 L3 assertion header.
+	humanRelay string
 }
 
 func peerServing(t *testing.T, status int, payload any, rec *capture) *httptest.Server {
@@ -62,13 +64,14 @@ func peerServing(t *testing.T, status int, payload any, rec *capture) *httptest.
 		if rec != nil && !probing {
 			raw, _ := io.ReadAll(r.Body)
 			*rec = capture{
-				method: r.Method,
-				path:   r.URL.Path,
-				query:  r.URL.RawQuery,
-				auth:   r.Header.Get("Authorization"),
-				idem:   r.Header.Get("Idempotency-Key"),
-				dline:  r.Header.Get("Fleet-Deadline-Ms"),
-				body:   string(raw),
+				method:     r.Method,
+				path:       r.URL.Path,
+				query:      r.URL.RawQuery,
+				auth:       r.Header.Get("Authorization"),
+				humanRelay: r.Header.Get("Fleet-Human-Relay"),
+				idem:       r.Header.Get("Idempotency-Key"),
+				dline:      r.Header.Get("Fleet-Deadline-Ms"),
+				body:       string(raw),
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -361,6 +364,53 @@ func TestSendForwardsReplaceIfStranded(t *testing.T) {
 	}
 	if !body.ReplaceIfStranded {
 		t.Fatalf("body = %q, want replaceIfStranded:true carried through to the owning daemon (#112)", rec.body)
+	}
+}
+
+// TestSendForwardsForceTerminalRoute is the review's regression test for the
+// SAME #33 trap this file's own doc comments already name twice over, this
+// time for terminal path v2 / D7's ForceTerminalRoute: Send's hand-built
+// body silently dropped it, so a human's terminal-routed send relayed to a
+// peer was evaluated for inbox-eligibility on the OWNING machine as if
+// route:"terminal" had never been asked for — undoing D7's whole purpose the
+// moment the (currently paused) inbox path is re-enabled.
+func TestSendForwardsForceTerminalRoute(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+	d := New("peerbox", srv.URL)
+
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "a human's message",
+		driver.SendOptions{Submit: true, ForceTerminalRoute: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	var body struct {
+		Route string `json:"route"`
+	}
+	if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+		t.Fatalf("body = %q: %v", rec.body, err)
+	}
+	if body.Route != "terminal" {
+		t.Fatalf("body = %q, want route:\"terminal\" carried through to the owning daemon (D7)", rec.body)
+	}
+}
+
+// TestSendOmitsRouteWhenNotForced proves the field stays absent (not merely
+// empty-string-but-present) on an ordinary send — the owning daemon's own
+// decoder treats an explicit unrecognised value as a caller error, so this
+// driver must never send a value a future, stricter decoder could reject for
+// a send that never asked to force anything.
+func TestSendOmitsRouteWhenNotForced(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+	d := New("peerbox", srv.URL)
+
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "an ordinary message",
+		driver.SendOptions{Submit: true}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rec.body, "route") {
+		t.Fatalf("body = %q, want no \"route\" field at all when ForceTerminalRoute is false", rec.body)
 	}
 }
 
@@ -1000,5 +1050,53 @@ func TestCreateForwardsMcpConfigPathsVerbatim(t *testing.T) {
 		if body.McpConfig[i] != want[i] {
 			t.Errorf("mcpConfig[%d] = %q, want %q", i, body.McpConfig[i], want[i])
 		}
+	}
+}
+
+// TestSendForwardsExpect (#180): the draft rule's caller-supplied proof is
+// one more field Send's hand-built body must carry, or a relayed
+// replaceIfStranded with a correct expect digest is refused on the owning
+// machine for want of proof the caller did supply (#33's trap, again).
+func TestSendForwardsExpect(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+	d := New("peerbox", srv.URL)
+
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "replacement",
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true, ExpectComposerDigest: "0123456789abcdef"}); err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Expect            string `json:"expect"`
+		ReplaceIfStranded bool   `json:"replaceIfStranded"`
+	}
+	if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+		t.Fatalf("body = %q: %v", rec.body, err)
+	}
+	if body.Expect != "0123456789abcdef" || !body.ReplaceIfStranded {
+		t.Fatalf("body = %q, want expect and replaceIfStranded carried to the owning daemon", rec.body)
+	}
+}
+
+// TestSendCarriesTheHumanRelayAssertion (#180 L3): a human relay established
+// on the entering machine reaches the owning machine as an assertion header —
+// and only when it was established.
+func TestSendCarriesTheHumanRelayAssertion(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+	d := New("peerbox", srv.URL)
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "a person's message",
+		driver.SendOptions{Submit: true, ForceTerminalRoute: true, HumanRelay: true}); err != nil {
+		t.Fatal(err)
+	}
+	if rec.humanRelay != "1" {
+		t.Fatalf("Fleet-Human-Relay = %q, want 1", rec.humanRelay)
+	}
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "an agent's message",
+		driver.SendOptions{Submit: true}); err != nil {
+		t.Fatal(err)
+	}
+	if rec.humanRelay != "" {
+		t.Fatalf("Fleet-Human-Relay = %q on a send that asserted nothing", rec.humanRelay)
 	}
 }

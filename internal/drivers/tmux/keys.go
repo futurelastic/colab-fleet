@@ -71,6 +71,33 @@ var tmuxKey = map[fleet.KeyName]string{
 
 // Keys delivers one raw key event to a session's screen (driver.KeySender).
 func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionRef, key fleet.KeyName, expectDigest string) (fleet.DeliveryReceipt, error) {
+	// Terminal path v2 / D4 — see Send's identical acquisition. Ahead of the
+	// key-name validation below on purpose, the same way Send's own lock
+	// runs ahead of its #53 guard: an unrecognised key name refuses without
+	// ever touching a pane either way, so there is no cost to holding the
+	// lock through it, and it keeps "acquire the lock first, always" a rule
+	// with no exception to remember at the other three call sites.
+	// Review fix (D4 lock ignoring the caller's deadline): Escape is the key
+	// a caller reaches for to get OUT of a stuck dialog, and it is the one
+	// key whose whole reason for existing is unblocking a session another
+	// call has occupied for a while (confirmLandedV2/confirmSubmittedV2 can
+	// each hold this session's lock for a full submitConfirmWindow). Making
+	// Escape wait behind that lock would refuse the escape hatch for
+	// exactly the situation it exists to escape. It still corroborates
+	// against expectDigest below exactly as every other key does — skipping
+	// the lock changes WHO gets to go first, not what this call is allowed
+	// to assume about the screen.
+	if key != fleet.KeyEscape {
+		unlockComposer, lockOK := d.lockComposerOpsCtx(ctx, ref.ID)
+		if !lockOK {
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason:  composerBusyReason(" (Escape alone does not wait for this lock)"),
+			}, nil
+		}
+		defer unlockComposer()
+	}
+
 	send, ok := tmuxKey[key]
 	if !ok {
 		// Unreachable through the HTTP surface, which validates first. Kept
@@ -121,7 +148,7 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// screen holds RIGHT NOW, decided before the expectDigest check so the
 	// error messages below can already name the right field.
 	//
-	// composer holds unsent text -> composer scope, screenDigest(pending).
+	// composer holds unsent text -> composer scope, composerTextDigest(pending).
 	// This is the SAME value GET publishes as ComposerDigest (classify.go),
 	// and the SAME value Discard corroborates against (tmux.go) — chosen
 	// because every key this driver could deliver into that state is refused
@@ -163,11 +190,16 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 
 	var before string
 	if composerHoldsText {
-		before = screenDigest(pending)
+		before = composerTextDigest(pending)
 	} else {
 		before = screenDigest(text)
 	}
-	if before != expectDigest {
+	// #180 L1: a caller may hold a composer digest read before an upgrade.
+	matches := before == expectDigest
+	if composerHoldsText {
+		matches = composerDigestMatches(expectDigest, pending)
+	}
+	if !matches {
 		if composerHoldsText {
 			return fleet.DeliveryReceipt{}, fmt.Errorf(
 				"%w: the composer changed since the caller read it (expected "+
@@ -239,6 +271,21 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			Reason: "the composer holds unsent text; a key delivered now could submit " +
 				"something nobody asked to send. Clear it with discard, or send it",
 		}, nil
+	}
+
+	// #180 L7: arrow keys exist for dialogs. On an idle, empty composer with
+	// no dialog on screen they drive the runtime itself — Left was measured
+	// opening its agent view and starting a background supervisor.
+	if scan == composerFound && !awaitingSelection(screen) {
+		switch key {
+		case fleet.KeyUp, fleet.KeyDown, fleet.KeyLeft, fleet.KeyRight:
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason: "arrow keys are for answering a dialog, and this session shows an " +
+					"empty composer with no dialog; on an idle composer an arrow drives the " +
+					"runtime's own interface instead (Left opens its agent view) — refusing",
+			}, nil
+		}
 	}
 
 	if _, err := d.run(ctx, d.bin, "send-keys", "-t", live.paneID, send); err != nil {

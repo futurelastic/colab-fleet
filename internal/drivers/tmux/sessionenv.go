@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	fleet "github.com/godx-jp/colab-fleet"
+	"github.com/godx-jp/colab-fleet/internal/delivery"
 )
 
 // colab-fleet issue #94: an operator declaring what THIS machine's sessions
@@ -133,6 +134,26 @@ func ValidateSessionEnv(entries []SessionEnvEntry) error {
 			return fmt.Errorf("sessionEnv: %q is declared more than once", e.Name)
 		}
 		seen[e.Name] = true
+	}
+	return nil
+}
+
+// ValidateSessionEnvReserved refuses a configured sessionEnv entry naming a
+// variable this driver's delivery module reserves (#180): the module is the
+// sole setter of those, and a configured value would silently compete with
+// it. Separate from ValidateSessionEnv because it needs the constructed
+// driver — which module is installed is not a fact about the entries alone.
+func (d *Driver) ValidateSessionEnvReserved() error {
+	reserved := d.ReservedEnv()
+	if len(reserved) == 0 || len(d.sessionEnv) == 0 {
+		return nil
+	}
+	names := make(map[string]string, len(d.sessionEnv))
+	for _, e := range d.sessionEnv {
+		names[e.Name] = ""
+	}
+	if err := delivery.CheckReservedEnv(names, reserved); err != nil {
+		return fmt.Errorf("sessionEnv: %w", err)
 	}
 	return nil
 }

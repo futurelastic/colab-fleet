@@ -689,7 +689,35 @@ func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 	if len(s.lines) > promptScanDepth {
 		from = len(s.lines) - promptScanDepth
 	}
-	for _, raw := range s.lines[from:] {
+
+	// Review fix (#180 review): mask OUT the active composer's own
+	// fenced rows before scanning for a menu. numberedOption/selected below
+	// have no way to tell a genuine menu option apart from a MULTI-LINE
+	// composer message that merely starts with "1." — Claude Code echoes a
+	// composer's continuation rows with the same ❯ leader a menu's
+	// highlighted option uses (composerText's own doc comment: the row after
+	// the prompt wraps below it), so "1. merge PR 12 once CI is green" /
+	// "2. then deploy staging" typed into a live composer parsed as a
+	// two-option menu with option 1 "selected", and confirmLandedV2's own
+	// dialog-race gate (which calls this via awaitingSelection) refused the
+	// send outright — the exact numbered-message wedge D2 was supposed to
+	// have closed.
+	//
+	// composerSpan is the right test for "is this really a composer" rather
+	// than "is this really a menu", because on an ACTUAL selection menu
+	// composerSpan itself already reads composerAbsent (composerSpan's own
+	// doc comment: the fenced-composer shape a menu occupies that SAME
+	// visual position instead of, per colab-fleet#58's original finding) —
+	// masking only ever removes rows a real composer owns, never a real
+	// menu's.
+	promptRow, lastRow, composerScan := composerSpan(s)
+	maskComposer := composerScan == composerFound
+
+	for i, raw := range s.lines[from:] {
+		idx := from + i
+		if maskComposer && idx >= promptRow && idx <= lastRow {
+			continue
+		}
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
@@ -1993,7 +2021,7 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 		held := fleet.InferredState(fleet.StatusWaitingInput,
 			"turn finished; composer holds unsent input", nil)
 		held.WaitingOn = fleet.WaitingUnsentInput
-		held.ComposerDigest = screenDigest(pending)
+		held.ComposerDigest = composerTextDigest(pending)
 		return held, ambNone
 
 	case foundSpinner && !running && clipped:
@@ -2056,7 +2084,7 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 		// the field useless: a caller quoted back a fingerprint of the whole
 		// screen while discard compared the text, so a correct call could
 		// never match.
-		pendingState.ComposerDigest = screenDigest(pending)
+		pendingState.ComposerDigest = composerTextDigest(pending)
 		return pendingState, ambNoSpinnerPending
 
 	default:

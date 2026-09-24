@@ -104,6 +104,101 @@ type fakeMux struct {
 	// "height unknown" — so every test that never sets it keeps treating all
 	// captured rows as visible, exactly as before.
 	heights map[string]int
+	// bracketPasteOff models the one pane shape terminal-path-v2's
+	// pasteBracketed refuses on: an occupant that has NOT asked the
+	// terminal for bracketed paste mode (`#{bracket_paste_flag}` reads 0).
+	// Every pane absent here answers "1" — matching round-1's own live
+	// measurement that every real Claude Code pane sampled reported
+	// bracket_paste_flag=1 — so no existing fixture has to know this query
+	// exists at all; only a test that specifically wants to exercise the
+	// refusal sets a pane here.
+	bracketPasteOff map[string]bool
+	// echoOutsideFence restores this fake's original paste model: delivered
+	// text is appended AFTER the whole pre-armed screen instead of being
+	// rendered inside the composer's fence (renderInComposer). That is the
+	// shape of text echoed by something other than the composer — a shell
+	// under a leftover composer frame (#180 H2) — so a landed check must
+	// never be confirmed by it.
+	echoOutsideFence bool
+	// pasteLog is every payload delivered through the paste buffer, in
+	// order, whatever became of it on screen afterwards.
+	pasteLog []string
+	// collapsePastes models the runtime collapsing a paste of five or more
+	// lines, or over 800 bytes, to one "[Pasted text #N +L lines]" marker
+	// (bare "[Pasted text #N]" for a single long line) inside the composer.
+	// N counts per pane; L is the paste's newline count, as measured.
+	collapsePastes bool
+	pasteSeq       map[string]int
+	// currentCommand is a pane's #{pane_current_command} (#180 H2): the
+	// name of its foreground process. Absent means the runtime.
+	currentCommand map[string]string
+}
+
+// renderInComposer models what the runtime does with a paste: the text
+// appears INSIDE the composer, between its fences, one row per logical line
+// (#180). A screen with no fenced composer is returned unchanged (ok=false),
+// and the caller falls back to appending — text a pane shows outside any
+// composer. Existing composer text (other than the dim placeholder) is kept
+// and the paste continues it, as a paste at the end of the line does.
+func renderInComposer(capture, pasted string) (string, bool) {
+	lines := strings.Split(capture, "\n")
+	last := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isRule(stripEscapes(lines[i])) {
+			last = i
+			break
+		}
+	}
+	if last <= 0 {
+		return "", false
+	}
+	prompt := -1
+	for i := last - 1; i >= 0; i-- {
+		plain := strings.TrimSpace(stripEscapes(lines[i]))
+		if isRule(plain) {
+			return "", false
+		}
+		if strings.HasPrefix(plain, composerRuneMarker) {
+			prompt = i
+			break
+		}
+	}
+	if prompt < 0 {
+		return "", false
+	}
+	var existing []string
+	if !allDim(afterMarker(lines[prompt])) {
+		if first := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(stripEscapes(lines[prompt])), composerRuneMarker)); first != "" {
+			existing = append(existing, first)
+		}
+		for i := prompt + 1; i < last; i++ {
+			if row := stripEscapes(lines[i]); strings.TrimSpace(row) != "" {
+				existing = append(existing, row)
+			}
+		}
+	}
+	rows := strings.Split(pasted, "\n")
+	if n := len(existing); n > 0 {
+		existing[n-1] += rows[0]
+		rows = append(existing, rows[1:]...)
+	}
+	out := append([]string{}, lines[:prompt]...)
+	out = append(out, composerRuneMarker+" "+rows[0])
+	out = append(out, rows[1:]...)
+	out = append(out, lines[last:]...)
+	return strings.Join(out, "\n"), true
+}
+
+// setBracketPasteOff arms the one pane shape terminal-path-v2's
+// pasteBracketed refuses delivery on — see bracketPasteOff's own doc
+// comment.
+func (f *fakeMux) setBracketPasteOff(paneID string, v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.bracketPasteOff == nil {
+		f.bracketPasteOff = map[string]bool{}
+	}
+	f.bracketPasteOff[paneID] = v
 }
 
 func (f *fakeMux) setCapChunkArgWall(n int) {
@@ -329,7 +424,21 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 				}
 			}
 		}
+		if pane != "" {
+			f.pasteLog = append(f.pasteLog, content)
+		}
 		if pane != "" && !f.noEcho {
+			if f.collapsePastes && (strings.Count(content, "\n") >= 4 || len(content) > 800) {
+				if f.pasteSeq == nil {
+					f.pasteSeq = map[string]int{}
+				}
+				f.pasteSeq[pane]++
+				if n := strings.Count(content, "\n"); n > 0 {
+					content = fmt.Sprintf("[Pasted text #%d +%d lines]", f.pasteSeq[pane], n)
+				} else {
+					content = fmt.Sprintf("[Pasted text #%d]", f.pasteSeq[pane])
+				}
+			}
 			f.pasted[pane] += content
 		}
 		return nil, nil
@@ -351,6 +460,11 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "-t" {
 				body := f.captures[args[i+1]] + "\n" + f.pasted[args[i+1]]
+				if p := f.pasted[args[i+1]]; p != "" && !f.echoOutsideFence {
+					if rendered, ok := renderInComposer(f.captures[args[i+1]], p); ok {
+						body = rendered
+					}
+				}
 				if !withEscapes {
 					body = stripEscapes(body)
 				}
@@ -569,6 +683,12 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 				// backwards.
 				if f.pasted[pane] != "" {
 					f.captures[pane] = composerHolding(f.pasted[pane])
+					// The text now lives in the screen itself; leaving it in
+					// f.pasted too would render it a second time inside the
+					// composer (renderInComposer).
+					if !f.echoOutsideFence {
+						delete(f.pasted, pane)
+					}
 				}
 			} else {
 				delete(f.pasted, pane)
@@ -591,6 +711,37 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		}
 		return nil, nil
 	case "display-message":
+		// #180 H2: foregroundIsRuntime's own query. A live runtime pane
+		// reports the runtime's process title (its version string), so
+		// that is the default; a test arms currentCommand to model a
+		// shell. The tty is deliberately not a real device name, so an
+		// un-faked ps finds nothing there.
+		if len(args) == 5 && args[4] == paneForegroundFormat {
+			pane := args[3]
+			cmd := "2.1.281"
+			if c, ok := f.currentCommand[pane]; ok {
+				cmd = c
+			}
+			pid := 0
+			for _, s := range f.sessions {
+				if s.paneID == pane {
+					pid = s.pid
+				}
+			}
+			return []byte(itoa(pid) + "|/dev/fake-tty" + strings.TrimPrefix(pane, "%") + "|" + cmd + "\n"), nil
+		}
+		// Terminal path v2: pasteBracketed's own standalone probe
+		// (`display-message -p -t <pane> "#{bracket_paste_flag}"`) — never
+		// chained with anything else, unlike every other display-message
+		// shape this fake models below. See bracketPasteOff's own doc
+		// comment for why the default answer is "1" rather than "0".
+		if len(args) == 5 && args[4] == "#{bracket_paste_flag}" {
+			pane := args[3]
+			if f.bracketPasteOff[pane] {
+				return []byte("0\n"), nil
+			}
+			return []byte("1\n"), nil
+		}
 		// The batched capture call: one chained invocation of
 		// "display-message -p <mark> ; capture-pane ... -t <pane> ; ..." per
 		// row, exactly as enumerate builds it (tmux.go's capArgs).
@@ -719,6 +870,16 @@ func intToStr(i int) string {
 // newTestDriver injects no control-mode dialer, so anything that dials —
 // Subscribe above all — attaches REAL multiplexer clients to whatever server
 // the test machine has. Subscription tests use newSubDriver instead (#162).
+// pendingOf is the composer text a fixture shows, as composerText reads it.
+func pendingOf(t *testing.T, fixture string) string {
+	t.Helper()
+	p, scan := composerText(newScreen(fixture))
+	if scan != composerFound || p == "" {
+		t.Fatalf("setup: fixture holds no composer text")
+	}
+	return p
+}
+
 func newTestDriver(f *fakeMux) *Driver {
 	return New("testbox",
 		withExec(f.exec),
@@ -1819,7 +1980,8 @@ func TestConfirmLandedIgnoresResidueAndAttributesOnlyTheNewMarker(t *testing.T) 
 	f := twoSessions()
 	f.setCapture("%1", residue)
 	d := newTestDriver(f)
-	before := d.paintedMarkers(context.Background(), "%1")
+	sc, _ := d.captureForClassify(context.Background(), "%1")
+	before := composerMarkers(sc)
 	if len(before) != 1 {
 		t.Fatalf("setup: before-snapshot = %v, want exactly the one pre-existing marker", before)
 	}
@@ -1845,7 +2007,7 @@ func TestConfirmLandedIgnoresResidueAndAttributesOnlyTheNewMarker(t *testing.T) 
 	// literal-match branch on the very first read, before this delivery's own
 	// marker (#11) ever appears, which is exactly the false positive this
 	// test exists to rule out. "q" appears nowhere in the fixture.
-	key, atCount, ok := d2.confirmLanded(context.Background(), "%1", strings.Repeat("q\n", 30), before)
+	key, atCount, ok := d2.confirmLandedV2(context.Background(), "%1", strings.Repeat("q\n", 30), before, false, false)
 	if !ok {
 		t.Fatal("never confirmed landed, even after this delivery's own marker appeared")
 	}
@@ -4303,29 +4465,34 @@ func TestResumeSubmitsOnlyWhatThisDriverStranded(t *testing.T) {
 	// doc comment describes — no record backing the composer's content meant
 	// an unconditional refusal regardless of either flag, "close to an hour"
 	// per #135's field report once the 30-minute strandedRetention window
-	// lapsed mid-retry. Both flags now fold /discard's own read-then-clear
-	// corroboration into Send instead: the composer is cleared and THIS
-	// call's text is delivered in its place. The safety property that
-	// survives is narrower but still real, and still worth this test's own
-	// name — this driver must never submit text it did not place. The FOREIGN
-	// text sitting in the composer is discarded, never delivered; only the
-	// caller's own new text may reach the pane. See stranded_test.go's
-	// dedicated #135 tests for the rest of the new behaviour (the #87 futile
-	// guard, a partial clear reported honestly, and a bare send with neither
-	// flag set still refusing with the original wording).
-	t.Run("resume clears foreign text and submits only what this driver placed", func(t *testing.T) {
+	// lapsed mid-retry. #135 originally folded BOTH flags' "no record" case
+	// into the identical clear-and-deliver door; a later review fix (see
+	// stranded_test.go's TestResumeIfStrandedRefusesWithNoStrandedRecord)
+	// narrowed that to replaceIfStranded alone — resumeIfStranded's own
+	// contract ("finish MY earlier delivery") has nothing to finish here and
+	// now refuses instead of guessing. This subtest is updated to exercise
+	// the door that still exists (replaceIfStranded), and keeps proving the
+	// same safety property it always did: this driver must never submit text
+	// it did not place. The FOREIGN text sitting in the composer is
+	// discarded, never delivered; only the caller's own new text may reach
+	// the pane. See stranded_test.go's dedicated #135 tests for the rest of
+	// the new behaviour (the #87 futile guard, a partial clear reported
+	// honestly, and a bare send with neither flag set still refusing with
+	// the original wording).
+	t.Run("replace clears foreign text and submits only what this driver placed", func(t *testing.T) {
 		f := twoSessions()
 		f.captures["%2"] = fixtureUnsent // a human's typing, nothing to do with us
 		d := newTestDriver(f)
 
 		r, err := d.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"},
-			"something else entirely", driver.SendOptions{Submit: true, ResumeIfStranded: true})
+			"something else entirely", driver.SendOptions{Submit: true, ReplaceIfStranded: true,
+				ExpectComposerDigest: composerTextDigest(pendingOf(t, fixtureUnsent))})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if r.Outcome != fleet.OutcomeQueued {
 			t.Errorf("outcome = %s (%s), want queued — #135: no record means nothing to resume, "+
-				"so resumeIfStranded clears the composer and delivers this call's own text instead",
+				"so replaceIfStranded clears the composer and delivers this call's own text instead",
 				r.Outcome, r.Reason)
 		}
 		// The ordinary delivery path this falls through to always pastes THIS

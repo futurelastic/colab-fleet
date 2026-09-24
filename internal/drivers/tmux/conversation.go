@@ -262,7 +262,12 @@ func (s *conversationStore) derive(cwd, name string, started time.Time) *fleet.C
 // `entry.id`), so a caller holding a resolved fleet.ConversationRef can ask
 // for the same file directly instead of re-deriving it (#56).
 func (s *conversationStore) recordPath(cwd, id string) string {
-	return filepath.Join(s.root, recordDirFor(cwd), id+".jsonl")
+	p := filepath.Join(s.root, recordDirFor(cwd), id+".jsonl")
+	// #180 L5: never a path outside the record root, whatever id holds.
+	if rel, err := filepath.Rel(s.root, p); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.Join(s.root, "invalid-record-id.jsonl")
+	}
+	return p
 }
 
 func (s *conversationStore) entryFor(path string) (recordEntry, bool) {

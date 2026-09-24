@@ -56,22 +56,24 @@ type SendOptions struct {
 	// that protects it, and nothing else submits.
 	//
 	// With this set, a driver may submit what is in the composer ONLY if it
-	// can establish the text is the text it delivered — from its own record,
-	// not by reading the screen back, because a multi-line paste is collapsed
-	// to a summary and cannot be compared (F49).
+	// can establish the text is the text it delivered — from its own record:
+	// the composer digest it took when the delivery stranded, the text itself
+	// read back row by row, or, for a paste the runtime collapsed to a
+	// "[Pasted text #N +L lines]" summary, the marker it saw that paste land
+	// as (#180 H1).
 	//
 	// It must never submit text it did not put there. Composer contents are
 	// not evidence that anyone meant to send them: the runtime redraws the
 	// last submitted message as a placeholder, and a human's half-typed line
 	// looks the same to a screen reader as a finished one.
 	//
-	// colab-fleet #135: when the driver holds no record at all for this
-	// composer, there is nothing to literally resume — so this converges on
-	// ReplaceIfStranded's own door instead of dead-ending at the busy-composer
-	// refusal: clear whatever is there and deliver THIS call's text. Still
-	// never the foreign text itself; only ever this call's own. See
-	// ReplaceIfStranded's doc for the corroboration this rests on in that
-	// no-record case.
+	// The draft rule (#180): with no live record for this composer, a driver
+	// clears it and delivers THIS call's text (colab-fleet #135's door) only
+	// when it can still prove the text is its own — a record it kept after
+	// the live one lapsed (a tombstone: the same text, or the same digest) —
+	// or when the caller passes the composer's current digest in
+	// ExpectComposerDigest, proving it saw what it asks to clear. Otherwise
+	// it refuses and the text stays: it may be a person's draft.
 	ResumeIfStranded bool
 
 	// ReplaceIfStranded (colab-fleet #112) clears a composer holding a
@@ -94,19 +96,32 @@ type SendOptions struct {
 	// set together is a contradiction a driver refuses outright rather than
 	// resolves by picking one.
 	//
-	// colab-fleet #135: when no record exists for this composer at all
-	// (the ordinary reason a caller ends up here), a driver may ALSO act —
-	// on a different corroboration, since there is no record to compare a
-	// digest against. It may read the composer's own current content and
-	// clear it using that SAME read as the proof nothing changed between
-	// "look" and "clear" (the same property /discard's own `?expect=`
-	// digest enforces), then deliver this call's text. This is not a
-	// loosening of that property, only its relocation: the opt-in flag on
-	// THIS call is the caller's considered decision to clear whatever is
-	// there, replacing the separate round trip a caller previously had to
-	// make to supply that same proof by hand. A bare Send with neither flag
-	// set must still refuse untouched.
+	// The draft rule (#180) applies unchanged: when no record exists for
+	// this composer, or the record's digest no longer matches it, a driver
+	// clears it only if the driver's own tombstone proves the text is its
+	// own, or the caller passes the composer's current digest in
+	// ExpectComposerDigest — the same proof /discard's `?expect=` demands.
+	// The flag alone is a wish to replace, not proof that the text there is
+	// anyone's to throw away; before #180 it was treated as proof, and a
+	// person's draft was cleared with nothing but the send grant (M9). A bare
+	// Send with neither flag set still refuses untouched.
 	ReplaceIfStranded bool
+
+	// ExpectComposerDigest is the composer digest the caller read (a
+	// session's state carries it) and is prepared to have cleared or
+	// submitted — the draft rule's second proof (#180). It only ever
+	// PERMITS: it is compared with the composer as it is at the moment of
+	// acting, and a mismatch refuses, keeping whatever is there. It has no
+	// effect without ResumeIfStranded or ReplaceIfStranded.
+	ExpectComposerDigest string
+
+	// HumanRelay says the service established that this call relays a
+	// human's own message: the caller holds the human-relay grant, or a
+	// peer this service trusts to relay asserted it (#180). Set by the
+	// service, never by a caller's body. A driver may let such a call send a
+	// leading "/" — a human at a keyboard types slash commands — where it
+	// refuses one from anyone else.
+	HumanRelay bool
 
 	// From (colab-fleet #158) is who the message says it comes from. Nil
 	// means unlabelled, exactly as before #158. By the time a driver sees
@@ -118,6 +133,27 @@ type SendOptions struct {
 	// that driver's hand-built body forwards it (#33) — a label that
 	// vanished at the federation boundary would produce no symptom at all.
 	From *fleet.MessageFrom
+
+	// ForceTerminalRoute (terminal path v2, item g / D7) asks a driver that
+	// ALSO has a capability-detected inbox path (colab-fleet #119) to use
+	// the pane/composer path instead, even on a call that would otherwise
+	// be inboxEligible (Submit set, neither stranded flag set).
+	//
+	// # Why this exists at all
+	//
+	// #119's inbox path is a cross-session PEER delivery mechanism, paused
+	// fleet-wide pending #119's own remaining human ruling on credentials —
+	// but a caller sending on behalf of a HUMAN (a human-facing relay
+	// service, chiefly) needs a way to say "use the path a human's own typed
+	// message would use" independent of when the inbox path itself comes
+	// back for AGENT-to-agent traffic. Without this field the only lever is
+	// disabling the inbox path fleet-wide, which throws away the distinction
+	// entirely instead of letting one class of sender opt out on its own.
+	//
+	// A driver with no inbox capability at all is unaffected either way —
+	// see inboxEligible, the only place this field is read on the tmux
+	// driver.
+	ForceTerminalRoute bool
 }
 
 // SenderLabel renders from as "agent · session · machine", skipping empty
@@ -449,6 +485,18 @@ type Driver interface {
 // the one holding credentials.
 type EnvironmentReporter interface {
 	Environment(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionEnvironment, error)
+}
+
+// ReservedEnvReporter is an OPTIONAL capability: a driver whose delivery
+// module needs to be the sole setter of some environment variables for a
+// session's agent process (#180). Session create refuses caller-supplied env
+// naming any of them, before the driver is asked to create anything.
+//
+// Optional for the same reason EnvironmentReporter is: most substrates have
+// no such names. A relaying driver does not implement it — the owning
+// machine's service applies its own driver's answer.
+type ReservedEnvReporter interface {
+	ReservedEnv() []string
 }
 
 // KeySender is an OPTIONAL capability: a driver that can deliver a raw key

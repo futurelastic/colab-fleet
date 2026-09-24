@@ -729,6 +729,12 @@ func (d *Driver) bounded(ctx context.Context) (context.Context, context.CancelFu
 // credential — that is how a proxied call presents the original caller's
 // authority (§13).
 func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string, body any, out any) error {
+	return d.doWithHeaders(ctx, req, method, path, nil, body, out)
+}
+
+// doWithHeaders is do with extra request headers — the one call that needs
+// them is Send carrying the human-relay assertion (#180 L3).
+func (d *Driver) doWithHeaders(ctx context.Context, req fleet.Request, method, path string, headers map[string]string, body any, out any) error {
 	token, behalf, ok := d.bearerFor(req)
 	if !ok {
 		return ErrNoCallerAuthority
@@ -755,6 +761,9 @@ func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string,
 	}
 	if body != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		httpReq.Header.Set(k, v)
 	}
 	// Tell the peer a bound slightly inside the one we are enforcing, so it
 	// can fail fast rather than working on a request we have already given
@@ -1230,6 +1239,19 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 // over: it also has no effect unless forwarded, and a caller who never sets
 // it sees no symptom at all — the owning daemon just falls back to the same
 // §2.4 refusal ResumeIfStranded's own paragraph above describes.
+// forceTerminalRouteWireValue renders driver.SendOptions.ForceTerminalRoute
+// as the wire's own closed vocabulary (service/http.go's own switch: "" or
+// "terminal", anything else rejected before a driver ever sees it) — kept as
+// its own function so the ONE place this bool becomes that string is
+// visible in a diff, rather than an inline ternary easy to miss re-deriving
+// wrong at a second call site later.
+func forceTerminalRouteWireValue(forced bool) string {
+	if forced {
+		return "terminal"
+	}
+	return ""
+}
+
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
@@ -1238,18 +1260,39 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// the machine field is on the wire at all. The entering machine stamped
 	// it; the owning daemon accepts it only because this request arrives as a
 	// relay (see the service's stampSender).
+	//
+	// Route (terminal path v2 / D7, review fix): this is the SAME #33 trap
+	// this doc comment already names twice over for ResumeIfStranded and
+	// ReplaceIfStranded — a field with no effect unless explicitly forwarded,
+	// and a caller who forgets sees no symptom AT ALL until the one day it
+	// matters. Dropping it here meant a human's terminal-routed send
+	// (a human-facing relay, entering on one machine for a session on another) was
+	// evaluated for inbox-eligibility on the OWNING machine as if
+	// route:"terminal" had never been asked for — exactly what D7 exists to
+	// prevent, and it would have started silently doing the wrong thing the
+	// moment the inbox path (currently paused fleet-wide) is re-enabled for
+	// anything this shape can reach.
 	body := struct {
 		Text              string             `json:"text"`
 		Submit            bool               `json:"submit"`
 		ResumeIfStranded  bool               `json:"resumeIfStranded,omitempty"`
 		ReplaceIfStranded bool               `json:"replaceIfStranded,omitempty"`
+		Expect            string             `json:"expect,omitempty"`
 		From              *fleet.MessageFrom `json:"from,omitempty"`
-	}{Text: text, Submit: opts.Submit, ResumeIfStranded: opts.ResumeIfStranded, ReplaceIfStranded: opts.ReplaceIfStranded, From: opts.From}
+		Route             string             `json:"route,omitempty"`
+	}{Text: text, Submit: opts.Submit, ResumeIfStranded: opts.ResumeIfStranded, ReplaceIfStranded: opts.ReplaceIfStranded, Expect: opts.ExpectComposerDigest, From: opts.From, Route: forceTerminalRouteWireValue(opts.ForceTerminalRoute)}
 
 	var out fleet.DeliveryReceipt
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/input",
 		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
-	if err := d.do(ctx, req, http.MethodPost, path, body, &out); err != nil {
+	// #180 L3: a human relay established on this machine travels to the
+	// owning one as an assertion; the owner trusts it only as far as it
+	// trusts this machine as a relay.
+	var headers map[string]string
+	if opts.HumanRelay {
+		headers = map[string]string{"Fleet-Human-Relay": "1"}
+	}
+	if err := d.doWithHeaders(ctx, req, http.MethodPost, path, headers, body, &out); err != nil {
 		return fleet.DeliveryReceipt{}, err
 	}
 	return out, nil

@@ -260,10 +260,35 @@ labels, the create is refused `unsupported` before anything is started there.
 
 ```json
 { "text": "…", "submit": true, "resumeIfStranded": false,
-  "from": { "agent": "…", "session": "…", "relayOfHuman": false } }
+  "replaceIfStranded": false, "expect": "<composerDigest>",
+  "from": { "agent": "…", "session": "…", "relayOfHuman": false },
+  "route": "terminal" }
 ```
 
 Returns `200` with a **delivery receipt** — always `200`, even on refusal.
+
+`route` (optional, terminal path v2) forces the pane/composer delivery path
+even on a call that would otherwise be eligible for a driver's
+capability-detected inbox path (colab-fleet #119, paused fleet-wide pending
+its own remaining human ruling on credentials). The only accepted non-empty
+value today is `"terminal"`; anything else is a `400` naming the field, before
+any driver is resolved — the same way an over-long `text` is rejected. Leave
+it out (or send `""`) and a call keeps its ordinary eligibility.
+
+Use this when the caller is relaying a **human's** own message (a human-facing relay
+service, chiefly) and wants the path a human's own typed message
+would take, independent of when the inbox path itself comes back for
+agent-to-agent traffic. A driver with no inbox capability at all is
+unaffected either way.
+
+`route: "terminal"` from a caller **without** the `human-relay` grant is a
+`400` unless the call carries a `from` label that actually prints — a
+non-empty agent, session or machine that survives label normalisation (#180).
+A caller holding the grant needs no label. When such a call enters on one
+machine for a session on another, the entering machine asserts the grant to
+the owning one; the owner honours that assertion only from one of its
+configured peers (or from anyone when no principal table is configured) —
+the same trust bound as the on-behalf-of assertion.
 
 `from` (optional) labels the message with who it comes from, so the receiving
 session sees `agent · session · machine` instead of an anonymous peer. Leave it
@@ -293,6 +318,18 @@ out and the message is unlabelled, exactly as before.
 | `refused` | The driver actively declined; `reason` says why | Read the reason — this is information, not a fault |
 | `unknown` | Sent, outcome unverifiable — **the text may be sitting unsent** | Retry with `resumeIfStranded: true` |
 
+**Two refusals worth recognising by their `reason` (#180):**
+
+- A `reason` beginning **`composer busy, retryable: `** means another
+  delivery, respond or discard held the session's composer until your own
+  deadline ran out. Nothing was done; the condition is transient — retry.
+  A `respond` takes priority over a send waiting on the same composer.
+- Text beginning with **`/`** is a command to the runtime, not a message, and
+  is refused — except `/rename`, `/rc` and `/remote-control`, which any caller
+  may send, and any command from a caller holding the `human-relay` grant.
+  Like the `!` refusal, it is judged after leading invisible characters are
+  skipped.
+
 **`submitted` is not one of the outcomes `input` can return today.** Every driver
 in this fleet reports `confirmsDelivery: false` on `/v1/runtimes` — none can
 distinguish "the agent received it" from "the runtime accepted it" — so a
@@ -308,14 +345,30 @@ this table alone.
 confirmation of. It only ever resubmits text the service's own record says it
 placed there — never text a human typed.
 
-`resumeIfStranded` and `replaceIfStranded` also clear a composer the service
-holds **no** record for at all (colab-fleet #135), instead of dead-ending at
-the busy-composer refusal — both flags already declare "deliver this text
-regardless of what's stuck in the composer", so the driver folds `discard`'s
-own read-then-clear corroboration into this one call rather than making the
-caller do it by hand across three round trips (read → discard → resend). It
-never resubmits the foreign text itself — only ever THIS call's own — and a
-bare `input` with neither flag set keeps refusing exactly as before.
+**The draft rule (#180).** The service never clears or submits text sitting in
+a session's composer unless **(a)** its own record proves the text is its own
+stranded delivery, or **(b)** the call carries `expect` — the composer's
+current digest, as a session read reports it in `composerDigest` — proving the
+caller saw exactly what it is asking to have cleared. Otherwise the call is
+`refused` and the text stays: it may be a person's draft. The flags alone are
+a wish, never proof.
+
+- `resumeIfStranded` finishes the service's own stranded delivery when its
+  record still matches the composer. When the live record has lapsed (it is
+  kept 30 minutes) the service keeps a longer-lived record of the text it
+  placed, and if the composer still holds exactly that text, the call clears
+  it and delivers this call's text — colab-fleet #135's case, still covered.
+- `replaceIfStranded` clears the service's own stranded delivery and
+  delivers this call's text instead. For any composer the service cannot
+  prove is its own, it needs `expect`.
+- An `expect` that does not match the composer as it is now refuses — it
+  changed after it was read, possibly because a person typed into it.
+
+A refusal under this rule names the composer's current digest and both ways
+forward: send again with `replaceIfStranded` and that `expect`, or `discard`
+it. `expect` has no effect without one of the two flags, and it never
+permits anything by itself — it is compared with the composer at the moment
+of acting.
 
 > A `POST` to `/input` is not the same thing as an instruction delivered. If you
 > write one client rule from this document, make it: read the outcome.
