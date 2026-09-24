@@ -138,7 +138,7 @@ func TestModuleCreate_LanePersisted(t *testing.T) {
 func TestModuleCreate_EnvMergedExactly(t *testing.T) {
 	r := newModRig(t, rigOptions{behaviour: reserving(modtest.Behaviour{Ops: map[string]modtest.OpScript{
 		"prepare-launch": {Results: []json.RawMessage{modtest.JSON(map[string]any{
-			"laneKey": "0123456789abcdef", "claudeVersion": "1.0.0",
+			"laneKey": "lane-alpha", "claudeVersion": "1.0.0",
 			"env": map[string]string{modPrefix + "LANE": "/p/lane one", modPrefix + "SOCK": "/p/sock"},
 		})}},
 	}})})
@@ -160,7 +160,7 @@ func TestModuleCreate_EnvMergedExactly(t *testing.T) {
 	// Never on a command line.
 	for _, c := range r.mux.callsSnapshot() {
 		for _, a := range c {
-			if strings.Contains(a, "/p/lane one") || strings.Contains(a, "0123456789abcdef") {
+			if strings.Contains(a, "/p/lane one") || strings.Contains(a, "lane-alpha") {
 				t.Errorf("a module value reached a command line: %v", c)
 			}
 		}
@@ -173,7 +173,7 @@ func TestModuleCreate_EnvMergedExactly(t *testing.T) {
 func TestModuleCreate_ModuleEnvOutsidePrefixesRejected(t *testing.T) {
 	r := newModRig(t, rigOptions{behaviour: reserving(modtest.Behaviour{Ops: map[string]modtest.OpScript{
 		"prepare-launch": {Results: []json.RawMessage{modtest.JSON(map[string]any{
-			"laneKey": "fedcba9876543210", "claudeVersion": "1",
+			"laneKey": "lane-beta", "claudeVersion": "1",
 			"env": map[string]string{modPrefix + "OK": "/p", "PATH": "/evil"},
 		})}},
 	}})})
