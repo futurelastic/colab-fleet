@@ -1,8 +1,8 @@
 # 184 — route a send by who is sending it, and never let two paths carry one message
 
 **Issue:** #184
-**Status:** decided; the parts that need a person's ratification are listed at
-the end.
+**Status:** decided and ratified (#193, 2026-09-24); each of the six choices that
+needed a person's ruling is listed at the end with its outcome.
 
 ## Context
 
@@ -123,14 +123,51 @@ The create-time prompt made it concrete: it retries with `resumeIfStranded` afte
 any `unknown`.
 
 So an inbox write that put bytes on the socket and could not be confirmed leaves
-an entry — digests only, never the message — keyed on the sanitised text, the
-sender label and the relay declaration, corroborated on the session's working
+an entry — digests only, never the message — keyed on the sanitised text, who
+the sender said it is (its agent and session), whether the message carried a
+label at all, and the relay declaration; corroborated on the session's working
 directory (§5.4), persisted with the stranded records, lapsing after
 `strandedRetention`. Every `Send` consults it before choosing a path. While an
 entry stands, nothing is written on either path, whatever the route or flags: the
 transcript is looked at once more, and the answer is `delivered` if the message
 has since been recorded and `unknown` otherwise. Different text, or the same text
 from another sender, is a different message and is not held.
+
+**The key leaves out the machine the request entered through (#191).** The
+service stamps `from.machine` with where a request arrived, so it says nothing
+about who sent it — and it is exactly what changes when a caller's client fails
+over and retries through the peer. Keyed on the label as the receiver sees it,
+that retry produced a different key and missed the entry; if the inbox then
+declined with nothing written, `auto` could fall back to the terminal and the
+message arrive twice; the miss itself is pinned offline, where the retry wrote a
+second time. The key is now built from the caller's own agent and session. A sender that named neither is labelled by the service with
+only its machine, so what survives in the key is that the message *was* labelled:
+it still differs from an unlabelled one, and a human relay's words, which go to
+the terminal with no label, are never held for an anonymous peer's identical
+text.
+
+What that costs is on the safe side. Two callers that give the same agent and
+session and send the same text to the same session inside the retention window
+are held as one, and the second is told `unknown`, not sent again, instead of
+being delivered. Agent and session are the caller's own unverified statement
+either way (`MessageFrom`), so the check was never a claim about identity; the
+machine only made it finer in the one place a retry moves. Documenting the gap
+and leaving the key was the other option, and is rejected below.
+
+**Two limits, both deliberate.**
+
+- **Eight entries per session.** The ledger keeps the most recent
+  `unconfirmedPerSession` (8) unconfirmed messages for a session; a ninth
+  distinct one evicts the oldest, and a retry of the evicted message is no longer
+  held, so it can be delivered a second time. The bound counts distinct messages
+  still awaiting confirmation, not traffic — a confirmed send leaves no entry.
+  It exists so the persisted state stays small, and the ones it keeps are the
+  ones a caller could still be retrying. A test pins it.
+- **The working-directory corroboration fails open.** When the multiplexer
+  cannot be enumerated, the entry is honoured rather than dropped: refusing a
+  possible duplicate is the cheap side to be wrong on, and the cost of a wrong
+  hold is one `unknown` that lapses on its own. It is listed among the
+  deviations below.
 
 The other direction needs no new state: a terminal delivery that could not be
 confirmed already leaves a stranded record, and a later send of the same text
@@ -193,9 +230,11 @@ and `written` splits into `confirmed` and `unconfirmed`, so
 - **Same-text follow-ups are held for 30 minutes** after an unconfirmed inbox
   write. That is stricter than the issue asks; it is the price of "never twice"
   without a reply channel.
-- **The doctor cannot see the missing grant.** It is offline; a row that warns
-  when an inbox index is configured and no principal holds `human-relay` is a
-  follow-up, not part of this change.
+- **The doctor sees the missing grant only where a principal table exists.** It
+  is offline, so it reads configuration and not callers. The row that warns when
+  an inbox index is configured and no principal holds `human-relay` was not part
+  of this change; it shipped afterwards (#189) and skips single-token mode, where
+  there is no grant to point an operator at.
 
 ## Alternatives rejected
 
@@ -208,21 +247,56 @@ and `written` splits into `confirmed` and `unconfirmed`, so
 - **Rely on callers not to retry.** The service's own create path retries.
 - **Block only `resumeIfStranded`.** A fresh `auto` send crosses paths as easily.
 - **Relax the class gate now.** On evidence that never tested the failing case.
+- **Document the failover gap and keep the machine in the ledger key.** It leaves a
+  known route to a double delivery in exchange for a finer distinction between
+  senders that the caller's own unverified statement cannot support (#191).
 
 ## Needs ratification
 
-1. **The synthesised label** changes what an existing unlabelled caller's terminal
-   message looks like: it gains a `[from: <principal> · <machine>]` first line.
-   This is what the issue's table asks for ("with the mandatory label"); the
-   wording is a choice.
-2. **With no principal table**, #180 L3 honours the relay headers from any caller,
-   so "the human-relay fact is never inferred from a header" holds only where a
-   table exists. Tighten it (no human relay without a table) or keep and document
-   it — this ADR keeps it, and a test pins the exception.
-3. **The create-time prompt is pinned to the terminal.**
-4. **The 30-minute hold** on same-text follow-ups after an unconfirmed inbox write.
-5. **The issue can close with its live cases deferred** to the operator step,
-   because class emission is off wherever it was measured; the offline suite
-   covers every branch, and the live cases are written down in `deploy.md`.
-6. **This reverses ADR 119's addendum, item 3, for writes that put bytes on the
-   socket:** a write that fails after some bytes went out no longer falls back.
+The implementer marked six choices as needing a ruling. They were ruled on in
+#193 on 2026-09-24, under the maintainer's delegation for technical rulings. The
+outcome of each:
+
+1. **The synthesised label — ratified.** It changes what an existing unlabelled
+   caller's terminal message looks like: it gains a `[from: <principal> ·
+   <machine>]` first line. This is what the issue's table asks for ("with the
+   mandatory label"), and the wording is acceptable.
+2. **With no principal table — kept for now, to be tightened after the doctor
+   warning ships.** #180 L3 honours the relay headers from any caller, so "the
+   human-relay fact is never inferred from a header" holds only where a table
+   exists. Tightening today would silently stop relays on machines that have no
+   table; the doctor's `principals.human-relay` row (#189, shipped) makes the
+   table-mode half visible first. Until the follow-up is decided the exception
+   stays documented and test-pinned. The follow-up is not the one-line change the
+   ruling assumed: on a single-token machine "no human relay without a table"
+   leaves no way to relay a person's message unlabelled at all, so the choice is
+   between keeping the assertion and requiring a table before the inbox route is
+   enabled. That is tracked in #195.
+3. **The create-time prompt is pinned to the terminal — ratified.** It is
+   consistent with the measured loss of a session from a create-time prompt.
+4. **The 30-minute hold — ratified.** Same-text follow-ups after an unconfirmed
+   inbox write are held for `strandedRetention`. It is stricter than the issue
+   asked for and errs against double delivery. Revisit it only on a measured case
+   where it blocks a legitimate follow-up.
+5. **The issue closes with its live cases deferred — ratified.** They go to the
+   operator step, because class emission is off wherever it was measured; the
+   offline suite covers every branch, the live cases are written down in
+   `deploy.md`, and the measurements are tracked in #190.
+6. **No fallback after a write that put bytes on the socket — ratified.** This
+   reverses ADR 119's addendum, item 3, for that case: a write that fails after
+   some bytes went out no longer falls back, because falling back after a partial
+   write risks a garbled or duplicated delivery and failing loudly is the correct
+   behaviour.
+
+## Deviations from the plan
+
+Recorded at ship-time grading of #184 and accepted in the ruling on #193 as
+documentation, not a code change.
+
+- **The ledger's working-directory corroboration fails open.** `answerFromLedger`
+  drops an entry whose session is gone or now has a different working directory
+  (§5.4), but it learns that from one enumeration of the multiplexer, and when
+  that enumeration fails the entry is honoured. The alternative, dropping it on
+  an error, would let a retry through exactly when the multiplexer is unwell.
+  The cost is one wrongly held `unknown` for a recycled session id, which lapses
+  on its own; a duplicate is the more expensive error.

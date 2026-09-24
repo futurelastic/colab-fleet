@@ -46,8 +46,9 @@ const unconfirmedPerSession = 8
 // unconfirmedEntry is what is remembered about one inbox write that could not
 // be confirmed.
 type unconfirmedEntry struct {
-	// Key identifies the delivery: a digest of the text, the sender label and
-	// whether the sender declared a human relay (deliveryKey).
+	// Key identifies the delivery: a digest of the text, who the sender said it
+	// is (never the machine the request entered through) and whether the sender
+	// declared a human relay (deliveryKey).
 	Key string `json:"key"`
 	// Cwd corroborates the session (§5.4): an id is recyclable, and an entry
 	// made for one session must never gate an unrelated one that reused the
@@ -67,15 +68,39 @@ type unconfirmedEntry struct {
 }
 
 // deliveryKey identifies one delivery for the ledger. The text is the
-// sanitised text the driver acts on; the sender is the label's normalised form
-// (what the receiver sees), so a retry that repeats the same `from` matches and
-// a message from a different sender does not. The relay declaration is part of
-// the key because it changes the body that was written.
+// sanitised text the driver acts on; the sender is who the caller said it is
+// (agent and session), in the label's normalised form, so a retry that repeats
+// the same `from` matches and a message from a different sender does not. The
+// relay declaration is part of the key because it changes the body that was
+// written.
+//
+// The machine the request entered through is deliberately NOT part of the key
+// (#191). The service stamps it, so it names where a request arrived and not who
+// sent it, and it is exactly what changes when a caller retries: a client that
+// fails over to the peer enters through a different machine with the same text
+// and the same identity. Keyed on the label as the receiver sees it, that retry
+// would miss the entry, and an inbox that then declined with nothing written
+// would let the terminal carry the message a second time. The cost of leaving
+// the machine out is on the safe side: two callers that give the same identity
+// and send the same text to the same session inside the retention window are
+// held as one, which reads as "not sent again" rather than as a duplicate.
+//
+// Whether the message carried a label at all stays in the key, so a sender that
+// named nothing and was labelled by the service (which leaves only the machine,
+// dropped above) is not confused with an unlabelled one — a human relay's words
+// go to the terminal with no label and must never be held for an anonymous
+// peer's identical text.
 func deliveryKey(text string, from *fleet.MessageFrom) string {
 	h := sha256.New()
 	h.Write([]byte(text))
 	h.Write([]byte{0})
-	h.Write([]byte(inboxclient.SenderName(driver.SenderLabel(from))))
+	h.Write([]byte(inboxclient.SenderName(driver.SenderLabel(withoutMachine(from)))))
+	h.Write([]byte{0})
+	if driver.SenderLabel(from) != "" {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
+	}
 	h.Write([]byte{0})
 	if from != nil && from.RelayOfHuman {
 		h.Write([]byte{1})
@@ -83,6 +108,19 @@ func deliveryKey(text string, from *fleet.MessageFrom) string {
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// withoutMachine returns from with the machine the request entered through
+// removed, leaving what the caller said about itself. A copy: the caller's
+// value is also what the send itself labels the message with, and that keeps
+// the machine.
+func withoutMachine(from *fleet.MessageFrom) *fleet.MessageFrom {
+	if from == nil {
+		return nil
+	}
+	id := *from
+	id.Machine = ""
+	return &id
 }
 
 // noteUnconfirmed records an inbox write that could not be confirmed. An entry
