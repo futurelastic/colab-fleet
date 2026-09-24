@@ -331,6 +331,12 @@ func runChecks(ctx context.Context, env doctorEnv) []doctorRow {
 		}
 	}
 
+	// --- who relays a person's messages (#189) --------------------------------
+	// Its own row, after the grants block, because it reads two things that
+	// block does not: the inbox index and the runtime. --principal deliberately
+	// does not narrow it (see checkHumanRelay).
+	c.add(checkHumanRelay(runtime, getenv("FLEET_INBOX_INDEX"), cfgFailed, cfg != nil, principals))
+
 	// --- this machine's own credential for peer reads (#98) -------------------
 	switch {
 	case len(peers) == 0:
@@ -635,6 +641,76 @@ func checkRelay(principals []service.Principal, named string, peerCount int) doc
 		row.Status = statusFail
 		row.Summary = "peers configured but no principal holds relay — every write to a peer is refused here"
 	}
+	return row
+}
+
+// checkHumanRelay names the configuration gap #184 leaves behind: an inbox
+// index is configured, a principal table is configured, and nobody in the table
+// holds the human-relay grant. Under `route: auto` every send from a principal
+// WITHOUT the grant goes through the session's inbox whenever the session can
+// take it, so once an index emits a permission-mode class a person's relayed
+// message arrives as a peer message — which the receiving runtime treats as not
+// coming from the user and which cannot grant escalation. That is the failure
+// #184 was filed for, reproduced by a missing grant instead of a code path.
+//
+// A warning and never a failure (ADR 160): nothing is broken until an index
+// also emits a class, and a fleet whose callers are all agents has no person to
+// relay and is right to hold no such principal — --skip=principals.human-relay
+// says so.
+//
+// --principal does NOT narrow this row, unlike principals.relay. The
+// supervising client that flag names is the caller that drives sessions;
+// human-relay is deliberately outside the supervisor set (supervisorGrants) and
+// is held by whichever principal relays a PERSON's messages, usually another.
+// "Does anyone hold it" is the question the row can answer; "is the holder the
+// right one" is not, and a pass says so.
+//
+// The row is decidable only where the grant exists to be held. Single-token
+// mode has no per-caller identity, so there is nothing to grant and nothing to
+// count — the row is skipped there, and says why rather than reading as "fine".
+func checkHumanRelay(runtime, indexDir string, cfgFailed, tableMode bool, principals []service.Principal) doctorRow {
+	row := doctorRow{ID: "principals.human-relay", Refs: []int{184, 189}}
+	switch {
+	case cfgFailed:
+		row.Status = statusSkip
+		row.Summary = "undecidable until config.load passes"
+		return row
+	case runtime != "tmux":
+		row.Status = statusSkip
+		row.Summary = fmt.Sprintf("FLEET_RUNTIME=%s has no inbox delivery path", runtime)
+		return row
+	case indexDir == "":
+		row.Status = statusSkip
+		row.Summary = "FLEET_INBOX_INDEX unset — no delivery takes the inbox route, so who relays a person's messages does not matter here"
+		return row
+	case !tableMode:
+		row.Status = statusSkip
+		row.Summary = "single-token mode has no per-caller grants — there is no human-relay grant to hold"
+		row.Detail = "nothing identifies a caller in this mode, so the human-relay fact is honoured only from a request that " +
+			"asserts it (the peer-relay headers); a plain caller is not one, and once an index emits a permission-mode " +
+			"class its sends take the inbox. A principal table (docs/install.md step 5) is what makes the grant expressible"
+		return row
+	}
+
+	var holders []string
+	for _, p := range principals {
+		if p.Allows(service.GrantHumanRelay) {
+			holders = append(holders, p.Name)
+		}
+	}
+	if len(holders) > 0 {
+		row.Status = statusPass
+		row.Summary = "human-relay held by " + quoteAll(holders)
+		row.Detail = "this row cannot tell which caller relays a person's messages — check the holder is that one; " +
+			"--principal does not narrow it"
+		return row
+	}
+	row.Status = statusWarn
+	row.Summary = "FLEET_INBOX_INDEX is set but no principal holds human-relay — a person's relayed message will arrive as a peer message once an index emits a class"
+	row.Detail = "the receiving runtime treats a peer message as not coming from the user, and it cannot grant escalation. " +
+		"Grant human-relay to the principal that relays a person's messages BEFORE the index writer emits mode_class " +
+		"(docs/deploy.md, \"Turning the inbox route on\"). Nothing is broken until a class is emitted; " +
+		"--skip=principals.human-relay silences it where every caller is an agent"
 	return row
 }
 
