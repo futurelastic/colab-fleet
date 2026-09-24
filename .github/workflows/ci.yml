@@ -59,6 +59,7 @@ jobs:
           # it logs an error, scans 0 commits and exits 0 with "no leaks found"
           # (measured, 8.30.1). A scan that quietly looks at nothing is a green
           # gate over an unread tree, so the failure has to happen here.
+          # See docs/gotchas.d/197-gitleaks-unresolvable-scope-exits-zero.md
           count="$(git rev-list --count "$scope")" || {
             echo "::error::cannot resolve the scan scope '${scope}' — refusing to scan nothing"
             exit 1
