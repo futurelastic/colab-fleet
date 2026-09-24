@@ -137,7 +137,9 @@ signals above.
 - **Slash commands.** The runtime records an accepted slash command as a
   `<command-name>` entry. That entry confirms the command sent and is never
   "a different turn". A genuinely different turn gets one screen check, so
-  the receipt says whether the composer emptied (M3).
+  the receipt says whether the composer emptied (M3). A command the runtime
+  runs itself is recorded as `local_command` entries instead, which confirm
+  it the same way (ADR 187).
 
 ### Locks and dialogs
 

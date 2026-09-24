@@ -212,6 +212,11 @@ func transcriptTurnMatches(recordedText, sent string) bool {
 // content shape — see this file's own top comment for why the exact
 // "queue-operation" shape is not independently verified here.
 //
+// A third family, "command", is a slash command the runtime recorded rather than
+// a message: a user entry wrapped in <command-name> tags (#180 M3), or a
+// `system`/`local_command` entry (#187, localCommandLine). Its text is
+// "/name args".
+//
 // # Review fix: the real queue-operation shape, and what is NOT a candidate
 //
 // Claude Code's own writer for a queue-operation entry (read from the
@@ -269,6 +274,17 @@ func extractTranscriptCandidate(line []byte) (kind, text, promptSource string, o
 		return "", "", "", false
 	}
 	t, _ := obj["type"].(string)
+	if t == "system" {
+		// #187: the one system entry that is a candidate at all — a command the
+		// runtime ran itself. Everything else it writes as "system" is not a
+		// turn and never was.
+		if sub, _ := obj["subtype"].(string); sub == "local_command" {
+			if line, ok := localCommandLine(obj); ok {
+				return "command", line, "", true
+			}
+		}
+		return "", "", "", false
+	}
 	isUser := t == "user"
 	operation, _ := obj["operation"].(string)
 	isEnqueue := t == "queue-operation" && operation == "enqueue"
@@ -368,6 +384,61 @@ func commandLine(entry string) string {
 		return strings.TrimSpace(name)
 	}
 	return strings.TrimSpace(name) + " " + args
+}
+
+// localCommandLine reads the slash command a `system`/`local_command` entry
+// names, as "/name args", and reports false when the entry names none (#187).
+//
+// # Measured, not assumed
+//
+// Read off real transcripts written by runtime builds 2.1.273 through 2.1.281
+// (34 commands, every one of the two forms below present in every build): a
+// command the runtime runs itself — a session-management command such as
+// /rename — does NOT write the `<command-name>` user entry #180 M3 was built
+// on. It writes entries with `"type":"system","subtype":"local_command"`,
+// `"isMeta":false`, in two forms:
+//
+//   - an echo, first, whose `content` is the same `<command-name>` /
+//     `<command-message>` / `<command-args>` markup a user entry carries,
+//     leading slash included, and which carries no `commandRun`;
+//   - a result, immediately after it (adjacent in all 34 pairs), whose
+//     `content` is the command's `<local-command-stdout>` and which carries
+//     `commandRun: {"command": "rename", "args": "<the args>"}` — the name WITHOUT
+//     its slash, and args equal to the echo's in all 34 pairs.
+//
+// Both name the command, so either confirms it, and taking both is not
+// redundancy. The echo is the earliest evidence, written at dispatch, so a
+// command that takes seconds to run still confirms then and not at completion.
+// The result is the one entry every measured local command wrote: a command that
+// records the user-entry form instead (M3, above) has no echo, only that user
+// entry and then this result. Reading the result too means a build that drops
+// one of the earlier entries costs no confirmation.
+//
+// The stdout of the result is never read: it is the command's output, which can
+// be anything, and it is not needed — the name and the arguments are already
+// structured.
+func localCommandLine(obj map[string]any) (string, bool) {
+	if run, ok := obj["commandRun"].(map[string]any); ok {
+		name, _ := run["command"].(string)
+		name = strings.TrimPrefix(strings.TrimSpace(name), "/")
+		if name == "" {
+			return "", false
+		}
+		args, _ := run["args"].(string)
+		if args = strings.TrimSpace(args); args != "" {
+			return "/" + name + " " + args, true
+		}
+		return "/" + name, true
+	}
+	content, _ := obj["content"].(string)
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "<command-name>") {
+		return "", false
+	}
+	if line := commandLine(trimmed); strings.HasPrefix(line, "/") {
+		return line, true
+	}
+	return "", false
 }
 
 func between(s, open, shut string) string {
