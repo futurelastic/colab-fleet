@@ -85,6 +85,39 @@ func TestSend_DeliversAndReportsQueued_NeverSubmittedUnconfirmed(t *testing.T) {
 	}
 }
 
+// #184: this driver has one delivery path and no inbox. A caller that INSISTS on
+// the inbox is refused — nothing sent — rather than quietly served by the only
+// path there is; auto and terminal are that one path and name no route.
+func TestSend_RouteInboxIsRefusedNotDowngraded(t *testing.T) {
+	f := newFakeServer(t)
+	d := newTestDriver(t, f)
+	ref := createOne(t, d, "/work/x", "key-1")
+
+	before := len(f.requestsSnapshot())
+	receipt, err := d.Send(context.Background(), fleet.RequestFrom(fleet.Caller{}),
+		fleet.SessionRef{ID: ref.ID}, "hello", driver.SendOptions{Submit: true, Route: fleet.RouteInbox})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if receipt.Outcome != fleet.OutcomeRefused || receipt.RouteOf() != fleet.RouteInbox {
+		t.Fatalf("receipt = %+v, want a refusal naming the inbox", receipt)
+	}
+	if got := len(f.requestsSnapshot()); got != before {
+		t.Errorf("a refused inbox request made %d HTTP calls, want 0", got-before)
+	}
+
+	for _, route := range []fleet.Route{"", fleet.RouteAuto, fleet.RouteTerminal} {
+		receipt, err := d.Send(context.Background(), fleet.RequestFrom(fleet.Caller{}),
+			fleet.SessionRef{ID: ref.ID}, "hello", driver.SendOptions{Submit: true, Route: route})
+		if err != nil {
+			t.Fatalf("Send(route %q): %v", route, err)
+		}
+		if receipt.Outcome != fleet.OutcomeQueued || receipt.Delivery != nil {
+			t.Errorf("route %q: receipt = %+v, want queued naming no path", route, receipt)
+		}
+	}
+}
+
 func TestSend_SubmitFalseIsUnsupported_NoComposerToStageIn(t *testing.T) {
 	f := newFakeServer(t)
 	d := newTestDriver(t, f)

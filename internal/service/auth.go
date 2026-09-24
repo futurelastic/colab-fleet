@@ -97,28 +97,32 @@ const (
 	// gains this by upgrading.
 	GrantLabel Grant = "label"
 	GrantRelay Grant = "relay" // have mutations proxied to peers
-	// GrantHumanRelay marks a principal as a HUMAN relay for terminal-path
-	// routing (colab-fleet round-3 #180 review fix): route:"terminal" on
-	// POST …/input forces the pane/composer delivery path even on a call
-	// that would otherwise be eligible for the capability-detected inbox
-	// path (colab-fleet #119) — see http.go's own handling of body.Route.
-	// Absent this grant, route:"terminal" still works, but ONLY when the
-	// request also carries a `from` label: while the inbox path stays
-	// paused fleet-wide this changes nothing observable, but once it comes
-	// back "for agents only" (D7's own stated intent), an agent able to set
-	// route:"terminal" without holding this grant could opt a delivery out
-	// of the inbox path and have it recorded as unlabelled, human-typed
-	// input — undoing the very separation D7 exists to create. A principal
-	// configured with this grant (the one human-facing relay
-	// today) may set route:"terminal" with no `from` at all: its own
-	// channel IS the human-identifying fact.
+	// GrantHumanRelay marks a principal as a HUMAN relay (colab-fleet round-3
+	// #180 review fix; #184). What such a principal sends is a person's own
+	// message, so:
 	//
-	// Absent means denied, like every other grant, so no existing principal
-	// gains this by upgrading — every route:"terminal" call already in the
-	// field either goes unauthenticated (no principal table configured
-	// here at all) or already sets `from`, so this only tightens the one
-	// combination — unauthenticated-as-human AND unlabelled — nothing
-	// legitimate currently relies on.
+	//   - route "auto" — the default — carries it through the terminal,
+	//     UNLABELLED, so it arrives as the user's own turn. Anyone else's auto
+	//     send goes through the session's inbox when it can (arriving as a peer
+	//     message the runtime marks as not from the user) and is always
+	//     labelled. Routing a person's approval through the inbox is exactly
+	//     what this grant exists to prevent: the receiver refused it as coming
+	//     from a peer;
+	//   - route "terminal" needs no `from` label, where every other caller needs
+	//     one that prints (#180 M8) — otherwise an agent could opt a delivery out
+	//     of the inbox and have it recorded as unlabelled, human-typed input;
+	//   - a leading "/" is delivered, as a human at a keyboard types slash
+	//     commands.
+	//
+	// The fact is NEVER inferred from anything a caller sets — not a header, not
+	// `from`, not relayOfHuman. It is this grant, or (across a peer relay) a
+	// trusted peer's assertion of it (relayTrusted); on a machine with no
+	// principal table there is no per-caller identity at all and the assertion is
+	// honoured as it always was.
+	//
+	// It is the grant that lets a message skip the label, so it is not one to
+	// hand to an agent. Absent means denied, like every other grant, so no
+	// existing principal gains it by upgrading.
 	GrantHumanRelay Grant = "human-relay"
 )
 

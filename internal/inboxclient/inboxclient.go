@@ -25,7 +25,9 @@ package inboxclient
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"time"
 )
@@ -124,21 +126,68 @@ type messageLineBody struct {
 // conn is never closed here — opening and closing it is the caller's own
 // concern (dialing needs a socket path and a network this package is not
 // told, see the package doc comment).
+//
+// A failure is always a *WriteError carrying how many bytes the connection
+// accepted (#184). That count, not the error's wording, is what tells a caller
+// whether the message could have arrived: see WriteError and NothingWritten.
 func Deliver(conn net.Conn, token, text string, timeout time.Duration) (Receipt, error) {
 	if timeout <= 0 {
 		timeout = FirstLineDeadline
 	}
 	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
-		return Receipt{}, fmt.Errorf("inboxclient: setting write deadline: %w", err)
+		return Receipt{}, &WriteError{Written: 0, Err: fmt.Errorf("inboxclient: setting write deadline: %w", err)}
 	}
 
-	enc := json.NewEncoder(conn) // Encode always appends exactly one '\n'
+	cw := &countingWriter{w: conn}
+	enc := json.NewEncoder(cw) // Encode always appends exactly one '\n'
 	if err := enc.Encode(authLine{Type: "auth", Token: token}); err != nil {
-		return Receipt{}, fmt.Errorf("inboxclient: writing auth line: %w", err)
+		return Receipt{}, &WriteError{Written: cw.n, Err: fmt.Errorf("inboxclient: writing auth line: %w", err)}
 	}
 	msg := messageLine{Type: "user", Message: messageLineBody{Role: "user", Content: text}}
 	if err := enc.Encode(msg); err != nil {
-		return Receipt{}, fmt.Errorf("inboxclient: writing message line: %w", err)
+		return Receipt{}, &WriteError{Written: cw.n, Err: fmt.Errorf("inboxclient: writing message line: %w", err)}
 	}
 	return Receipt{Outcome: OutcomeDelivered}, nil
+}
+
+// WriteError is a failed Deliver, carrying what the caller needs to decide
+// whether the message could have arrived (#184).
+//
+// Written is the number of bytes the connection ACCEPTED before the failure,
+// across both lines. It is the whole basis of the fallback rule: a delivery
+// that put nothing on the socket cannot have reached the receiver, so the
+// terminal path may carry the message instead; a delivery that put any byte
+// there might have — a receiver reads what it is given, and a partial line
+// followed by a closed connection is not something a sender can prove is
+// discarded. Past zero bytes the honest answer is "unknown", and the same text
+// is never sent down the other path.
+type WriteError struct {
+	Written int
+	Err     error
+}
+
+func (e *WriteError) Error() string { return e.Err.Error() }
+func (e *WriteError) Unwrap() error { return e.Err }
+
+// NothingWritten reports whether err proves that no byte of the delivery
+// reached the connection. Only a *WriteError with Written == 0 does; any other
+// error — including a nil-typed surprise — proves nothing, so it answers false
+// and the caller must not treat the message as unsent.
+func NothingWritten(err error) bool {
+	var we *WriteError
+	return errors.As(err, &we) && we.Written == 0
+}
+
+// countingWriter counts the bytes its target ACCEPTED. io.Writer's contract is
+// that a Write returning an error has accepted n < len(p) bytes, and n is what
+// is counted — including on the failing call, which is the one that matters.
+type countingWriter struct {
+	w io.Writer
+	n int
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += n
+	return n, err
 }

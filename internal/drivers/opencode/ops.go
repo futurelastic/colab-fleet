@@ -159,7 +159,19 @@ func (d *Driver) sendPrompt(ctx context.Context, id, text string) error {
 // means ResumeIfStranded and ReplaceIfStranded (colab-fleet #112) are both
 // silently no-ops here rather than errors: there is nothing for either to
 // act on, and neither opt-in changes this method's behaviour.
+//
+// This driver has one delivery path and no inbox, so a caller that INSISTS on
+// the inbox (route "inbox", #184) is refused — with nothing sent — rather than
+// quietly served by the only path there is. An explicit request is never
+// downgraded. Auto and terminal are both this driver's one path; its receipts
+// name no route, because there is nothing to distinguish.
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
+	if opts.Route == fleet.RouteInbox {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason:  "route \"inbox\" was requested but this runtime has no inbox delivery. Nothing was written",
+		}.WithRoute(fleet.RouteInbox), nil
+	}
 	if !opts.Submit {
 		return fleet.DeliveryReceipt{}, driver.ErrUnsupported
 	}

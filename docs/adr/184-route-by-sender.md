@@ -1,0 +1,228 @@
+# 184 — route a send by who is sending it, and never let two paths carry one message
+
+**Issue:** #184
+**Status:** decided; the parts that need a person's ratification are listed at
+the end.
+
+## Context
+
+A send has two ways in, and each gives the wrong authority to some senders.
+
+- **The terminal.** Any sender's text arrives as a genuine **user** turn. #180
+  gave a non-human sender a label so its text is recognisable, but the runtime
+  still grants it a user's authority.
+- **The inbox.** The runtime itself marks the text as a cross-session **peer
+  message** — with its own warning that it did not come from the user and that a
+  peer cannot grant escalation. That is exactly the right authority for an
+  agent's message and exactly the wrong one for a person's: when the inbox was
+  enabled, an operator's approval relayed through a human-facing client went out
+  as a peer message and the receiving session refused it.
+
+So the path has to follow the sender. That is small. The hard part is what it
+forces: **two paths that must never both deliver one message.** Nothing in the
+old design had to care — the inbox either answered or fell back, and a fallback
+after a failed write was accepted as safe (#144).
+
+## Decision
+
+### The route, and where each half is decided
+
+`POST …/input` takes `route`: `auto` (the default), `terminal`, `inbox`. The
+decision is split by what each side can know.
+
+- **The service** decides everything that depends on the *request and the
+  principal*: it parses `route`; a human relay's `auto` becomes `terminal`
+  (unlabelled); anyone else's is labelled; the shape errors are `400`s.
+- **The driver** decides everything that depends on the *session*: whether the
+  inbox can take the message, what to do when it cannot, what was confirmed, and
+  whether an earlier attempt already put the message somewhere.
+
+Neither can do the other's job. The driver cannot see principals, and an older
+owning peer would re-decide a human's `auto` as inbox-eligible. The service does
+not hold the resolver and would need an eligibility query that races the send.
+
+`driver.SendOptions.ForceTerminalRoute` is replaced by `Route fleet.Route`. The
+zero value is auto, so every existing caller keeps its meaning. An explicit
+`inbox` that the session cannot take is a **refusal with nothing written**, never
+a downgrade: a caller that asked for a path is entitled to know it did not get
+it. A `400` was rejected for that case, because it is a fact about the session
+and not a fault in the request, and a `4xx` teaches callers to retry.
+
+### The receipt names the path
+
+`delivery: {route}` on the receipt, `inbox` or `terminal`. Absent means the
+receipt names no path (an early refusal, a driver with one path, an older peer) —
+never a guess. An unrecognised route decodes to absent rather than failing the
+receipt: a newer peer adding a route must not make an older machine unable to
+read the outcome of a send that already happened. It is an object, not a string,
+so a later module name can join it.
+
+### The label is mandatory for everyone but a human relay
+
+Today an unlabelled non-human send reaches the terminal as though a person typed
+it. Refusing such sends would break every existing caller, so the service fills
+the label in from the one fact it holds — the authenticated principal, then the
+machine — and never replaces anything the caller said about itself. The label is
+a pure function of the request, so a `resumeIfStranded` retry is labelled
+identically and still matches the record it is resuming. A forced
+`route:"terminal"` keeps #180 M8's refusal: an unlabelled non-human terminal send
+is still a `400`.
+
+### Fallback only before any byte is written
+
+`inboxclient.Deliver` reports how many bytes the connection accepted
+(`WriteError.Written`). A fallback is taken only for a decline that provably
+wrote nothing: no resolver, no identity, no entry, no class, an unattestable
+body, no transcript, a failed dial, or `NothingWritten`. **Any** byte — including
+the auth line alone — makes the outcome `unknown` on the inbox's account. The one
+case where non-delivery could be argued (a partial write inside the auth prefix)
+is still `unknown`, deliberately: the rule the issue states is "before any byte",
+one condition is auditable, and the cost is an occasional `unknown` for a
+transport that broke mid-write.
+
+The wire form is unchanged: two lines, two writes, counted by a wrapper rather
+than collapsed into one frame. Collapsing would give the same guarantee and
+change what the receiver observes for no benefit.
+
+### A write is confirmed from the receiver's transcript
+
+The inbox has no reply channel, so a clean write only ever proved bytes reached a
+socket, and "delivered" on that basis is #148's false report. The terminal path
+confirms from the transcript; the inbox now does too. `delivered` means the
+transcript recorded the message; anything else is `unknown`.
+
+The transcript shape a peer message produces has **never been observed by this
+repository** — the terminal matcher rejects every non-human entry precisely
+because it does not know them. So the probe holds two independent fingerprints
+and either confirms: the exact **envelope** (the receiver accepts an envelope
+only after a byte-for-byte rebuild, so an accepted one is identical to what was
+written) anywhere in the entry, or the exact **body** as the text of a user entry
+the runtime marked as not from a human. There is no "recorded a different turn"
+outcome: a peer message arrives beside other traffic, so an unrelated entry
+proves nothing.
+
+A matcher that never matches is **safe**: every inbox send ends `unknown` and
+nothing is sent twice. It also makes the path useless, and `inbox.unconfirmed`
+close to `inbox.written` is how that would show. Which shape the runtime writes,
+and how long a busy receiver takes to write it, are the two things only a live
+receiver can say (`deploy.md`, live look).
+
+A send needs a locatable transcript to use the inbox at all; without one it
+declines (`inbox.fallback_no_transcript`) before dialling, the same "half a
+capability is none of it" rule as the missing class. Identity is verified twice:
+before attestation, where ADR 148 needs it so that a fallback cannot mask it, and
+immediately before the dial, where #116 needs it, after the work that takes time.
+
+### The cross-path ledger
+
+Inside one `Send` the rule is control flow. Across sends it is not: an `unknown`
+invites a retry, and the documented retry, `resumeIfStranded`, is a terminal
+operation that — with no stranded record and an empty composer — pastes the text
+fresh. Left alone, a retry of an inbox `unknown` would deliver the message twice.
+The create-time prompt made it concrete: it retries with `resumeIfStranded` after
+any `unknown`.
+
+So an inbox write that put bytes on the socket and could not be confirmed leaves
+an entry — digests only, never the message — keyed on the sanitised text, the
+sender label and the relay declaration, corroborated on the session's working
+directory (§5.4), persisted with the stranded records, lapsing after
+`strandedRetention`. Every `Send` consults it before choosing a path. While an
+entry stands, nothing is written on either path, whatever the route or flags: the
+transcript is looked at once more, and the answer is `delivered` if the message
+has since been recorded and `unknown` otherwise. Different text, or the same text
+from another sender, is a different message and is not held.
+
+The other direction needs no new state: a terminal delivery that could not be
+confirmed already leaves a stranded record, and a later send of the same text
+finds it and does not use the inbox.
+
+The create-time prompt is pinned to the terminal, on both attempts. It is the
+creator's launch instruction, not a peer's message, and pinning it makes its
+retry safe by construction.
+
+### The #148 class gate stays
+
+The issue asks whether the gate is stricter than the runtime requires and to
+decide from a measurement. The measurement (runtime 2.1.281, throwaway sessions):
+a peer message asserting the *prompting* class was delivered to receivers in
+default, accept-edits, plan and auto modes, including mid-turn; a *mismatched*
+class was delivered, not held.
+
+Read against ADR 148 it says less than it seems to:
+
+- All four receiver modes are prompting-class. A prompting assertion accepted by
+  prompting receivers is parity **matching** — what #148 predicts.
+- A mismatch that was delivered contradicts "a mismatch is held", but it is
+  equally what a receiver whose remotely controlled policy gate is **off** does
+  (gotcha 148: with the gate off it accepts anything while it prompts and holds
+  everything while it bypasses).
+- **No receiver with permission prompts bypassed was measured, and no unattested
+  message was.** Those are the only two cases the gate exists to protect.
+
+The gate also cannot be narrowed: the only way to know a receiver is
+prompting-class is the index's `mode_class`, and with one we attest anyway.
+**Decision: keep it, unchanged.** It would be reopened by measuring, on the
+current runtime and confirmed from the receiver's transcript, idle and mid-turn
+with the gate state recorded, a bypass-mode receiver sent (a) an unattested
+message and (b) a prompting-class message. Even then relaxing is its own change.
+What this ADR does contribute is that a future silent hold is now a counted
+`unknown` rather than a false `delivered`, which is what would make relaxing
+affordable.
+
+### Counters
+
+Every send is counted once under `route.decided.<requested>.<taken>` (taken is
+the receipt's path, `none` when it names none, `error` when `Send` failed) and
+`route.outcome.<path>.<outcome>`; `route.auto_fallback` is the subset where the
+inbox was tried and declined before any byte; `route.guard.*` are the ledger's.
+The `inbox.*` exits of ADR 150 gain `fallback_no_transcript` and
+`unknown_partial_write`, `fallback_write_failed` narrows to zero-byte failures,
+and `written` splits into `confirmed` and `unconfirmed`, so
+`attempted = Σ exits` and `written = confirmed + unconfirmed` still hold.
+
+## Consequences
+
+- **Shipping this changes nothing on a machine whose index emits no class.** Every
+  `auto` send falls back; the differences are the receipt's `delivery.route` and
+  a label on every non-human terminal message.
+- **The order of enabling matters** (`deploy.md`): the human-relay grant first,
+  then class emission. A person's relayed message from a principal without the
+  grant would otherwise arrive as a peer message.
+- **An inbox `unknown` is not the terminal's `unknown`.** Nothing sits in a
+  composer; `resumeIfStranded` is not the retry. The docs say so.
+- **Same-text follow-ups are held for 30 minutes** after an unconfirmed inbox
+  write. That is stricter than the issue asks; it is the price of "never twice"
+  without a reply channel.
+- **The doctor cannot see the missing grant.** It is offline; a row that warns
+  when an inbox index is configured and no principal holds `human-relay` is a
+  follow-up, not part of this change.
+
+## Alternatives rejected
+
+- **Everything in the driver / everything in the service.** See above.
+- **Refuse unlabelled non-human sends.** Breaks every existing caller.
+- **One write frame instead of two.** Same guarantee, changes the wire.
+- **Report `queued` for a confirmed inbox write.** Flattens the per-surface
+  vocabulary #119 kept and changes what inbox success returns.
+- **Bare-write `delivered`.** That is #148.
+- **Rely on callers not to retry.** The service's own create path retries.
+- **Block only `resumeIfStranded`.** A fresh `auto` send crosses paths as easily.
+- **Relax the class gate now.** On evidence that never tested the failing case.
+
+## Needs ratification
+
+1. **The synthesised label** changes what an existing unlabelled caller's terminal
+   message looks like: it gains a `[from: <principal> · <machine>]` first line.
+   This is what the issue's table asks for ("with the mandatory label"); the
+   wording is a choice.
+2. **With no principal table**, #180 L3 honours the relay headers from any caller,
+   so "the human-relay fact is never inferred from a header" holds only where a
+   table exists. Tighten it (no human relay without a table) or keep and document
+   it — this ADR keeps it, and a test pins the exception.
+3. **The create-time prompt is pinned to the terminal.**
+4. **The 30-minute hold** on same-text follow-ups after an unconfirmed inbox write.
+5. **The issue can close with its live cases deferred** to the operator step,
+   because class emission is off wherever it was measured; the offline suite
+   covers every branch, and the live cases are written down in `deploy.md`.
+6. **This reverses ADR 119's addendum, item 3, for writes that put bytes on the
+   socket:** a write that fails after some bytes went out no longer falls back.

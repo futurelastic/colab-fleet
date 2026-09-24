@@ -8,6 +8,17 @@ package tmux
 // Driver that never calls WithInboxResolver behaves exactly as it did
 // before #119.
 //
+// # Since #184
+//
+// The inbox is now one of two paths a send chooses between by route (auto,
+// terminal, inbox — Send in tmux.go), and a delivery over it is CONFIRMED from
+// the receiver's own transcript (inbox_confirm.go) instead of being reported
+// delivered on a clean write. A decline is only ever a decline while nothing has
+// been written; once any byte has gone out the message is the inbox's, an
+// unconfirmed one is recorded in the cross-path ledger (route.go), and the same
+// text is never sent down the other path. docs/adr/184-route-by-sender.md is the
+// whole argument.
+//
 // Everything genuinely protocol-specific — the auth line, the message line,
 // the receipt line — lives in internal/inboxclient, which knows the bytes
 // and nothing about where either endpoint of a connection is found. This
@@ -23,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
@@ -114,40 +126,78 @@ func withInboxDial(f inboxDialFunc) Option { return func(d *Driver) { d.inboxDia
 // wait buys this driver nothing but a slower failure.
 const inboxRoundTripTimeout = inboxclient.FirstLineDeadline
 
-// sendViaInbox is Send's capability-detected fast path (#119). ok=false
-// (with a zero DeliveryReceipt and nil error) means the caller falls through
-// to the pane path unchanged; every ok=true return is this path's own,
-// final answer for the call — never partial, never a guess.
+// inboxResult is what one pass through the inbox path amounted to (#184).
 //
-// #144: ok=false now covers two different things, deliberately conflated
-// the same way capability-absence and a resolver error already were before
-// this change (see the resolver call below) — "this driver could not make
-// the inbox path work for this call" and "there is no inbox for this call"
-// are both facts about THIS attempt, not an answer from the target, so both
-// fall through to the same pane path rather than reporting two different
-// permanent failures for what the pane might still deliver:
+// Final says whether the inbox path ANSWERED. When it did, Receipt is the
+// answer and the caller returns it: the message is now on the inbox path's
+// account and no other path may carry it. When it did not, nothing was written —
+// Why says in words what stopped it — and the caller either falls back to the
+// terminal (route auto) or turns Why into a refusal (route inbox). The two are
+// deliberately one type: a decline is exactly "no byte written", the only state
+// from which either continuation is safe.
+type inboxResult struct {
+	Receipt fleet.DeliveryReceipt
+	Final   bool
+	// Tried is true once the path had a resolver to try, whatever came of it.
+	// It separates "this machine has no inbox" (nothing to count) from "the
+	// inbox declined this send" (the fallback rate an operator watches).
+	Tried bool
+	Why   string
+}
+
+func inboxDeclined(why string) inboxResult { return inboxResult{Tried: true, Why: why} }
+
+func inboxAnswered(r fleet.DeliveryReceipt) inboxResult {
+	return inboxResult{Receipt: r.WithRoute(fleet.RouteInbox), Final: true, Tried: true}
+}
+
+// sendViaInbox is Send's capability-detected inbox path (#119, #184). A result
+// with Final=false (and a nil error) means the inbox could not carry this call
+// and NOTHING was written; every Final=true result is this path's own, final
+// answer for the call — never partial, never a guess.
+//
+// #144: Final=false covers two different things, deliberately conflated the
+// same way capability-absence and a resolver error already were before this
+// change — "this driver could not make the inbox path work for this call" and
+// "there is no inbox for this call" are both facts about THIS attempt, not an
+// answer from the target:
 //
 //   - no resolver configured, no identity, or the resolver itself declined
-//     (unchanged from before #144)
+//   - no class to attest, or a body that cannot be attested
+//   - no transcript to confirm a delivery against (#184)
 //   - the dial to a resolved address failed
-//   - the write to a dialed connection failed (inboxclient.Deliver returned
-//     an error)
+//   - a write that put NOT ONE BYTE on the connection
 //
-// The one case that stays final with no pane fallback is identity
-// verification failing immediately before the write, below — that is a
-// deliberate refusal (#116), not a failed attempt, and ADR 119 explains why
-// falling back there would defeat the check.
-func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text string, from *fleet.MessageFrom) (fleet.DeliveryReceipt, bool, error) {
+// # Where the line is (#184)
+//
+// It used to include "the write failed" without asking how far the write got. A
+// write can fail after the auth line and half the message have gone out, and a
+// receiver given part of a line and then a closed connection is not something a
+// sender can prove discards it. Now the fallback is taken only when
+// inboxclient.NothingWritten proves the socket got nothing. Any byte at all
+// makes the outcome `unknown`, on the inbox's account, and the same text is
+// never sent down the other path. A complete write is confirmed from the
+// receiver's transcript (confirmInbox) — delivered if it shows, `unknown` if it
+// does not, and never a terminal resend either way.
+//
+// The one other case that stays final with no fallback is identity verification
+// failing immediately before the write: a deliberate refusal (#116), not a
+// failed attempt, and ADR 119 explains why falling back there would defeat the
+// check. It is verified twice — once where ADR 148 needs it, before attestation,
+// and once immediately before the dial, after the work that takes time — and
+// either failing is that same final refusal.
+func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text string, opts driver.SendOptions) (inboxResult, error) {
 	if d.inboxResolver == nil {
-		return fleet.DeliveryReceipt{}, false, nil
+		return inboxResult{Why: "this machine has no inbox delivery configured"}, nil
 	}
+	from := opts.From
 	// #150: from here on, every return below increments exactly one exit
 	// counter — see counters.go for why each reason is counted apart.
 	d.counters.incr(counterInboxAttempted)
 
 	// #116's requirement #1: resolve fresh, never from this driver's own
 	// memory of an earlier call.
-	identity, err := d.ResolveProcessIdentity(ctx, ref)
+	identity, row, err := d.resolveProcessIdentityRow(ctx, ref)
 	if err != nil {
 		if errors.Is(err, ErrProcessIdentityUnresolved) {
 			// No authoritative identity to hand the resolver — a fact
@@ -156,10 +206,10 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 			// terms. Falling through here avoids reporting it twice, in
 			// two different vocabularies, for the same call.
 			d.counters.incr(counterInboxFallbackIdentityUnresolved)
-			return fleet.DeliveryReceipt{}, false, nil
+			return inboxDeclined("the session's process could not be identified: " + err.Error()), nil
 		}
 		d.counters.incr(counterInboxErrorIdentityResolve)
-		return fleet.DeliveryReceipt{}, false, err
+		return inboxResult{}, err
 	}
 
 	addr, ok, rerr := d.inboxResolver(ctx, identity)
@@ -170,10 +220,10 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 		// the other a target that has no inbox.
 		if rerr != nil {
 			d.counters.incr(counterInboxFallbackResolverError)
-		} else {
-			d.counters.incr(counterInboxFallbackResolverDeclined)
+			return inboxDeclined("this machine could not read its inbox index"), nil
 		}
-		return fleet.DeliveryReceipt{}, false, nil
+		d.counters.incr(counterInboxFallbackResolverDeclined)
+		return inboxDeclined("the session has no inbox entry"), nil
 	}
 
 	// #116's requirement #2: verify immediately before the write, not
@@ -183,12 +233,7 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 	// valid socket and valid auth would otherwise deliver cleanly to
 	// whatever now holds this pid, reporting success at every layer.
 	if verr := d.VerifyProcessIdentity(ctx, identity); verr != nil {
-		d.counters.incr(counterInboxRefusedIdentityUnverified)
-		return fleet.DeliveryReceipt{
-			Outcome: fleet.OutcomeRefused,
-			Reason: fmt.Sprintf("identity could not be verified immediately before the "+
-				"inbox write, so nothing was sent: %v", verr),
-		}, true, nil
+		return d.inboxIdentityRefused(verr), nil
 	}
 
 	// #148: attest the target's permission-mode class, or do not use this path
@@ -201,29 +246,24 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 	// is the same as to none of it. Sending anyway is what produced #148 —
 	// this driver reported delivered while the receiver held the message for a
 	// human who was never coming, then dropped it at its own hold deadline.
-	// The pane path is the pre-#144 default, which #148 itself records running
-	// at a 100% delivery rate, so falling back costs a slower delivery and
-	// nothing else.
 	//
-	// Placed AFTER the identity verification above and BEFORE the dial below,
-	// deliberately. Verification failing is a final refusal with no pane
+	// Placed AFTER the first identity verification above and BEFORE the dial
+	// below, deliberately. Verification failing is a final refusal with no
 	// fallback (ADR 119: falling back there would defeat the check), so
 	// checking attestability first would silently convert that refusal into a
 	// fallback for any send that merely happened to be unattestable — turning
 	// a security gate off through an unrelated door. Nothing is dialled for a
 	// send that cannot be attested.
 	//
-	// #158: the sender label rides in the envelope's sender-name attribute,
-	// and a relayOfHuman declaration as the body's first line. Attest drops a
-	// name it cannot guarantee rather than refusing the send, so the label
-	// never changes whether this path is taken.
+	// #158: the sender label rides in the envelope's sender-name attribute, and
+	// a relayOfHuman declaration as the body's first line. Attest drops a name
+	// it cannot guarantee rather than refusing the send, so the label never
+	// changes whether this path is taken.
 	//
-	// #150: the body is checked and counted BEFORE Attest, independently of
-	// the class, because Attest refuses a missing class first and would
-	// otherwise hide every body refusal behind it. The body counted is exactly
-	// the body Attest is given — declaration line included. Attest's contract
-	// (ok == class valid && body attestable) is what lets the refusal's reason
-	// be named below without a second return value.
+	// #150: the body is checked and counted BEFORE Attest, independently of the
+	// class, because Attest refuses a missing class first and would otherwise
+	// hide every body refusal behind it. The body counted is exactly the body
+	// Attest is given — declaration line included.
 	body := driver.WithDeclaration(from, text)
 	d.counters.incr(counterInboxAttestChecked)
 	if !inboxclient.BodyAttestable(body) {
@@ -233,10 +273,26 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 	if !ok {
 		if !addr.ModeClass.Valid() {
 			d.counters.incr(counterInboxFallbackNoModeClass)
-		} else {
-			d.counters.incr(counterInboxFallbackBodyUnattestable)
+			return inboxDeclined("the inbox index names no permission-mode class for this session, so a message cannot be attested"), nil
 		}
-		return fleet.DeliveryReceipt{}, false, nil
+		d.counters.incr(counterInboxFallbackBodyUnattestable)
+		return inboxDeclined("the text cannot be carried in a peer-message envelope that is guaranteed to arrive intact"), nil
+	}
+
+	// #184: a delivery that cannot be confirmed cannot be stood behind, and the
+	// confirmation is the receiver's own transcript. Located BEFORE the write —
+	// the offset it carries is the transcript's size now, which is what makes an
+	// identical earlier message unable to confirm this one.
+	src, srcOK := d.resolveTranscriptSource(ctx, ref, &row)
+	if !srcOK {
+		d.counters.incr(counterInboxFallbackNoTranscript)
+		return inboxDeclined("the session's transcript could not be located, so a delivery could not be confirmed"), nil
+	}
+
+	// The second verification, after everything above that takes time and
+	// immediately before the dial (#116).
+	if verr := d.VerifyProcessIdentity(ctx, identity); verr != nil {
+		return d.inboxIdentityRefused(verr), nil
 	}
 
 	dctx, cancel := context.WithTimeout(ctx, inboxRoundTripTimeout)
@@ -252,27 +308,85 @@ func (d *Driver) sendViaInbox(ctx context.Context, ref fleet.SessionRef, text st
 		// whether the session itself is reachable, so this falls through to
 		// it rather than reporting a permanent refusal here.
 		d.counters.incr(counterInboxFallbackDialFailed)
-		return fleet.DeliveryReceipt{}, false, nil
+		return inboxDeclined("the session's inbox could not be reached"), nil
 	}
 	defer conn.Close()
 
-	receipt, derr := inboxclient.Deliver(conn, addr.Token, attested, inboxRoundTripTimeout)
-	if derr != nil {
-		// #144: previously mapped to a final OutcomeUnknown, which #143's
-		// own investigation named as the exact hazard — "the call site
-		// returns as soon as sendViaInbox reports ok=true, so a dial that
-		// succeeds then fails never reaches the pane." A write failure after
-		// a successful dial is the same kind of local transport fact as a
-		// dial failure above, not an answer from the target, so it falls
-		// back the same way.
-		d.counters.incr(counterInboxFallbackWriteFailed)
-		return fleet.DeliveryReceipt{}, false, nil
+	probe := newInboxProbe(attested, body)
+	key := deliveryKey(text, from)
+	entry := unconfirmedEntry{
+		Key: key, Cwd: row.cwd, TranscriptPath: src.path, TranscriptOffset: src.offset, Probe: probe,
+	}
+
+	_, werr := inboxclient.Deliver(conn, addr.Token, attested, inboxRoundTripTimeout)
+	if werr != nil {
+		if inboxclient.NothingWritten(werr) {
+			// #144, narrowed by #184: not one byte reached the connection, so
+			// the receiver cannot have been given anything and the pane path
+			// may carry the message. This is the only write failure that may.
+			d.counters.incr(counterInboxFallbackWriteFailed)
+			return inboxDeclined("the write to the session's inbox failed before any byte was sent"), nil
+		}
+		// Some bytes went out. The message may be in the receiver's hands, so
+		// this is `unknown` on the inbox's account and the terminal is not
+		// tried — see the doc comment above.
+		d.counters.incr(counterInboxUnknownPartialWrite)
+		entry.Partial = true
+		d.noteUnconfirmed(ref.ID, entry)
+		return inboxAnswered(fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeUnknown,
+			Reason: "the write to the session's inbox broke part-way, so the message may or may not have " +
+				"reached the receiver. It was NOT sent again on any path: sending it again could deliver it " +
+				"twice. Read the session's transcript before deciding; a resend of the same text is held for " +
+				strandedRetention.String() + " or until the message is recorded",
+		}), nil
 	}
 	d.counters.incr(counterInboxWritten)
-	return fleet.DeliveryReceipt{
-		Outcome: mapInboxOutcome(receipt.Outcome),
-		Reason:  receipt.Reason,
-	}, true, nil
+
+	// A clean write proves only that bytes reached a socket (#144). What the
+	// receiver did with them is in its transcript.
+	if how := d.confirmInbox(ctx, src, probe); how != inboxScanSilent {
+		d.counters.incr(counterInboxConfirmed)
+		if how == inboxScanByEnvelope {
+			d.counters.incr(counterInboxConfirmedByEnvelope)
+		} else {
+			d.counters.incr(counterInboxConfirmedByOriginBody)
+		}
+		return inboxAnswered(fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeDelivered,
+			Reason:  "the receiver's own transcript recorded this message as a peer message (" + src.evidence + ")",
+		}), nil
+	}
+	d.counters.incr(counterInboxUnconfirmed)
+	d.noteUnconfirmed(ref.ID, entry)
+	return inboxAnswered(fleet.DeliveryReceipt{
+		Outcome: fleet.OutcomeUnknown,
+		Reason: "the message was written to the session's inbox but the receiver's transcript did not record " +
+			"it within " + inboxWindowOf(d).String() + " (" + src.evidence + "). It may still arrive, or the " +
+			"receiver may be holding it. It was NOT sent again on any path: sending it again could deliver " +
+			"it twice. Read the session's transcript before deciding; a resend of the same text is held for " +
+			strandedRetention.String() + " or until the message is recorded",
+	}), nil
+}
+
+// inboxIdentityRefused is the final refusal for an identity that could not be
+// verified (#116): nothing was written, and no path is tried — the terminal
+// would defeat the check (ADR 119).
+func (d *Driver) inboxIdentityRefused(verr error) inboxResult {
+	d.counters.incr(counterInboxRefusedIdentityUnverified)
+	return inboxAnswered(fleet.DeliveryReceipt{
+		Outcome: fleet.OutcomeRefused,
+		Reason: fmt.Sprintf("identity could not be verified immediately before the "+
+			"inbox write, so nothing was sent: %v", verr),
+	})
+}
+
+// inboxWindowOf is the confirmation window in force, for a receipt's reason.
+func inboxWindowOf(d *Driver) time.Duration {
+	if d.inboxWindow > 0 {
+		return d.inboxWindow
+	}
+	return inboxConfirmWindow
 }
 
 // mapInboxOutcome is the one place inboxclient.Outcome becomes fleet.Outcome
@@ -318,9 +432,10 @@ func mapInboxOutcome(o inboxclient.Outcome) fleet.Outcome {
 // composer to strand in — see the #119 issue body's own "the failure mode
 // ... stops existing"). A caller asking for any of these is explicitly
 // asking for the pane, so Send skips the inbox attempt entirely rather than
-// let sendViaInbox reinterpret a pane-shaped request.
+// let sendViaInbox reinterpret a pane-shaped request. A forced terminal route
+// (#184) is the fourth: the caller has asked for the terminal by name.
 func inboxEligible(opts driver.SendOptions) bool {
-	return opts.Submit && !opts.ResumeIfStranded && !opts.ReplaceIfStranded && !opts.ForceTerminalRoute
+	return opts.Submit && !opts.ResumeIfStranded && !opts.ReplaceIfStranded && opts.Route != fleet.RouteTerminal
 }
 
 // panePrefix opens the first line the terminal path adds for a labelled send.

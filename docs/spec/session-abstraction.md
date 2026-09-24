@@ -392,6 +392,11 @@ DeliveryReceipt {
   outcome : "submitted" | "queued" | "refused" | "unknown"
           | "delivered" | "held" | "denied" | "expired" | "dropped"
   reason? : string
+  delivery? : DeliveryPath
+}
+
+DeliveryPath {
+  route : "terminal" | "inbox"
 }
 ```
 
@@ -401,6 +406,15 @@ Input delivery is **not** fire-and-forget, and not a boolean.
 - `queued` — accepted by the driver, submission unconfirmed
 - `refused` — the driver declined; `reason` explains why
 - `unknown` — sent, outcome unverifiable
+
+`delivery` names the path that made the receipt (#184): `terminal` (the
+session's composer — the text arrives as the user's own turn) or `inbox` (the
+runtime's own messaging socket — the text arrives as a peer message). It is
+**absent** when the receipt names no path — a refusal made before any path was
+chosen, a driver with a single path, or a peer that predates the field — and a
+consumer must read absent as "not stated", never as either value. A value this
+build does not recognise is read as absent, not as an error: the outcome is the
+part that matters.
 
 `refused` is the important one. A driver is expected to protect a session from
 input that would corrupt it — for example, injecting text into a prompt that

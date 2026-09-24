@@ -102,6 +102,105 @@ func (o *Outcome) UnmarshalJSON(b []byte) error {
 type DeliveryReceipt struct {
 	Outcome Outcome `json:"outcome"`
 	Reason  string  `json:"reason,omitempty"`
+
+	// Delivery names the path that made this receipt (#184). Nil means the
+	// receipt names no path — an early refusal that never reached one, a
+	// respond, a driver with a single path, or a peer built before the field
+	// existed. It is never a guess: a consumer that needs to know which path
+	// delivered reads it, and treats nil as "not stated".
+	Delivery *DeliveryPath `json:"delivery,omitempty"`
+}
+
+// Route names a delivery path, and — on the request side — the caller's choice
+// of one (POST …/input's `route`, #184).
+//
+// Two of the values name a path a delivery can actually take. RouteAuto is
+// only ever a REQUEST: it asks the service to pick by who is sending, and a
+// receipt never carries it, because a receipt reports what happened.
+type Route string
+
+const (
+	// RouteAuto asks the service to choose. It is the default — the zero
+	// value of the Go field and an absent or empty `route` on the wire.
+	RouteAuto Route = "auto"
+	// RouteTerminal is the terminal module: the text is typed into the
+	// session's composer and arrives as the user's own turn (labelled, unless
+	// the sender is a human relay).
+	RouteTerminal Route = "terminal"
+	// RouteInbox is the runtime's own messaging socket: the text arrives as a
+	// cross-session peer message, marked by the runtime as not from the user.
+	RouteInbox Route = "inbox"
+)
+
+// Valid reports whether r is a route a caller may request. The zero value is
+// not one: callers treat empty as auto before asking.
+func (r Route) Valid() bool {
+	return r == RouteAuto || r == RouteTerminal || r == RouteInbox
+}
+
+// IsPath reports whether r names a path a delivery can take — the two
+// values a receipt may carry.
+func (r Route) IsPath() bool { return r == RouteTerminal || r == RouteInbox }
+
+// DeliveryPath is the receipt's account of how a send was carried out. It is
+// an object, not a bare string, so a later field (a delivery module's name,
+// #185) can join it without breaking a consumer.
+type DeliveryPath struct {
+	Route Route `json:"route"`
+}
+
+// MarshalJSON refuses a path it cannot name, the same discipline Outcome
+// applies: a receipt that claimed a route outside the set would decode on the
+// other end as an unnamed fourth state.
+func (p DeliveryPath) MarshalJSON() ([]byte, error) {
+	if !p.Route.IsPath() {
+		return nil, fmt.Errorf("fleet: %q is not a route a delivery can take", string(p.Route))
+	}
+	type wire DeliveryPath
+	return json.Marshal(wire(p))
+}
+
+// UnmarshalJSON on the RECEIPT is lenient about the route: a value this build
+// does not know is dropped to "the receipt names no path" rather than failing
+// the whole receipt. A newer peer adding a route (#185) must not make an older
+// machine unable to read the outcome of a send that already happened — the
+// outcome is the part that matters, and refusing it would invite a retry of a
+// send that may have delivered.
+func (r *DeliveryReceipt) UnmarshalJSON(b []byte) error {
+	type wire struct {
+		Outcome  Outcome `json:"outcome"`
+		Reason   string  `json:"reason,omitempty"`
+		Delivery *struct {
+			Route Route `json:"route"`
+		} `json:"delivery,omitempty"`
+	}
+	var w wire
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	*r = DeliveryReceipt{Outcome: w.Outcome, Reason: w.Reason}
+	if w.Delivery != nil && w.Delivery.Route.IsPath() {
+		r.Delivery = &DeliveryPath{Route: w.Delivery.Route}
+	}
+	return nil
+}
+
+// WithRoute returns r stating the path that made it. A route that is not one a
+// delivery can take leaves the receipt unchanged, so a caller cannot stamp
+// "auto" onto a receipt by accident.
+func (r DeliveryReceipt) WithRoute(route Route) DeliveryReceipt {
+	if route.IsPath() {
+		r.Delivery = &DeliveryPath{Route: route}
+	}
+	return r
+}
+
+// RouteOf reports the path r names, or "" when it names none.
+func (r DeliveryReceipt) RouteOf() Route {
+	if r.Delivery == nil {
+		return ""
+	}
+	return r.Delivery.Route
 }
 
 // PromptDelivery is what became of a prompt a create carried (§2.1's initial

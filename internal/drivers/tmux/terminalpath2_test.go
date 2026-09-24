@@ -304,17 +304,24 @@ func TestSendRefusesRatherThanFallingBackWhenBracketPasteUnavailable(t *testing.
 	}
 }
 
-// --- inboxEligible / ForceTerminalRoute (D7) ------------------------------
+// --- inboxEligible / terminal route (D7, #184) ---------------------------
 
-func TestInboxEligibleRespectsForceTerminalRoute(t *testing.T) {
+func TestInboxEligibleRespectsRouteTerminal(t *testing.T) {
 	base := driver.SendOptions{Submit: true}
 	if !inboxEligible(base) {
 		t.Fatal("sanity: an ordinary submit-only send should be inbox-eligible")
 	}
+	for _, route := range []fleet.Route{"", fleet.RouteAuto, fleet.RouteInbox} {
+		o := base
+		o.Route = route
+		if !inboxEligible(o) {
+			t.Fatalf("route %q must stay inbox-eligible", route)
+		}
+	}
 	forced := base
-	forced.ForceTerminalRoute = true
+	forced.Route = fleet.RouteTerminal
 	if inboxEligible(forced) {
-		t.Fatal("inboxEligible must return false once ForceTerminalRoute is set (D7)")
+		t.Fatal("inboxEligible must return false once Route is terminal (D7)")
 	}
 }
 

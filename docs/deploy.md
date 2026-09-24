@@ -142,6 +142,66 @@ The counters are in memory: a reading covers only the window since that
 machine's `startedAt`. `inbox.fallback_no_mode_class` is the same class rollout
 seen per send rather than per index entry.
 
+**Turning the inbox route on (colab-fleet #184) — what has to be true first, in
+this order.** Since #184 a send with no `route` is `auto`: anyone who does not
+hold the `human-relay` grant goes through the inbox whenever the session can take
+it. On a machine whose index emits no class that is nobody, so shipping this
+changes nothing there — the terminal carries every message, now with the
+`delivery.route` on the receipt and a label on every non-human message. Enabling
+the inbox is the operator step that follows, and it has an order:
+
+1. **Give the `human-relay` grant to the principal that relays a person's
+   messages, before any class is emitted.** Without it that principal is an
+   ordinary sender: once the inbox is live its messages arrive as **peer
+   messages**, which the receiving runtime treats as not coming from the user and
+   which cannot grant escalation — measured, a receiver refused an operator's
+   approval for exactly this reason. Nothing checks this for you:
+   `colab-fleetd doctor` runs offline and does not read the running service's
+   counters or its callers, so a fleet with `FLEET_INBOX_INDEX` set and no
+   principal holding the grant passes every row. A row that warns on that
+   combination is the obvious follow-up and does not exist yet.
+2. **Have the index writer emit `mode_class`** (above). Until it does, every
+   `auto` send falls back and this is a no-op.
+3. **Take one live look** on throwaway sessions, from the receiver's side, before
+   trusting the counters — the things below are precisely what no offline test can
+   establish:
+   - an agent's message arrives as a peer message carrying the sender's name and
+     the runtime's own warning, and the receipt says `delivered` on
+     `delivery.route: "inbox"`;
+   - a human relay's message arrives as a plain, unlabelled user turn, receipt
+     `delivery.route: "terminal"`;
+   - an agent's message to a session the inbox cannot take arrives through the
+     terminal with its `[from: …]` line, receipt `terminal`;
+   - which of `inbox.confirmed_by_envelope` and `inbox.confirmed_by_origin_body`
+     moved — that is the transcript shape the runtime actually writes for a peer
+     message, which this repository has never seen;
+   - a receiver in the middle of a turn: how long its transcript takes to record
+     the message, against the 4-second confirmation window.
+4. **Then read the counters** on `GET /v1/health`, under the terminal runtime's
+   entry, summed across machines and remembering they are in memory since that
+   machine's `startedAt`:
+   - the **fallback rate** — `route.auto_fallback / (route.decided.auto.inbox +
+     route.auto_fallback)`. Every `auto` send the inbox was tried for and declined
+     before writing a byte. Read the reasons in the `inbox.*` exits
+     (`fallback_no_mode_class`, `fallback_no_transcript`, `fallback_dial_failed`,
+     …); they sum to `inbox.attempted`, per ADR 150, with two more exits since
+     #184 (`fallback_no_transcript`, `unknown_partial_write`);
+   - the **unconfirmed rate** — `inbox.unconfirmed / inbox.written`. Written is
+     the sum of confirmed and unconfirmed. Near zero is healthy. Near one means the
+     matcher does not recognise what the runtime writes — every message is safe
+     (`unknown`, never resent) but the path is not doing its job — or receivers are
+     holding messages; step 3's transcript look tells which;
+   - `route.guard.*` — follow-ups the ledger answered instead of sending again
+     (`inbox_unconfirmed`), text kept out of the inbox because it was already
+     stranded in the composer (`terminal_unconfirmed`), and earlier writes found
+     recorded after all (`late_confirmed`).
+
+The permission-mode class gate itself (#148) is **unchanged** by #184. Its
+re-check, the evidence it rested on and what would reopen it are recorded in
+`docs/adr/184-route-by-sender.md`: the short version is that the measurement that
+prompted it covered no receiver running with permission prompts bypassed, which
+is the case the gate exists for.
+
 **One check this script — and `doctor` — cannot perform: whether the sender
 label actually renders (colab-fleet #158).** `/input`'s optional `from` object
 reaches the receiving side either as the envelope's sender-name attribute
