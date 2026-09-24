@@ -144,6 +144,7 @@ evidence, not on taste.
 | Go, and zero dependencies | below |
 | Delivery goes through a module seam; the draft rule; terminal path v2 | [ADR 180](adr/180-delivery-module-and-terminal-path-v2.md) |
 | `BTab` (Shift+Tab) is a `keys` key under the `keys` grant, so `keys` can escalate a session | [ADR 188](adr/188-btab-rides-the-keys-grant.md) |
+| An optional external delivery module is a child process speaking JSON lines; off by default; a lane is chosen at create; a send is never delivered twice | [ADR 185](adr/185-optional-external-delivery-modules.md) |
 
 **Go, zero dependencies.** Chosen at zero lines of code, on the reasoning that
 language cost is lowest at the start and compounds afterwards. A static binary
