@@ -105,3 +105,175 @@ func TestDifferentTurnReasonIsAccurate(t *testing.T) {
 		t.Fatalf("reason = %q", got.Reason)
 	}
 }
+
+// --- #187: the runtime's own local_command entries confirm a slash command ---
+//
+// The fixtures below have the SHAPE measured on real transcripts (runtime builds
+// 2.1.273 through 2.1.281) and synthetic values: a real transcript is somebody's
+// conversation. See localCommandLine for what was measured.
+
+// localCommandEcho is the first entry a runtime-run command writes.
+func localCommandEcho(name, args string) map[string]any {
+	return map[string]any{
+		"type": "system", "subtype": "local_command", "level": "info", "isMeta": false,
+		"content": "<command-name>/" + name + "</command-name>\n            <command-message>" + name +
+			"</command-message>\n            <command-args>" + args + "</command-args>",
+	}
+}
+
+// localCommandResult is the entry written right after it: the command's output,
+// with the command itself named structurally and WITHOUT its slash.
+func localCommandResult(name, args string) map[string]any {
+	return map[string]any{
+		"type": "system", "subtype": "local_command", "level": "info", "isMeta": false,
+		"commandRun": map[string]any{"command": name, "args": args},
+		"content":    "<local-command-stdout>synthetic output</local-command-stdout>",
+	}
+}
+
+// localCommandReminder is what the runtime writes after a command: a meta user
+// entry that is not a turn.
+func localCommandReminder() map[string]any {
+	return map[string]any{"type": "user", "isMeta": true,
+		"message": map[string]any{"role": "user", "content": "<system-reminder>synthetic</system-reminder>"}}
+}
+
+func TestLocalCommandEntriesAreCommandCandidates(t *testing.T) {
+	for name, tc := range map[string]struct {
+		entry map[string]any
+		want  string
+	}{
+		"echo with args":            {localCommandEcho("rename", "alpha-renamed"), "/rename alpha-renamed"},
+		"echo without args":         {localCommandEcho("model", ""), "/model"},
+		"result with args":          {localCommandResult("rename", "alpha-renamed"), "/rename alpha-renamed"},
+		"result without args":       {localCommandResult("remote-control", ""), "/remote-control"},
+		"result whose name is a /x": {localCommandResult("/rename", "alpha"), "/rename alpha"},
+	} {
+		b, _ := json.Marshal(tc.entry)
+		kind, text, _, ok := extractTranscriptCandidate(b)
+		if !ok || kind != "command" || text != tc.want {
+			t.Errorf("%s: got (%q, %q, ok=%v), want (\"command\", %q, true)", name, kind, text, ok, tc.want)
+		}
+	}
+}
+
+// Nothing else the runtime writes as a system entry, and no local_command entry
+// that names no command, may be taken for one.
+func TestSystemEntriesThatNameNoCommandAreNotCandidates(t *testing.T) {
+	for name, entry := range map[string]map[string]any{
+		"another subtype":                {"type": "system", "subtype": "turn_duration", "content": "<command-name>/rename</command-name>"},
+		"no subtype":                     {"type": "system", "content": "<command-name>/rename</command-name>"},
+		"output only, no commandRun":     {"type": "system", "subtype": "local_command", "content": "<local-command-stdout>hi</local-command-stdout>"},
+		"empty commandRun name":          {"type": "system", "subtype": "local_command", "commandRun": map[string]any{"command": "", "args": "x"}},
+		"commandRun that is not object":  {"type": "system", "subtype": "local_command", "commandRun": "rename"},
+		"echo naming no slash command":   {"type": "system", "subtype": "local_command", "content": "<command-name>rename</command-name>"},
+		"echo with an unclosed name tag": {"type": "system", "subtype": "local_command", "content": "<command-name>/rename"},
+		"meta entry":                     {"type": "system", "subtype": "local_command", "isMeta": true, "commandRun": map[string]any{"command": "rename"}},
+		"sidechain entry":                {"type": "system", "subtype": "local_command", "isSidechain": true, "commandRun": map[string]any{"command": "rename"}},
+	} {
+		b, _ := json.Marshal(entry)
+		if kind, text, _, ok := extractTranscriptCandidate(b); ok {
+			t.Errorf("%s: taken as a candidate (%q, %q)", name, kind, text)
+		}
+	}
+}
+
+// writeTranscript writes entries as a transcript file and returns its path and
+// the offset a send would have recorded before pressing Enter: after the first
+// `before` entries.
+func writeTranscript(t *testing.T, before int, entries ...map[string]any) (string, int64) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "conv.jsonl")
+	var b strings.Builder
+	var offset int64
+	for i, e := range entries {
+		if i == before {
+			offset = int64(b.Len())
+		}
+		line, _ := json.Marshal(e)
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+	if before >= len(entries) {
+		offset = int64(b.Len())
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path, offset
+}
+
+func TestTailScanConfirmsACommandFromLocalCommandEntries(t *testing.T) {
+	for name, entries := range map[string][]map[string]any{
+		"the echo alone":         {localCommandEcho("rename", "alpha-renamed")},
+		"the result alone":       {localCommandResult("rename", "alpha-renamed")},
+		"the runtime's order":    {localCommandEcho("rename", "alpha-renamed"), localCommandResult("rename", "alpha-renamed"), localCommandReminder()},
+		"after an unrelated run": {localCommandEcho("context", ""), localCommandResult("context", ""), localCommandEcho("rename", "alpha-renamed")},
+	} {
+		path, offset := writeTranscript(t, 0, entries...)
+		got, err := transcriptTailScan(path, offset, "/rename alpha-renamed")
+		if err != nil || got != transcriptScanMatched {
+			t.Errorf("%s: scan = %v (err %v), want matched", name, got, err)
+		}
+	}
+}
+
+// A command entry that names a different command, or different arguments, is
+// not evidence about this send — and must read as silence, not as "a different
+// turn": a different turn stops the screen fallback, and a runtime that ran some
+// other command in the same moment is not a reason to give up on this one.
+func TestTailScanIgnoresALocalCommandThatIsNotTheOneSent(t *testing.T) {
+	for name, entries := range map[string][]map[string]any{
+		"another command":     {localCommandEcho("context", ""), localCommandResult("context", ""), localCommandReminder()},
+		"other arguments":     {localCommandEcho("rename", "someone-else"), localCommandResult("rename", "someone-else")},
+		"output-only entries": {{"type": "system", "subtype": "local_command", "content": "<local-command-stdout>x</local-command-stdout>"}},
+	} {
+		path, offset := writeTranscript(t, 0, entries...)
+		got, err := transcriptTailScan(path, offset, "/rename alpha-renamed")
+		if err != nil || got != transcriptScanSilent {
+			t.Errorf("%s: scan = %v (err %v), want silent", name, got, err)
+		}
+	}
+}
+
+// A command run before the send's own offset is never read: an identical
+// earlier /rename must not confirm this one.
+func TestTailScanDoesNotReadALocalCommandBeforeTheOffset(t *testing.T) {
+	path, offset := writeTranscript(t, 2,
+		localCommandEcho("rename", "alpha-renamed"), localCommandResult("rename", "alpha-renamed"))
+	if got, err := transcriptTailScan(path, offset, "/rename alpha-renamed"); err != nil || got != transcriptScanSilent {
+		t.Fatalf("scan = %v (err %v), want silent", got, err)
+	}
+}
+
+// The measured case of #187, end to end through Send: /rename against a runtime
+// that wrote local_command entries and no <command-name> user entry. Confirmed by
+// the transcript — the counters, not the wording of the reason, say which signal
+// decided it: the screen fallback's own reason also contains the word
+// "transcript".
+func TestSlashCommandSendConfirmsFromLocalCommandEntries(t *testing.T) {
+	for name, entry := range map[string]map[string]any{
+		"echo":   localCommandEcho("rename", "alpha-renamed"),
+		"result": localCommandResult("rename", "alpha-renamed"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, _, ref, appendSoon := transcriptSession(t)
+			appendSoon(entry)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			got, err := d.Send(ctx, testCaller, ref, "/rename alpha-renamed", driver.SendOptions{Submit: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Outcome != fleet.OutcomeQueued {
+				t.Fatalf("outcome = %s (%s), want queued", got.Outcome, got.Reason)
+			}
+			c := d.counters.Snapshot()
+			if c[counterSubmitConfirmedByTranscript] != 1 || c[counterSubmitConfirmedByScreenAfterSilentTranscript] != 0 {
+				t.Fatalf("by_transcript=%d by_screen_after_silent_transcript=%d, want 1 and 0 — the "+
+					"transcript should have decided this, not the screen after the window (reason: %s)",
+					c[counterSubmitConfirmedByTranscript], c[counterSubmitConfirmedByScreenAfterSilentTranscript], got.Reason)
+			}
+		})
+	}
+}
