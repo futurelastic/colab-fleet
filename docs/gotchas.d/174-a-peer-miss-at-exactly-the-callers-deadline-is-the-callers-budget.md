@@ -57,3 +57,19 @@ slow one.
 
 The line is deliberately unsuppressed. Suppression is how this stayed
 invisible.
+
+## Since #175: a slow peer is no longer a deadline miss
+
+The requester used to announce its full remaining budget to the peer, so a
+peer that was up but slow and a peer that was down both logged `kind=deadline`
+at the full budget. The requester now holds a transit reserve back from the
+bound it announces (at most 250 ms, or one fifth of a short budget). A slow
+peer's own answer, which carries its own status and error text, arrives before
+the requester's timer fires, and no miss line is logged.
+
+So after #175, a `kind=deadline` line whose `budget` equals the caller's
+budget points to a peer that is hung or down, not merely slow. Evidence of
+slowness is now in the peer's own report and its own log, not in this line.
+The peer's report is not always `degraded`: a peer whose local *listing*
+timed out reports itself `unreachable`. The difference is that the error text
+is the peer's own, not "no answer from … after …".

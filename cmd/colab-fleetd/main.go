@@ -168,11 +168,17 @@
 //	                                  directory, inbox index, peers (doctor.go,
 //	                                  colab-fleet #160). Run it under the service
 //	                                  unit's environment.
+//	colab-fleetd -h | --help          print usage and exit 0
+//
+// Any other argument is a usage error (exit 2) and starts nothing
+// (colab-fleet #177). The service itself takes no arguments: it is started
+// bare, and configured entirely by its environment.
 package main
 
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -210,6 +216,14 @@ func main() {
 			os.Exit(2)
 		}
 		return
+	}
+	// Anything else on the command line is refused here, before any startup
+	// work (colab-fleet #177). The service is configured by its environment
+	// alone, so the only way to start it is with no arguments at all; a
+	// typo or a help flag used to fall through and count as "start", which
+	// from an operator's shell means starting as the installed service.
+	if handled, code := runUsage(os.Args[1:], os.Stdout, os.Stderr); handled {
+		os.Exit(code)
 	}
 
 	self := fleet.MachineId(getenv("FLEET_MACHINE", "local"))
@@ -862,4 +876,36 @@ func runTrustSeedLoop(d *tmux.Driver, interval time.Duration) {
 			log.Printf("colab-fleetd: trust-seed: %s", got)
 		}
 	}
+}
+
+// usageTop is the binary's own usage: the service form, then the operator
+// subcommands, whose detailed usage each prints for itself.
+func usageTop() string {
+	return strings.Join([]string{
+		"usage: colab-fleetd                      start the service (configured by FLEET_* environment only)",
+		"       colab-fleetd doctor [--json] ...  read-only installation check (colab-fleetd doctor --help)",
+		"       colab-fleetd principal add|list   enrol or list clients (colab-fleetd principal)",
+		"       colab-fleetd -h | --help          print this usage",
+		"",
+		"The service takes no arguments. Anything else is refused before any startup work.",
+	}, "\n")
+}
+
+// runUsage decides what remains of the command line once the subcommands
+// have had their turn. No arguments means "start the service" and is left to
+// main. A help flag prints usage and exits 0. Anything else — a typo, an
+// unknown flag, a stray word — is refused with exit 2, because the
+// alternative is starting a full instance nobody asked for (colab-fleet
+// #177). Pure, so the gate has a test that does not go through os.Exit.
+func runUsage(args []string, stdout, stderr io.Writer) (handled bool, code int) {
+	if len(args) == 0 {
+		return false, 0
+	}
+	switch args[0] {
+	case "-h", "-help", "--help", "help":
+		fmt.Fprintln(stdout, usageTop())
+		return true, 0
+	}
+	fmt.Fprintf(stderr, "colab-fleetd: unknown argument %q — nothing was started\n%s\n", args[0], usageTop())
+	return true, 2
 }
