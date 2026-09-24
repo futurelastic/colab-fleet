@@ -119,7 +119,7 @@ func TestRefuseAsRuntimeSyntax(t *testing.T) {
 		{"   ", false},
 	}
 	for _, c := range cases {
-		reason, refused := refuseAsRuntimeSyntax(c.text)
+		reason, refused := refuseAsRuntimeSyntax(c.text, false)
 		if refused != c.refused {
 			t.Errorf("refuseAsRuntimeSyntax(%q) refused = %v, want %v (reason %q)", c.text, refused, c.refused, reason)
 		}

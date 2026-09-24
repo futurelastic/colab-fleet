@@ -115,6 +115,14 @@ type SendOptions struct {
 	// effect without ResumeIfStranded or ReplaceIfStranded.
 	ExpectComposerDigest string
 
+	// HumanRelay says the service established that this call relays a
+	// human's own message: the caller holds the human-relay grant, or a
+	// peer this service trusts to relay asserted it (#180). Set by the
+	// service, never by a caller's body. A driver may let such a call send a
+	// leading "/" — a human at a keyboard types slash commands — where it
+	// refuses one from anyone else.
+	HumanRelay bool
+
 	// From (colab-fleet #158) is who the message says it comes from. Nil
 	// means unlabelled, exactly as before #158. By the time a driver sees
 	// it, Machine has already been stamped by the service (see

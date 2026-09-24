@@ -256,6 +256,40 @@ func grantForVerb(r *http.Request) Grant {
 // shared a secret.
 const onBehalfOfHeader = "Fleet-On-Behalf-Of"
 
+// humanRelayHeader carries, across a peer relay, the entering machine's
+// finding that the call relays a human's own message (#180 L3). On the
+// entering machine that is a grant (GrantHumanRelay); on the owning machine
+// the request authenticates as the relaying PEER, which holds no such grant,
+// so the fact has to travel as an assertion — trusted exactly as far as an
+// on-behalf-of assertion is (relayTrusted).
+const humanRelayHeader = "Fleet-Human-Relay"
+
+// relayTrusted reports whether this request's relay assertions — the
+// on-behalf-of principal, the human-relay fact — may be honoured (#180 M8).
+// With no principal table every caller presents the one shared token and
+// nothing tells a relay from anyone else, so the assertion is honoured as it
+// always was. With a table, only a principal that is one of this service's
+// configured peers relays: any other caller setting these headers is
+// asserting authority it was never given, and the headers are ignored.
+func (svc *Service) relayTrusted(r *http.Request) bool {
+	p, ok := principalOf(r)
+	if !ok {
+		return true
+	}
+	_, isPeer := svc.peerDrivers()[fleet.MachineId(p.Name)]
+	return isPeer
+}
+
+// humanRelay reports whether this /input call relays a human's own message:
+// the caller holds GrantHumanRelay here, or a trusted relay asserted that the
+// original caller held it where the request entered the fleet.
+func (svc *Service) humanRelay(r *http.Request) bool {
+	if p, ok := principalOf(r); ok && p.Allows(GrantHumanRelay) {
+		return true
+	}
+	return r.Header.Get(onBehalfOfHeader) != "" && r.Header.Get(humanRelayHeader) == "1" && svc.relayTrusted(r)
+}
+
 // callerFor builds the Request a resolved principal makes.
 func callerFor(p Principal, r *http.Request) fleet.Caller {
 	name := p.Name

@@ -2150,7 +2150,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// at all, so it runs ahead of every one of those and the substrate is
 	// never touched for text that was always going to be refused. See
 	// inputguard.go for the pattern list and why it belongs to this driver.
-	if reason, refused := refuseAsRuntimeSyntax(text); refused {
+	if reason, refused := refuseAsRuntimeSyntax(text, opts.HumanRelay); refused {
 		return d.observeEarly(delivery.Refused, fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}), nil
 	}
 

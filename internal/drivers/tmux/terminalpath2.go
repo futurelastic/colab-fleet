@@ -63,7 +63,7 @@ var errBracketPasteUnavailable = errors.New("tmux: bracketed paste is not availa
 // a control code by convention even though it sits outside the 0x00-0x1F
 // block.
 func sanitizeForBracketedPaste(text string) string {
-	if !strings.ContainsAny(text, "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x7f") {
+	if !strings.ContainsFunc(text, func(r rune) bool { return r < 0x20 && r != '\n' && r != '\t' || r >= 0x7f && r <= 0x9f }) {
 		return text
 	}
 	var b strings.Builder
@@ -72,7 +72,11 @@ func sanitizeForBracketedPaste(text string) string {
 		switch {
 		case r == '\n' || r == '\t':
 			b.WriteRune(r)
-		case r == 0x7f:
+		case r >= 0x7f && r <= 0x9f:
+			// DEL, and the C1 controls (#180 M7): U+009B is the 8-bit form
+			// of CSI, so "\u009b201~" is the paste-END sequence spelled
+			// another way — measured to pass tmux into a bracketed paste
+			// unchanged — and U+009D/U+0090 open OSC/DCS strings.
 			continue
 		case r < 0x20:
 			continue

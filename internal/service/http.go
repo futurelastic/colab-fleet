@@ -14,6 +14,7 @@ import (
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/delivery"
 	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/godx-jp/colab-fleet/internal/inboxclient"
 )
 
 // Config wires the pieces an HTTP server needs beyond the Service itself.
@@ -1229,6 +1230,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			return
 		}
 		from := svc.stampSender(r, body.From)
+		humanRelay := svc.humanRelay(r)
 
 		if ferr := rejectOverLength("text", body.Text, machine, svc.MaxInputBytes()); ferr != nil {
 			writeError(w, ferr)
@@ -1258,15 +1260,21 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			// recorded as human-typed input, which is exactly the
 			// separation D7 exists to create once the inbox comes back
 			// "for agents only".
-			if p, ok := principalOf(r); !ok || !p.Allows(GrantHumanRelay) {
-				if from == nil {
-					writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
-						Message: "route \"terminal\" requires a \"from\" label unless the caller is " +
-							"a principal configured as a human relay (the human-relay grant) — an " +
-							"unlabelled terminal-routed send would be recorded as human-typed input",
-						Machine: machine})
-					return
-				}
+			//
+			// #180 M8: the requirement is a label that PRINTS, not a `from`
+			// object — `{}`, or a name the label normalisation drops whole,
+			// satisfied the old check and reached the pane unlabelled. The
+			// human-relay fact is the grant here, or a trusted relay's
+			// assertion of it (L3).
+			if !humanRelay && inboxclient.SenderName(driver.SenderLabel(from)) == "" {
+				writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
+					Message: "route \"terminal\" requires a \"from\" label that prints — a " +
+						"non-empty agent, session or machine that survives label normalisation — " +
+						"unless the caller is a principal configured as a human relay (the " +
+						"human-relay grant); an unlabelled terminal-routed send would be recorded " +
+						"as human-typed input",
+					Machine: machine})
+				return
 			}
 			forceTerminalRoute = true
 		default:
@@ -1288,7 +1296,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, ExpectComposerDigest: body.Expect, From: from, ForceTerminalRoute: forceTerminalRoute})
+		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, ExpectComposerDigest: body.Expect, From: from, ForceTerminalRoute: forceTerminalRoute, HumanRelay: humanRelay})
 		if err != nil {
 			// A refusal from the driver is not this branch — Send returns
 			// it as a DeliveryReceipt value, not an error. Only a
@@ -1324,7 +1332,11 @@ func (svc *Service) stampSender(r *http.Request, from *fleet.MessageFrom) *fleet
 	}
 	out := *from
 	out.Machine = ""
-	if r.Header.Get(onBehalfOfHeader) == "" {
+	// #180 M8: an on-behalf-of header from a caller this service does not
+	// trust to relay is ignored — the request is treated as direct, and
+	// stamped with this machine, rather than letting any caller blank its
+	// own label's machine by claiming to be a relay.
+	if r.Header.Get(onBehalfOfHeader) == "" || !svc.relayTrusted(r) {
 		out.Machine = svc.Self()
 	} else if claimed := from.Machine; claimed != "" && claimed != svc.Self() {
 		if _, isPeer := svc.peerDrivers()[claimed]; isPeer {

@@ -38,6 +38,8 @@ type capture struct {
 	idem   string
 	dline  string
 	body   string
+	// humanRelay is the #180 L3 assertion header.
+	humanRelay string
 }
 
 func peerServing(t *testing.T, status int, payload any, rec *capture) *httptest.Server {
@@ -62,13 +64,14 @@ func peerServing(t *testing.T, status int, payload any, rec *capture) *httptest.
 		if rec != nil && !probing {
 			raw, _ := io.ReadAll(r.Body)
 			*rec = capture{
-				method: r.Method,
-				path:   r.URL.Path,
-				query:  r.URL.RawQuery,
-				auth:   r.Header.Get("Authorization"),
-				idem:   r.Header.Get("Idempotency-Key"),
-				dline:  r.Header.Get("Fleet-Deadline-Ms"),
-				body:   string(raw),
+				method:     r.Method,
+				path:       r.URL.Path,
+				query:      r.URL.RawQuery,
+				auth:       r.Header.Get("Authorization"),
+				humanRelay: r.Header.Get("Fleet-Human-Relay"),
+				idem:       r.Header.Get("Idempotency-Key"),
+				dline:      r.Header.Get("Fleet-Deadline-Ms"),
+				body:       string(raw),
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -1072,5 +1075,28 @@ func TestSendForwardsExpect(t *testing.T) {
 	}
 	if body.Expect != "0123456789abcdef" || !body.ReplaceIfStranded {
 		t.Fatalf("body = %q, want expect and replaceIfStranded carried to the owning daemon", rec.body)
+	}
+}
+
+// TestSendCarriesTheHumanRelayAssertion (#180 L3): a human relay established
+// on the entering machine reaches the owning machine as an assertion header —
+// and only when it was established.
+func TestSendCarriesTheHumanRelayAssertion(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+	d := New("peerbox", srv.URL)
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "a person's message",
+		driver.SendOptions{Submit: true, ForceTerminalRoute: true, HumanRelay: true}); err != nil {
+		t.Fatal(err)
+	}
+	if rec.humanRelay != "1" {
+		t.Fatalf("Fleet-Human-Relay = %q, want 1", rec.humanRelay)
+	}
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "an agent's message",
+		driver.SendOptions{Submit: true}); err != nil {
+		t.Fatal(err)
+	}
+	if rec.humanRelay != "" {
+		t.Fatalf("Fleet-Human-Relay = %q on a send that asserted nothing", rec.humanRelay)
 	}
 }

@@ -666,6 +666,12 @@ func (d *Driver) bounded(ctx context.Context) (context.Context, context.CancelFu
 // credential — that is how a proxied call presents the original caller's
 // authority (§13).
 func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string, body any, out any) error {
+	return d.doWithHeaders(ctx, req, method, path, nil, body, out)
+}
+
+// doWithHeaders is do with extra request headers — the one call that needs
+// them is Send carrying the human-relay assertion (#180 L3).
+func (d *Driver) doWithHeaders(ctx context.Context, req fleet.Request, method, path string, headers map[string]string, body any, out any) error {
 	token, behalf, ok := d.bearerFor(req)
 	if !ok {
 		return ErrNoCallerAuthority
@@ -692,6 +698,9 @@ func (d *Driver) do(ctx context.Context, req fleet.Request, method, path string,
 	}
 	if body != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		httpReq.Header.Set(k, v)
 	}
 	// Tell the peer the bound we are enforcing, so it can fail fast rather
 	// than working on a request we have already given up on (§3.3).
@@ -1221,7 +1230,14 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	var out fleet.DeliveryReceipt
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/input",
 		url.PathEscape(string(d.machine)), url.PathEscape(ref.ID))
-	if err := d.do(ctx, req, http.MethodPost, path, body, &out); err != nil {
+	// #180 L3: a human relay established on this machine travels to the
+	// owning one as an assertion; the owner trusts it only as far as it
+	// trusts this machine as a relay.
+	var headers map[string]string
+	if opts.HumanRelay {
+		headers = map[string]string{"Fleet-Human-Relay": "1"}
+	}
+	if err := d.doWithHeaders(ctx, req, http.MethodPost, path, headers, body, &out); err != nil {
 		return fleet.DeliveryReceipt{}, err
 	}
 	return out, nil
