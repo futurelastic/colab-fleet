@@ -126,7 +126,11 @@ order of this page and the order of its output are the same.
    machine you expected to deliver to an inbox. Where it is set, the writer
    must emit `mode_class` for each entry, and emit the class the session is
    actually running in — an entry without one cannot be attested and is sent
-   through the pane path (#148). Rows: `inbox.index`, `inbox.mode-class`.
+   through the pane path (#148). Where a principal table is in use, the
+   principal that relays a person's messages must also hold `human-relay`
+   **before** the writer emits a class — otherwise its messages arrive through
+   the inbox as peer messages (#184; `docs/deploy.md`, "Turning the inbox route
+   on"). Rows: `inbox.index`, `inbox.mode-class`, `principals.human-relay`.
 
 8. **Write the service unit.** Whatever the machine's service manager is, the
    unit must:

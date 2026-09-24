@@ -155,11 +155,18 @@ the inbox is the operator step that follows, and it has an order:
    ordinary sender: once the inbox is live its messages arrive as **peer
    messages**, which the receiving runtime treats as not coming from the user and
    which cannot grant escalation — measured, a receiver refused an operator's
-   approval for exactly this reason. Nothing checks this for you:
-   `colab-fleetd doctor` runs offline and does not read the running service's
-   counters or its callers, so a fleet with `FLEET_INBOX_INDEX` set and no
-   principal holding the grant passes every row. A row that warns on that
-   combination is the obvious follow-up and does not exist yet.
+   approval for exactly this reason. `colab-fleetd doctor` runs offline and does
+   not read the running service's counters or its callers, so it cannot see who
+   actually relays a person's messages — but it can see the configuration that
+   makes the failure possible: row `principals.human-relay` warns when
+   `FLEET_INBOX_INDEX` is set, a principal table is configured and no principal
+   holds the grant (`--skip=principals.human-relay` where every caller is an
+   agent). It is a warning, never a failure — nothing is broken until an index
+   also emits a class. Two things it does not cover: a pass means *someone*
+   holds the grant, not that the holder is the principal that relays (a
+   `--principal` does not narrow it — that flag names the supervising client, and
+   the grant is deliberately outside the supervisor set); and in single-token mode
+   it is skipped, because there is no grant to hold there.
 2. **Have the index writer emit `mode_class`** (above). Until it does, every
    `auto` send falls back and this is a no-op.
 3. **Take one live look** on throwaway sessions, from the receiver's side, before
