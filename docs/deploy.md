@@ -150,6 +150,21 @@ changes nothing there — the terminal carries every message, now with the
 `delivery.route` on the receipt and a label on every non-human message. Enabling
 the inbox is the operator step that follows, and it has an order:
 
+0. **A machine with no principal table needs one before this build (#196).**
+   The inbox route is not available without a table: with `FLEET_INBOX_INDEX`
+   set and `FLEET_CONFIG` unset, `colab-fleetd` **refuses to start**, naming the
+   table. The reason is the one step 1 turns on — who relays a person's messages
+   has to be a grant the table holds, and a single-token machine has nothing
+   but a header any bearer of the token can set to say so. **Before you install
+   this build on a machine that sets `FLEET_INBOX_INDEX`, run `colab-fleetd
+   doctor` there, under the service's own environment: row
+   `principals.human-relay` reads `fail` on exactly the machines that would
+   refuse to start.** Then either write a table
+   (`docs/install.md` step 5) and continue with step 1, or unset
+   `FLEET_INBOX_INDEX` to keep every delivery on the terminal path. A machine with
+   no table and no index is unaffected — it has no inbox route, so nothing is
+   diverted into a peer message — and its single-token relay keeps working as it
+   did.
 1. **Give the `human-relay` grant to the principal that relays a person's
    messages, before any class is emitted.** Without it that principal is an
    ordinary sender: once the inbox is live its messages arrive as **peer
@@ -166,7 +181,8 @@ the inbox is the operator step that follows, and it has an order:
    holds the grant, not that the holder is the principal that relays (a
    `--principal` does not narrow it — that flag names the supervising client, and
    the grant is deliberately outside the supervisor set); and in single-token mode
-   it is skipped, because there is no grant to hold there.
+   there is no grant to hold, so with an index set the row **fails** instead —
+   see step 0.
 2. **Have the index writer emit `mode_class`** (above). Until it does, every
    `auto` send falls back and this is a no-op.
 3. **Take one live look** on throwaway sessions, from the receiver's side, before

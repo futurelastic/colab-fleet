@@ -128,7 +128,9 @@ const (
 	// `from`, not relayOfHuman. It is this grant, or (across a peer relay) a
 	// trusted peer's assertion of it (relayTrusted); on a machine with no
 	// principal table there is no per-caller identity at all and the assertion is
-	// honoured as it always was.
+	// honoured as it always was — which is safe only because such a machine
+	// cannot have the inbox route on (colab-fleetd refuses FLEET_INBOX_INDEX
+	// without a table, #196), so the assertion can only pick the terminal path.
 	//
 	// It is the grant that lets a message skip the label, so it is not one to
 	// hand to an agent. Absent means denied, like every other grant, so no
@@ -282,7 +284,8 @@ const humanRelayHeader = "Fleet-Human-Relay"
 // on-behalf-of principal, the human-relay fact — may be honoured (#180 M8).
 // With no principal table every caller presents the one shared token and
 // nothing tells a relay from anyone else, so the assertion is honoured as it
-// always was. With a table, only a principal that is one of this service's
+// always was — and, since #196, can only ever pick the terminal path, because a
+// machine with no table cannot turn the inbox route on. With a table, only a principal that is one of this service's
 // configured peers relays: any other caller setting these headers is
 // asserting authority it was never given, and the headers are ignored.
 func (svc *Service) relayTrusted(r *http.Request) bool {

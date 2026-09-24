@@ -59,8 +59,13 @@ func TestDoctorHumanRelayRow(t *testing.T) {
 			map[string]string{}, statusSkip, "FLEET_INBOX_INDEX unset"},
 		{"stub runtime has no inbox path", agents,
 			map[string]string{"FLEET_INBOX_INDEX": index, "FLEET_RUNTIME": "stub"}, statusSkip, "no inbox delivery path"},
-		{"single-token mode has no grant to hold", nil,
-			map[string]string{"FLEET_INBOX_INDEX": index, "FLEET_TOKEN": "t"}, statusSkip, "single-token mode"},
+		// #196 (ruled on #195): this case used to skip, because there is no grant
+		// to hold in single-token mode. It now fails — the inbox route needs a
+		// principal table, so the service refuses to start with an index and none.
+		{"single-token mode with an index is refused", nil,
+			map[string]string{"FLEET_INBOX_INDEX": index, "FLEET_TOKEN": "t"}, statusFail, "no principal table is configured"},
+		{"single-token mode without an index is untouched — no inbox route to divert into", nil,
+			map[string]string{"FLEET_TOKEN": "t"}, statusSkip, "FLEET_INBOX_INDEX unset"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,5 +185,46 @@ func TestDoctorHumanRelayWarnsWithoutFailingAndSkips(t *testing.T) {
 	}
 	if got := statusOf(out); got != statusSkip {
 		t.Fatalf("row = %s, want skip", got)
+	}
+}
+
+// #196: a table-less machine that turns the inbox route on fails the run, points
+// at the table AND at the other way out, and hiding the row does not un-refuse
+// the service — the row says so.
+func TestDoctorHumanRelayFailsWithoutATableAndPointsAtTheFix(t *testing.T) {
+	dir, bin, index := humanRelayFixture(t)
+	vars := map[string]string{
+		"FLEET_MACHINE": "m1", "FLEET_TOKEN": "t", "FLEET_INBOX_INDEX": index, "FLEET_TMUX_BIN": bin,
+		"FLEET_STATE_DIR": dir, "FLEET_ADDR": "127.0.0.1:9000",
+	}
+	row := rowByID(t, runChecks(context.Background(), testDoctorEnv(vars)), "principals.human-relay")
+	if row.Status != statusFail {
+		t.Fatalf("row = %+v, want fail", row)
+	}
+	for _, want := range []string{"refuses to start", "docs/install.md step 5", "human-relay", "unset FLEET_INBOX_INDEX", "--skip=principals.human-relay"} {
+		if !strings.Contains(row.Summary+" "+row.Detail, want) {
+			t.Errorf("the row must mention %q: %+v", want, row)
+		}
+	}
+	hasRef := func(n int) bool {
+		for _, r := range row.Refs {
+			if r == n {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasRef(195) || !hasRef(196) {
+		t.Errorf("row must cite the ruling and the change (#195, #196): %+v", row.Refs)
+	}
+
+	// A failing row stops the run — that is what fail means (ADR 160). The
+	// control is the same environment with only this row skipped: it must pass,
+	// or the exit code above was some other row's doing and proves nothing.
+	if code, out, _ := runDoctorTest(vars, "--offline"); code != 1 {
+		t.Fatalf("exit = %d, want 1: the service would refuse to start\n%s", code, out)
+	}
+	if code, out, _ := runDoctorTest(vars, "--offline", "--skip=principals.human-relay"); code != 0 {
+		t.Fatalf("with only the human-relay row skipped exit = %d, want 0 — another row is failing this fixture\n%s", code, out)
 	}
 }

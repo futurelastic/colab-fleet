@@ -233,8 +233,10 @@ and `written` splits into `confirmed` and `unconfirmed`, so
 - **The doctor sees the missing grant only where a principal table exists.** It
   is offline, so it reads configuration and not callers. The row that warns when
   an inbox index is configured and no principal holds `human-relay` was not part
-  of this change; it shipped afterwards (#189) and skips single-token mode, where
-  there is no grant to point an operator at.
+  of this change; it shipped afterwards (#189). It skipped single-token mode,
+  where there is no grant to point an operator at; since #196 it **fails** there
+  instead when an index is set, because the service now refuses to start in that
+  shape (below).
 
 ## Alternatives rejected
 
@@ -247,6 +249,14 @@ and `written` splits into `confirmed` and `unconfirmed`, so
 - **Rely on callers not to retry.** The service's own create path retries.
 - **Block only `resumeIfStranded`.** A fresh `auto` send crosses paths as easily.
 - **Relax the class gate now.** On evidence that never tested the failing case.
+- **Stop honouring the relay headers when there is no table (#196's first
+  draft).** It makes the rule true everywhere by taking the terminal relay away
+  from every single-token machine, which has no other way to express "this is a
+  person". Ruled out on #195 in favour of requiring the table for the inbox route.
+- **Ignore `FLEET_INBOX_INDEX` quietly when there is no table.** It avoids a
+  refused start, and it is the failure #122 was: an operator sets an index and
+  the service silently never uses it. A refusal to start is loud, `doctor` shows
+  it beforehand, and it matches the missing-token gate beside it.
 - **Document the failover gap and keep the machine in the ledger key.** It leaves a
   known route to a double delivery in exchange for a finer distinction between
   senders that the caller's own unverified statement cannot support (#191).
@@ -261,17 +271,33 @@ outcome of each:
    caller's terminal message looks like: it gains a `[from: <principal> ·
    <machine>]` first line. This is what the issue's table asks for ("with the
    mandatory label"), and the wording is acceptable.
-2. **With no principal table — kept for now, to be tightened after the doctor
-   warning ships.** #180 L3 honours the relay headers from any caller, so "the
-   human-relay fact is never inferred from a header" holds only where a table
-   exists. Tightening today would silently stop relays on machines that have no
-   table; the doctor's `principals.human-relay` row (#189, shipped) makes the
-   table-mode half visible first. Until the follow-up is decided the exception
-   stays documented and test-pinned. The follow-up is not the one-line change the
-   ruling assumed: on a single-token machine "no human relay without a table"
-   leaves no way to relay a person's message unlabelled at all, so the choice is
-   between keeping the assertion and requiring a table before the inbox route is
-   enabled. That is tracked in #195.
+2. **With no principal table — resolved by #195 and #196: the inbox route is
+   refused without one.** #180 L3 honours the relay headers from any caller, so
+   "the human-relay fact is never inferred from a header" held only where a table
+   exists. The ruling on #193 kept that exception until the doctor could show the
+   table-mode half, and expected a one-line tightening after. It was not one: on
+   a single-token machine "no human relay without a table" leaves no way to relay
+   a person's message unlabelled at all (#195). #195 ruled for the other way to
+   reach the same invariant — **turning on the inbox route requires a principal
+   table** — and #196 built it: with `FLEET_INBOX_INDEX` set and no
+   `FLEET_CONFIG`, `colab-fleetd` refuses to start with a message naming the
+   table, and `doctor`'s `principals.human-relay` row fails for the same shape
+   (both read one function, `requireTableForInbox`, so they cannot disagree). The
+   exception is **closed in the sense that mattered**: a machine with no table
+   has no inbox route, so nothing it sends — with or without the header — is
+   ever diverted into a peer message. Its unlabelled terminal relay keeps
+   working, which is why the request-time header handling is deliberately
+   **unchanged**; the pinning test in `internal/service/route_test.go` keeps
+   asserting it and now says why.
+
+   **What is left, stated so it is not mistaken for closed:** on a machine with
+   no table, any holder of the one shared token can still assert the human-relay
+   fact with the peer-relay headers. Its effect is now confined to the terminal
+   path — the label is skipped and a leading `/` is delivered — and that is the
+   cost of keeping a single-token relay at all. Refusing the headers there as
+   well would strand that relay; it is a separate decision and was not made
+   here. A machine that wants the strict form writes a
+   table, which is what `deploy.md` step 0 says.
 3. **The create-time prompt is pinned to the terminal — ratified.** It is
    consistent with the measured loss of a session from a create-time prompt.
 4. **The 30-minute hold — ratified.** Same-text follow-ups after an unconfirmed

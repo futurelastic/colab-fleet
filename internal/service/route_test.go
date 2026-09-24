@@ -320,10 +320,18 @@ func TestSendInput_CallerSetClaimsNeverMakeAHumanRelay(t *testing.T) {
 	}
 }
 
-// Documented, not endorsed (#180 L3): with NO principal table every caller
-// presents the one shared token and nothing tells a relay from anyone else, so
-// the relay assertions are honoured as they always were. Pinned so the exception
-// is visible and a change to it is a decision.
+// With NO principal table every caller presents the one shared token and nothing
+// tells a relay from anyone else (#180 L3), so the relay assertions are honoured
+// as they always were — and that is what lets a single-token machine relay a
+// person unlabelled at all. #196 (ruled on #195, option 2) did NOT change this
+// request-time behaviour; it removed what made it dangerous. The header can only
+// ever pick the terminal path here, because such a machine cannot turn the inbox
+// route on: colab-fleetd refuses to start with FLEET_INBOX_INDEX and no table
+// (cmd/colab-fleetd/inboxgate.go, pinned by TestRequireTableForInbox), so a
+// person's message is never diverted into a peer message, whether it carried the
+// header or not. If this test starts failing because the headers stopped being
+// honoured, that is a different decision from #196's and it strands unlabelled
+// relay on single-token machines: read #195 before flipping it.
 func TestSendInput_WithoutAPrincipalTableRelayHeadersAreHonoured(t *testing.T) {
 	svc := New("test-machine")
 	d := &routeDriver{Driver: stub.Driver{DeadlineMs: 500}}
@@ -337,7 +345,7 @@ func TestSendInput_WithoutAPrincipalTableRelayHeadersAreHonoured(t *testing.T) {
 		map[string]string{onBehalfOfHeader: "someone", humanRelayHeader: "1"},
 		map[string]any{"text": "x", "submit": true}))
 	if got := d.last(t); !got.HumanRelay || got.Route != fleet.RouteTerminal {
-		t.Fatalf("driver got humanRelay=%v route=%q; the documented no-table exception no longer holds", got.HumanRelay, got.Route)
+		t.Fatalf("driver got humanRelay=%v route=%q; a single-token machine's terminal relay (#195) no longer holds", got.HumanRelay, got.Route)
 	}
 }
 

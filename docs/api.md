@@ -302,7 +302,8 @@ resolved.
   principal's own configured grant. (Across a peer relay it is an assertion the
   owning machine honours only from one of its configured peers — or from anyone,
   on a machine with no principal table, where nothing distinguishes a relay from
-  any other bearer.)
+  any other bearer. Such a machine cannot have the inbox route on, so there the
+  assertion can only choose the terminal path.)
 - **`route: "terminal"`** forces the composer. Without the `human-relay` grant it
   needs a `from` that actually prints — a non-empty agent, session or machine
   that survives label normalisation — or it is a `400` (#180 M8). A caller
