@@ -12,6 +12,7 @@ import (
 	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
+	"github.com/godx-jp/colab-fleet/internal/delivery"
 	"github.com/godx-jp/colab-fleet/internal/driver"
 )
 
@@ -1001,6 +1002,16 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			return
 		}
 		setResolutionHeaders(w, resolvedRuntime, via)
+
+		// #180: refuse env naming a variable this machine's delivery module
+		// reserves, as a 400 naming it. A relaying driver does not report
+		// reserved names; the owning machine's handler checks its own.
+		if rr, ok := d.(driver.ReservedEnvReporter); ok {
+			if err := delivery.CheckReservedEnv(body.Env, rr.ReservedEnv()); err != nil {
+				writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error() + " (#180)", Machine: machine})
+				return
+			}
+		}
 
 		spec := fleet.SessionSpec{
 			// Machine is filled from the URL path, not the request body

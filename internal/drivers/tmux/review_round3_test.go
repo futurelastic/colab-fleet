@@ -460,7 +460,7 @@ func TestRV_ConfirmSubmittedDoesNotFallBackToScreenOnADifferentRecordedTurn(t *t
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	confirmed, evidence := d.confirmSubmittedFromSource(ctx, &paneRow{paneID: "%1"},
+	confirmed, evidence, _ := d.confirmSubmittedFromSource(ctx, &paneRow{paneID: "%1"},
 		"the actual sent text", pasteKey{}, 0, src, true)
 	if confirmed {
 		t.Fatalf("confirmed = true (%s), want false — a transcript recording a DIFFERENT turn "+

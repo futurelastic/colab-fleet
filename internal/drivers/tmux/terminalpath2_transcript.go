@@ -13,6 +13,7 @@ import (
 	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
+	"github.com/godx-jp/colab-fleet/internal/delivery"
 )
 
 // Terminal path v2, item c / D6: "screen-based confirmation is the weak
@@ -719,10 +720,14 @@ func (d *Driver) resolveTranscriptSource(ctx context.Context, ref fleet.SessionR
 //
 // Returns the same bool confirmSubmitted always has, plus which family of
 // evidence decided it, for the receipt to quote.
-func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow, sent string, key pasteKey, atCount int, src transcriptSource, srcOK bool) (bool, string) {
+func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow, sent string, key pasteKey, atCount int, src transcriptSource, srcOK bool) (bool, string, delivery.Signal) {
 	if !srcOK {
 		confirmed := d.confirmSubmitted(ctx, target.paneID, key, atCount)
-		return confirmed, "no transcript could be resolved for this session; fell back to the screen-based signal (composer emptying or this delivery's own paste marker clearing)"
+		signal := delivery.SignalNone
+		if confirmed {
+			signal = delivery.SignalScreen
+		}
+		return confirmed, "no transcript could be resolved for this session; fell back to the screen-based signal (composer emptying or this delivery's own paste marker clearing)", signal
 	}
 
 	start := d.now()
@@ -735,7 +740,7 @@ func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow
 		switch result {
 		case transcriptScanMatched:
 			d.recordConfirmed(counterSubmitConfirmedByTranscript, d.now().Sub(start))
-			return true, "the runtime's own transcript recorded this exact text as a turn (" + src.evidence + ")"
+			return true, "the runtime's own transcript recorded this exact text as a turn (" + src.evidence + ")", delivery.SignalTranscript
 		case transcriptScanDifferentTurn:
 			// Review fix: a transcript that recorded a DIFFERENT turn is not
 			// silence, and must not be handed to the screen-based fallback
@@ -749,7 +754,7 @@ func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow
 			return false, "a transcript was resolved (" + src.evidence + ") but recorded a DIFFERENT " +
 				"turn instead of this delivery's own text within the confirmation window — not " +
 				"falling back to the screen signal, which could report this as queued for text " +
-				"that, per the transcript's own account, never arrived"
+				"that, per the transcript's own account, never arrived", delivery.SignalNone
 		}
 		if d.now().After(deadline) || ctx.Err() != nil {
 			break
@@ -757,7 +762,7 @@ func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow
 		select {
 		case <-ctx.Done():
 			d.counters.incr(counterSubmitConfirmTimeout)
-			return false, "context cancelled while waiting for the transcript to confirm this delivery"
+			return false, "context cancelled while waiting for the transcript to confirm this delivery", delivery.SignalNone
 		case <-time.After(submitConfirmInterval):
 		}
 	}
@@ -772,10 +777,10 @@ func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow
 		d.recordConfirmed(counterSubmitConfirmedByScreenAfterSilentTranscript, d.now().Sub(start))
 		return true, "a transcript was resolved (" + src.evidence + ") but recorded no matching turn " +
 			"within the confirmation window; confirmed instead by the composer emptying or this " +
-			"delivery's own paste marker clearing"
+			"delivery's own paste marker clearing", delivery.SignalScreen
 	}
 	d.counters.incr(counterSubmitConfirmTimeout)
 	return false, "a transcript was resolved (" + src.evidence + ") but recorded no matching turn " +
 		"within the confirmation window, and the screen shows neither the composer emptying nor this " +
-		"delivery's own paste marker clearing either"
+		"delivery's own paste marker clearing either", delivery.SignalNone
 }

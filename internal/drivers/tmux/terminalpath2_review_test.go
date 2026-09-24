@@ -698,7 +698,7 @@ func TestConfirmSubmittedFromSourceCountsScannerErrorsAndStillFallsBackToScreen(
 	target := &paneRow{session: "alpha💬", paneID: "%1", cwd: "/work/alpha", created: time.Unix(1785600000, 0)}
 	src := transcriptSource{path: path, offset: 0, evidence: "test fixture"}
 
-	confirmed, evidence := d.confirmSubmittedFromSource(context.Background(), target, "anything at all",
+	confirmed, evidence, _ := d.confirmSubmittedFromSource(context.Background(), target, "anything at all",
 		pasteKey{}, 0, src, true)
 	if !confirmed {
 		t.Fatalf("confirmSubmittedFromSource did not fall back to the screen after an unreadable "+

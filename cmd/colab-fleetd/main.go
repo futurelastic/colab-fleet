@@ -420,6 +420,11 @@ func main() {
 			}
 		}
 		d := tmux.New(self, opts...)
+		// #180: this machine's own sessionEnv may not name a variable the
+		// delivery module reserves either — the module is the sole setter.
+		if err := d.ValidateSessionEnvReserved(); err != nil {
+			log.Fatalf("colab-fleetd: %v", err)
+		}
 		// An unreadable key table is surfaced, never absorbed: continuing
 		// with an empty one is exactly the behaviour §10 calls a disaster.
 		if err := d.StateError(); err != nil {

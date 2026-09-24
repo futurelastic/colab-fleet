@@ -77,6 +77,7 @@ import (
 	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
+	"github.com/godx-jp/colab-fleet/internal/delivery"
 	"github.com/godx-jp/colab-fleet/internal/driver"
 	"github.com/godx-jp/colab-fleet/internal/state"
 	"github.com/godx-jp/colab-fleet/internal/trustseed"
@@ -497,6 +498,11 @@ type Driver struct {
 	// see terminalpath2_lock.go. Zero value is ready to use, same as every
 	// sync.Mutex-based field above.
 	composerLocks composerLockTable
+
+	// module is the delivery module Send hands a request to once every
+	// decision about the request itself is made (#180). Nil means the
+	// built-in terminal path (delivery_module.go).
+	module delivery.Module
 
 	// processSessionsRoot is terminal-path-v2's second identity source
 	// (item c / D6): the directory the runtime writes one `<pid>.json` file
@@ -2095,11 +2101,11 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// acquiring it before a call that is about to refuse anyway.
 	unlockComposer, lockOK := d.lockComposerOpsCtx(ctx, ref.ID)
 	if !lockOK {
-		return fleet.DeliveryReceipt{
+		return d.observeEarly(delivery.RefusedBusy, fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: "this session's composer is busy with another delivery, respond, or discard " +
 				"call and the caller's own deadline ran out waiting for it; retry",
-		}, nil
+		}), nil
 	}
 	defer unlockComposer()
 
@@ -2142,7 +2148,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// never touched for text that was always going to be refused. See
 	// inputguard.go for the pattern list and why it belongs to this driver.
 	if reason, refused := refuseAsRuntimeSyntax(text); refused {
-		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
+		return d.observeEarly(delivery.Refused, fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}), nil
 	}
 
 	// colab-fleet #112: ResumeIfStranded asks to finish the delivery already
@@ -2152,12 +2158,12 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// anything else runs, the same way #53's guard above decides on the
 	// bytes alone before looking at session state.
 	if opts.ResumeIfStranded && opts.ReplaceIfStranded {
-		return fleet.DeliveryReceipt{
+		return d.observeEarly(delivery.Refused, fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: "resumeIfStranded and replaceIfStranded were both set — the first asks " +
 				"to finish the delivery already in the composer, the second asks to " +
 				"discard it and deliver this text instead; set at most one",
-		}, nil
+		}), nil
 	}
 
 	// colab-fleet #119: capability-detected fast path over a target
@@ -2186,6 +2192,27 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// repeat the same `from` as well as the same text.
 	text = paneLabelled(text, opts.From)
 
+	// #180: everything above decides about the REQUEST; how the text reaches
+	// the session is the delivery module's (internal/delivery). Callers see
+	// the module's receipt verbatim.
+	mod := d.deliveryModule()
+	res, err := mod.Deliver(ctx, delivery.Delivery{Req: req, Ref: ref, Text: text, Opts: opts})
+	if err != nil {
+		d.counters.incr(delivery.CounterPrefix + mod.Name() + ".error")
+		return fleet.DeliveryReceipt{}, err
+	}
+	delivery.Observe(d.counters.incr, mod.Name(), res)
+	return res.Receipt, nil
+}
+
+// deliverViaPane is the built-in tmux delivery module's mechanism (#180):
+// terminal path v2 — a bracketed, sanitised paste into the session's
+// composer, a composer-region landed check, the wake-key submit, and
+// transcript-first confirmation. Send has already taken the session's
+// composer lock and settled everything that is a decision about the request
+// alone; tr collects what this delivery amounted to, for the module's
+// counters.
+func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text string, opts driver.SendOptions, tr *sendTrace) (fleet.DeliveryReceipt, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -2333,6 +2360,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 				if result, _ := transcriptTailScan(record.TranscriptPath, record.TranscriptOffset, text); result == transcriptScanMatched {
 					d.forgetStranded(ref.ID)
 					d.counters.incr(counterResumeConfirmedByTranscriptOnEmptyComposer)
+					tr.resumed = true
 					return fleet.DeliveryReceipt{
 						Outcome: fleet.OutcomeQueued,
 						Reason: "resumeIfStranded found the composer already empty, and this " +
@@ -2550,7 +2578,9 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			// marker clearing. Delivering a receipt this driver did not earn
 			// is the exact conflation delivery.go's OutcomeSubmitted doc
 			// forbids.
-			if confirmed, evidence := d.confirmSubmittedFromSource(ctx, target, text, key, atCount, src, srcOK); !confirmed {
+			confirmed, evidence, signal := d.confirmSubmittedFromSource(ctx, target, text, key, atCount, src, srcOK)
+			tr.confirmedBy = signal
+			if !confirmed {
 				// The record is KEPT, deliberately unlike the old behaviour: a
 				// swallowed keystroke here must leave something for a third
 				// attempt to resume, not discard the only trace of the text on
@@ -2564,6 +2594,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 				}, nil
 			}
 			d.forgetStranded(ref.ID)
+			tr.resumed = true
 			return fleet.DeliveryReceipt{
 				// Queued, not submitted — matching the first-attempt path's
 				// own outcome for the identical evidence (§4.3's
@@ -2837,7 +2868,8 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// was only written when the text failed to RENDER, so a submit that went
 	// nowhere left nothing behind, the resume was refused for lack of a
 	// record, and every later send was refused for a busy composer.
-	submitConfirmed, submitEvidence := d.confirmSubmittedFromSource(ctx, target, text, key, atCount, src, srcOK)
+	submitConfirmed, submitEvidence, submitSignal := d.confirmSubmittedFromSource(ctx, target, text, key, atCount, src, srcOK)
+	tr.confirmedBy = submitSignal
 	if !submitConfirmed {
 		d.noteStrandedWithTranscript(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK)
 		return fleet.DeliveryReceipt{
@@ -3160,6 +3192,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		if cleared {
 			// Terminal path v2 / item e.
 			d.forgetStranded(ref.ID)
+			d.counters.incr(delivery.CounterPrefix + d.deliveryModule().Name() + "." + string(delivery.Discarded))
 			return fleet.Ack{Accepted: true}, nil
 		}
 		return fleet.Ack{}, d.withRestartNote(ref.ID, discardIncomplete(pending, left))
@@ -3173,6 +3206,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	if cleared {
 		// Terminal path v2 / item e.
 		d.forgetStranded(ref.ID)
+		d.counters.incr(delivery.CounterPrefix + d.deliveryModule().Name() + "." + string(delivery.Discarded))
 		return fleet.Ack{Accepted: true}, nil
 	}
 	return fleet.Ack{}, d.withRestartNote(ref.ID, discardIncomplete(pending, left))
@@ -3941,6 +3975,13 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// inside the local driver's own Create — never in the HTTP handler — so
 	// a create this machine only relays onward never reads this machine's
 	// files (see sessionenv.go's package doc for why).
+	// #180: a caller may not set a name the delivery module reserves — the
+	// service is the sole setter of those. Checked against the CALLER's env,
+	// before this machine's own sessionEnv is merged in (ValidateSessionEnv
+	// already refused a configuration naming one at startup).
+	if err := delivery.CheckReservedEnv(spec.Env, d.ReservedEnv()); err != nil {
+		return fleet.Session{}, fmt.Errorf("create: %w", err)
+	}
 	mergedEnv, err := d.provisionSessionEnv(spec)
 	if err != nil {
 		return fleet.Session{}, err

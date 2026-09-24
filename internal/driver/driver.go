@@ -472,6 +472,18 @@ type EnvironmentReporter interface {
 	Environment(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionEnvironment, error)
 }
 
+// ReservedEnvReporter is an OPTIONAL capability: a driver whose delivery
+// module needs to be the sole setter of some environment variables for a
+// session's agent process (#180). Session create refuses caller-supplied env
+// naming any of them, before the driver is asked to create anything.
+//
+// Optional for the same reason EnvironmentReporter is: most substrates have
+// no such names. A relaying driver does not implement it — the owning
+// machine's service applies its own driver's answer.
+type ReservedEnvReporter interface {
+	ReservedEnv() []string
+}
+
 // KeySender is an OPTIONAL capability: a driver that can deliver a raw key
 // event to a session's screen.
 //
