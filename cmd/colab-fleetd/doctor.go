@@ -527,7 +527,7 @@ func supervisorGrants() []service.Grant {
 		// Counting it would turn every existing full supervisor into a warning
 		// the day this build lands.
 		//
-		// human-relay (round-3 review-safety fix) is excluded the same way:
+		// human-relay (round-3 #180 review fix) is excluded the same way:
 		// it names a caller's own claim to BE a human-facing relay for
 		// route:"terminal" labelling, not a verb that drives sessions at
 		// all — a principal can fully create/send/interrupt/close/rename/

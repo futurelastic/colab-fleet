@@ -244,7 +244,7 @@ func extractTranscriptText(line []byte) (kind, text string, ok bool) {
 }
 
 // extractTranscriptCandidate is extractTranscriptText plus the one extra
-// field review-confirmation's anchoring fix needs: promptSource, verbatim
+// field #180 review's anchoring fix needs: promptSource, verbatim
 // off a "user" candidate ("typed", "queued", or "" when the field is
 // absent — round-1's own measurement is that a real entry always carries
 // one of the first two, but a caller must not assume that of every
@@ -409,7 +409,7 @@ func truthy(v any) bool {
 
 // transcriptScanResult is transcriptTailScan's own three-way verdict — see
 // its doc comment for what each value means and why "no match" was not
-// enough on its own (review-confirmation's own finding).
+// enough on its own (#180 review's own finding).
 type transcriptScanResult int
 
 const (

@@ -281,6 +281,15 @@ would take, independent of when the inbox path itself comes back for
 agent-to-agent traffic. A driver with no inbox capability at all is
 unaffected either way.
 
+`route: "terminal"` from a caller **without** the `human-relay` grant is a
+`400` unless the call carries a `from` label that actually prints — a
+non-empty agent, session or machine that survives label normalisation (#180).
+A caller holding the grant needs no label. When such a call enters on one
+machine for a session on another, the entering machine asserts the grant to
+the owning one; the owner honours that assertion only from one of its
+configured peers (or from anyone when no principal table is configured) —
+the same trust bound as the on-behalf-of assertion.
+
 `from` (optional) labels the message with who it comes from, so the receiving
 session sees `agent · session · machine` instead of an anonymous peer. Leave it
 out and the message is unlabelled, exactly as before.
@@ -308,6 +317,18 @@ out and the message is unlabelled, exactly as before.
 | `queued` | Accepted, submission unconfirmed | Done |
 | `refused` | The driver actively declined; `reason` says why | Read the reason — this is information, not a fault |
 | `unknown` | Sent, outcome unverifiable — **the text may be sitting unsent** | Retry with `resumeIfStranded: true` |
+
+**Two refusals worth recognising by their `reason` (#180):**
+
+- A `reason` beginning **`composer busy, retryable: `** means another
+  delivery, respond or discard held the session's composer until your own
+  deadline ran out. Nothing was done; the condition is transient — retry.
+  A `respond` takes priority over a send waiting on the same composer.
+- Text beginning with **`/`** is a command to the runtime, not a message, and
+  is refused — except `/rename`, `/rc` and `/remote-control`, which any caller
+  may send, and any command from a caller holding the `human-relay` grant.
+  Like the `!` refusal, it is judged after leading invisible characters are
+  skipped.
 
 **`submitted` is not one of the outcomes `input` can return today.** Every driver
 in this fleet reports `confirmsDelivery: false` on `/v1/runtimes` — none can

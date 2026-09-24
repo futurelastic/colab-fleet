@@ -252,7 +252,7 @@ func TestResumeRefusesATailOnlyComposerMatch(t *testing.T) {
 	}
 }
 
-// --- #4/review-safety: Discard must not forget a stranded record on a
+// --- #4/#180 review: Discard must not forget a stranded record on a
 // composerAbsent screen (a dialog may be covering real, unfinished text) ---
 
 // TestDiscardDoesNotForgetAStrandedRecordWhenNoComposerIsFoundAtAll
@@ -488,7 +488,7 @@ func TestExtractTranscriptTextAcceptsOrdinaryHumanTypedEntry(t *testing.T) {
 	}
 }
 
-// --- #22 (review-regression): the record-root cache must not survive a
+// --- #22 (#180 review): the record-root cache must not survive a
 // runtime-side session-id change under an unchanged pane -------------------
 
 // TestResolveTranscriptSourceDetectsCacheDisagreementWithLiveIdentity

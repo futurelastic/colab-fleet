@@ -690,7 +690,7 @@ func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 		from = len(s.lines) - promptScanDepth
 	}
 
-	// Review fix (review-regression): mask OUT the active composer's own
+	// Review fix (#180 review): mask OUT the active composer's own
 	// fenced rows before scanning for a menu. numberedOption/selected below
 	// have no way to tell a genuine menu option apart from a MULTI-LINE
 	// composer message that merely starts with "1." — Claude Code echoes a

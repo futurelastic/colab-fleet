@@ -1247,7 +1247,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		switch body.Route {
 		case "":
 		case "terminal":
-			// Review fix (review-safety): route:"terminal" is no longer
+			// Review fix (#180 review): route:"terminal" is no longer
 			// honoured unconditionally from any caller holding the fleet
 			// token. A principal explicitly configured as a human relay
 			// (GrantHumanRelay — a human-facing relay)

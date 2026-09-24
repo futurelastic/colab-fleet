@@ -98,7 +98,7 @@ const (
 	GrantLabel Grant = "label"
 	GrantRelay Grant = "relay" // have mutations proxied to peers
 	// GrantHumanRelay marks a principal as a HUMAN relay for terminal-path
-	// routing (colab-fleet round-3 review-safety fix): route:"terminal" on
+	// routing (colab-fleet round-3 #180 review fix): route:"terminal" on
 	// POST …/input forces the pane/composer delivery path even on a call
 	// that would otherwise be eligible for the capability-detected inbox
 	// path (colab-fleet #119) — see http.go's own handling of body.Route.

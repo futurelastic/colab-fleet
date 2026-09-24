@@ -13,12 +13,12 @@ import (
 )
 
 // This file holds the fixes for round 3's findings — live A/B testing
-// (P1-P5) and three adversarial reviews (review-safety, review-confirmation,
-// review-regression) against the round-2 terminal-path-v2 prototype
+// (P1-P5) and three adversarial reviews (#180 review, #180 review,
+// #180 review) against the round-2 terminal-path-v2 prototype
 // (commit 9cb796c). Each test is named for the finding it reproduces and
 // fails against the pre-fix code (verified individually while writing this file).
 
-// --- review-regression#3: the composer digest must be resize-tolerant -----
+// --- #180 review: the composer digest must be resize-tolerant -----
 
 // TestRV_ResumeSurvivesAPaneResizeBetweenStrandAndResume reproduces the
 // finding's own example: a long, spaceless token (a job URL) that a narrower
@@ -83,7 +83,7 @@ func TestRV_ResumeSurvivesAPaneResizeBetweenStrandAndResume(t *testing.T) {
 	}
 }
 
-// --- review-confirmation#1: the runtime's real <pasted_content> closing tag ---
+// --- #180 review: the runtime's real <pasted_content> closing tag ---
 
 // TestRV_PastedContentCloseTagCarriesTheSameIdAsTheOpenTag reproduces the
 // measured real shape (cc 2.1.281): the closing tag repeats the SAME id
@@ -103,11 +103,11 @@ func TestRV_PastedContentCloseTagCarriesTheSameIdAsTheOpenTag(t *testing.T) {
 	}
 }
 
-// --- review-safety#1 / review-confirmation#3 / review-regression#2: the ---
+// --- #180 review / #180 review / #180 review: the ---
 // --- marker path must not submit a person's draft on a strict resume ------
 
 // TestRV_StrictResumeDoesNotSubmitAPersonsCollapsedPasteViaMarkerPath is the
-// review-safety reproduction: a delivery strands with an EMPTY recorded
+// #180 review reproduction: a delivery strands with an EMPTY recorded
 // digest (the composer was unreadable at strand time — a modal covering it,
 // or the ctx already expired), and by the time of resume, a PERSON has
 // pasted their own, unrelated block into the composer, which collapses to
@@ -178,7 +178,7 @@ func TestRV_FreshSendMarkerAttributionStillWorks(t *testing.T) {
 	}
 }
 
-// --- review-safety#2: resumeIfStranded must not clear an unrecorded composer ---
+// --- #180 review: resumeIfStranded must not clear an unrecorded composer ---
 
 // TestRV_ResumeIfStrandedRefusesWhenItsOwnRecordWasForgotten reproduces the
 // review's own sequence: a send strands (unknown), Discard runs against a
@@ -265,7 +265,7 @@ func TestReplaceIfStrandedRefusesAnUnrecordedComposerWithoutExpect(t *testing.T)
 	}
 }
 
-// --- review-safety#4: the dialog gate and the needle/marker checks must ----
+// --- #180 review: the dialog gate and the needle/marker checks must ----
 // --- read the SAME capture, not two independent ones ------------------------
 
 // TestRV_ConfirmLandedV2MakesOnlyOneCaptureEachPoll pins the fix's own
@@ -300,7 +300,7 @@ func TestRV_ConfirmLandedV2MakesOnlyOneCaptureEachPoll(t *testing.T) {
 	}
 }
 
-// --- review-regression#4: a numbered composer message is not a menu --------
+// --- #180 review: a numbered composer message is not a menu --------
 
 // TestRV_NumberedTwoLineComposerMessageIsNotReadAsAMenu reproduces the
 // finding: a multi-line message typed into a real composer, whose first line
@@ -333,12 +333,12 @@ func TestRV_ARealMenuIsStillRecognisedNextToAComposerlessScreen(t *testing.T) {
 	}
 }
 
-// --- review-safety#5 / D7: route:"terminal" must not launder an unlabelled --
+// --- #180 review / D7: route:"terminal" must not launder an unlabelled --
 // --- agent send as human-typed input --------------------------------------
 
 // (http-level test lives in internal/service; see http_route_terminal_test.go)
 
-// --- review-confirmation#2: a dequeue is only attributed to THIS delivery --
+// --- #180 review: a dequeue is only attributed to THIS delivery --
 // --- if an enqueue for the same text was ALSO seen after this delivery's ---
 // --- own offset -------------------------------------------------------------
 
@@ -414,7 +414,7 @@ func TestRV_OwnEnqueueAfterOffsetStillConfirmsQuickly(t *testing.T) {
 	}
 }
 
-// --- review-confirmation#4: a transcript recording a DIFFERENT turn is -----
+// --- #180 review: a transcript recording a DIFFERENT turn is -----
 // --- not silence, and must not be papered over by the screen fallback ------
 
 func TestRV_TranscriptDifferentTurnIsNotTreatedAsSilence(t *testing.T) {
@@ -491,7 +491,7 @@ func TestRV_ConfirmSubmittedDoesNotFallBackToScreenOnADifferentRecordedTurn(t *t
 	}
 }
 
-// --- review-confirmation#5: resumeIfStranded on an EMPTY composer must -----
+// --- #180 review: resumeIfStranded on an EMPTY composer must -----
 // --- check this driver's own transcript record before re-pasting -----------
 
 // TestRV_ResumeOnEmptyComposerConfirmsFromItsOwnTranscriptRecord reproduces
@@ -580,7 +580,7 @@ func TestRV_ResumeOnEmptyComposerRefusesWhenUnconfirmed(t *testing.T) {
 	}
 }
 
-// --- review-regression#1: a digest-verified resume may still finish a real --
+// --- #180 review: a digest-verified resume may still finish a real --
 // --- 7-row composer's own tail-only render ---------------------------------
 
 // TestRV_DigestVerifiedResumeFinishesATailOnlyComposerRender reproduces the
@@ -656,7 +656,7 @@ func TestRV_UnverifiedResumeStillRefusesATailOnlyComposerMatch(t *testing.T) {
 	}
 }
 
-// --- review-safety#3: the window resolveTranscriptSource itself opens ------
+// --- #180 review: the window resolveTranscriptSource itself opens ------
 // --- before the submit keystroke must be re-checked for a dialog -----------
 
 // TestRV_DialogAppearingJustBeforeSubmitIsNotApproved models a selection

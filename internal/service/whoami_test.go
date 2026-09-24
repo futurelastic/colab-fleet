@@ -183,7 +183,7 @@ func TestWhoAmIUnderLegacyTokenMode(t *testing.T) {
 		_, report := whoami(t, srv, testToken, "")
 		for _, g := range Grants() {
 			// GrantHumanRelay is deliberately excluded from this "both flags
-			// implies everything" check (review-safety fix): it is never a
+			// implies everything" check (#180 review fix): it is never a
 			// coarser version of "can mutate" or "can relay" the way every
 			// other grant here is under legacy mode — it names a caller's
 			// own claim to BE a human-facing relay (route:"terminal" with no

@@ -300,7 +300,7 @@ const (
 	counterSendRefusedDialogRace = "land_confirm.refused_dialog_race"
 
 	// counterSendRefusedDialogRacePreSubmit is counterSendRefusedDialogRace's
-	// sibling for the SECOND review-safety finding of the same shape: a
+	// sibling for the SECOND #180 review finding of the same shape: a
 	// selection menu appearing not while confirmLandedV2 was polling, but in
 	// the extra window resolveTranscriptSource itself opens between the
 	// landed check returning and the submit keystroke — list-panes plus a
@@ -332,7 +332,7 @@ const (
 
 	// counterSendRefusedResumeNoRecord counts resumeIfStranded (without
 	// replaceIfStranded) landing on a busy composer this driver holds no
-	// stranded record for — review-safety's own fix: #135 originally treated
+	// stranded record for — #180 review's own fix: #135 originally treated
 	// this the same as replaceIfStranded (clear whatever is there and
 	// deliver), which is safe when the caller explicitly means "discard it"
 	// but not when the caller only means "finish MY earlier delivery" and the
@@ -348,7 +348,7 @@ const (
 	// record's own TranscriptPath/TranscriptOffset, resolved at strand time —
 	// that the runtime had already accepted the text, rather than silently
 	// falling through to the ordinary fresh-paste path and delivering a
-	// byte-for-byte duplicate (review-confirmation's own finding).
+	// byte-for-byte duplicate (#180 review's own finding).
 	counterResumeConfirmedByTranscriptOnEmptyComposer = "resume.confirmed_by_transcript_on_empty_composer"
 
 	// counterResumeRefusedEmptyComposerUnconfirmed is
@@ -367,7 +367,7 @@ const (
 	// counterTranscriptDifferentTurnRecorded counts
 	// confirmSubmittedFromSource finding transcriptScanDifferentTurn — a
 	// candidate turn attributable to this delivery's own confirmation window
-	// that did NOT match the sent text — review-confirmation's own fix for
+	// that did NOT match the sent text — #180 review's own fix for
 	// "a transcript that records a different turn is treated as silence, and
 	// the screen fallback reports queued".
 	counterTranscriptDifferentTurnRecorded = "transcript_source.different_turn_recorded"

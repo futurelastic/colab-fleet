@@ -850,7 +850,7 @@ func TestSendInput_UnrecognisedRouteIs400(t *testing.T) {
 }
 
 // The empty value is accepted with no further condition; "terminal" is
-// accepted once a `from` label is present (review-safety fix, below — a
+// accepted once a `from` label is present (#180 review fix, below — a
 // caller with no principal table configured here at all, the shape this
 // test's own newTestServer sets up, is not a human relay either) — proven by
 // their NOT getting a 400 for this reason (the stub driver still returns 501
@@ -877,7 +877,7 @@ func TestSendInput_RouteTerminalAndEmptyAreAccepted(t *testing.T) {
 }
 
 // TestSendInput_RouteTerminalWithoutFromOrHumanRelayGrantIs400 is the
-// review-safety fix itself: route:"terminal" from a caller that is neither
+// #180 review fix itself: route:"terminal" from a caller that is neither
 // configured as a human relay NOR carries a `from` label must be rejected —
 // otherwise an agent could opt an unlabelled delivery out of the (paused
 // today, "for agents only" tomorrow) inbox path and have it recorded as

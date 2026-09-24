@@ -131,6 +131,7 @@ evidence, not on taste.
 | Proxy topology, not redirect | spec §13 |
 | A remote peer is just another driver | proven — spec §4.2 |
 | Go, and zero dependencies | below |
+| Delivery goes through a module seam; the draft rule; terminal path v2 | [ADR 180](adr/180-delivery-module-and-terminal-path-v2.md) |
 
 **Go, zero dependencies.** Chosen at zero lines of code, on the reasoning that
 language cost is lowest at the start and compounds afterwards. A static binary

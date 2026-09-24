@@ -2348,7 +2348,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 				clippedComposerRemedy,
 		}, nil
 	}
-	// Review fix (review-confirmation): resumeIfStranded against a composer
+	// Review fix (#180 review): resumeIfStranded against a composer
 	// that reads EMPTY must not silently fall through to the ordinary
 	// fresh-paste path below when this driver holds a matching stranded
 	// record — that fresh paste has no memory of the record at all, and
@@ -2517,13 +2517,13 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			// (below) already applies to identical evidence — the record is
 			// kept either way, so a later resume gets another chance once the
 			// paste has actually settled.
-			// digestVerified (review-regression fix): resumeRecord.ComposerDigest
+			// digestVerified (#180 review fix): resumeRecord.ComposerDigest
 			// is either empty (this driver never corroborated the composer's
 			// content at strand time) or, by construction of the mismatch
 			// check just above, equal to curDigest — a mismatch already
 			// returned. So a non-empty recorded digest here IS a verified
 			// match, and confirmLandedV2's own suffix rule may safely be
-			// reintroduced for THIS resume alone (review-regression's own
+			// reintroduced for THIS resume alone (#180 review's own
 			// fix for the real, tall-composer tail-only render #143/M2
 			// reproduces) — every other fallback strict=true disables stays
 			// disabled regardless.
@@ -2556,7 +2556,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			// exactly the false negative that then triggers a duplicate
 			// resume. See resolveTranscriptSource / confirmSubmittedFromSource.
 			src, srcOK := d.resolveTranscriptSource(ctx, ref, target)
-			// Review fix (review-safety): resolveTranscriptSource itself
+			// Review fix (#180 review): resolveTranscriptSource itself
 			// widens the window between the landed check above and the
 			// submit keystroke below (list-panes plus a batched capture,
 			// then `ps`, then file reads — measured 26.8-52.9ms on a private
@@ -2817,7 +2817,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 		// the same as before.
 		// Record what we left behind, so the caller has a way to finish this
 		// rather than being told where the text is and left there. Also
-		// resolves and records a transcript source (review-confirmation fix)
+		// resolves and records a transcript source (#180 review fix)
 		// so a LATER resumeIfStranded finding this composer empty can check
 		// whether the runtime accepted it in the meantime instead of
 		// re-pasting blind.
@@ -2881,7 +2881,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// source, and the byte offset that goes with it, BEFORE this keystroke,
 	// not after.
 	src, srcOK := d.resolveTranscriptSource(ctx, ref, target)
-	// Review fix (review-safety): the same dialog-race close as the resume
+	// Review fix (#180 review): the same dialog-race close as the resume
 	// site above — one cheap, fresh capture immediately before send-keys,
 	// refusing (and recording the stranded text with its own transcript
 	// source, exactly as the timeout path just above does) rather than
@@ -5497,7 +5497,7 @@ type strandedRecord struct {
 	// guess. Empty on a record from before colab-fleet #112.
 	ComposerDigest string `json:"composerDigest,omitempty"`
 
-	// TranscriptPath/TranscriptOffset (review-confirmation fix): the
+	// TranscriptPath/TranscriptOffset (#180 review fix): the
 	// transcript this driver resolved for this session AT STRAND TIME, and
 	// the byte offset a match must come after — the identical pair
 	// resolveTranscriptSource produces for an ordinary send, captured here so
@@ -5564,7 +5564,7 @@ func (d *Driver) noteStranded(id, cwd, text, composerDigest string) {
 	d.noteStrandedWithTranscript(id, cwd, text, composerDigest, transcriptSource{}, false)
 }
 
-// noteStrandedWithTranscript is noteStranded plus the review-confirmation
+// noteStrandedWithTranscript is noteStranded plus the #180 review
 // fix: it also records WHERE this driver would look, and from what offset,
 // to find out later whether the runtime accepted this exact text — src/srcOK
 // is resolveTranscriptSource's own return, resolved by the caller at the
