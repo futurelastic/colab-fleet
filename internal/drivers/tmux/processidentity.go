@@ -102,33 +102,44 @@ func ParseProcessStartTime(s string) (time.Time, error) {
 // the time this call gets there — never falls through to a zero value or a
 // stale one, which is #116's third requirement, not just its first.
 func (d *Driver) ResolveProcessIdentity(ctx context.Context, ref fleet.SessionRef) (ProcessIdentity, error) {
+	id, _, err := d.resolveProcessIdentityRow(ctx, ref)
+	return id, err
+}
+
+// resolveProcessIdentityRow is ResolveProcessIdentity plus the multiplexer row
+// the identity was read from. The inbox path (#184) needs the row's working
+// directory and pane to locate the receiver's transcript, and taking it from
+// the SAME enumeration the identity came from means the two describe one
+// session at one instant — a second enumerate could observe a different one.
+// The row is the zero value whenever the error is non-nil.
+func (d *Driver) resolveProcessIdentityRow(ctx context.Context, ref fleet.SessionRef) (ProcessIdentity, paneRow, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	rows, _, err := d.enumerate(ctx)
 	if err != nil {
-		return ProcessIdentity{}, fmt.Errorf("resolving process identity for %q: %w", ref.ID, err)
+		return ProcessIdentity{}, paneRow{}, fmt.Errorf("resolving process identity for %q: %w", ref.ID, err)
 	}
 	for _, r := range rows {
 		if r.session != ref.ID {
 			continue
 		}
 		if r.dead {
-			return ProcessIdentity{}, fmt.Errorf("%w: %q: pane is dead", ErrProcessIdentityUnresolved, ref.ID)
+			return ProcessIdentity{}, paneRow{}, fmt.Errorf("%w: %q: pane is dead", ErrProcessIdentityUnresolved, ref.ID)
 		}
 		if r.pid <= 0 {
 			d.counters.incr(counterProcessIdentityUnresolved)
-			return ProcessIdentity{}, fmt.Errorf("%w: %q: multiplexer reported no usable pid",
+			return ProcessIdentity{}, paneRow{}, fmt.Errorf("%w: %q: multiplexer reported no usable pid",
 				ErrProcessIdentityUnresolved, ref.ID)
 		}
 		startedAt, err := d.processStartedAt(ctx, r.pid)
 		if err != nil {
 			d.counters.incr(counterProcessIdentityUnresolved)
-			return ProcessIdentity{}, fmt.Errorf("%w: %q: %v", ErrProcessIdentityUnresolved, ref.ID, err)
+			return ProcessIdentity{}, paneRow{}, fmt.Errorf("%w: %q: %v", ErrProcessIdentityUnresolved, ref.ID, err)
 		}
-		return ProcessIdentity{PID: r.pid, StartedAt: startedAt}, nil
+		return ProcessIdentity{PID: r.pid, StartedAt: startedAt}, r, nil
 	}
-	return ProcessIdentity{}, fmt.Errorf("%w: %q: no such session", ErrProcessIdentityUnresolved, ref.ID)
+	return ProcessIdentity{}, paneRow{}, fmt.Errorf("%w: %q: no such session", ErrProcessIdentityUnresolved, ref.ID)
 }
 
 // VerifyProcessIdentity answers colab-fleet #116's second requirement: a

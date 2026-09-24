@@ -26,7 +26,7 @@ var errBracketPasteUnavailable = errors.New("tmux: bracketed paste is not availa
 //	D4  no per-session serialisation                                -> terminalpath2_lock.go
 //	D5  stranded-record lifecycle gaps                               -> terminalpath2_stranded.go
 //	D6  screen-based confirmation is the weak link                  -> terminalpath2_transcript.go
-//	D7  routing (force the terminal path)                           -> ForceTerminalRoute (driver.SendOptions), inbox.go's inboxEligible
+//	D7  routing (force the terminal path)                           -> Route (driver.SendOptions; #184), inbox.go's inboxEligible
 //
 // This file holds the two D1/D2 fixes: bracketed, literal-newline delivery
 // (replacing the CR-converting, non-bracketed paste-buffer call D2 names),

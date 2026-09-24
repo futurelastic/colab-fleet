@@ -82,3 +82,34 @@ and the counter follows it for free.
   discards the sample.
 - Nothing here changes which sends are attested, what is written, or the order
   of the checks.
+
+## Addendum (#184): two more exits, and what "written" became
+
+The exit list above is the one #150 shipped. `docs/adr/184-route-by-sender.md`
+changed it in three ways, and the invariants were kept:
+
+- **`inbox.fallback_no_transcript`** — a new exit, before the dial: the session's
+  transcript could not be located, so a delivery could not be confirmed.
+- **`inbox.unknown_partial_write`** — a new exit: a write that put *some* bytes on
+  the socket and failed. It is never a fallback.
+- **`inbox.fallback_write_failed`** now means a write that put **no** byte on the
+  connection. It is the only write failure that falls back.
+- **`inbox.written`** is a complete write and is split, as sub-counters and not
+  exits, into `inbox.confirmed` (the receiver's transcript recorded the message;
+  itself split into `inbox.confirmed_by_envelope` and
+  `inbox.confirmed_by_origin_body`) and `inbox.unconfirmed`. `written = confirmed
+  + unconfirmed`.
+
+`inbox.attempted` therefore equals the sum of **twelve** exits, exactly as it
+equalled ten. `inbox.attest_checked` no longer has the tidy identity it had: it is
+the sum of the last seven exits — no_mode_class, body_unattestable,
+no_transcript, dial_failed, write_failed, unknown_partial_write and written —
+**plus** the sends the *second* identity verification refused, because
+attestation now runs between the two verifications. Those are counted in
+`inbox.refused_identity_unverified` together with the first verification's
+refusals, which never reached attestation, and the two cannot be told apart. The
+number #150's decision reads, `attest_body_lookalike / attest_checked`, is not
+affected: both are counted at the same point.
+
+The route counters (`route.*`) are a separate family, one count per `Send`.
+

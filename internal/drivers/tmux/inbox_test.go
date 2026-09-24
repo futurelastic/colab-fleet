@@ -3,7 +3,6 @@ package tmux
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"strings"
@@ -22,6 +21,13 @@ import (
 // for the OS process table, and neither may silently answer for a socket
 // dial.
 func newInboxTestDriver(mux *fakeMux, ps *fakePS, resolver InboxResolver, dial inboxDialFunc) *Driver {
+	return newInboxTestDriverWith(mux, ps, resolver, dial)
+}
+
+// newInboxTestDriverWith is newInboxTestDriver plus extra options — chiefly the
+// receiver's transcript store, without which the inbox has nothing to confirm
+// against and (#184) is not used.
+func newInboxTestDriverWith(mux *fakeMux, ps *fakePS, resolver InboxResolver, dial inboxDialFunc, extra ...Option) *Driver {
 	opts := []Option{
 		withExec(mux.exec),
 		withPSExec(ps.exec),
@@ -34,6 +40,7 @@ func newInboxTestDriver(mux *fakeMux, ps *fakePS, resolver InboxResolver, dial i
 	if dial != nil {
 		opts = append(opts, withInboxDial(dial))
 	}
+	opts = append(opts, extra...)
 	return New("testbox", opts...)
 }
 
@@ -243,24 +250,17 @@ func TestMapInboxOutcome_EveryValueSurfacesDistinctly(t *testing.T) {
 // and then reported OutcomeUnknown; it must now report OutcomeDelivered
 // promptly, and the pane must never be touched.
 func TestSend_InboxDeliverySucceeds_ReportsDeliveredWithoutTouchingPane(t *testing.T) {
-	f := twoSessions()
-	ps := &fakePS{}
-	ps.set(100, time.Now())
-	ps.set(200, time.Now())
 	// #148: the address now carries the target's permission-mode class. Without
 	// it there is nothing to attest and this path is unavailable by design —
 	// see TestSend_InboxWithoutModeClass_FallsBackToPane below.
-	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
-		return InboxAddress{
-			Network: "unix", Socket: "/irrelevant", Token: "tok",
-			ModeClass: inboxclient.ModeBypass,
-		}, true, nil
-	}
-	d := newInboxTestDriver(f, ps, resolver, pipeDialer(t, readTwoLinesNoReply))
+	//
+	// #184: and a delivery is reported delivered only when the receiver's own
+	// transcript records it, so this receiver does.
+	rcv := newInboxReceiver(t)
+	d, f := newRoutedDriver(t, rcv, attestableResolver(inboxclient.ModeBypass), rcv.dialer(receiverRecordsEnvelope))
 
 	start := time.Now()
-	got, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
+	got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", driver.SendOptions{Submit: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,14 +268,18 @@ func TestSend_InboxDeliverySucceeds_ReportsDeliveredWithoutTouchingPane(t *testi
 		t.Errorf("Send took %s, at or beyond the round-trip timeout — it waited on a response line #144 says never arrives", elapsed)
 	}
 	if got.Outcome != fleet.OutcomeDelivered {
-		t.Fatalf("outcome = %q, want delivered", got.Outcome)
+		t.Fatalf("outcome = %q (%s), want delivered", got.Outcome, got.Reason)
 	}
-	for _, c := range f.callsSnapshot() {
-		if len(c) > 0 && (c[0] == "paste-buffer" || c[0] == "load-buffer" || c[0] == "send-keys") {
-			t.Fatalf("an inbox delivery must never also touch the pane, saw: %v", c)
-		}
+	if got.RouteOf() != fleet.RouteInbox {
+		t.Errorf("receipt route = %q, want inbox", got.RouteOf())
+	}
+	if paneTouched(f) {
+		t.Fatalf("an inbox delivery must never also touch the pane, saw: %v", f.callsSnapshot())
 	}
 	assertInboxExit(t, d, counterInboxWritten, 1, 0)
+	if c := d.Counters(); c[counterInboxConfirmed] != 1 || c[counterInboxConfirmedByEnvelope] != 1 {
+		t.Errorf("confirmed=%d by_envelope=%d, want 1 and 1", c[counterInboxConfirmed], c[counterInboxConfirmedByEnvelope])
+	}
 }
 
 // TestSend_InboxDialFails_FallsBackToPane is #144's fix for the gap #143's
@@ -300,7 +304,8 @@ func TestSend_InboxDialFails_FallsBackToPane(t *testing.T) {
 	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
 		return nil, errors.New("connection refused")
 	}
-	d := newInboxTestDriver(f, ps, resolver, dial)
+	rcv := newInboxReceiver(t)
+	d := newInboxTestDriverWith(f, ps, resolver, dial, rcv.options()...)
 
 	got, err := d.Send(context.Background(), testCaller,
 		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
@@ -309,6 +314,9 @@ func TestSend_InboxDialFails_FallsBackToPane(t *testing.T) {
 	}
 	if got.Outcome != fleet.OutcomeQueued {
 		t.Fatalf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
+	}
+	if got.RouteOf() != fleet.RouteTerminal {
+		t.Errorf("receipt route = %q, want terminal", got.RouteOf())
 	}
 	assertInboxExit(t, d, counterInboxFallbackDialFailed, 1, 0)
 }
@@ -330,7 +338,8 @@ func TestSend_InboxWriteFails_FallsBackToPane(t *testing.T) {
 			ModeClass: inboxclient.ModeBypass,
 		}, true, nil
 	}
-	d := newInboxTestDriver(f, ps, resolver, pipeDialer(t, closeBeforeReading))
+	rcv := newInboxReceiver(t)
+	d := newInboxTestDriverWith(f, ps, resolver, pipeDialer(t, closeBeforeReading), rcv.options()...)
 
 	got, err := d.Send(context.Background(), testCaller,
 		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
@@ -340,6 +349,9 @@ func TestSend_InboxWriteFails_FallsBackToPane(t *testing.T) {
 	if got.Outcome != fleet.OutcomeQueued {
 		t.Fatalf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
 	}
+	// #184: a write that put not one byte on the connection is the only write
+	// failure that may fall back; see TestSend_InboxPartialWrite_UnknownNoPane
+	// for the one that may not.
 	assertInboxExit(t, d, counterInboxFallbackWriteFailed, 1, 0)
 }
 
@@ -504,59 +516,22 @@ func TestSend_InboxUnattestableText_FallsBackToPane(t *testing.T) {
 // an unwrapped body would pass every other test in this file and reproduce
 // #148 exactly.
 func TestSend_InboxAttestedEnvelopeReachesTheWire(t *testing.T) {
-	f := twoSessions()
-	ps := &fakePS{}
-	ps.set(100, time.Now())
-	ps.set(200, time.Now())
-	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
-		return InboxAddress{
-			Network: "unix", Socket: "/irrelevant", Token: "tok",
-			ModeClass: inboxclient.ModePrompting,
-		}, true, nil
-	}
-	lines := make(chan string, 2)
-	dial := pipeDialer(t, func(server net.Conn) {
-		defer server.Close()
-		reader := bufio.NewReader(server)
-		for i := 0; i < 2; i++ {
-			line, err := reader.ReadString('\n')
-			if err != nil {
-				return
-			}
-			lines <- line
-		}
-	})
-	d := newInboxTestDriver(f, ps, resolver, dial)
+	rcv := newInboxReceiver(t)
+	d, _ := newRoutedDriver(t, rcv, attestableResolver(inboxclient.ModePrompting), rcv.dialer(receiverRecordsEnvelope))
 
-	if _, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true}); err != nil {
+	if _, err := d.Send(context.Background(), testCaller, alphaRef, "hello", driver.SendOptions{Submit: true}); err != nil {
 		t.Fatal(err)
 	}
 
-	var message string
-	for i := 0; i < 2; i++ {
-		select {
-		case line := <-lines:
-			if strings.Contains(line, `"user"`) {
-				message = line
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for the request lines")
-		}
-	}
-	if message == "" {
-		t.Fatal("no message line reached the wire")
+	if rcv.received() != 1 {
+		t.Fatalf("the receiver was given %d messages, want 1", rcv.received())
 	}
 	want, ok := inboxclient.Attest("hello", inboxclient.ModePrompting, "")
 	if !ok {
 		t.Fatal("Attest refused a plain body")
 	}
-	encoded, err := json.Marshal(want)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(message, string(encoded[1:len(encoded)-1])) {
-		t.Errorf("the message line does not carry the attested envelope:\n%s", message)
+	if got := rcv.messages[0]; got != want {
+		t.Errorf("the message on the wire is not the attested envelope:\n got %q\nwant %q", got, want)
 	}
 }
 
@@ -564,61 +539,24 @@ func TestSend_InboxAttestedEnvelopeReachesTheWire(t *testing.T) {
 // as the sender-name attribute, with a relayOfHuman declaration as the body's
 // first line — and the send must still be attested and delivered.
 func TestSend_InboxCarriesTheSenderLabel(t *testing.T) {
-	f := twoSessions()
-	ps := &fakePS{}
-	ps.set(100, time.Now())
-	ps.set(200, time.Now())
-	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
-		return InboxAddress{
-			Network: "unix", Socket: "/irrelevant", Token: "tok",
-			ModeClass: inboxclient.ModeBypass,
-		}, true, nil
-	}
-	lines := make(chan string, 2)
-	dial := pipeDialer(t, func(server net.Conn) {
-		defer server.Close()
-		reader := bufio.NewReader(server)
-		for i := 0; i < 2; i++ {
-			line, err := reader.ReadString('\n')
-			if err != nil {
-				return
-			}
-			lines <- line
-		}
-	})
-	d := newInboxTestDriver(f, ps, resolver, dial)
+	rcv := newInboxReceiver(t)
+	d, _ := newRoutedDriver(t, rcv, attestableResolver(inboxclient.ModeBypass), rcv.dialer(receiverRecordsEnvelope))
 
 	from := &fleet.MessageFrom{Agent: "agent-a", Session: "s-158", Machine: "entrybox", RelayOfHuman: true}
-	got, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true, From: from})
+	got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", driver.SendOptions{Submit: true, From: from})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Outcome != fleet.OutcomeDelivered {
-		t.Fatalf("outcome = %q, want delivered — a label must never cost the inbox path", got.Outcome)
+		t.Fatalf("outcome = %q (%s), want delivered — a label must never cost the inbox path", got.Outcome, got.Reason)
 	}
 
-	var message string
-	for i := 0; i < 2; i++ {
-		select {
-		case line := <-lines:
-			if strings.Contains(line, `"user"`) {
-				message = line
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for the request lines")
-		}
-	}
 	want, ok := inboxclient.Attest(driver.RelayDeclaration+"\nhello", inboxclient.ModeBypass, "agent-a · s-158 · entrybox")
 	if !ok {
 		t.Fatal("Attest refused a labelled plain body")
 	}
-	encoded, err := json.Marshal(want)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(message, string(encoded[1:len(encoded)-1])) {
-		t.Errorf("the message line does not carry the labelled envelope:\n%s", message)
+	if rcv.received() != 1 || rcv.messages[0] != want {
+		t.Errorf("the message on the wire is not the labelled envelope:\n got %q\nwant %q", rcv.messages, want)
 	}
 	if !strings.Contains(want, `from-name="agent-a · s-158 · entrybox" from-mode="bypass"`) {
 		t.Errorf("envelope lacks the sender-name attribute before the mode attribute: %q", want)
@@ -692,8 +630,10 @@ func TestSend_SenderLabelDoesNotDefuseTheRuntimeSyntaxGuard(t *testing.T) {
 }
 
 // inboxExitCounters is every exit of sendViaInbox past the nil-resolver check
-// (#150). Each call that increments counterInboxAttempted must end in exactly
-// one of these, which is what assertInboxExit checks.
+// (#150; #184 added no_transcript and unknown_partial_write). Each call that
+// increments counterInboxAttempted must end in exactly one of these, which is
+// what assertInboxExit checks. counterInboxWritten is a complete write and is
+// itself the sum of counterInboxConfirmed and counterInboxUnconfirmed.
 var inboxExitCounters = []string{
 	counterInboxFallbackIdentityUnresolved,
 	counterInboxErrorIdentityResolve,
@@ -702,8 +642,10 @@ var inboxExitCounters = []string{
 	counterInboxRefusedIdentityUnverified,
 	counterInboxFallbackNoModeClass,
 	counterInboxFallbackBodyUnattestable,
+	counterInboxFallbackNoTranscript,
 	counterInboxFallbackDialFailed,
 	counterInboxFallbackWriteFailed,
+	counterInboxUnknownPartialWrite,
 	counterInboxWritten,
 }
 
@@ -788,7 +730,8 @@ func TestSend_InboxRelayDeclaration_DoesNotCountAsLookalike(t *testing.T) {
 			ModeClass: inboxclient.ModeBypass,
 		}, true, nil
 	}
-	d := newInboxTestDriver(f, ps, resolver, pipeDialer(t, readTwoLinesNoReply))
+	rcv := newInboxReceiver(t)
+	d := newInboxTestDriverWith(f, ps, resolver, rcv.dialer(receiverRecordsEnvelope), rcv.options()...)
 
 	from := &fleet.MessageFrom{Agent: "agent-a", Session: "s-150", Machine: "entrybox", RelayOfHuman: true}
 	got, err := d.Send(context.Background(), testCaller,
@@ -816,9 +759,9 @@ func TestSendViaInbox_IdentityResolveError_Counted(t *testing.T) {
 	}
 	d := newInboxTestDriver(f, ps, resolver, nil)
 
-	_, ok, err := d.sendViaInbox(context.Background(), fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", nil)
+	res, err := d.sendViaInbox(context.Background(), fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
 	if err == nil {
-		t.Fatalf("sendViaInbox err = nil (ok=%v), want the multiplexer failure", ok)
+		t.Fatalf("sendViaInbox err = nil (%+v), want the multiplexer failure", res)
 	}
 	assertInboxExit(t, d, counterInboxErrorIdentityResolve, 0, 0)
 }

@@ -152,3 +152,85 @@ func TestPromptDelivery_RefusesToPresentSomethingItCannotSupport(t *testing.T) {
 		t.Errorf("round trip changed the value: %+v vs %+v", got, *good)
 	}
 }
+
+// #184: the receipt names the path that made it. Four properties are pinned:
+// the field round-trips, an absent field encodes to nothing (so a receipt from
+// a driver with one path is byte-identical to before), a route the receipt
+// cannot honestly name is refused on the way out, and one this build does not
+// know is dropped on the way in rather than failing the whole receipt.
+
+func TestDeliveryReceipt_RouteRoundTrips(t *testing.T) {
+	for _, route := range []Route{RouteInbox, RouteTerminal} {
+		in := DeliveryReceipt{Outcome: OutcomeDelivered, Reason: "why"}.WithRoute(route)
+		b, err := json.Marshal(in)
+		if err != nil {
+			t.Fatalf("Marshal(%q): %v", route, err)
+		}
+		want := `{"outcome":"delivered","reason":"why","delivery":{"route":"` + string(route) + `"}}`
+		if string(b) != want {
+			t.Fatalf("wire shape = %s, want %s", b, want)
+		}
+		var out DeliveryReceipt
+		if err := json.Unmarshal(b, &out); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", b, err)
+		}
+		if out.RouteOf() != route || out.Outcome != OutcomeDelivered || out.Reason != "why" {
+			t.Fatalf("round trip: got %+v, want route %q", out, route)
+		}
+	}
+}
+
+func TestDeliveryReceipt_NoRouteEncodesNoDeliveryKey(t *testing.T) {
+	b, err := json.Marshal(DeliveryReceipt{Outcome: OutcomeRefused})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"outcome":"refused"}` {
+		t.Fatalf("a receipt naming no path must encode exactly as before #184, got %s", b)
+	}
+}
+
+func TestDeliveryReceipt_UnrecognisedRouteIsDroppedNotGuessed(t *testing.T) {
+	var got DeliveryReceipt
+	if err := json.Unmarshal([]byte(`{"outcome":"queued","delivery":{"route":"carrier-pigeon"}}`), &got); err != nil {
+		t.Fatalf("a receipt from a newer peer must still decode: %v", err)
+	}
+	if got.Outcome != OutcomeQueued {
+		t.Errorf("outcome = %q, want queued", got.Outcome)
+	}
+	if got.Delivery != nil {
+		t.Errorf("Delivery = %+v, want nil — an unknown route is 'not stated', never a guess", got.Delivery)
+	}
+	// "auto" is a request, never a path: a receipt claiming it is not believed.
+	if err := json.Unmarshal([]byte(`{"outcome":"queued","delivery":{"route":"auto"}}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Delivery != nil {
+		t.Errorf("Delivery = %+v for route auto, want nil", got.Delivery)
+	}
+}
+
+func TestDeliveryReceipt_MarshalRefusesInvalidRoute(t *testing.T) {
+	for _, bad := range []Route{"", RouteAuto, "carrier-pigeon"} {
+		if _, err := json.Marshal(DeliveryReceipt{Outcome: OutcomeQueued, Delivery: &DeliveryPath{Route: bad}}); err == nil {
+			t.Errorf("Marshal accepted a receipt naming route %q", bad)
+		}
+	}
+}
+
+func TestDeliveryReceipt_WithRouteIgnoresANonPath(t *testing.T) {
+	r := DeliveryReceipt{Outcome: OutcomeQueued}.WithRoute(RouteAuto)
+	if r.Delivery != nil {
+		t.Errorf("WithRoute(auto) stamped %+v; auto is a request, never a path", r.Delivery)
+	}
+	if got := (DeliveryReceipt{}).RouteOf(); got != "" {
+		t.Errorf("RouteOf on a receipt naming none = %q, want empty", got)
+	}
+}
+
+func TestDeliveryReceipt_UnknownOutcomeStillRejected(t *testing.T) {
+	var got DeliveryReceipt
+	if err := json.Unmarshal([]byte(`{"outcome":"maybe"}`), &got); err == nil {
+		t.Fatal("the lenient route decoding must not have loosened the outcome check")
+	}
+}

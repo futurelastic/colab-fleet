@@ -665,11 +665,58 @@ never that the session is untyped.
 POST /v1/machines/{machine}/sessions/{id}/input
 { "text": "...", "submit": true, "resumeIfStranded": false, "replaceIfStranded": false,
   "expect": "<composerDigest>",
-  "from": { "agent": "...", "session": "...", "relayOfHuman": false } }
+  "from": { "agent": "...", "session": "...", "relayOfHuman": false },
+  "route": "auto" | "terminal" | "inbox" }
 ```
 
+**`route` (colab-fleet #184) is optional and chooses the delivery path.**
+Absent, `""` and `"auto"` mean the same thing, so a caller that sends nothing
+new behaves as it always did. A value outside the three is `invalid` (400) naming
+all of them, before any driver is resolved.
+
+| `route` | Who | Path |
+|---|---|---|
+| `auto` (default) | a principal holding the **human-relay** grant, or a trusted relay's assertion of it | the terminal, **unlabelled** — the message arrives as the user's own turn |
+| `auto` | anyone else, session **inbox-eligible** | the inbox — the runtime marks the message as a cross-session peer message, with its own warning that it did not come from the user |
+| `auto` | anyone else, session not eligible | the terminal, **with the sender label** |
+| `terminal` | any caller, with a printable label unless the caller holds human-relay | the terminal |
+| `inbox` | any caller | the inbox — or a **refusal**, never a downgrade |
+
+- **The label is mandatory for everyone but a human relay.** A caller that does
+  not name itself is labelled with the one fact the service holds — the
+  authenticated principal (on a trusted relay, the principal the request was made
+  on behalf of), then the machine where the request entered. A caller's own
+  `agent` and `session` are never replaced. `route: "terminal"` without a label
+  that prints, from a caller that is not a human relay, is still `invalid`
+  (400), exactly as #180 M8 made it.
+- **The human-relay fact is never inferred from anything a caller sets** — not a
+  header, not `from`, not `relayOfHuman`. It is the principal's own configured
+  grant, or a trusted peer's assertion of it (session-abstraction.md §13, #180
+  L3). ⚠️ With no principal table configured every caller presents the one
+  shared token, nothing tells a relay from anyone else, and the relay assertions
+  are honoured as they always were: on such a machine the rule above holds only
+  as far as the token does.
+- **An explicit `inbox` is refused when the session cannot take it, and nothing
+  is written.** The receipt is `refused`, names `delivery.route: "inbox"`, and
+  its `reason` says what stopped it: no inbox configured, no index entry, no
+  permission-mode class, a body that cannot be carried intact, no transcript to
+  confirm a delivery against, an unreachable socket, or a write that failed
+  before any byte was sent. `route: "inbox"` with `submit: false`,
+  `resumeIfStranded` or `replaceIfStranded` is `invalid` (400): those name a
+  composer the inbox does not have.
+- **Fallback happens only before any byte is written.** Under `auto` the same
+  reasons send the message to the terminal instead, and the receipt says
+  `delivery.route: "terminal"`. Once any byte has reached the inbox the message
+  may be in the receiver's hands, and it is **never sent down the other path**:
+  see the receipt below.
+- **`route` travels through a peer relay** as `""` for auto and as itself
+  otherwise. A peer built before #184 answers an explicit `"inbox"` with its own
+  `invalid`; the caller gets that answer, never a downgrade.
+
 **`from` (colab-fleet #158) is optional and labels the message with its
-sender.** Absent means unlabelled, exactly the behaviour before it existed. The
+sender.** Absent means the service labels the message itself for any caller that
+is not a human relay (`route`, above, #184) and leaves it unlabelled for one that
+is — before #184 absent meant unlabelled for everyone. The
 label is `agent · session · machine`, with empty parts skipped, and it reaches
 the receiving session as follows:
 
@@ -960,30 +1007,55 @@ POST /v1/machines/{machine}/sessions/{id}/input?runtime=
 { "text": "...", "submit": true }
 
 → 200 { "outcome": "submitted" | "queued" | "refused" | "unknown",
-        "reason": "prompt holds unsent input" }
+        "reason": "prompt holds unsent input",
+        "delivery": { "route": "terminal" | "inbox" } }
 ```
+
+**`delivery.route` (colab-fleet #184) names the path that made the receipt.** It
+is `inbox` for anything the inbox path decided — a delivery, an `unknown`, or a
+refusal an explicit `route: "inbox"` earned — and `terminal` for everything the
+terminal module produced. It is **absent** when the receipt names no path: a
+refusal made before any path was chosen (a busy composer lock, the runtime-syntax
+guard, contradictory flags), a driver with a single path, or a peer built before
+the field. Absent means "not stated", never either value, and a value this build
+does not recognise is read as absent: the outcome is the part that matters. It
+is a `DeliveryReceipt` field (session-abstraction.md §2.4) and travels through a
+peer relay untouched.
 
 **A driver that delivers over a target session's own inbox instead of the
 terminal surface (colab-fleet #119) can additionally answer `delivered` |
 `held` | `denied` | `expired` | `dropped`** — session-abstraction.md §2.4 has
 the full vocabulary and why those five are not folded into the four above.
-This is capability-detected per target, never a caller choice: the same call
-shape, the same endpoint, a richer answer only when that surface was actually
-used for this delivery.
+Since #184 which path a send takes is also the caller's to ask for (`route`,
+above); when it does not, the service chooses per sender and per target, and
+`delivery.route` says what happened.
 
-⚠️ **Of those five, only `delivered` is reachable today, and `held` is
-specifically not** (colab-fleet #120, #148). The receiving runtime's status
-frame is routed to a reply address that must be a socket bound in the
-receiver's own namespace, which this service does not have — so a sender reads
-nothing back even on a delivery that fully succeeded. `held` is the value that
-would matter most: #148 measured a receiver holding messages for a human who
-never came, then dropping them, while this endpoint answered `delivered` 206
-times. That is fixed at the source — a send this service cannot attest now
-declines the inbox path entirely and the terminal path carries it, so
-`delivered` is a true statement rather than a hopeful one — **not** by
-producing `held`, which would require inventing a receipt this protocol never
-hands a plain sender. A caller must still not read `delivered` as proof the
-model saw the turn; it means the attested bytes reached the socket.
+⚠️ **Of those five, only `delivered` is reachable, and since #184 it is a
+statement about the receiver rather than about a socket** (colab-fleet #120,
+#148). The receiving runtime's status frame is routed to a reply address that
+must be a socket bound in the receiver's own namespace, which this service does
+not have — so a sender reads nothing back from the inbox itself, and `held` is
+still not produced. What changed is that an inbox write is now **confirmed from
+the receiver's own transcript**, the same evidence the terminal path uses:
+
+- `delivered` — the transcript recorded this message as a peer message. Read it
+  as "the receiver took it", not as proof the model has acted on it.
+- `unknown` on `delivery.route: "inbox"` — bytes reached the socket and the
+  transcript did not record the message within the confirmation window (a
+  receiver that is holding it, has not written it yet, or dropped it), or the
+  write itself broke part-way. **The message may have arrived. It was not sent
+  again, and it will not be:** for `strandedRetention` (30 minutes), or until the
+  message is recorded, every further send of the same text from the same sender
+  to the same session — including `resumeIfStranded`, a forced terminal send and
+  an explicit inbox request — is answered with the same `unknown` and writes
+  nothing on either path. Different text, or the same text from another sender,
+  is a different message and is not held. `resumeIfStranded` is a terminal
+  operation and is **not** the way to retry an inbox `unknown`: read the
+  session's transcript, and wait.
+- A machine whose index names no permission-mode class for a session, whose
+  session has no locatable transcript, or whose text cannot be attested never
+  reaches the inbox for it: under `auto` the terminal carries the message, which
+  is the fallback #148 recorded running at a 100% delivery rate.
 
 **`text` is capped by the same effective limit `prompt` carries on create**
 (colab-fleet #114, #130). Over that, the call is rejected outright —
@@ -1470,6 +1542,16 @@ ordering is wrong rather than handing you a cursor that would skip.
   and applies to a fresh deployment as much as an established one — no grant is
   implied by anything else, including a runtime advertising the capability the
   grant gates (§3, `keys`; colab-fleet #68).
+- **`human-relay` is not a verb; it is a statement about the caller** (colab-fleet
+  #180, #184). A principal holding it is a human-facing relay: what it sends is a
+  person's own message, so `route: auto` carries it through the terminal,
+  unlabelled, arriving as the user's own turn, and it may send a leading `/`.
+  Nothing else confers this — no header, no `from`, no `relayOfHuman` — and it
+  crosses a peer relay only as an assertion the owning machine honours from one
+  of its configured peers (or from anyone, on a machine with no principal table:
+  §3.3, `route`). It defaults to denied like every other grant, and it is not
+  something to hand to an agent: it is the grant that lets a message skip the
+  label.
 - Each caller presents its own credential and holds per-verb grants (§6).
 - **`GET /v1/whoami` is the one read exempt from needing the `read` grant
   itself** (§3.1, session-abstraction.md §7.7, colab-fleet #106). It reports

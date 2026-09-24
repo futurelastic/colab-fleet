@@ -1239,15 +1239,21 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 // over: it also has no effect unless forwarded, and a caller who never sets
 // it sees no symptom at all — the owning daemon just falls back to the same
 // §2.4 refusal ResumeIfStranded's own paragraph above describes.
-// forceTerminalRouteWireValue renders driver.SendOptions.ForceTerminalRoute
-// as the wire's own closed vocabulary (service/http.go's own switch: "" or
-// "terminal", anything else rejected before a driver ever sees it) — kept as
-// its own function so the ONE place this bool becomes that string is
-// visible in a diff, rather than an inline ternary easy to miss re-deriving
-// wrong at a second call site later.
-func forceTerminalRouteWireValue(forced bool) string {
-	if forced {
-		return "terminal"
+// routeWireValue renders driver.SendOptions.Route as the wire's own closed
+// vocabulary (service/http.go's own switch). Auto is sent as NO field at all,
+// not as "auto": an owning peer built before #184 knows only "" and "terminal"
+// and rejects anything else with a 400, so naming a value it may not know for a
+// send that never asked for one would break exactly the callers that changed
+// nothing. An explicit "inbox" is sent as itself — and an older peer's 400 is
+// the right answer to it, never a silent downgrade to the terminal.
+//
+// Kept as its own function so the ONE place this type becomes that string is
+// visible in a diff, rather than an inline expression easy to re-derive wrong
+// at a second call site later.
+func routeWireValue(r fleet.Route) string {
+	switch r {
+	case fleet.RouteTerminal, fleet.RouteInbox:
+		return string(r)
 	}
 	return ""
 }
@@ -1261,7 +1267,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// it; the owning daemon accepts it only because this request arrives as a
 	// relay (see the service's stampSender).
 	//
-	// Route (terminal path v2 / D7, review fix): this is the SAME #33 trap
+	// Route (terminal path v2 / D7, review fix; #184): this is the SAME #33 trap
 	// this doc comment already names twice over for ResumeIfStranded and
 	// ReplaceIfStranded — a field with no effect unless explicitly forwarded,
 	// and a caller who forgets sees no symptom AT ALL until the one day it
@@ -1269,9 +1275,11 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// (a human-facing relay, entering on one machine for a session on another) was
 	// evaluated for inbox-eligibility on the OWNING machine as if
 	// route:"terminal" had never been asked for — exactly what D7 exists to
-	// prevent, and it would have started silently doing the wrong thing the
-	// moment the inbox path (currently paused fleet-wide) is re-enabled for
-	// anything this shape can reach.
+	// prevent. Since #184 the ENTERING service has already turned a human
+	// relay's auto into "terminal" before this driver sees the call, so an
+	// owning peer that predates #184 never weighs a human's message for the
+	// inbox; and "inbox" is forwarded verbatim, so an owner that cannot honour
+	// it answers, rather than this driver deciding for it.
 	body := struct {
 		Text              string             `json:"text"`
 		Submit            bool               `json:"submit"`
@@ -1280,7 +1288,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		Expect            string             `json:"expect,omitempty"`
 		From              *fleet.MessageFrom `json:"from,omitempty"`
 		Route             string             `json:"route,omitempty"`
-	}{Text: text, Submit: opts.Submit, ResumeIfStranded: opts.ResumeIfStranded, ReplaceIfStranded: opts.ReplaceIfStranded, Expect: opts.ExpectComposerDigest, From: opts.From, Route: forceTerminalRouteWireValue(opts.ForceTerminalRoute)}
+	}{Text: text, Submit: opts.Submit, ResumeIfStranded: opts.ResumeIfStranded, ReplaceIfStranded: opts.ReplaceIfStranded, Expect: opts.ExpectComposerDigest, From: opts.From, Route: routeWireValue(opts.Route)}
 
 	var out fleet.DeliveryReceipt
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/input",

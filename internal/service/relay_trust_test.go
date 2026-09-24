@@ -82,7 +82,7 @@ func TestHumanRelayCrossesAPeerRelay(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d: %s", resp.StatusCode, decodeError(t, resp).Error.Message)
 	}
-	if len(d.opts) != 1 || !d.opts[0].HumanRelay || !d.opts[0].ForceTerminalRoute {
+	if len(d.opts) != 1 || !d.opts[0].HumanRelay || d.opts[0].Route != fleet.RouteTerminal {
 		t.Fatalf("driver got %+v, want a human-relay terminal send", d.opts)
 	}
 }

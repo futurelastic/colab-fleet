@@ -159,6 +159,57 @@ const (
 	counterInboxFallbackWriteFailed        = "inbox.fallback_write_failed"
 	counterInboxWritten                    = "inbox.written"
 
+	// colab-fleet#184: two more exits, and what "written" now splits into.
+	//
+	// no_transcript: the inbox needs the receiver's transcript to CONFIRM a
+	// write, so a session whose transcript this driver cannot locate cannot
+	// have an inbox delivery it can stand behind — the same "half a capability
+	// is none of it" rule as no_mode_class (ADR 119, ADR 148). A fallback, taken
+	// before anything is dialled.
+	//
+	// unknown_partial_write: a write that put SOME bytes on the socket and then
+	// failed. Unlike write_failed (which now means ZERO bytes) this is never a
+	// fallback: the receiver may have been given a message, and the same text is
+	// not sent down the other path. It ends `unknown`.
+	//
+	// written is still an exit — a complete write — and is now split into
+	// confirmed and unconfirmed by whether the receiver's own transcript
+	// recorded the message. written = confirmed + unconfirmed, so a read checks
+	// itself. unconfirmed / written is the rate an operator watches: it is what
+	// a silently-held message (#148) looks like now that there is something to
+	// confirm against. confirmed_by_envelope / confirmed_by_origin_body say
+	// which transcript shape the runtime actually writes for a peer message,
+	// which no offline test can tell.
+	counterInboxFallbackNoTranscript  = "inbox.fallback_no_transcript"
+	counterInboxUnknownPartialWrite   = "inbox.unknown_partial_write"
+	counterInboxConfirmed             = "inbox.confirmed"
+	counterInboxUnconfirmed           = "inbox.unconfirmed"
+	counterInboxConfirmedByEnvelope   = "inbox.confirmed_by_envelope"
+	counterInboxConfirmedByOriginBody = "inbox.confirmed_by_origin_body"
+	counterInboxLedgerEntryWritten    = "inbox.unconfirmed_ledger_written"
+
+	// colab-fleet#184: one family per Send, whatever path it took, so an
+	// operator can split deliveries by route. Every Send is counted exactly
+	// once in route.decided.<requested>.<taken>, where <taken> is the path the
+	// receipt names (inbox | terminal) or "none" when the receipt names no path
+	// (a refusal made before any path was chosen) or "error" when Send returned
+	// an error. route.outcome.<path>.<outcome> is the same delivery by outcome.
+	//
+	// auto_fallback is the subset of decided.auto.terminal where the inbox was
+	// TRIED and declined before any byte was written — the fallback rate an
+	// operator reads: auto_fallback / (decided.auto.inbox + auto_fallback).
+	//
+	// The guard counters are the cross-path ledger's (docs/adr/184-route-by-sender.md):
+	// inbox_unconfirmed — a follow-up was answered from an earlier unconfirmed
+	// inbox write instead of being sent again; terminal_unconfirmed — the inbox
+	// was skipped (auto) or refused (route inbox) because the same text is
+	// stranded in the composer; late_confirmed — a follow-up found the earlier
+	// inbox write recorded after all.
+	counterRouteAutoFallback           = "route.auto_fallback"
+	counterRouteGuardInboxUnconfirmed  = "route.guard.inbox_unconfirmed"
+	counterRouteGuardTerminalUnconfirm = "route.guard.terminal_unconfirmed"
+	counterRouteGuardLateConfirmed     = "route.guard.late_confirmed"
+
 	// The number #150's decision reads. attest_checked counts every call
 	// that reached attestation; attest_body_lookalike counts those whose
 	// body the current rule refuses, WHETHER OR NOT the class was also

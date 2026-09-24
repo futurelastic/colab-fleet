@@ -262,37 +262,78 @@ labels, the create is refused `unsupported` before anything is started there.
 { "text": "…", "submit": true, "resumeIfStranded": false,
   "replaceIfStranded": false, "expect": "<composerDigest>",
   "from": { "agent": "…", "session": "…", "relayOfHuman": false },
-  "route": "terminal" }
+  "route": "auto" }
 ```
 
 Returns `200` with a **delivery receipt** — always `200`, even on refusal.
 
-`route` (optional, terminal path v2) forces the pane/composer delivery path
-even on a call that would otherwise be eligible for a driver's
-capability-detected inbox path (colab-fleet #119, paused fleet-wide pending
-its own remaining human ruling on credentials). The only accepted non-empty
-value today is `"terminal"`; anything else is a `400` naming the field, before
-any driver is resolved — the same way an over-long `text` is rejected. Leave
-it out (or send `""`) and a call keeps its ordinary eligibility.
+```json
+{ "outcome": "queued", "reason": "…", "delivery": { "route": "terminal" } }
+```
 
-Use this when the caller is relaying a **human's** own message (a human-facing relay
-service, chiefly) and wants the path a human's own typed message
-would take, independent of when the inbox path itself comes back for
-agent-to-agent traffic. A driver with no inbox capability at all is
-unaffected either way.
+**`route`** (optional, #184) chooses the delivery path: `"auto"` (the default —
+omitted and `""` mean the same), `"terminal"` or `"inbox"`. Anything else is a
+`400` naming all three, before any driver is resolved.
 
-`route: "terminal"` from a caller **without** the `human-relay` grant is a
-`400` unless the call carries a `from` label that actually prints — a
-non-empty agent, session or machine that survives label normalisation (#180).
-A caller holding the grant needs no label. When such a call enters on one
-machine for a session on another, the entering machine asserts the grant to
-the owning one; the owner honours that assertion only from one of its
-configured peers (or from anyone when no principal table is configured) —
-the same trust bound as the on-behalf-of assertion.
+- **`auto` decides by who is sending.** A principal holding the `human-relay`
+  grant (a human-facing relay) goes through the **terminal, unlabelled** — the
+  message arrives as the user's own turn. Anyone else goes through the
+  **inbox** when the session can take it: the runtime marks the message as a
+  cross-session **peer message**, carrying the sender's name and its own warning
+  that the text did not come from the user. When the session cannot take the
+  inbox, the message goes through the terminal **with the label**.
+- **The label is mandatory for everyone but a human relay.** If you send no
+  `from`, the service labels the message with the one fact it holds — the
+  principal you authenticated as, and the machine your request entered — so an
+  agent's text is never indistinguishable from a person's. A `from` you send is
+  kept as you wrote it.
+- **The human-relay fact is never inferred from anything you set.** No header, no
+  `from`, no `relayOfHuman` moves your send onto the human-relay path; it is the
+  principal's own configured grant. (Across a peer relay it is an assertion the
+  owning machine honours only from one of its configured peers — or from anyone,
+  on a machine with no principal table, where nothing distinguishes a relay from
+  any other bearer.)
+- **`route: "terminal"`** forces the composer. Without the `human-relay` grant it
+  needs a `from` that actually prints — a non-empty agent, session or machine
+  that survives label normalisation — or it is a `400` (#180 M8). A caller
+  holding the grant needs no label.
+- **`route: "inbox"`** insists on the inbox. When the session cannot take it the
+  receipt is **`refused`**, `delivery.route` is `inbox`, and the `reason` says
+  why and that **nothing was written** — the request is never quietly downgraded
+  to the terminal. `route: "inbox"` combined with `submit: false`,
+  `resumeIfStranded` or `replaceIfStranded` is a `400`: those name a composer the
+  inbox does not have.
+- **A session is inbox-eligible** only when the machine has an inbox configured
+  and an index entry for the session, the entry names its permission-mode class
+  (#148), the text can be carried in a peer-message envelope that is guaranteed
+  to arrive intact, and the session's transcript can be located to confirm a
+  delivery against. None of this is a caller's business under `auto` — the
+  terminal carries what the inbox cannot — but `deliversToInbox` on
+  `GET /v1/runtimes` is a statement about wiring, not a promise about a send.
+
+**`delivery.route`** names the path that produced the receipt: `inbox` or
+`terminal`. It is **absent** when the receipt names no path — a refusal made
+before any path was chosen (a busy composer, the runtime-syntax guard,
+contradictory flags), or a peer built before the field. Treat absent as "not
+stated"; it is never either value.
+
+**Fallback happens only before any byte is written.** An inbox that declines
+under `auto` sends the message to the terminal; an inbox that has written *any*
+byte and cannot confirm the message ends `unknown` and is **never followed by a
+terminal send of the same text.** See the `unknown` row below.
+
+Use `route: "terminal"` — or simply hold the `human-relay` grant — when the
+caller is relaying a **human's** own message and wants the path a human's own
+typed message would take. A driver with no inbox capability at all is unaffected
+either way.
 
 `from` (optional) labels the message with who it comes from, so the receiving
 session sees `agent · session · machine` instead of an anonymous peer. Leave it
-out and the message is unlabelled, exactly as before.
+out and — unless you hold the `human-relay` grant, whose messages are never
+labelled — the service labels the message for you with the principal you
+authenticated as and the machine your request entered (#184): the label is
+mandatory for everyone but a human relay, and only its *filling in* is the
+service's.
 
 - **`agent` and `session` are your own statement.** The service carries them
   but cannot verify them — under a shared token nothing tells one caller from
@@ -316,7 +357,23 @@ out and the message is unlabelled, exactly as before.
 | `submitted` | The agent received it — reachable only when the driver's `confirmsDelivery` capability is `true` (see below) | Done |
 | `queued` | Accepted, submission unconfirmed | Done |
 | `refused` | The driver actively declined; `reason` says why | Read the reason — this is information, not a fault |
-| `unknown` | Sent, outcome unverifiable — **the text may be sitting unsent** | Retry with `resumeIfStranded: true` |
+| `unknown` | Sent, outcome unverifiable. On `delivery.route: "terminal"` **the text may be sitting unsent** | On the terminal: retry with `resumeIfStranded: true`. On **`inbox`: do not** — the message may have arrived; see below |
+| `delivered` | The receiver's own transcript recorded the message as a peer message — reachable only on `delivery.route: "inbox"` | Done |
+
+**`unknown` on the inbox (#184) means the message may have arrived, and it will
+not be sent again.** The inbox has no reply channel, so a clean write only proves
+that bytes reached a socket. The service confirms the message from the
+receiver's own transcript, the way the terminal path does; when the transcript
+does not record it inside the confirmation window (or the write broke part-way),
+the outcome is `unknown` and the receiver may be holding it, may not have written
+it yet, or may have dropped it. For 30 minutes, or until the message is recorded,
+every further send of the **same text from the same sender to the same session**
+— a `resumeIfStranded` retry, a forced terminal send, an explicit inbox request —
+is answered with the same `unknown` and writes nothing on either path, because
+sending it again could deliver it twice. **`resumeIfStranded` is a terminal
+operation; it is not the way to retry an inbox `unknown`.** Read the session's
+transcript and wait. Different text, or the same text from another sender, is a
+different message and is not held.
 
 **Two refusals worth recognising by their `reason` (#180):**
 
@@ -631,10 +688,16 @@ with the implementation is worse than one that admits where it does.
   address this service does not hold (#120). `held` is the consequential one:
   #148 measured a receiver holding 206 messages for a human who never came and
   then dropping them, while this endpoint answered `delivered` every time. That
-  is addressed at the source — a send this service cannot attest now declines
-  the inbox path and falls back to the terminal one — rather than by producing
-  `held`, so `delivered` is honest but still means "the attested bytes reached
-  the socket", never "the model saw the turn".
+  is addressed at the source rather than by producing `held`: a send this
+  service cannot attest declines the inbox path and falls back to the terminal
+  one, and (#184) an inbox write is confirmed from the receiver's own transcript,
+  so `delivered` now means "the receiver's transcript recorded the message" and a
+  held-then-dropped message reads `unknown`, counted as `inbox.unconfirmed`. It
+  still does not mean the model has acted on the turn. **Which transcript entry a
+  peer message produces has not been measured on a live fleet** (the inbox is
+  switched off wherever it was measured): until it has, `inbox.unconfirmed`
+  close to `inbox.written` means the matcher does not recognise what the runtime
+  writes, not that messages are being lost.
 - **`deliversToInbox: true` does not imply any send will use the inbox.** Since
   #148 a send also needs the target's permission-mode class from the
   machine-local index; without it every send falls back while this flag still

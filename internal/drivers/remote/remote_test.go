@@ -367,20 +367,20 @@ func TestSendForwardsReplaceIfStranded(t *testing.T) {
 	}
 }
 
-// TestSendForwardsForceTerminalRoute is the review's regression test for the
+// TestSendForwardsTerminalRoute is the review's regression test for the
 // SAME #33 trap this file's own doc comments already name twice over, this
-// time for terminal path v2 / D7's ForceTerminalRoute: Send's hand-built
+// time for terminal path v2 / D7's terminal route: Send's hand-built
 // body silently dropped it, so a human's terminal-routed send relayed to a
 // peer was evaluated for inbox-eligibility on the OWNING machine as if
 // route:"terminal" had never been asked for — undoing D7's whole purpose the
-// moment the (currently paused) inbox path is re-enabled.
-func TestSendForwardsForceTerminalRoute(t *testing.T) {
+// moment the inbox path is live for anything this shape can reach.
+func TestSendForwardsTerminalRoute(t *testing.T) {
 	var rec capture
 	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
 	d := New("peerbox", srv.URL)
 
 	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "a human's message",
-		driver.SendOptions{Submit: true, ForceTerminalRoute: true}); err != nil {
+		driver.SendOptions{Submit: true, Route: fleet.RouteTerminal}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -410,7 +410,99 @@ func TestSendOmitsRouteWhenNotForced(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(rec.body, "route") {
-		t.Fatalf("body = %q, want no \"route\" field at all when ForceTerminalRoute is false", rec.body)
+		t.Fatalf("body = %q, want no \"route\" field at all when no route was asked for", rec.body)
+	}
+}
+
+// #184: the wire's route vocabulary. Auto is sent as NO field (an owning peer
+// built before #184 rejects any value it does not know), terminal and inbox are
+// sent as themselves.
+func TestSendForwardsRoute(t *testing.T) {
+	for _, tc := range []struct {
+		route fleet.Route
+		want  string // "" means the field must be absent
+	}{
+		{"", ""},
+		{fleet.RouteAuto, ""},
+		{fleet.RouteTerminal, "terminal"},
+		{fleet.RouteInbox, "inbox"},
+	} {
+		t.Run(string(tc.route), func(t *testing.T) {
+			var rec capture
+			srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+			d := New("peerbox", srv.URL)
+			if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "hello",
+				driver.SendOptions{Submit: true, Route: tc.route}); err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+				t.Fatalf("body = %q: %v", rec.body, err)
+			}
+			got, present := body["route"]
+			if tc.want == "" && present {
+				t.Fatalf("body = %q, want no route field for %q", rec.body, tc.route)
+			}
+			if tc.want != "" && got != tc.want {
+				t.Fatalf("body = %q, want route %q", rec.body, tc.want)
+			}
+		})
+	}
+}
+
+// An owning peer that predates the "inbox" route answers it with a 400 of its
+// own. That answer is the right one: the driver returns it as an error and never
+// retries the same text on a path the caller did not ask for.
+func TestSendRouteInboxToAnOlderPeerIsAnErrorNotADowngrade(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/input") {
+			requests++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(fleet.ErrorEnvelope{Error: fleet.Error{
+				Kind: fleet.ErrorInvalid, Message: `route "inbox" is not recognised; the only accepted non-empty value is "terminal"`}})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	d := New("peerbox", srv.URL)
+
+	_, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "hello",
+		driver.SendOptions{Submit: true, Route: fleet.RouteInbox})
+	if err == nil {
+		t.Fatal("an explicit inbox request to a peer that cannot honour it succeeded")
+	}
+	if requests != 1 {
+		t.Errorf("the peer was asked %d times, want exactly 1: the driver must not retry on another route", requests)
+	}
+}
+
+// The receipt's account of the path comes back from a peer as it was, and a
+// receipt from a peer built before the field has no path — never a guessed one.
+func TestSendReceiptPathPassesThroughFromAPeer(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload any
+		want    fleet.Route
+	}{
+		{"a peer that names the inbox", map[string]any{"outcome": "delivered", "delivery": map[string]any{"route": "inbox"}}, fleet.RouteInbox},
+		{"a peer that names the terminal", map[string]any{"outcome": "queued", "delivery": map[string]any{"route": "terminal"}}, fleet.RouteTerminal},
+		{"an older peer that names none", map[string]any{"outcome": "queued"}, ""},
+		{"a newer peer with a route this build does not know", map[string]any{"outcome": "queued", "delivery": map[string]any{"route": "carrier-pigeon"}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := peerServing(t, 200, tc.payload, nil)
+			d := New("peerbox", srv.URL)
+			got, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "hello", driver.SendOptions{Submit: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.RouteOf() != tc.want {
+				t.Fatalf("route = %q, want %q", got.RouteOf(), tc.want)
+			}
+		})
 	}
 }
 
@@ -1086,7 +1178,7 @@ func TestSendCarriesTheHumanRelayAssertion(t *testing.T) {
 	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
 	d := New("peerbox", srv.URL)
 	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "a person's message",
-		driver.SendOptions{Submit: true, ForceTerminalRoute: true, HumanRelay: true}); err != nil {
+		driver.SendOptions{Submit: true, Route: fleet.RouteTerminal, HumanRelay: true}); err != nil {
 		t.Fatal(err)
 	}
 	if rec.humanRelay != "1" {

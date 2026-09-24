@@ -488,13 +488,39 @@ input with no automated way back in — re-reading state and calling `discard`
 yourself was the only move. Colab-fleet #135 closed that gap, and #180 bounded
 it with the draft rule, described below.
 
-**If `send` answers `unknown`, retry it with `resumeIfStranded: true`.** That
+**Choosing a route (#184).** `input` takes an optional `route`: `auto` (the
+default — send nothing and you get it), `terminal` or `inbox`. Under `auto` the
+service decides by who is sending: a principal holding the `human-relay` grant
+goes through the terminal, unlabelled, and arrives as the user's own turn;
+everyone else goes through the session's inbox when it can take it, and arrives as
+a **peer message** the runtime itself marks as not from the user — which is the
+authority an agent's message should have. When the inbox cannot take it, `auto`
+sends it through the terminal **with a `[from: …]` line**; a message from anyone
+but a human relay is always labelled, and if you send no `from` the service
+labels it with the principal you authenticated as. Read `delivery.route` on the
+receipt to see which path carried it. Reach for `route: "inbox"` only when the
+message must not go through the composer: it is **refused, with nothing written**,
+when the session cannot take it — never downgraded. And do not try to look like a
+human: no header, no `from` and no `relayOfHuman` changes which path a message
+takes; only the principal's own grant does.
+
+**If `send` answers `unknown` on `delivery.route: "terminal"` (or with no
+route), retry it with `resumeIfStranded: true`.** That
 outcome means the text reached the composer but could not be confirmed in time,
 so it is sitting there unsent — and a plain retry is refused, correctly, by the
 rule that stops anything appending to a busy composer. When the service can
 establish from its own record that the composer holds the text it delivered, the
 resume submits it — send the *same* text: this finishes one delivery, it does
 not start another.
+
+**If it answers `unknown` on `delivery.route: "inbox"`, do not retry — wait and
+read the transcript.** Nothing is sitting in a composer: the message was written
+to the session's inbox and the receiver's transcript has not recorded it yet, so
+it may have arrived, may be held, or may have been dropped. The service will not
+send it again: for 30 minutes, or until it is recorded, the same text from the
+same sender to the same session is answered with the same `unknown` on every
+path, `resumeIfStranded` included, because sending it again could deliver it
+twice. Different text is a different message and goes through.
 
 **The draft rule (#180): the service never clears or submits composer text it
 cannot prove is its own, unless you prove you saw it.** When no live record

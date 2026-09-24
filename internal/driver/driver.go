@@ -134,26 +134,30 @@ type SendOptions struct {
 	// vanished at the federation boundary would produce no symptom at all.
 	From *fleet.MessageFrom
 
-	// ForceTerminalRoute (terminal path v2, item g / D7) asks a driver that
-	// ALSO has a capability-detected inbox path (colab-fleet #119) to use
-	// the pane/composer path instead, even on a call that would otherwise
-	// be inboxEligible (Submit set, neither stranded flag set).
+	// Route (#184) is the delivery path the caller asked for. The zero value
+	// and fleet.RouteAuto both mean "the driver chooses": on a driver with an
+	// inbox path, a call that is eligible for it goes there, and anything else
+	// takes the terminal path. fleet.RouteTerminal forces the terminal path.
+	// fleet.RouteInbox insists on the inbox and is REFUSED — nothing written —
+	// when the session cannot take it; a driver never quietly downgrades an
+	// explicit request.
 	//
-	// # Why this exists at all
+	// # Who decides what
 	//
-	// #119's inbox path is a cross-session PEER delivery mechanism, paused
-	// fleet-wide pending #119's own remaining human ruling on credentials —
-	// but a caller sending on behalf of a HUMAN (a human-facing relay
-	// service, chiefly) needs a way to say "use the path a human's own typed
-	// message would use" independent of when the inbox path itself comes
-	// back for AGENT-to-agent traffic. Without this field the only lever is
-	// disabling the inbox path fleet-wide, which throws away the distinction
-	// entirely instead of letting one class of sender opt out on its own.
+	// The service decides everything that depends on WHO is asking: a human
+	// relay's auto becomes fleet.RouteTerminal before a driver sees it, because
+	// a driver cannot see principals and a peer built earlier would re-decide
+	// it wrongly. The driver decides everything that depends on the SESSION:
+	// whether the inbox is reachable, what to do when it is not, and what was
+	// actually confirmed.
 	//
-	// A driver with no inbox capability at all is unaffected either way —
-	// see inboxEligible, the only place this field is read on the tmux
-	// driver.
-	ForceTerminalRoute bool
+	// A driver with a single delivery path treats fleet.RouteInbox as a request
+	// it cannot honour and refuses it; the other values it may ignore, since
+	// every path it has is the terminal one.
+	//
+	// Like ResumeIfStranded, this has no effect on a remote driver unless that
+	// driver's hand-built body forwards it (#33).
+	Route fleet.Route
 }
 
 // SenderLabel renders from as "agent · session · machine", skipping empty

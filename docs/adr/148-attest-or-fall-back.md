@@ -151,3 +151,22 @@ door. Nothing is dialled for a send that cannot be attested.
 - **Relax the clipped-composer refusal so the cascade can be cleared.** Out of
   scope and its own design. That refusal is correct; what was missing was an
   operator-side lever, which is the capture window this branch also exposes.
+
+## Addendum (#184): the gate was re-checked and kept
+
+#184 re-checked whether this gate is stricter than the runtime requires, against
+a measurement made on runtime 2.1.281: a message asserting the prompting class
+reached receivers in default, accept-edits, plan and auto modes (including
+mid-turn), and a mismatched class was delivered rather than held. The gate is
+**unchanged**. That measurement covered no receiver running with permission
+prompts bypassed and no unattested message — the only two cases the gate exists
+for — and a delivered mismatch is equally what a receiver with the class-consulting
+policy gate off would do (see the consequences above and gotcha 148). What would
+reopen it, and why the class cannot simply be narrowed, are in
+`docs/adr/184-route-by-sender.md`.
+
+Since #184 a delivery is also confirmed from the receiver's own transcript, so a
+message a receiver holds and drops reads `unknown` (`inbox.unconfirmed`) instead
+of a false `delivered`. That does not replace this gate; it makes a failure of it
+visible.
+

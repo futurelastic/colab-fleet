@@ -387,6 +387,15 @@ type Driver struct {
 	// own after the live record is gone (draftrule.go, #180 M2).
 	tombstones map[string][]strandedTombstone
 
+	// unconfirmed is the cross-path ledger (#184, route.go): per session, inbox
+	// writes that put bytes on the socket and could not be confirmed. It is the
+	// reason a retry of an inbox `unknown` cannot reach the terminal path with
+	// the same text. Persisted beside stranded, for the same reason: a restart
+	// must not turn "written, unconfirmed" back into "never sent".
+	unconfirmed map[string][]unconfirmedEntry
+	// inboxWindow overrides inboxConfirmWindow. Tests only.
+	inboxWindow time.Duration
+
 	// delivered remembers, per session, the most recent delivery THIS DRIVER
 	// made into that session's composer — the denominator colab-fleet #111's
 	// `turns` is counted relative to. Written once, at the moment Send's own
@@ -2100,6 +2109,15 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 // message containing something like "C-c" is a live hazard; the paste
 // buffer takes bytes and interprets none of them.
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
+	receipt, err := d.send(ctx, req, ref, text, opts)
+	// #184: every Send is counted under route.* exactly once, whichever return
+	// below produced it.
+	d.observeRoute(opts.Route, receipt, err)
+	return receipt, err
+}
+
+// send is Send's body; Send only adds the route counters around it.
+func (d *Driver) send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
 	// Terminal path v2 / D4: every composer-touching operation on this
 	// session id is serialised through one lock, acquired before anything
 	// else runs and released on every return from here on
@@ -2174,43 +2192,106 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		}), nil
 	}
 
-	// colab-fleet #119: capability-detected fast path over a target
-	// session's own inbox, tried before anything below touches the pane.
-	// inboxEligible excludes every shape (!Submit, ResumeIfStranded,
-	// ReplaceIfStranded) that names a pane-composer concept the inbox path
-	// has none of — those calls fall straight through to the pane path
-	// unchanged, same as ever. sendViaInbox manages its own bounded
-	// context internally (mirroring ResolveProcessIdentity/
-	// VerifyProcessIdentity, which it calls); it does not use the `ctx`
-	// this function bounds just below, because it must run — and
-	// possibly return — before that bound exists.
-	if inboxEligible(opts) {
-		if receipt, ok, err := d.sendViaInbox(ctx, ref, text, opts.From); err != nil {
-			return fleet.DeliveryReceipt{}, err
-		} else if ok {
-			return receipt, nil
-		}
-		// ok=false: no inbox capability for this target — fall through to
-		// the pane path below, unchanged.
+	// #184: which path. The service has already decided everything that depends
+	// on WHO is sending (a human relay's auto arrives here as terminal); what is
+	// decided here depends on the SESSION — whether its inbox can take this
+	// message, and what to do when it cannot.
+	route := opts.Route
+	if route == "" {
+		route = fleet.RouteAuto
+	}
+	if !route.Valid() {
+		return d.observeEarly(delivery.Refused, fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason:  fmt.Sprintf("route %q is not one this driver accepts (auto, terminal or inbox)", string(route)),
+		}), nil
+	}
+	if route == fleet.RouteInbox && (!opts.Submit || opts.ResumeIfStranded || opts.ReplaceIfStranded) {
+		// The same shape rule the service applies, stated again because a driver
+		// can be called without it. An explicit inbox request is never quietly
+		// turned into a composer operation.
+		return d.observeEarly(delivery.Refused, fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "route \"inbox\" delivers a message as a turn: it cannot be combined with " +
+				"submit:false, resumeIfStranded or replaceIfStranded, which name a composer the inbox " +
+				"does not have. Nothing was written",
+		}.WithRoute(fleet.RouteInbox)), nil
 	}
 
-	// colab-fleet #158: from here on the text is the pane's, so it carries
-	// the sender label as its first line. Everything below — the stranded-
-	// delivery record included — sees the labelled text, so a resume must
-	// repeat the same `from` as well as the same text.
-	text = paneLabelled(text, opts.From)
+	// #184: the cross-path ledger, before any path is chosen. An earlier inbox
+	// write of this same text that could not be confirmed may already be in the
+	// receiver's hands: nothing is written on EITHER path, whatever the flags —
+	// a resumeIfStranded retry is a terminal operation and would paste it again.
+	if receipt, held := d.answerFromLedger(ctx, ref, deliveryKey(text, opts.From)); held {
+		return receipt, nil
+	}
+
+	// colab-fleet #158: on the terminal path the text carries the sender label
+	// as its first line. Everything below — the stranded-delivery record
+	// included — sees the labelled text, so a resume must repeat the same `from`
+	// as well as the same text. Computed here, after the #53 guard has judged
+	// the caller's own text: prefixing first would move a leading slash command
+	// off the first line and past the guard.
+	labelled := paneLabelled(text, opts.From)
+
+	// colab-fleet #119: capability-detected inbox path over a target session's
+	// own inbox, tried before anything below touches the pane. inboxEligible
+	// excludes every shape (!Submit, ResumeIfStranded, ReplaceIfStranded, a
+	// forced terminal route) that names a pane-composer concept the inbox has
+	// none of — those calls fall straight through to the terminal path.
+	// sendViaInbox manages its own bounded context internally (mirroring
+	// ResolveProcessIdentity/VerifyProcessIdentity, which it calls); it does not
+	// use the `ctx` this function bounds below, because it must run — and
+	// possibly return — before that bound exists.
+	if inboxEligible(opts) {
+		switch {
+		case d.terminalUnconfirmed(ref.ID, labelled):
+			// The composer already holds this text as a stranded delivery of
+			// ours. The inbox would deliver it once and leave a copy waiting to
+			// be submitted — twice — so the inbox is not used. Auto goes on to
+			// the terminal, whose own stranded-record rules decide; an explicit
+			// inbox request is refused, never quietly sent to the terminal.
+			d.counters.incr(counterRouteGuardTerminalUnconfirm)
+			if route == fleet.RouteInbox {
+				return fleet.DeliveryReceipt{
+					Outcome: fleet.OutcomeRefused,
+					Reason: "an earlier terminal delivery of this same text is unconfirmed and still in the " +
+						"session's composer, so it was not also sent to the inbox. Nothing was written",
+				}.WithRoute(fleet.RouteInbox), nil
+			}
+		default:
+			res, err := d.sendViaInbox(ctx, ref, text, opts)
+			if err != nil {
+				return fleet.DeliveryReceipt{}, err
+			}
+			if res.Final {
+				return res.Receipt, nil
+			}
+			// Declined with nothing written.
+			if route == fleet.RouteInbox {
+				return fleet.DeliveryReceipt{
+					Outcome: fleet.OutcomeRefused,
+					Reason: "route \"inbox\" was requested but the session cannot take it: " + res.Why +
+						". Nothing was written",
+				}.WithRoute(fleet.RouteInbox), nil
+			}
+			if res.Tried {
+				d.counters.incr(counterRouteAutoFallback)
+			}
+		}
+	}
 
 	// #180: everything above decides about the REQUEST; how the text reaches
 	// the session is the delivery module's (internal/delivery). Callers see
-	// the module's receipt verbatim.
+	// the module's receipt verbatim, plus the path it took.
 	mod := d.deliveryModule()
-	res, err := mod.Deliver(ctx, delivery.Delivery{Req: req, Ref: ref, Text: text, Opts: opts})
+	res, err := mod.Deliver(ctx, delivery.Delivery{Req: req, Ref: ref, Text: labelled, Opts: opts})
 	if err != nil {
 		d.counters.incr(delivery.CounterPrefix + mod.Name() + ".error")
 		return fleet.DeliveryReceipt{}, err
 	}
 	delivery.Observe(d.counters.incr, mod.Name(), res)
-	return res.Receipt, nil
+	return res.Receipt.WithRoute(fleet.RouteTerminal), nil
 }
 
 // deliverViaPane is the built-in tmux delivery module's mechanism (#180):
@@ -4833,7 +4914,12 @@ func (d *Driver) settleNewSession(req fleet.Request, ref fleet.SessionRef, spec 
 // afterwards "did this happen, how often" — which is exactly the shape #9
 // describes wanting and not having.
 func (d *Driver) deliverInitialPrompt(ctx context.Context, req fleet.Request, ref fleet.SessionRef, prompt string) {
-	receipt, err := d.Send(ctx, req, ref, prompt, driver.SendOptions{Submit: true})
+	// #184: the create-time prompt is the creator's launch instruction, not a
+	// peer's message, so it is pinned to the terminal — on the first attempt
+	// AND the retry. That is also what makes the retry below safe: it can only
+	// resume something the terminal path itself stranded, never re-send text the
+	// inbox already put in front of the receiver.
+	receipt, err := d.Send(ctx, req, ref, prompt, driver.SendOptions{Submit: true, Route: fleet.RouteTerminal})
 	if err != nil {
 		// A transport-level error Send itself already wraps and named. #86:
 		// resolved as unknown, not refused — nothing declined this delivery,
@@ -4855,7 +4941,7 @@ func (d *Driver) deliverInitialPrompt(ctx context.Context, req fleet.Request, re
 	}
 
 	d.counters.incr(counterInitialPromptRetried)
-	retry, err := d.Send(ctx, req, ref, prompt, driver.SendOptions{Submit: true, ResumeIfStranded: true})
+	retry, err := d.Send(ctx, req, ref, prompt, driver.SendOptions{Submit: true, ResumeIfStranded: true, Route: fleet.RouteTerminal})
 	// #101: the resume path used to report `submitted` unconditionally, which
 	// is why this compared against it. It now confirms the submit the same
 	// way the first attempt does and reports `queued` on the same evidence
@@ -5547,6 +5633,9 @@ func (r strandedRecord) pasteKey() pasteKey {
 type strandedFile struct {
 	Records    map[string]strandedRecord      `json:"records"`
 	Tombstones map[string][]strandedTombstone `json:"tombstones,omitempty"`
+	// Unconfirmed is #184's cross-path ledger. A file written before it existed
+	// decodes with it empty, and an older build ignores the key.
+	Unconfirmed map[string][]unconfirmedEntry `json:"unconfirmed,omitempty"`
 }
 
 const strandedFileName = "stranded"
@@ -5943,7 +6032,7 @@ func (d *Driver) saveStrandedLocked() {
 	if d.store == nil {
 		return
 	}
-	_ = d.store.Save(strandedFileName, strandedFile{Records: d.stranded, Tombstones: d.tombstones})
+	_ = d.store.Save(strandedFileName, strandedFile{Records: d.stranded, Tombstones: d.tombstones, Unconfirmed: d.unconfirmed})
 }
 
 // loadStranded restores stranded-delivery records at startup, sweeping
@@ -5956,15 +6045,17 @@ func (d *Driver) loadStranded() {
 	}
 	var f strandedFile
 	found, err := d.store.Load(strandedFileName, &f)
-	if err != nil || !found || (len(f.Records) == 0 && len(f.Tombstones) == 0) {
+	if err != nil || !found || (len(f.Records) == 0 && len(f.Tombstones) == 0 && len(f.Unconfirmed) == 0) {
 		return
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.stranded = f.Records
 	d.tombstones = f.Tombstones
+	d.unconfirmed = f.Unconfirmed
 	d.sweepTombstonesLocked()
 	d.sweepStrandedLocked()
+	d.sweepUnconfirmedLocked()
 	d.saveStrandedLocked()
 }
 

@@ -261,3 +261,20 @@ The five-value receipt vocabulary is still unproduced, and #120 is still why.
 reply address that must be bound in the receiver's own socket namespace, which
 confirms rather than contradicts #143's measurement of zero bytes back on a
 fully successful delivery. See `docs/adr/148-attest-or-fall-back.md`.
+
+## Addendum (#184): the fallback stops at the first byte
+
+This ADR's rule that a failed write falls back to the pane (item 3 of the #148
+addendum, from #144) held while a failed write meant "nothing reached the
+receiver". It was never checked. A write can fail after the auth line and part of
+the message have gone out, and a receiver given part of a line then a closed
+connection is not something a sender can prove discards it. Since #184 the
+fallback is taken only when the socket accepted **no** byte
+(`inboxclient.NothingWritten`); any byte makes the outcome `unknown` on the
+inbox's account, and the same text is never sent down the other path. A complete
+write is confirmed from the receiver's transcript, and `delivered` reports that
+rather than "the attested bytes reached the socket". Identity verification is done
+twice, once before attestation and once immediately before the dial. The rest of
+this ADR — capability detection, no reply channel, the resolver — stands. See
+`docs/adr/184-route-by-sender.md`.
+

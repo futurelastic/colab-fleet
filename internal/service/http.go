@@ -1216,13 +1216,12 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			// it comes from. Its Machine is replaced by stampSender below,
 			// never passed through.
 			From *fleet.MessageFrom `json:"from,omitempty"`
-			// Route (terminal path v2, item g / D7) forces the pane/composer
-			// delivery path even on a call that would otherwise be eligible
-			// for a driver's capability-detected inbox path (colab-fleet
-			// #119). The only recognised non-empty value today is
-			// "terminal"; anything else is a caller error, rejected below
-			// rather than silently ignored — the same discipline this
-			// service already applies to a malformed body.
+			// Route (terminal path v2, item g / D7; #184) chooses the delivery
+			// path: "" or "auto" (the service picks by who is sending),
+			// "terminal" (the session's composer), or "inbox" (the runtime's own
+			// messaging socket, arriving as a peer message). Anything else is a
+			// caller error, rejected below rather than silently ignored — the
+			// same discipline this service already applies to a malformed body.
 			Route string `json:"route,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1237,29 +1236,24 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			return
 		}
 
-		// terminal path v2 / D7: "route" is a closed set of one value today.
-		// Rejected here, before a driver ever sees it, for the same reason
-		// #112's contradictory-flags check runs ahead of everything in
-		// Send: a caller error about the REQUEST'S OWN SHAPE should never
-		// depend on which session exists or whether a driver can be
-		// resolved for it.
-		var forceTerminalRoute bool
-		switch body.Route {
-		case "":
-		case "terminal":
-			// Review fix (#180 review): route:"terminal" is no longer
-			// honoured unconditionally from any caller holding the fleet
-			// token. A principal explicitly configured as a human relay
-			// (GrantHumanRelay — a human-facing relay)
-			// may set it with no further condition: its own channel IS the
+		// "route" is a closed set (#184). Rejected here, before a driver ever
+		// sees it, for the same reason #112's contradictory-flags check runs
+		// ahead of everything in Send: a caller error about the REQUEST'S OWN
+		// SHAPE should never depend on which session exists or whether a
+		// driver can be resolved for it.
+		route := fleet.RouteAuto
+		switch fleet.Route(body.Route) {
+		case "", fleet.RouteAuto:
+		case fleet.RouteTerminal:
+			// Review fix (#180 review): route:"terminal" is not honoured
+			// unconditionally from any caller holding the fleet token. A
+			// principal configured as a human relay (GrantHumanRelay) may set
+			// it with no further condition: its own channel IS the
 			// human-identifying fact route:"terminal" exists to preserve.
-			// Every other caller (no principal table configured here at
-			// all, or a principal without the grant) must ALSO carry a
-			// `from` label — refusing an unlabelled agent send from opting
-			// out of the (currently paused) inbox path and having it
-			// recorded as human-typed input, which is exactly the
-			// separation D7 exists to create once the inbox comes back
-			// "for agents only".
+			// Every other caller must ALSO carry a `from` label — refusing an
+			// unlabelled agent send from opting out of the inbox and having it
+			// recorded as human-typed input, which is exactly the separation
+			// D7 exists to create.
 			//
 			// #180 M8: the requirement is a label that PRINTS, not a `from`
 			// object — `{}`, or a name the label normalisation drops whole,
@@ -1276,12 +1270,43 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 					Machine: machine})
 				return
 			}
-			forceTerminalRoute = true
+			route = fleet.RouteTerminal
+		case fleet.RouteInbox:
+			// The inbox has no composer: a text that is not submitted, or a
+			// resume/replace of a delivery stranded in one, names a composer
+			// concept it cannot honour. Refused as the request's own shape, not
+			// discovered per session — an explicit route is never quietly
+			// downgraded, and this is the same fact stated up front.
+			if !body.Submit || body.ResumeIfStranded || body.ReplaceIfStranded {
+				writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
+					Message: "route \"inbox\" delivers a message as a turn: it cannot be combined with " +
+						"submit:false, resumeIfStranded or replaceIfStranded, which name a composer " +
+						"the inbox does not have",
+					Machine: machine})
+				return
+			}
+			route = fleet.RouteInbox
 		default:
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
-				Message: fmt.Sprintf("route %q is not recognised; the only accepted non-empty value is \"terminal\"", body.Route),
+				Message: fmt.Sprintf("route %q is not recognised; the accepted values are \"auto\" (or omitted), \"terminal\" and \"inbox\"", body.Route),
 				Machine: machine})
 			return
+		}
+
+		// #184: who is sending decides what auto means, and the service is the
+		// only place that can see it. A human relay's message is the user's own
+		// words: it goes through the terminal, unlabelled, so it arrives as the
+		// user. Anyone else's is a peer's: it is labelled — with what the
+		// service actually knows when the caller said nothing — and the driver
+		// then prefers the inbox, where the runtime itself marks it as not from
+		// the user. The decision reads the principal's own grant (or a trusted
+		// relay's assertion of it), never a header or a `from` a caller set.
+		if humanRelay {
+			if route == fleet.RouteAuto {
+				route = fleet.RouteTerminal
+			}
+		} else {
+			from = svc.labelledSender(r, from)
 		}
 
 		req := requestFrom(r)
@@ -1296,7 +1321,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, ExpectComposerDigest: body.Expect, From: from, ForceTerminalRoute: forceTerminalRoute, HumanRelay: humanRelay})
+		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, ExpectComposerDigest: body.Expect, From: from, Route: route, HumanRelay: humanRelay})
 		if err != nil {
 			// A refusal from the driver is not this branch — Send returns
 			// it as a DeliveryReceipt value, not an error. Only a
@@ -1310,6 +1335,51 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		// unknown.
 		writeJSON(w, http.StatusOK, receipt)
 	}
+}
+
+// labelledSender makes a non-human sender's label real (#184). The terminal
+// path puts the label on the message as its first line and the inbox carries it
+// in the envelope, and either way it is what lets a receiver tell an agent's
+// text from a person's. A caller that names itself keeps exactly what it said;
+// a caller that names nothing gets the one fact this service actually holds —
+// the authenticated principal's name — instead of arriving as an anonymous
+// message that reads like a human typed it.
+//
+// `from` is the value stampSender already produced, so Machine is settled. Only
+// a missing self-description is filled: when the caller gave neither an agent
+// nor a session, Agent becomes the principal (on a trusted relay, the principal
+// the request is made on behalf of). With no principal table the request has no
+// authenticated identity at all, and the label is the machine alone; if even
+// that is empty the agent reads "unidentified" rather than sending nothing.
+//
+// The result is a pure function of the request, so a resumeIfStranded retry
+// carrying the same body is labelled identically and still matches the record
+// it is resuming.
+func (svc *Service) labelledSender(r *http.Request, from *fleet.MessageFrom) *fleet.MessageFrom {
+	out := fleet.MessageFrom{}
+	if from != nil {
+		out = *from
+	}
+	behalf := r.Header.Get(onBehalfOfHeader)
+	relayed := behalf != "" && svc.relayTrusted(r)
+	if from == nil && !relayed {
+		// stampSender is nil-in, nil-out, so a request that named nobody was
+		// never stamped. A direct request entered HERE; a relayed one entered
+		// somewhere this service was not told, and naming the owning machine as
+		// its origin would be a guess.
+		out.Machine = svc.Self()
+	}
+	if strings.TrimSpace(out.Agent) == "" && strings.TrimSpace(out.Session) == "" {
+		if relayed {
+			out.Agent = behalf
+		} else if p, ok := principalOf(r); ok {
+			out.Agent = p.Name
+		}
+	}
+	if inboxclient.SenderName(driver.SenderLabel(&out)) == "" {
+		out.Agent = "unidentified"
+	}
+	return &out
 }
 
 // stampSender applies colab-fleet #158's one rule about a sender's machine:
