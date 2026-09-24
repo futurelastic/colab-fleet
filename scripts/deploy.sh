@@ -78,6 +78,19 @@
 #                             deadline needs slack above that, not just above
 #                             a quiet-box startup.
 #   FLEET_VERIFY_INTERVAL     seconds between polls while waiting. Default 2.
+#   FLEET_MODULE_SOURCES    OPTIONAL. Space-separated name=source entries, one
+#                             per optional delivery module to install beside
+#                             the daemon (colab-fleet #185). Each is fetched
+#                             and built with THIS user's own access by
+#                             scripts/fetch-module.sh; a source this user
+#                             cannot fetch installs nothing and says nothing.
+#                             A malformed entry gets one warning line. Unset or
+#                             empty: this step does not run at all.
+#   FLEET_MODULES_DIR       where those modules are installed on the host.
+#                             Default: <parent of REMOTE_PATH's directory>/
+#                             libexec/colab-fleet/modules - the same place the
+#                             daemon looks. Set the same value in the
+#                             service's own environment if you set it here.
 #   ALLOW_DIRTY=1       build from a modified tree anyway. The resulting
 #                       binary reports itself as dirty and will never compare
 #                       equal to anything, including the next deploy.
@@ -260,6 +273,130 @@ echo "deploy: installing to ${HOST}:${REMOTE_PATH}"
 run "mkdir -p \"\$(dirname ${REMOTE_PATH})\""
 put "$TMPBIN" "${REMOTE_PATH}.incoming"
 run "chmod 0755 ${REMOTE_PATH}.incoming && mv ${REMOTE_PATH}.incoming ${REMOTE_PATH}"
+
+# >>> optional delivery modules (#185) >>>
+#
+# --- install optional delivery modules, when asked ---------------------------
+#
+# colab-fleet #185. Runs ONLY when FLEET_MODULE_SOURCES is set and non-empty;
+# otherwise nothing below executes and a deploy is byte-for-byte what it was.
+#
+# A module is an optional helper program that lives beside the daemon and is
+# built from a source this operator may or may not be able to reach. So the
+# rule is the installer's, not this script's: fetch it with the operator's OWN
+# access (scripts/fetch-module.sh), and when that fails - no access, no such
+# version, no network - install nothing and say nothing. A machine with only
+# the built-in terminal module is a supported state, not a deploy problem, and
+# a fetch that failed must never remove a module an earlier deploy installed.
+#
+# Built here, for the TARGET's platform (GOOS/GOARCH, settled above), then put
+# on the host the same way the daemon binary was: uploaded beside its final
+# name and renamed into place, never written over a file in use.
+#
+# What still speaks up, on stderr, and still never fails the deploy:
+#   - a malformed entry (no '=', an empty side, a name the service would not
+#     accept) - one line, naming the entry's position and, only when the name
+#     side is itself a valid name, that name. Never the source: it can carry
+#     a credential in its shape;
+#   - a module that WAS fetched but could not be put on the host.
+# The daemon lists its modules directory at startup, so the restart below is
+# what makes a newly installed module visible.
+if [ -n "${FLEET_MODULE_SOURCES:-}" ]; then
+	# Explicit character sets, not ranges: a range means different things in
+	# different locales. Same rule as scripts/fetch-module.sh.
+	module_name_ok() {
+		case "$1" in
+		'' | auto | terminal | inbox | module) return 1 ;;
+		[!abcdefghijklmnopqrstuvwxyz]* | *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) return 1 ;;
+		esac
+		[ "${#1}" -le 32 ]
+	}
+
+	# $1 = local file, $2 = destination on the host. Written as explicit &&
+	# steps because it is called from an `if`, where `set -e` does not apply.
+	module_install() {
+		run "mkdir -p -m 0755 ${MODULES_DIR}" &&
+			put "$1" "$2.incoming" &&
+			run "chmod 0755 $2.incoming && mv $2.incoming $2"
+	}
+
+	if [ -n "${FLEET_MODULES_DIR:-}" ]; then
+		MODULES_DIR=$FLEET_MODULES_DIR
+		if [ "$HOST" = "local" ]; then
+			# Same leading-~ handling, and for the same reason, as REMOTE_PATH.
+			case "$MODULES_DIR" in
+			'~/'*) MODULES_DIR="$HOME/${MODULES_DIR#\~/}" ;;
+			'~') MODULES_DIR="$HOME" ;;
+			esac
+		fi
+	else
+		# Where the daemon looks by default: the parent of the directory its
+		# own binary runs from, resolved on the host (symlinks and all, as the
+		# daemon resolves its own path), plus libexec/colab-fleet/modules.
+		MODULE_BIN_DIR=$(run "cd \"\$(dirname ${REMOTE_PATH})\" && pwd -P") || MODULE_BIN_DIR=""
+		if [ -n "$MODULE_BIN_DIR" ]; then
+			MODULES_DIR="$(dirname "$MODULE_BIN_DIR")"
+			MODULES_DIR="${MODULES_DIR%/}/libexec/colab-fleet/modules"
+		else
+			MODULES_DIR=""
+			echo "deploy: WARNING could not work out where ${HOST} keeps delivery modules;" >&2
+			echo "        none installed. Set FLEET_MODULES_DIR." >&2
+		fi
+	fi
+
+	# A module problem never fails the deploy, so even the staging directory
+	# is asked for inside an `if`.
+	if [ -n "$MODULES_DIR" ] && MODSTAGE=$(mktemp -d -t colab-fleet-modules.XXXXXX); then
+		# Restates the trap above (which this replaces) and adds the staging
+		# directory; ${...:-} so this is safe wherever TMPBIN is not set.
+		trap 'rm -f "${TMPBIN:-}"; rm -rf "${MODSTAGE:-}"' EXIT
+
+		# No globbing: an entry is data, and a stray * must not expand.
+		set -f
+		MOD_N=0
+		for MOD_ENTRY in $FLEET_MODULE_SOURCES; do
+			MOD_N=$((MOD_N + 1))
+			case "$MOD_ENTRY" in
+			*=*)
+				MOD_NAME=${MOD_ENTRY%%=*}
+				MOD_SRC=${MOD_ENTRY#*=}
+				;;
+			*)
+				MOD_NAME=""
+				MOD_SRC=""
+				;;
+			esac
+
+			if ! module_name_ok "$MOD_NAME"; then
+				echo "deploy: WARNING module entry ${MOD_N} is malformed (expected name=source); skipped." >&2
+				continue
+			fi
+			if [ -z "$MOD_SRC" ]; then
+				echo "deploy: WARNING module entry ${MOD_N} (${MOD_NAME}) is malformed (expected name=source); skipped." >&2
+				continue
+			fi
+
+			MOD_OUT="$MODSTAGE/$MOD_NAME"
+			rm -f "$MOD_OUT"
+			# Silent by contract, and always exits 0; a failed fetch is the
+			# absence of $MOD_OUT, which is all this step looks at.
+			GOOS="$GOOS" GOARCH="$GOARCH" sh scripts/fetch-module.sh "$MOD_NAME" "$MOD_SRC" "$MOD_OUT" || true
+			if [ ! -f "$MOD_OUT" ]; then
+				continue
+			fi
+
+			if module_install "$MOD_OUT" "${MODULES_DIR}/${MOD_NAME}"; then
+				echo "deploy: installed delivery module ${MOD_NAME} to ${HOST}:${MODULES_DIR}/${MOD_NAME}"
+			else
+				run "rm -f ${MODULES_DIR}/${MOD_NAME}.incoming" 2>/dev/null || true
+				echo "deploy: WARNING delivery module ${MOD_NAME} was fetched but could not be installed to ${HOST}:${MODULES_DIR}; skipped." >&2
+			fi
+		done
+		set +f
+		rm -rf "$MODSTAGE"
+	fi
+fi
+# <<< optional delivery modules (#185) <<<
 
 # --- restart ----------------------------------------------------------------
 if [ -n "${FLEET_RESTART:-}" ]; then
