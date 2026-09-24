@@ -1,0 +1,21 @@
+{
+  "name": "permission-mode-real-plan",
+  "for": "Colab-fleet #194: a REAL capture of a session whose runtime shows `⏸ plan mode on (shift+tab to cycle)` in its indicator row, replayed through the same classifier the polling loop uses. Pins that the mode reads as plan from the wording alone (the glyph and the trailing hints are decoration) and that the state still classifies as an ordinary idle session — the mode is a second fact about the session, never a rewrite of its status. The row also has to survive redaction whole, which is what makes a committed capture usable at all: before #194 the redactor kept only the auto-mode wording and discarded this row as unrecognised.",
+  "source": "#194 (the field), #188 (BTab, the key whose effect this makes readable)",
+  "redactedFrom": "real capture of runtime build 2.1.282 taken from a session started for this purpose in a private multiplexer server and cycled with Shift+Tab, redacted by corpus-redact",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "unknown",
+      "wantPermissionMode": "plan"
+    },
+    {
+      "afterSeconds": 5,
+      "young": false,
+      "want": "idle",
+      "wantPermissionMode": "plan"
+    }
+  ]
+}

@@ -40,6 +40,12 @@ var catalogue = []Spec{
 		ReliedOn: []string{"internal/drivers/tmux/controlchannel.go#controlStates"},
 	},
 	{
+		ID:       "F-MODE",
+		Gate:     GateWarn,
+		Asserts:  "The driver reads the permission mode a live session shows: a session started in the default mode reads as default and one started in bypass-permissions mode reads as bypass, and the candidate still contains the wording of the accept-edits, plan and auto indicator rows. The other three modes cannot be entered without pressing keys in a session other checks share, so their wording is checked statically.",
+		ReliedOn: []string{"internal/drivers/tmux/permissionmode.go#permissionModeOf"},
+	},
+	{
 		ID:       "C1",
 		Gate:     GateMust,
 		Asserts:  "A working directory the driver seeds as trusted starts without the folder-trust dialog, so a session created there reaches its composer on its own.",

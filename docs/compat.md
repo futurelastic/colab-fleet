@@ -264,6 +264,7 @@ build.
 | `F-LIMIT` | warn | The candidate still contains the usage-limit notice wording the screen classifier recognises. Static text only: the screen cannot be produced on demand. | `internal/drivers/tmux/classify.go#usageLimit` |
 | `F-APIERR` | warn | The candidate still contains the API-error wording the classifier reads to tell a failed turn from a finished one. Static text only: the screen cannot be produced on demand. | `internal/drivers/tmux/classify.go#lastTurnFailed` |
 | `H-RC` | warn | The candidate still contains the four remote-control footer labels the control-channel reader maps. Static text only: a check never attaches a bridge. | `internal/drivers/tmux/controlchannel.go#controlStates` |
+| `F-MODE` | warn | The driver reads the permission mode a live session shows: a session started in the default mode reads as default and one started in bypass-permissions mode reads as bypass, and the candidate still contains the wording of the accept-edits, plan and auto indicator rows. The other three modes cannot be entered without pressing keys in a session other checks share, so their wording is checked statically. | `internal/drivers/tmux/permissionmode.go#permissionModeOf` |
 | `C1` | must | A working directory the driver seeds as trusted starts without the folder-trust dialog, so a session created there reaches its composer on its own. | `internal/trustseed/trustseed.go#Seeder` |
 | `F-TRUST` | must | A directory outside the trust root shows the folder-trust dialog, which the driver classifies as such, reads as an unnumbered menu, and can find exactly one affirmative option in. Observed only: the dialog is never answered. | `internal/drivers/tmux/classify.go#classifyPromptKind`, `internal/drivers/tmux/tmux.go#affirmativeOption` |
 | `B5` | must | A session started in bypass-permissions mode reaches its composer with no acceptance screen in the way, given the user setting that suppresses it. | `internal/drivers/tmux/tmux.go#claudeCodeCommand` |
@@ -301,14 +302,14 @@ reason; they do not report them as unable to run.
 
 | Stage | What runs | Model turns |
 |---|---|---|
-| 0 | One scan of the candidate for the wording the screen classifiers read (F-LIMIT, F-APIERR, H-RC, and F-BYPASS as a fallback). | 0 |
+| 0 | One scan of the candidate for the wording the screen classifiers read (F-LIMIT, F-APIERR, H-RC, F-MODE, and F-BYPASS as a fallback). | 0 |
 | 1 | The isolated multiplexer server. | 0 |
-| 2 | Four sessions: a trusted directory (C1, D1, D3, D4, B2, E-*…), an untrusted one (F-TRUST), and two in bypass mode (B5, F-BYPASS). | 0 |
+| 2 | Four sessions: a trusted directory (C1, D1, D3, D4, B2, E-*…), an untrusted one (F-TRUST), and two in bypass mode (B5, F-BYPASS; and F-MODE reads the default-mode and bypass sessions' indicator rows, after giving each up to ten seconds to paint it — measured: the composer is up about a second before the row under it). | 0 |
 | 3 | Drafts pasted into the composer and cleared again (F-COMPOSER, F-MLDRAFT, F-PASTEMARK, F-WRAP), and a session used once to enter shell mode (G6). | 0 |
 | 4 | Five sends on the trusted session: a first one that creates the transcript, then a short one, a single line over 800 bytes, a 40-line paste, and text with control bytes and a tab (G1, G2, E-USER, E-PASTE, E-NAME, E-SLUG, B2, B7a, D2). | 5 |
 
-Measured on one full run against a current supported build: **24 checks, 5 model turns,
-about 42 seconds.** Every turn is a synthetic, nonce-tagged prompt at the smallest model
+Measured on one full run against a current supported build: **25 checks, 5 model turns,
+about 44 seconds.** Every turn is a synthetic, nonce-tagged prompt at the smallest model
 and lowest effort. The first send is made only to create the transcript, because the
 runtime writes it at the first turn and the driver confirms a send by the screen until it
 exists; the confirmation checks are asserted on the sends after it.

@@ -76,6 +76,12 @@ further out.
   `state` (the machine-local index already carries a permission-mode class, #148,
   and the footer shows the mode) is the natural follow-up and is what B would
   have included; it is filed separately rather than smuggled in here.
+  **Update:** that follow-up is #194 — [ADR 194](194-permission-mode-in-state.md).
+  `state.permissionMode` now publishes the mode, read from the footer; the index
+  class was measured and is not a source. The statements above that this service
+  "does not read the mode indicator" are true of the decision as made here and
+  are superseded by that ADR for the read side; this ADR's decision, the grant,
+  is unchanged.
 - **Federation:** a service that predates this answers `400` naming the keys it
   does deliver, and across a peer relay the machine that runs the session is the
   one that decides, so a caller can meet that `400` from the far end.

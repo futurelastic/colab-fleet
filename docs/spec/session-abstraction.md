@@ -189,12 +189,21 @@ SessionState {
   turns?          : integer       // agent turns completed since the most recent prompt delivery (#111); 0 is a finding, absent means the driver could not count
   credentialGeneration?: Timestamp // this machine's local credential generation at read time (#12)
   controlChannel?: ControlChannel  // what the RUNTIME says about its own remote-control channel (#48)
+  permissionMode?: PermissionMode  // the permission mode the runtime shows the session to be in, when the driver can read it (#194); absent = nothing was read
 }
 
 ControlChannel {
   state   : "active" | "connecting" | "reconnecting" | "failed"
   reason? : string  // the runtime's own words for why `failed` (colab-fleet #69); for humans, never branched on
 }
+
+PermissionMode =
+  | "default"         // the runtime's ordinary mode (its own indicator calls it "manual")
+  | "acceptEdits"     // file edits accepted without asking
+  | "plan"            // read and plan, do not act
+  | "auto"            // the runtime decides what is safe to do without asking; not offered on every model
+  | "bypass"          // stops asking before it acts — the same word `SessionSpec.permissionMode` takes at create time
+  | "unknown"         // an indicator area was read and named no mode — a real answer, never a guess
 
 Status =
   | "starting"        // spawned, not yet accepting input
@@ -263,6 +272,38 @@ TurnEnd {
 > print, and the measured consequence is specific: a supervisor grepping panes
 > for the disconnection notice classified ITSELF as disconnected, because its
 > own tool output contained the strings it was searching for.
+
+> **`permissionMode` is the permission mode the runtime SHOWS the session to be in
+> (colab-fleet issue #194) — the read side of `keys`' `BTab`.** `BTab` cycles the
+> mode and the receipt for a press says only that the screen changed under it
+> (ADR 188); which mode a press lands in is the runtime's own cycle order, and a
+> client that wants a named mode has to press, read, and repeat. Until this field
+> existed the "read" had no answer anywhere in this API, and a client had to keep a
+> handle on the terminal multiplexer to get one.
+>
+> **Two different absences and one explicit answer — none of them a guess
+> (§5.7).** The field is *absent* when nothing was read: the driver does not look
+> (`observesPermissionMode`, §4.3, is what says so, and an unreached peer reports
+> it `assumed`), or no composer was on screen to anchor the indicator area to (a
+> dialog owns it), or nothing was painted under the composer yet. It is `unknown`
+> when the indicator area WAS read and named no mode this build recognises — a
+> reworded label, a mode this list does not have, a hint painted in its place, or
+> two modes at once. A client cycling toward a target stops on `unknown` rather
+> than pressing on, and reads again on absence.
+>
+> The set is closed and a value outside it is a decode error, like `status`. Its
+> members are the modes measured on a real runtime build, not the ones a settings
+> file lists — including `bypass`, the mode most of an unattended fleet runs in.
+> It carries no conversation and no screen text: it is one of six fixed words, so
+> publishing it does not reopen the rule that `state` publishes fingerprints of the
+> screen and never the screen.
+>
+> A driver reading it off a screen must read it from the runtime's own chrome —
+> the row under the composer's closing fence — and never from the transcript, for
+> the reason given for `controlChannel` above: a session whose transcript mentions
+> `plan mode on` must not read as being in plan mode, or a client that stops
+> cycling at `plan` stops on a lie. A change fires `session.state` (§4) like any
+> other material change. It never changes `status`.
 
 > **`ControlChannel.reason` is sourced from the runtime's own durable record,
 > never from a screen (colab-fleet issue #69).** `state` alone cannot say
@@ -1130,7 +1171,8 @@ such key, and that absence is how a relaying service tells the two apart.
 
 **`keys` delivers one raw key event** — `Up`/`Down`/`Left`/`Right`/`Enter`/
 `Escape`, and `BTab` (Shift+Tab, which cycles the runtime's permission mode and
-is not a dialog key; ADR 188) (api-http.md §3.3, `POST …/keys`) — to the
+is not a dialog key; ADR 188 — its effect is readable in
+`SessionState.permissionMode`, ADR 194) (api-http.md §3.3, `POST …/keys`) — to the
 full-screen dialogs `respond` cannot answer, corroborated by `SessionState.screenDigest` (§2.3)
 the same way `discard` corroborates against `composerDigest`. A driver
 declares whether it can do this at all through
@@ -1312,6 +1354,7 @@ DriverCapabilities {
   observesState   : boolean   // can report status without inference
   deliversRawKeys : boolean   // can deliver a raw key event to a screen (§3 `keys`) and populate `screenDigest` (§2.3)
   observesControlChannel: boolean // can report `controlChannel` (§2.3); absent state is answerable only against this
+  observesPermissionMode: boolean // can report `permissionMode` (§2.3); absent state is answerable only against this
   reportsRuntimeSurface: boolean // can say anything about `runtimeSurface` (§2.13); absent state is answerable only against this
   confirmsDelivery: boolean   // can distinguish submitted from queued
   supportsResume  : boolean   // sessions survive a service restart

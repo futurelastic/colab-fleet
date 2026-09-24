@@ -350,11 +350,24 @@ func redactOption(n int, text string) string {
 	return strconv.Itoa(n) + ". " + placeholderToken
 }
 
+// knownFooterPhrases are the runtime's fixed menu/status footer wording. Each is
+// UI chrome with no variable content. The mode labels (#194) are the wording
+// the permission-mode reader matches — kept in step with permissionModeLabels
+// by TestKnownFooterPhrasesCoverEveryModeLabel — so a real capture of any mode
+// survives redaction whole rather than being discarded as unrecognised, which
+// would leave the committed fixture unable to exercise the very row the reader
+// is about.
+var knownFooterPhrases = []string{
+	selectFooter, confirmFooter, amendFooter,
+	"shift+tab to cycle",
+	"manual mode on", "accept edits on", "plan mode on", "auto mode on", "bypass permissions on",
+}
+
 // isKnownFooter matches the runtime's fixed menu/status footers. Every
 // phrase here is UI chrome with no variable content — see classify.go's own
 // constants for the two that are load-bearing for prompt detection.
 func isKnownFooter(content string) bool {
-	for _, phrase := range []string{selectFooter, confirmFooter, amendFooter, "auto mode on", "shift+tab to cycle"} {
+	for _, phrase := range knownFooterPhrases {
 		if strings.Contains(content, phrase) {
 			return true
 		}

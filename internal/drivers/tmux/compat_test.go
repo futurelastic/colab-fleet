@@ -83,6 +83,18 @@ func TestStaticMarkersAreTiedToTheClassifier(t *testing.T) {
 			return acceptanceScreen(compatBypassSpec(), &fleet.SessionPrompt{Options: []string{"No, exit", "Yes, I accept"}}) &&
 				!acceptanceScreen(compatBypassSpec(), &fleet.SessionPrompt{Options: []string{"Yes, I accept", "Yes, I accept"}})
 		},
+		// permissionModeOf: the three indicator wordings that are literal strings in
+		// the candidate. (The other two are composed at run time and are read off
+		// live sessions by F-MODE instead — see compatStaticMarkers.)
+		"accept edits on": func() bool {
+			return permissionModeOf(newScreen(paneWithIndicator("  ⏵⏵ accept edits on"))) == fleet.PermissionModeAcceptEdits
+		},
+		"plan mode on": func() bool {
+			return permissionModeOf(newScreen(paneWithIndicator("  ⏸ plan mode on"))) == fleet.PermissionModePlan
+		},
+		"auto mode on": func() bool {
+			return permissionModeOf(newScreen(paneWithIndicator("  ⏵⏵ auto mode on"))) == fleet.PermissionModeAuto
+		},
 		// controlStateIn
 		"/rc active": func() bool {
 			st, ok := controlStateIn("/rc active")

@@ -102,6 +102,19 @@ type DriverCapabilities struct {
 	// peer, so a temporarily unreachable machine can never report a bare false
 	// and become permanently incapable in a caller's cache (§4.3, D3).
 	ObservesControlChannel bool `json:"observesControlChannel"`
+	// ObservesPermissionMode reports whether the driver can read the session's
+	// current permission mode (SessionState.PermissionMode, colab-fleet #194).
+	//
+	// It exists so an absent PermissionMode is answerable rather than
+	// ambiguous: without it, "this driver never looks" and "it looked and a
+	// dialog owned the screen" are one indistinguishable absence, and a client
+	// that loops on the field cannot tell "read again" from "this will never
+	// arrive". The same argument ObservesControlChannel settled one field above.
+	//
+	// Like every flag here it inherits `source: assumed` from an unreached peer,
+	// so a temporarily unreachable machine can never report a bare false and
+	// become permanently incapable in a caller's cache (§4.3, D3).
+	ObservesPermissionMode bool `json:"observesPermissionMode"`
 	// ReportsRuntimeSurface reports whether this driver can say anything
 	// about a session's runtime-operated surface (Session.RuntimeSurface,
 	// colab-fleet #85).

@@ -42,6 +42,15 @@ type corpusObservation struct {
 	// classified to a perfectly correct `idle`, and the whole defect was the
 	// second fact nothing carried.
 	WantControlChannel string `json:"wantControlChannel,omitempty"`
+	// WantPermissionMode is the fleet.PermissionModeState this observation must
+	// report (#194), or "none" to assert that it reports nothing at all — the
+	// state a dialog owning the screen has. Optional in the same sense as
+	// WantControlChannel: absent means the case does not speak to it.
+	//
+	// "none" and "unknown" are different assertions on purpose. "none" is
+	// nothing read; "unknown" is an indicator area read that named no mode —
+	// the distinction a client cycling toward a target branches on.
+	WantPermissionMode string `json:"wantPermissionMode,omitempty"`
 	// WantMultiSelect, when present, is what the observation's prompt must
 	// report as multiSelect (#176) — true for a checkbox question, false for
 	// a screen that must not read as one. Absent means the case does not
@@ -157,6 +166,19 @@ func TestCorpusReplaysToItsStatedState(t *testing.T) {
 					case string(got.ControlChannel.State) != obs.WantControlChannel:
 						t.Errorf("observation %d (t+%ds): control channel = %q, want %q",
 							i, obs.AfterSeconds, got.ControlChannel.State, obs.WantControlChannel)
+					}
+				}
+				if obs.WantPermissionMode != "" {
+					gotMode := string(got.PermissionMode)
+					if obs.WantPermissionMode == "none" {
+						gotMode = "none"
+						if got.PermissionMode != "" {
+							gotMode = string(got.PermissionMode)
+						}
+					}
+					if gotMode != obs.WantPermissionMode {
+						t.Errorf("observation %d (t+%ds): permission mode = %q, want %q",
+							i, obs.AfterSeconds, gotMode, obs.WantPermissionMode)
 					}
 				}
 				if obs.WantMultiSelect != nil {

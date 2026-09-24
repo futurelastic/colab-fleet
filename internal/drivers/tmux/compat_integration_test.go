@@ -48,7 +48,16 @@ func fakeRuntime(t *testing.T, python string, knobs map[string]string) string {
 	for k, v := range knobs {
 		b.WriteString("export " + k + "=" + shQuote(v) + "\n")
 	}
-	b.WriteString("exec " + shQuote(python) + " " + shQuote(tui) + "\n")
+	// FAKE_MARKERS=1 makes the launcher itself carry the wording the static checks
+	// scan a candidate for — the harness scans this file, not the synthetic
+	// composer it execs — so a check that reads it can be shown to pass. Off by
+	// default: a candidate that lacks the wording is what the failing cases need.
+	if knobs["FAKE_MARKERS"] == "1" {
+		b.WriteString("# " + allMarkersText() + "\n")
+	}
+	// "$@" so the synthetic runtime sees how it was launched: a bypass session is
+	// started with a flag, and the real runtime paints a different indicator for it.
+	b.WriteString("exec " + shQuote(python) + " " + shQuote(tui) + " \"$@\"\n")
 	p := filepath.Join(t.TempDir(), "runtime")
 	if err := os.WriteFile(p, []byte(b.String()), 0o755); err != nil {
 		t.Fatal(err)
@@ -334,11 +343,11 @@ func TestCompatCreatedSessionIsOnThePrivateServer(t *testing.T) {
 // outside a test assigns these.
 func shortWaits(t *testing.T) {
 	t.Helper()
-	settle, boot, dialog, record, bracket := compatSettleAge, compatBootWait, compatDialogWait, compatRecordWait, compatBracketWait
-	compatSettleAge, compatBootWait, compatDialogWait, compatRecordWait, compatBracketWait =
-		0, 6*time.Second, 3*time.Second, 2*time.Second, 2*time.Second
+	settle, boot, dialog, record, bracket, mode := compatSettleAge, compatBootWait, compatDialogWait, compatRecordWait, compatBracketWait, compatModeWait
+	compatSettleAge, compatBootWait, compatDialogWait, compatRecordWait, compatBracketWait, compatModeWait =
+		0, 6*time.Second, 3*time.Second, 2*time.Second, 2*time.Second, 2*time.Second
 	t.Cleanup(func() {
-		compatSettleAge, compatBootWait, compatDialogWait, compatRecordWait, compatBracketWait = settle, boot, dialog, record, bracket
+		compatSettleAge, compatBootWait, compatDialogWait, compatRecordWait, compatBracketWait, compatModeWait = settle, boot, dialog, record, bracket, mode
 	})
 }
 
@@ -390,6 +399,45 @@ func TestCompatBrokenSyntheticCandidates(t *testing.T) {
 		}
 		if exit != 0 {
 			t.Errorf("exit %d, want 0", exit)
+		}
+	})
+
+	// #194: F-MODE reads the indicator off two live sessions (default, bypass) and
+	// scans the candidate for the other three wordings.
+	t.Run("F-MODE passes when the indicator rows are the measured ones", func(t *testing.T) {
+		rep, exit := runFake(t, python, map[string]string{"FAKE_MARKERS": "1"}, "F-MODE")
+		if !strings.HasPrefix(rep["F-MODE"], "pass") {
+			t.Errorf("F-MODE = %s", rep["F-MODE"])
+		}
+		if exit != 0 {
+			t.Errorf("exit %d, want 0", exit)
+		}
+	})
+
+	t.Run("F-MODE fails, and says which session, when the wording is missing from the candidate", func(t *testing.T) {
+		rep, exit := runFake(t, python, nil, "F-MODE")
+		if !strings.HasPrefix(rep["F-MODE"], "fail") || !strings.Contains(rep["F-MODE"], "no longer contains") {
+			t.Errorf("F-MODE = %s, want a failure naming the missing wording", rep["F-MODE"])
+		}
+		// A warn check: reported, never changes the verdict.
+		if exit != 0 {
+			t.Errorf("exit %d, want 0 (F-MODE is warn-gated)", exit)
+		}
+	})
+
+	// The failure the check exists for: a candidate that REWORDS the indicator
+	// would silently start reporting `unknown` in production. Here the wording is
+	// all still in the launcher (so the static half passes) and only the live read
+	// can notice — which is why the live half exists.
+	t.Run("F-MODE fails, naming the read, when a candidate rewords the indicator", func(t *testing.T) {
+		rep, exit := runFake(t, python, map[string]string{"FAKE_MARKERS": "1", "FAKE_MODE_WORDING": "reworded"}, "F-MODE")
+		if !strings.HasPrefix(rep["F-MODE"], "fail") ||
+			!strings.Contains(rep["F-MODE"], "reads as unknown") ||
+			!strings.Contains(rep["F-MODE"], "default mode") || !strings.Contains(rep["F-MODE"], "bypass-permissions mode") {
+			t.Errorf("F-MODE = %s, want a failure saying both sessions read as unknown", rep["F-MODE"])
+		}
+		if exit != 0 {
+			t.Errorf("exit %d, want 0 (F-MODE is warn-gated)", exit)
 		}
 	})
 

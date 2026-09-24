@@ -344,6 +344,40 @@ type SessionState struct {
 	// Nil is a real answer and never means "connected" — see ControlChannel.
 	ControlChannel *ControlChannel `json:"controlChannel,omitempty"`
 
+	// PermissionMode is the permission mode the runtime shows the session to be
+	// in, when the driver can read it (colab-fleet #194; see
+	// PermissionModeState for the closed set and what each value means).
+	//
+	// # Why it is on the state
+	//
+	// `keys` can press BTab, which cycles the mode, and the receipt for a press
+	// says only that the screen changed under it (docs/adr/188). A busy session
+	// repaints for other reasons, and the runtime's cycle order decides which
+	// mode a press lands in, so the receipt cannot say where the session is now.
+	// A client that wants a named mode needs to READ it: press, read this, stop
+	// when it matches. Reading it any other way meant a direct handle on the
+	// terminal multiplexer, which is the thing `keys` exists to make
+	// unnecessary.
+	//
+	// # Where it is read from, and why not the machine-local index
+	//
+	// From the runtime's own indicator row, below the composer's closing fence —
+	// chrome the runtime redraws and nothing the agent prints can reach, the
+	// same region and the same reason as ControlChannel. The machine-local
+	// session index (#148) was measured as a source and set aside: it carries a
+	// two-value class (bypass or prompting) written once when the session is
+	// launched, so it cannot tell four prompting modes apart and it goes stale on
+	// the first press of the key this field exists to serve.
+	//
+	// # Absent is not unknown
+	//
+	// Empty means nothing was read (the driver does not look —
+	// DriverCapabilities.ObservesPermissionMode — or a dialog owns the screen).
+	// "unknown" means the indicator area was read and named no mode; a client
+	// cycling toward a target stops on it. Neither is ever a guess, and neither
+	// is evidence about which mode the session is in.
+	PermissionMode PermissionModeState `json:"permissionMode,omitempty"`
+
 	// ScreenDigest fingerprints the whole screen this state was read from.
 	//
 	// It is the corroboration token for a RAW KEY (api-http.md §3.3, POST
@@ -514,6 +548,12 @@ func UnknownState(confidence Confidence, evidence string) SessionState {
 // when a status was first observed is not a change in what the session is
 // doing. It travels with every event that does fire.
 //
+// PermissionMode (#194) is material by that rule: a client cycling toward a
+// named mode branches on it, and a mode change moves nothing else here — same
+// status, same composer, same prompt — so a feed that did not fire on it would
+// leave a mirror showing the mode the session had before somebody pressed the
+// key. It changes only when the mode does, so it cannot produce a storm.
+//
 // The rule for adding a field to this comparison: if a caller may branch on
 // it, it is material; if the documentation says not to parse it, it is not.
 func (s SessionState) MateriallyDiffers(other SessionState) bool {
@@ -521,7 +561,8 @@ func (s SessionState) MateriallyDiffers(other SessionState) bool {
 	case s.Status != other.Status,
 		s.Confidence != other.Confidence,
 		s.WaitingOn != other.WaitingOn,
-		s.ComposerDigest != other.ComposerDigest:
+		s.ComposerDigest != other.ComposerDigest,
+		s.PermissionMode != other.PermissionMode:
 		return true
 	}
 	if !samePrompt(s.Prompt, other.Prompt) {

@@ -77,7 +77,32 @@ func TestLiveKeysBTabCyclesTheModeFooterOnAPrivateServer(t *testing.T) {
 
 	// One full lap of the cycle, one press per request and a fresh digest before
 	// each — the honest cost of a corroborated keypress — ending where it began.
-	want := []string{"accept edits on", "plan mode on", "auto mode on", "? for shortcuts"}
+	//
+	// #194: after each press, what the DRIVER reports in state.permissionMode must
+	// be the mode the footer now shows — the read side of the loop a mode control
+	// runs, exercised through the real driver rather than the classifier alone.
+	// (The last stop is the default mode again: its row is `manual mode on`, and it
+	// reads as `default`.)
+	mode := func() fleet.PermissionModeState {
+		t.Helper()
+		st, err := d.State(ctx, compatRequest, ref)
+		if err != nil {
+			t.Fatalf("State: %v", err)
+		}
+		return st.PermissionMode
+	}
+	if got := mode(); got != fleet.PermissionModeDefault {
+		t.Fatalf("a session that has not been pressed reads as %q, want default", got)
+	}
+	want := []struct {
+		footer string
+		mode   fleet.PermissionModeState
+	}{
+		{"accept edits on", fleet.PermissionModeAcceptEdits},
+		{"plan mode on", fleet.PermissionModePlan},
+		{"auto mode on", fleet.PermissionModeAuto},
+		{"manual mode on", fleet.PermissionModeDefault},
+	}
 	for i, w := range want {
 		got, err := d.Keys(ctx, compatRequest, ref, fleet.KeyBTab, read())
 		if err != nil {
@@ -86,8 +111,57 @@ func TestLiveKeysBTabCyclesTheModeFooterOnAPrivateServer(t *testing.T) {
 		if got.Outcome != fleet.OutcomeSubmitted {
 			t.Fatalf("Keys(BTab) #%d = %s (%s); the footer repaint is the confirmation", i+1, got.Outcome, got.Reason)
 		}
-		cfcWaitFor(t, "the footer to show "+w, 5*time.Second, func() bool {
-			return strings.Contains(footer(), w)
+		cfcWaitFor(t, "the footer to show "+w.footer, 5*time.Second, func() bool {
+			return strings.Contains(footer(), w.footer)
+		})
+		if got := mode(); got != w.mode {
+			t.Errorf("after press #%d the footer reads %q and state.permissionMode = %q, want %q", i+1, footer(), got, w.mode)
+		}
+	}
+}
+
+// #194: a session launched with bypass permissions starts in bypass and follows
+// the measured ring from there, and state reads each stop. The synthetic runtime
+// decides that from its argv, as the real one does.
+func TestLiveBypassLaunchStartsInBypassAndStateFollowsTheRing(t *testing.T) {
+	_, python := compatIntegration(t)
+	h := harnessFor(t, fakeRuntime(t, python, map[string]string{"FAKE_MODES": "1"}))
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	if err := h.startWorld(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := h.world.create(ctx, "b", "b", func(sp *fleet.SessionSpec) { sp.PermissionMode = fleet.PermissionModeBypass })
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := h.world.d
+	read := func() fleet.SessionState {
+		t.Helper()
+		st, err := d.State(ctx, compatRequest, ref)
+		if err != nil {
+			t.Fatalf("State: %v", err)
+		}
+		return st
+	}
+	cfcWaitFor(t, "a bypass session to read as bypass", 20*time.Second, func() bool {
+		return read().PermissionMode == fleet.PermissionModeBypass
+	})
+	// bypass -> auto -> default -> acceptEdits -> plan -> bypass
+	for i, want := range []fleet.PermissionModeState{
+		fleet.PermissionModeAuto, fleet.PermissionModeDefault, fleet.PermissionModeAcceptEdits,
+		fleet.PermissionModePlan, fleet.PermissionModeBypass,
+	} {
+		before := read()
+		got, err := d.Keys(ctx, compatRequest, ref, fleet.KeyBTab, before.ScreenDigest)
+		if err != nil {
+			t.Fatalf("Keys(BTab) #%d: %v", i+1, err)
+		}
+		if got.Outcome != fleet.OutcomeSubmitted {
+			t.Fatalf("Keys(BTab) #%d = %s (%s)", i+1, got.Outcome, got.Reason)
+		}
+		cfcWaitFor(t, "state to read as "+string(want), 5*time.Second, func() bool {
+			return read().PermissionMode == want
 		})
 	}
 }

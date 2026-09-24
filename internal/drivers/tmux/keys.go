@@ -67,9 +67,10 @@ const (
 // recognised-prompt refusal, unsent-text refusal, composer lock, and the
 // confirm-by-repaint — and is deliberately NOT caught by the arrow-key guard
 // below, which exists to keep a move key off an idle composer while BTab's
-// whole use is an idle composer. It is not a mode setter: this driver does not
-// read the mode indicator, so `submitted` says the screen repainted under the
-// key and nothing about which mode the session is now in.
+// whole use is an idle composer. It is not a mode setter: `submitted` says the
+// screen repainted under the key and nothing about which mode the session is now
+// in. The mode is read separately, off the indicator row, and published as
+// state.permissionMode (#194, permissionmode.go) — press, read that, repeat.
 var tmuxKey = map[fleet.KeyName]string{
 	fleet.KeyUp:     "Up",
 	fleet.KeyDown:   "Down",
