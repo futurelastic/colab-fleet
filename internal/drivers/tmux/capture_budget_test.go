@@ -81,11 +81,27 @@ func (b *budgetMux) captureCount() int {
 	return b.captures
 }
 
+// capturedDeadlines is a copy of every capture invocation's context deadline,
+// in invocation order. A zero time means that invocation ran with no deadline.
+func (b *budgetMux) capturedDeadlines() []time.Time {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]time.Time(nil), b.deadlines...)
+}
+
 func newBudgetDriver(b *budgetMux, deadline time.Duration) *Driver {
+	return newBudgetDriverAt(b, deadline, time.Now)
+}
+
+// newBudgetDriverAt is newBudgetDriver with the driver's own clock supplied.
+// The clock is what the driver derives the call's deadline and every slice
+// from; the timers that actually stop a stalled invocation stay on the real
+// clock, because they belong to the context package.
+func newBudgetDriverAt(b *budgetMux, deadline time.Duration, now func() time.Time) *Driver {
 	return New("testbox",
 		withExec(b.exec),
 		withNonce(func() string { return testNonce }),
-		withClock(time.Now),
+		withClock(now),
 		WithDeadline(deadline),
 	)
 }
@@ -171,8 +187,25 @@ func TestCaptureChunkStuckIsRetriedOnceWithinCallBudget(t *testing.T) {
 }
 
 // A stall across the whole server: every invocation hangs. There is exactly
-// one retry per enumeration, not one per chunk, and the call as a whole
-// still ends within its declared deadline.
+// one retry per enumeration, not one per chunk, and no invocation is allowed
+// to run past the call's declared deadline.
+//
+// That last property used to be asserted as "List returned within the
+// deadline plus 150 ms", by wall clock (colab-fleet#186). It failed once
+// during a full -race run on a loaded machine, then passed on the rerun and
+// 8 of 8 times in isolation. Measured on a quiet machine, List takes about
+// 400 ms (one chunk) and 510 ms (several) against that 750 ms bound, and its
+// own work after the last capture is under 10 ms. So the driver leaves the
+// margin alone, and what is left for the assertion to measure is how late the
+// host wakes a timer, which nothing in this package controls. Delaying the
+// wake of the last invocations by 400 ms reproduces the reported failure
+// exactly.
+//
+// The property lives in the deadlines the driver hands each invocation, so it
+// is asserted there. The driver's clock is frozen at the call's start, which
+// makes the call's deadline exactly start+deadline instead of something to
+// estimate; stalls are still cut short by real timers, so the test still takes
+// real time. The frozen clock is only safe because List never polls on it.
 func TestCaptureRetryBoundedToOnePerEnumeration(t *testing.T) {
 	const deadline = 600 * time.Millisecond
 	for _, tc := range []struct {
@@ -191,10 +224,9 @@ func TestCaptureRetryBoundedToOnePerEnumeration(t *testing.T) {
 			chunks := len(chunkPaneRows(rows))
 
 			b := &budgetMux{fakeMux: tc.fleet, stall: func(int) bool { return true }}
-			d := newBudgetDriver(b, deadline)
-			start := time.Now()
+			callStart := time.Now()
+			d := newBudgetDriverAt(b, deadline, func() time.Time { return callStart })
 			got, err := d.List(context.Background(), testCaller, driver.ListFilter{})
-			elapsed := time.Since(start)
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
@@ -208,9 +240,17 @@ func TestCaptureRetryBoundedToOnePerEnumeration(t *testing.T) {
 			if src := got.Sources(); len(src) != 1 || src[0].Status != fleet.SourceDegraded {
 				t.Errorf("source should read degraded, got %+v", src)
 			}
-			if slack := 150 * time.Millisecond; elapsed > deadline+slack {
-				t.Errorf("List took %v; every slice derives from the call's %v deadline, so it "+
-					"must not run past it", elapsed, deadline)
+			// Every slice derives from the call's deadline, so no invocation
+			// may be handed one that runs past it, and none may run without one.
+			callDeadline := callStart.Add(deadline)
+			for i, dl := range b.capturedDeadlines() {
+				if dl.IsZero() {
+					t.Errorf("capture invocation %d ran with no deadline; every slice must derive "+
+						"from the call's %v deadline", i, deadline)
+				} else if dl.After(callDeadline) {
+					t.Errorf("capture invocation %d was given a deadline %v past the call's %v deadline",
+						i, dl.Sub(callDeadline), deadline)
+				}
 			}
 		})
 	}
