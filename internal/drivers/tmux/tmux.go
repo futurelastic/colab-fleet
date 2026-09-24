@@ -2107,8 +2107,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	if !lockOK {
 		return d.observeEarly(delivery.RefusedBusy, fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
-			Reason: "this session's composer is busy with another delivery, respond, or discard " +
-				"call and the caller's own deadline ran out waiting for it; retry",
+			Reason:  composerBusyReason(""),
 		}), nil
 	}
 	defer unlockComposer()
@@ -2530,7 +2529,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			// disabled regardless.
 			digestVerified := resumeRecord.ComposerDigest != ""
 			resumeCheck := landCheck{
-				strict: true, digestVerified: digestVerified,
+				strict: true, digestVerified: digestVerified, sessionID: ref.ID,
 				ownMarker: resumeRecord.pasteKey(), ownMarkerOK: resumeRecord.PasteLanded,
 			}
 			land := d.landV2(ctx, target.paneID, text, resumeCheck)
@@ -2801,7 +2800,8 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// where `C-m` submitted immediately, same text, seconds apart. They are
 	// the same character in principle; they are not the same in practice, and
 	// only one of them has been seen to work when the other did not.
-	land := d.landV2(ctx, target.paneID, text, landCheck{before: before})
+	freshCheck := landCheck{before: before, sessionID: ref.ID}
+	land := d.landV2(ctx, target.paneID, text, freshCheck)
 	key, atCount, landed := land.key, land.atCount, land.ok
 	if !landed {
 		// The text is in the composer and was not submitted. Say so plainly:
@@ -2826,6 +2826,16 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 		// a later resume may paste again when it finds the composer empty.
 		strandDigest := d.currentComposerDigest(ctx, target.paneID)
 		d.noteStrandedLanding(ref.ID, target.cwd, text, strandDigest, strandSrc, strandSrcOK, land, strandDigest == "")
+		if land.preempted {
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeUnknown,
+				Reason: d.withRestartNoteReason(ref.ID, "text was pasted, but a respond to this "+
+					"session arrived before it could be confirmed in the composer and was given "+
+					"priority; submit was not pressed. The text may be sitting in the composer "+
+					"unsent — once the respond is done, retry the same send with resumeIfStranded "+
+					"to submit it"),
+			}, nil
+		}
 		if land.dialog {
 			return fleet.DeliveryReceipt{
 				Outcome: fleet.OutcomeUnknown,
@@ -2877,7 +2887,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// source, exactly as the timeout path just above does) rather than
 	// pressing Enter into a screen this driver has not looked at since
 	// resolveTranscriptSource's own list-panes/`ps`/file-read window opened.
-	if v := d.preSubmitCheck(ctx, target, text, landCheck{before: before}); v != preSubmitOK {
+	if v := d.preSubmitCheck(ctx, target, text, freshCheck); v != preSubmitOK {
 		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land, false)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
@@ -2910,6 +2920,13 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	tr.confirmedBy = submitSignal
 	if !submitConfirmed {
 		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land, false)
+		if strings.HasPrefix(submitEvidence, differentTurnComposerEmptied) {
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeUnknown,
+				Reason: d.withRestartNoteReason(ref.ID, "the text landed and a submit was issued; "+
+					submitEvidence+". Read the session before sending it again"),
+			}, nil
+		}
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: d.withRestartNoteReason(ref.ID, "the text landed and was attributed to "+
@@ -3101,9 +3118,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	// bare, uninterruptible Lock()) governs the wait.
 	unlockComposer, lockOK := d.lockComposerOpsCtx(ctx, ref.ID)
 	if !lockOK {
-		return fleet.Ack{}, fmt.Errorf(
-			"discard: this session's composer is busy with another delivery, respond, or " +
-				"discard call and the caller's own deadline ran out waiting for it; retry")
+		return fleet.Ack{}, fmt.Errorf("discard: %s", composerBusyReason(""))
 	}
 	defer unlockComposer()
 
@@ -4368,12 +4383,14 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	// dialog is exactly the call this matters most for: it must not queue
 	// for seconds behind an unrelated, unconfirmable send on the same
 	// session.
-	unlockComposer, lockOK := d.lockComposerOpsCtx(ctx, ref.ID)
+	// #180 M4: a respond takes priority — a send holding the lock gives it
+	// up at its next safe point, because the dialog this respond answers is
+	// exactly what that send cannot get past.
+	unlockComposer, lockOK := d.lockComposerPreempting(ctx, ref.ID)
 	if !lockOK {
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
-			Reason: "this session's composer is busy with another delivery, respond, or discard " +
-				"call and the caller's own deadline ran out waiting for it; retry",
+			Reason:  composerBusyReason(""),
 		}, nil
 	}
 	defer unlockComposer()

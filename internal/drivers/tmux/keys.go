@@ -92,9 +92,7 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		if !lockOK {
 			return fleet.DeliveryReceipt{
 				Outcome: fleet.OutcomeRefused,
-				Reason: "this session's composer is busy with another delivery, respond, or " +
-					"discard call and the caller's own deadline ran out waiting for it; retry " +
-					"(Escape alone does not wait for this lock)",
+				Reason:  composerBusyReason(" (Escape alone does not wait for this lock)"),
 			}, nil
 		}
 		defer unlockComposer()

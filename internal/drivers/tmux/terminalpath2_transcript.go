@@ -334,7 +334,67 @@ func extractTranscriptCandidate(line []byte) (kind, text, promptSource string, o
 	if text == "" {
 		return "", "", "", false
 	}
+	if isUser {
+		// #180 M3: the runtime records a slash command as a user entry
+		// wrapped in <command-name>…</command-name> tags, and a command's
+		// own output or a bash-mode line as <local-command-…> / <bash-…>
+		// entries. None of those is a message turn. A command entry is kept,
+		// as kind "command", so a sent slash command can be confirmed by
+		// it; the others are not candidates at all.
+		trimmed := strings.TrimSpace(text)
+		switch {
+		case strings.HasPrefix(trimmed, "<command-name>"):
+			return "command", commandLine(trimmed), promptSource, true
+		case strings.HasPrefix(trimmed, "<local-command-"), strings.HasPrefix(trimmed, "<bash-"):
+			return "", "", "", false
+		}
+	}
 	return t, text, promptSource, true
+}
+
+// differentTurnComposerEmptied opens the evidence of a submit the transcript
+// contradicted after the composer had emptied: the caller must not describe
+// that text as sitting in the composer.
+const differentTurnComposerEmptied = "the composer emptied, but the runtime's own transcript " +
+	"recorded a DIFFERENT turn instead of this text, so whether this text arrived is unknown"
+
+// commandLine rebuilds "/name args" from a command entry's tags.
+func commandLine(entry string) string {
+	name := between(entry, "<command-name>", "</command-name>")
+	args := strings.TrimSpace(between(entry, "<command-args>", "</command-args>"))
+	if args == "" {
+		return strings.TrimSpace(name)
+	}
+	return strings.TrimSpace(name) + " " + args
+}
+
+func between(s, open, shut string) string {
+	i := strings.Index(s, open)
+	if i < 0 {
+		return ""
+	}
+	s = s[i+len(open):]
+	if j := strings.Index(s, shut); j >= 0 {
+		return s[:j]
+	}
+	return ""
+}
+
+// commandMatches reports whether a recorded command line is the slash
+// command sent: same command name, and the same arguments when the entry
+// recorded any.
+func commandMatches(recorded, sent string) bool {
+	sent = collapseSpace(sent)
+	recorded = collapseSpace(recorded)
+	if !strings.HasPrefix(sent, "/") || recorded == "" {
+		return false
+	}
+	sentName, sentArgs, _ := strings.Cut(sent, " ")
+	recName, recArgs, _ := strings.Cut(recorded, " ")
+	if sentName != recName {
+		return false
+	}
+	return recArgs == "" || recArgs == sentArgs
 }
 
 // truthy reports whether v — one field pulled out of a decoded JSON object —
@@ -428,6 +488,14 @@ func transcriptTailScan(path string, offset int64, sent string) (transcriptScanR
 		}
 		kind, text, promptSource, ok := extractTranscriptCandidate(line)
 		if !ok {
+			continue
+		}
+		if kind == "command" {
+			// #180 M3: a command entry confirms a sent slash command and is
+			// otherwise not a turn at all — never a "different turn".
+			if commandMatches(text, sent) {
+				return transcriptScanMatched, nil
+			}
 			continue
 		}
 		matches := transcriptTurnMatches(text, sent)
@@ -751,6 +819,15 @@ func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow
 			// transcript's own account says never arrived. Stop polling; more
 			// time will not turn a recorded disagreement back into silence.
 			d.counters.incr(counterTranscriptDifferentTurnRecorded)
+			// #180 M3: still not a confirmation — but look at the screen once,
+			// so the receipt says what is true. If the composer emptied, the
+			// text is not "sitting there unsent"; whether it arrived is what
+			// is unknown.
+			if sc, ok := d.captureForClassify(ctx, target.paneID); ok {
+				if pending, scan := composerText(sc); scan == composerFound && pending == "" {
+					return false, differentTurnComposerEmptied + " (" + src.evidence + ")", delivery.SignalNone
+				}
+			}
 			return false, "a transcript was resolved (" + src.evidence + ") but recorded a DIFFERENT " +
 				"turn instead of this delivery's own text within the confirmation window — not " +
 				"falling back to the screen signal, which could report this as queued for text " +

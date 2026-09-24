@@ -221,6 +221,9 @@ const (
 	// driver's own collapsed paste by its recorded marker (#180 H1).
 	counterLandConfirmByClippedTail = "land_confirm.by_clipped_tail"
 	counterLandConfirmByOwnMarker   = "land_confirm.by_own_marker"
+	// counterLandConfirmPreempted (#180 M4): a send gave up this session's
+	// lock before Enter because a respond was waiting for it.
+	counterLandConfirmPreempted = "land_confirm.preempted"
 
 	counterSubmitConfirmedByTranscript = "submit_confirm.by_transcript"
 

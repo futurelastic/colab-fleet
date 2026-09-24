@@ -247,6 +247,10 @@ type landCheck struct {
 	// the driver's own collapsed paste (#180 H1).
 	ownMarker   pasteKey
 	ownMarkerOK bool
+	// sessionID lets the check notice a respond waiting for this
+	// session's lock (#180 M4) and stop, not landed, so the respond gets
+	// the lock at once.
+	sessionID string
 }
 
 // landing is a landed check's answer.
@@ -258,6 +262,9 @@ type landing struct {
 	// dialog: the check stopped because a selection menu appeared. Nothing
 	// will press Enter into it; the caller strands the delivery and says so.
 	dialog bool
+	// preempted: the check stopped because a respond is waiting for this
+	// session's lock (#180 M4).
+	preempted bool
 }
 
 // confirmLandedV2 is the test-facing form of landV2 for a fresh send
@@ -292,6 +299,10 @@ func (d *Driver) landV2(ctx context.Context, paneID, text string, c landCheck) l
 
 	deadline := d.now().Add(submitConfirmWindow)
 	for {
+		if d.preempted(c.sessionID) {
+			d.counters.incr(counterLandConfirmPreempted)
+			return landing{preempted: true}
+		}
 		if sc, capOK := d.captureForClassify(ctx, paneID); capOK {
 			if awaitingSelection(sc) {
 				d.counters.incr(counterSendRefusedDialogRace)
@@ -342,6 +353,9 @@ const (
 	// runtime (foreground.go) — a shell, say, under a composer frame the
 	// runtime left behind. Enter would run the text as a command.
 	preSubmitNotRuntime
+	// preSubmitPreempted: a respond is waiting for this session's lock
+	// (#180 M4) — most likely to answer a dialog; Enter is not pressed.
+	preSubmitPreempted
 )
 
 // preSubmitCheck is the last look before the submit keystroke (#180 M6):
@@ -349,6 +363,10 @@ const (
 // by the same evidence the landed check accepted — not merely fail to show a
 // recognised menu. Anything else refuses and the stranded record is kept.
 func (d *Driver) preSubmitCheck(ctx context.Context, target *paneRow, text string, c landCheck) preSubmit {
+	if d.preempted(c.sessionID) {
+		d.counters.incr(counterLandConfirmPreempted)
+		return preSubmitPreempted
+	}
 	if ok, _ := d.foregroundIsRuntime(ctx, target); !ok {
 		return preSubmitNotRuntime
 	}
@@ -382,6 +400,9 @@ func preSubmitReason(v preSubmit, resumed bool) string {
 		return lead + "a selection menu appeared on this pane in the moment before submit would " +
 			"have been pressed; pressing Enter now would answer that menu instead of submitting " +
 			"this message, so it was not pressed." + tail
+	case preSubmitPreempted:
+		return lead + "a respond to this session arrived in the moment before submit and was " +
+			"given priority, so submit was not pressed." + tail
 	case preSubmitNotRuntime:
 		return lead + "in the moment before submit this pane's foreground process was no longer " +
 			"the agent runtime; pressing Enter could run the text as a command, so it was not " +

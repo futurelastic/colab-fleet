@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 // composerLocks is terminal-path-v2's fix for D5 ("no per-session
@@ -25,6 +26,56 @@ import (
 type composerLockTable struct {
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
+	// preempt counts respond calls waiting for a session's lock (#180 M4).
+	// A send holding the lock polls it at its safe points — before the
+	// paste is confirmed, never after Enter — and gives the lock up rather
+	// than keep a respond to the very dialog it cannot get past waiting.
+	preempt map[string]*atomic.Int32
+}
+
+// composerBusyPrefix opens every refusal for a composer lock the caller's
+// deadline ran out waiting for. It is stable and documented: the condition
+// is transient, and a consumer that treats refused as final can recognise
+// this one as retryable by its prefix.
+const composerBusyPrefix = "composer busy, retryable: "
+
+// composerBusyReason words that refusal for an operation.
+func composerBusyReason(extra string) string {
+	return composerBusyPrefix + "another delivery, respond or discard held this session's " +
+		"composer until the caller's own deadline ran out; nothing was done — retry" + extra
+}
+
+// preemptCounter returns the pre-emption counter for id.
+func (d *Driver) preemptCounter(id string) *atomic.Int32 {
+	d.composerLocks.mu.Lock()
+	defer d.composerLocks.mu.Unlock()
+	if d.composerLocks.preempt == nil {
+		d.composerLocks.preempt = map[string]*atomic.Int32{}
+	}
+	c, ok := d.composerLocks.preempt[id]
+	if !ok {
+		c = &atomic.Int32{}
+		d.composerLocks.preempt[id] = c
+	}
+	return c
+}
+
+// lockComposerPreempting is lockComposerOpsCtx for a caller that takes
+// priority (Respond): it asks the holder to give the lock up at its next
+// safe point, then waits for it like anyone else.
+func (d *Driver) lockComposerPreempting(ctx context.Context, id string) (unlock func(), ok bool) {
+	c := d.preemptCounter(id)
+	c.Add(1)
+	defer c.Add(-1)
+	return d.lockComposerOpsCtx(ctx, id)
+}
+
+// preempted reports whether a priority caller is waiting for id's lock.
+func (d *Driver) preempted(id string) bool {
+	if id == "" {
+		return false
+	}
+	return d.preemptCounter(id).Load() > 0
 }
 
 // lockComposerOps acquires (creating if needed) the mutex for one session id
