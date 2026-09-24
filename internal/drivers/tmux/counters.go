@@ -325,6 +325,11 @@ const (
 	counterForegroundShell      = "foreground.refused_shell"
 	counterForegroundUnanswered = "foreground.refused_unanswered"
 
+	// counterProcessSessionRecordRejected (#180 L5): a runtime per-process
+	// record whose session id is not UUID-shaped, refused before it could
+	// become part of a path.
+	counterProcessSessionRecordRejected = "transcript_source.session_record_rejected"
+
 	// counterSendRefusedResumeNoRecord counts resumeIfStranded (without
 	// replaceIfStranded) landing on a busy composer this driver holds no
 	// stranded record for — review-safety's own fix: #135 originally treated

@@ -14,11 +14,11 @@ import (
 // it into a bracketed paste unchanged; U+009D and U+0090 open OSC and DCS.
 func TestSanitiserDropsC1Controls(t *testing.T) {
 	for in, want := range map[string]string{
-		"A\u009b201~B":           "A201~B",
+		"A\u009b201~B":            "A201~B",
 		"\u009dOSC payload\u009c": "OSC payload",
 		"\u0090DCS\u009c":         "DCS",
 		"keep\nnew\tlines":        "keep\nnew\tlines",
-		"Việt ✓  nbsp":       "Việt ✓  nbsp",
+		"Việt ✓  nbsp":            "Việt ✓  nbsp",
 	} {
 		if got := sanitizeForBracketedPaste(in); got != want {
 			t.Errorf("sanitize(%q) = %q, want %q", in, got, want)

@@ -518,9 +518,9 @@ func TestResolveTranscriptSourceDetectsCacheDisagreementWithLiveIdentity(t *test
 	}
 	// The LIVE conversation, per the runtime's own per-process identity file
 	// — what /clear regenerated, under the SAME pane and the SAME pid.
-	newConvPath := filepath.Join(convDir, "conv-2.jsonl")
+	newConvPath := filepath.Join(convDir, "22222222-2222-4222-8222-222222222222.jsonl")
 	if err := os.WriteFile(newConvPath, []byte(mustJSONLine(t, map[string]any{
-		"type": "custom-title", "customTitle": "conv-2-has-no-title-match", "sessionId": "conv-2",
+		"type": "custom-title", "customTitle": "conv-2-has-no-title-match", "sessionId": "22222222-2222-4222-8222-222222222222",
 		"timestamp": time.Now().Format(time.RFC3339Nano),
 	})+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -536,7 +536,7 @@ func TestResolveTranscriptSourceDetectsCacheDisagreementWithLiveIdentity(t *test
 	instant := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.Local)
 	fps.set(707070, instant)
 	if err := os.WriteFile(filepath.Join(sessionsRoot, "707070.json"), []byte(mustJSONLine(t, map[string]any{
-		"pid": 707070, "sessionId": "conv-2", "cwd": cwd, "procStart": instant.UTC().Format(psStartTimeLayout),
+		"pid": 707070, "sessionId": "22222222-2222-4222-8222-222222222222", "cwd": cwd, "procStart": instant.UTC().Format(psStartTimeLayout),
 	})), 0o600); err != nil {
 		t.Fatal(err)
 	}

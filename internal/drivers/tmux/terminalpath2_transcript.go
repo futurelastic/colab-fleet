@@ -596,6 +596,13 @@ func (d *Driver) readProcessSessionRecord(pid int) (processSessionRecord, bool) 
 	if rec.PID != pid || rec.SessionID == "" || rec.CWD == "" || rec.ProcStart == "" {
 		return processSessionRecord{}, false
 	}
+	// #180 L5: the session id becomes part of a path. Anything but the
+	// runtime's own UUID shape is refused, so "../../elsewhere" never
+	// resolves outside the record root.
+	if !uuidShaped(rec.SessionID) {
+		d.counters.incr(counterProcessSessionRecordRejected)
+		return processSessionRecord{}, false
+	}
 	return rec, true
 }
 
@@ -860,4 +867,25 @@ func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow
 	return false, "a transcript was resolved (" + src.evidence + ") but recorded no matching turn " +
 		"within the confirmation window, and the screen shows neither the composer emptying nor this " +
 		"delivery's own paste marker clearing either", delivery.SignalNone
+}
+
+// uuidShaped reports whether s is 8-4-4-4-12 hexadecimal, the shape of the
+// runtime's session ids (#180 L5).
+func uuidShaped(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+				return false
+			}
+		}
+	}
+	return true
 }

@@ -110,7 +110,7 @@ func TestSendDoesNotPressEnterWhenTheRuntimeExitedMidSend(t *testing.T) {
 func TestForegroundRecordIsPositiveIdentity(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "100.json"),
-		[]byte(`{"pid":100,"sessionId":"s","cwd":"/work/alpha","procStart":"Mon Jan  2 15:04:05 2026"}`), 0o600); err != nil {
+		[]byte(`{"pid":100,"sessionId":"44444444-4444-4444-8444-444444444444","cwd":"/work/alpha","procStart":"Mon Jan  2 15:04:05 2026"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	f := twoSessions()

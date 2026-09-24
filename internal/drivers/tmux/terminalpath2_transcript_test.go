@@ -288,7 +288,7 @@ func TestReadProcessSessionRecordRejectsIncompleteRecords(t *testing.T) {
 		}
 	}
 
-	write(100, map[string]any{"pid": 100, "sessionId": "s1", "cwd": "/work/a", "procStart": "Mon Jan  2 15:04:05 2026"})
+	write(100, map[string]any{"pid": 100, "sessionId": "11111111-1111-4111-8111-111111111111", "cwd": "/work/a", "procStart": "Mon Jan  2 15:04:05 2026"})
 	if _, ok := d.readProcessSessionRecord(100); !ok {
 		t.Fatal("a complete record must be accepted")
 	}
@@ -298,7 +298,7 @@ func TestReadProcessSessionRecordRejectsIncompleteRecords(t *testing.T) {
 		t.Fatal("a record with no sessionId must be rejected")
 	}
 
-	write(102, map[string]any{"pid": 999, "sessionId": "s1", "cwd": "/work/a", "procStart": "Mon Jan  2 15:04:05 2026"}) // pid mismatch
+	write(102, map[string]any{"pid": 999, "sessionId": "11111111-1111-4111-8111-111111111111", "cwd": "/work/a", "procStart": "Mon Jan  2 15:04:05 2026"}) // pid mismatch
 	if _, ok := d.readProcessSessionRecord(102); ok {
 		t.Fatal("a record whose own pid field disagrees with the filename must be rejected")
 	}
@@ -324,7 +324,7 @@ func TestResolveTranscriptSourceFallsBackToProcessSessionsFileWhenRecordRootLook
 	sessionsRoot := t.TempDir()
 
 	cwd := "/work/alpha"
-	convID := "conv-abc-123"
+	convID := "0a0b0c0d-0000-4000-8000-00000000abc1"
 	convDir := filepath.Join(recordRoot, recordDirFor(cwd))
 	if err := os.MkdirAll(convDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -401,7 +401,7 @@ func TestResolveTranscriptSourceRefusesOnRecycledPid(t *testing.T) {
 	fps.set(555, mustParseProcessStartTime(t, "Tue Feb  3 10:00:00 2026"))
 
 	if err := os.WriteFile(filepath.Join(sessionsRoot, "555.json"), []byte(mustJSONLine(t, map[string]any{
-		"pid": 555, "sessionId": "stale-conv", "cwd": cwd, "procStart": "Mon Jan  2 15:04:05 2026",
+		"pid": 555, "sessionId": "33333333-3333-4333-8333-333333333333", "cwd": cwd, "procStart": "Mon Jan  2 15:04:05 2026",
 	})), 0o600); err != nil {
 		t.Fatal(err)
 	}

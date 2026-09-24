@@ -194,7 +194,12 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	} else {
 		before = screenDigest(text)
 	}
-	if before != expectDigest {
+	// #180 L1: a caller may hold a composer digest read before an upgrade.
+	matches := before == expectDigest
+	if composerHoldsText {
+		matches = composerDigestMatches(expectDigest, pending)
+	}
+	if !matches {
 		if composerHoldsText {
 			return fleet.DeliveryReceipt{}, fmt.Errorf(
 				"%w: the composer changed since the caller read it (expected "+
@@ -266,6 +271,21 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			Reason: "the composer holds unsent text; a key delivered now could submit " +
 				"something nobody asked to send. Clear it with discard, or send it",
 		}, nil
+	}
+
+	// #180 L7: arrow keys exist for dialogs. On an idle, empty composer with
+	// no dialog on screen they drive the runtime itself — Left was measured
+	// opening its agent view and starting a background supervisor.
+	if scan == composerFound && !awaitingSelection(screen) {
+		switch key {
+		case fleet.KeyUp, fleet.KeyDown, fleet.KeyLeft, fleet.KeyRight:
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason: "arrow keys are for answering a dialog, and this session shows an " +
+					"empty composer with no dialog; on an idle composer an arrow drives the " +
+					"runtime's own interface instead (Left opens its agent view) — refusing",
+			}, nil
+		}
 	}
 
 	if _, err := d.run(ctx, d.bin, "send-keys", "-t", live.paneID, send); err != nil {
