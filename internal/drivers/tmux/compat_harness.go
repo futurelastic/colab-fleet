@@ -51,7 +51,12 @@ const (
 	compatTeardownWait = 45 * time.Second
 	compatPaneCols     = 120
 	compatPaneRows     = 40
+)
 
+// The waits below are variables only so that a test driving a synthetic runtime
+// — which boots instantly and has no bookkeeping to protect — can shorten them.
+// Nothing outside a test assigns them.
+var (
 	// compatSettleAge is how long a launched candidate must have been alive
 	// before it is killed.
 	//

@@ -7,10 +7,22 @@ bracketed paste of 5+ lines or over 800 characters into
 
 FAKE_SWALLOW=N ignores the first N submits, modelling a swallowed Enter.
 FAKE_LOG=<path> appends every submitted turn, so a test can see exactly what
-was submitted and how often."""
+was submitted and how often.
+
+The next three build a deliberately BROKEN candidate for `colab-fleetd compat`
+(#183); every one defaults to today's behaviour, so no other test changes:
+FAKE_GLYPH=<char> paints a different prompt glyph than the driver looks for.
+FAKE_NO_BRACKET=1 never asks the terminal for bracketed paste (no ESC[?2004h).
+FAKE_PLACEHOLDER=1 paints a DIM (SGR 2) placeholder in an empty composer, the way
+the real runtime does, which the driver must read as an empty composer.
+FAKE_PLACEHOLDER=plain paints the same placeholder WITHOUT dim, which the driver
+must (and can only) read as typed text."""
 import os, sys, tty, termios, codecs, shutil
 SWALLOW = int(os.environ.get("FAKE_SWALLOW", "0"))
 LOG = os.environ.get("FAKE_LOG", "")
+GLYPH = os.environ.get("FAKE_GLYPH", "❯")
+NO_BRACKET = os.environ.get("FAKE_NO_BRACKET", "") == "1"
+PLACEHOLDER = os.environ.get("FAKE_PLACEHOLDER", "")
 transcript = ["fake tui ready (synthetic, not the real runtime)"]
 buf = ""
 pastes = {}
@@ -24,7 +36,10 @@ def render():
         while len(logical) > width:
             rows.append(logical[:width]); logical = logical[width:]
         rows.append(logical)
-    comp = ["❯ " + rows[0]] + ["  " + r for r in rows[1:]]
+    comp = [GLYPH + " " + rows[0]] + ["  " + r for r in rows[1:]]
+    if PLACEHOLDER and not buf:
+        dim_on, dim_off = ("\x1b[2m", "\x1b[0m") if PLACEHOLDER == "1" else ("", "")
+        comp = [GLYPH + "\u00a0" + dim_on + 'Try "synthetic"' + dim_off]
     rule = "─" * cols
     tail = [rule] + comp + [rule, "  ? for shortcuts"]
     room = lines - len(tail)
@@ -51,7 +66,8 @@ def main():
     fd = 0
     old = termios.tcgetattr(fd)
     tty.setraw(fd)
-    os.write(1, b"\x1b[?2004h")
+    if not NO_BRACKET:
+        os.write(1, b"\x1b[?2004h")
     dec = codecs.getincrementaldecoder("utf-8")()
     pending = ""
     in_paste = False

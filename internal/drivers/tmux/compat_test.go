@@ -75,6 +75,14 @@ func TestStaticMarkersAreTiedToTheClassifier(t *testing.T) {
 			te, ok := lastTurnFailed(newScreen("API Error: temporary failure\n"))
 			return ok && te.Retryable
 		},
+		// acceptanceScreen: the two option labels the classifier recognises.
+		"yes, i accept": func() bool {
+			return acceptanceScreen(compatBypassSpec(), &fleet.SessionPrompt{Options: []string{"No, exit", "Yes, I accept"}})
+		},
+		"no, exit": func() bool {
+			return acceptanceScreen(compatBypassSpec(), &fleet.SessionPrompt{Options: []string{"No, exit", "Yes, I accept"}}) &&
+				!acceptanceScreen(compatBypassSpec(), &fleet.SessionPrompt{Options: []string{"Yes, I accept", "Yes, I accept"}})
+		},
 		// controlStateIn
 		"/rc active": func() bool {
 			st, ok := controlStateIn("/rc active")
@@ -310,17 +318,36 @@ func TestRunCompatStaticChecks(t *testing.T) {
 	}
 }
 
+// Nothing in the ungated tests may start a real multiplexer. The static checks
+// need none; every other check does, so an ungated test that selected one would
+// quietly launch a private server (and wait for it) on whatever machine runs the
+// suite. Live checks belong behind FLEET_TMUX_INTEGRATION.
+func TestStaticCheckSetNeedsNoMultiplexer(t *testing.T) {
+	suite := newCompatSuite(&compatHarness{})
+	static := map[string]bool{"F-LIMIT": true, "F-APIERR": true, "H-RC": true}
+	probesOf := map[string][]string{}
+	for _, c := range suite.Checks {
+		probesOf[c.ID] = c.Probes
+	}
+	for id := range static {
+		for _, p := range probesOf[id] {
+			if p != "static.markers" {
+				t.Errorf("%s reads probe %q; the static checks must read only the marker scan", id, p)
+			}
+		}
+	}
+}
+
 func TestRunCompatRefusesBadInvocations(t *testing.T) {
 	ctx := context.Background()
 	good := fakeCandidate(t, "1.0.0", "x")
 	base := func() CompatOptions { return CompatOptions{Claude: good, Getenv: env("HOME", t.TempDir())} }
 	cases := map[string]func(o *CompatOptions){
-		"relative path":            func(o *CompatOptions) { o.Claude = "claude" },
-		"missing path":             func(o *CompatOptions) { o.Claude = filepath.Join(t.TempDir(), "nope") },
-		"unknown --only":           func(o *CompatOptions) { o.Only = []string{"NOT-A-CHECK"} },
-		"a typo in --only":         func(o *CompatOptions) { o.Only = []string{"F-LIMT"} },
-		"--only naming nothing":    func(o *CompatOptions) { o.Only = []string{" ", ""} },
-		"--only for an unbuilt id": func(o *CompatOptions) { o.Only = []string{"D1"} },
+		"relative path":         func(o *CompatOptions) { o.Claude = "claude" },
+		"missing path":          func(o *CompatOptions) { o.Claude = filepath.Join(t.TempDir(), "nope") },
+		"unknown --only":        func(o *CompatOptions) { o.Only = []string{"NOT-A-CHECK"} },
+		"a typo in --only":      func(o *CompatOptions) { o.Only = []string{"F-LIMT"} },
+		"--only naming nothing": func(o *CompatOptions) { o.Only = []string{" ", ""} },
 	}
 	for name, mutate := range cases {
 		o := base()
@@ -656,5 +683,76 @@ func TestSettleLaunchesUsesTheYoungestSession(t *testing.T) {
 func TestRunCompatEnablesTheSettlingRule(t *testing.T) {
 	if compatSettleAge < 12*time.Second {
 		t.Errorf("compatSettleAge = %s: the runtime clears a launch's record after about ten seconds, so anything much shorter still leaves a failed start behind", compatSettleAge)
+	}
+}
+
+// compatBypassSpec is a bypass-mode spec that consents to the acceptance screen,
+// which is what acceptanceScreen needs before it will recognise one.
+func compatBypassSpec() fleet.SessionSpec {
+	return fleet.SessionSpec{PermissionMode: fleet.PermissionModeBypass, Consents: []fleet.PromptKind{fleet.PromptBypassAcceptance}}
+}
+
+// The folder-trust dialog as the runtime paints it, captured from a real
+// launch (the directory name replaced). A check reads its prompt from the SAME
+// capture it waits on: an earlier version asked the driver's State for the
+// prompt and used a separate capture for the menu's shape, and the two could
+// catch the dialog at different stages of painting.
+const compatTrustDialog = `
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /tmp/example
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source
+ project, or work from your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+`
+
+func TestShotPromptIsReadFromItsOwnCapture(t *testing.T) {
+	shot := compatShot{ok: true, sc: newScreen(compatTrustDialog)}
+	p, unnumbered := shot.prompt()
+	if p == nil {
+		t.Fatal("the folder-trust dialog was not read as a prompt")
+	}
+	if p.Kind != fleet.PromptFolderTrust || !unnumbered || len(p.Options) != 2 {
+		t.Errorf("prompt = %+v unnumbered=%v", p, unnumbered)
+	}
+	if idx, ok := affirmativeOption(p); !ok || idx != 2 {
+		t.Errorf("affirmativeOption = %d, %v; want option 2", idx, ok)
+	}
+	// A half-painted dialog (no footer yet) is not a prompt at all — which is
+	// why the evidence and the wait condition must come from one capture.
+	partial := compatShot{ok: true, sc: newScreen(strings.Split(compatTrustDialog, " Enter to confirm")[0])}
+	if p, _ := partial.prompt(); p != nil {
+		t.Errorf("a dialog without its footer was read as a prompt: %+v", p)
+	}
+	// An ordinary idle screen carries no prompt.
+	idle := compatShot{ok: true, sc: newScreen("\n────────────\n❯ \n────────────\n  ? for shortcuts\n")}
+	if p, _ := idle.prompt(); p != nil {
+		t.Errorf("an idle composer was read as a prompt: %+v", p)
+	}
+}
+
+// Shell mode replaces the prompt glyph, so a leading "!" is recognised by the row
+// that replaces it, never by the text a plain prompt happens to contain.
+func TestShellModeDetection(t *testing.T) {
+	shell := newScreen("\n────────────────────\n! echo hi\n────────────────────\n  ! for shell mode\n")
+	if !shellMode(shell) {
+		t.Error("a composer row starting with ! under a rule is shell mode")
+	}
+	normal := newScreen("\n────────────────────\n❯  !echo hi\n────────────────────\n  ⏸ manual mode on\n")
+	if shellMode(normal) {
+		t.Error("a plain prompt whose text begins with a space and ! is not shell mode")
+	}
+	if _, found := composerRow(normal); !found {
+		t.Error("the prompt row was not found")
 	}
 }

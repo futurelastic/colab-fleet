@@ -167,6 +167,9 @@ type compatHarness struct {
 	// stopping it (compatSettleAge in a real run). A test that drives a
 	// synthetic runtime, which has no such bookkeeping, leaves it zero.
 	settleAge time.Duration
+
+	// ev is what the probes recorded; the checks read it.
+	ev compatEvidence
 }
 
 func (h *compatHarness) logf(format string, a ...any) {
@@ -182,6 +185,10 @@ func newCompatSuite(h *compatHarness) compat.Suite {
 	var s compat.Suite
 	h.addStatic(&s)
 	h.addWorld(&s)
+	h.addBoot(&s)
+	h.addDrafts(&s)
+	h.addBootChecks(&s)
+	h.addComposerChecks(&s)
 	return s
 }
 

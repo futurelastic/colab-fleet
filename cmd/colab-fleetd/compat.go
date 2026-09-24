@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -143,6 +144,15 @@ func runCompat(args []string, getenv func(string) string, stdout, stderr io.Writ
 	if b.Version != nil {
 		opts.Build.Version = *b.Version
 	}
+
+	// The driver logs through the standard logger; one line of it is expected in
+	// every run (the trust seeder refusing the deliberately untrusted directory).
+	// Give those lines this command's name and no timestamp, so they read as what
+	// they are, and put the logger back afterwards for the tests that share it.
+	oldFlags, oldPrefix := log.Flags(), log.Prefix()
+	log.SetFlags(0)
+	log.SetPrefix("colab-fleetd compat: ")
+	defer func() { log.SetFlags(oldFlags); log.SetPrefix(oldPrefix) }()
 
 	// SIGINT, SIGTERM and SIGHUP cancel the run; the harness's teardown runs
 	// under its own context, so a signal ends the checks and never the cleanup.

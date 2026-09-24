@@ -234,6 +234,9 @@ var compatStaticMarkers = map[string][]string{
 	"F-APIERR": {"api error", "try again ", "temporary"},
 	// controlStateIn: the label `/rc` followed by one of four state words.
 	"H-RC": {"/rc active", "/rc failed", "/rc reconnecting", "/rc connecting"},
+	// acceptanceScreen: two options, one containing `accept`, one `exit` or `no,`.
+	// F-BYPASS reads these only when the screen itself cannot be produced.
+	"F-BYPASS": {"yes, i accept", "no, exit"},
 }
 
 // staticMarkerList is every marker once, sorted.

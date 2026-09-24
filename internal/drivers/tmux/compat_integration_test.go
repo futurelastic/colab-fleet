@@ -328,3 +328,112 @@ func TestCompatCreatedSessionIsOnThePrivateServer(t *testing.T) {
 		t.Errorf("session %q not on the private server: %s", ref.ID, out)
 	}
 }
+
+// shortWaits lets a synthetic runtime, which boots at once and has no
+// bookkeeping to protect, be checked in seconds rather than minutes. Nothing
+// outside a test assigns these.
+func shortWaits(t *testing.T) {
+	t.Helper()
+	settle, boot, dialog, record, bracket := compatSettleAge, compatBootWait, compatDialogWait, compatRecordWait, compatBracketWait
+	compatSettleAge, compatBootWait, compatDialogWait, compatRecordWait, compatBracketWait =
+		0, 6*time.Second, 3*time.Second, 2*time.Second, 2*time.Second
+	t.Cleanup(func() {
+		compatSettleAge, compatBootWait, compatDialogWait, compatRecordWait, compatBracketWait = settle, boot, dialog, record, bracket
+	})
+}
+
+// runFake runs the real command path against a synthetic runtime with the given
+// knobs, restricted to the given checks, on a store that lives in a temp dir.
+func runFake(t *testing.T, python string, knobs map[string]string, only ...string) (rep map[string]string, exit int) {
+	t.Helper()
+	shortWaits(t)
+	home := t.TempDir()
+	for _, d := range []string{"projects", "sessions"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := RunCompat(context.Background(), CompatOptions{
+		Claude: fakeRuntime(t, python, knobs), Only: only,
+		Getenv: env("HOME", home, "FLEET_RECORD_ROOT", filepath.Join(home, "projects"),
+			"FLEET_PROCESS_SESSIONS_ROOT", filepath.Join(home, "sessions"), "FLEET_TRUST_STATE_PATH", filepath.Join(home, "state.json")),
+	})
+	if err != nil {
+		t.Fatalf("RunCompat: %v", err)
+	}
+	rep = map[string]string{}
+	for _, c := range report.Checks {
+		switch {
+		case c.Error:
+			rep[c.ID] = "error: " + c.Detail
+		case c.Pass:
+			rep[c.ID] = "pass: " + c.Detail
+		default:
+			rep[c.ID] = "fail: " + c.Detail
+		}
+	}
+	return rep, report.ExitCode()
+}
+
+// The acceptance for a check is that it can FAIL, and fail with the right id.
+// A synthetic runtime that is healthy passes the composer checks; the same
+// runtime with one thing broken fails exactly the checks that depend on it.
+func TestCompatBrokenSyntheticCandidates(t *testing.T) {
+	_, python := compatIntegration(t)
+
+	t.Run("healthy", func(t *testing.T) {
+		rep, exit := runFake(t, python, map[string]string{"FAKE_PLACEHOLDER": "1"}, "F-COMPOSER", "F-MLDRAFT")
+		for _, id := range []string{"F-COMPOSER", "F-MLDRAFT"} {
+			if !strings.HasPrefix(rep[id], "pass") {
+				t.Errorf("%s = %s", id, rep[id])
+			}
+		}
+		if exit != 0 {
+			t.Errorf("exit %d, want 0", exit)
+		}
+	})
+
+	t.Run("a different prompt glyph fails the composer check", func(t *testing.T) {
+		rep, exit := runFake(t, python, map[string]string{"FAKE_PLACEHOLDER": "1", "FAKE_GLYPH": ">"}, "F-COMPOSER")
+		if !strings.HasPrefix(rep["F-COMPOSER"], "fail") || !strings.Contains(rep["F-COMPOSER"], "no composer") {
+			t.Errorf("F-COMPOSER = %s, want a failure saying no composer was found", rep["F-COMPOSER"])
+		}
+		if exit != 1 {
+			t.Errorf("exit %d, want 1 (a must check failed)", exit)
+		}
+	})
+
+	t.Run("no bracketed paste fails the checks that paste, and says why", func(t *testing.T) {
+		rep, exit := runFake(t, python, map[string]string{"FAKE_PLACEHOLDER": "1", "FAKE_NO_BRACKET": "1"}, "F-COMPOSER", "F-MLDRAFT")
+		for _, id := range []string{"F-COMPOSER", "F-MLDRAFT"} {
+			if !strings.HasPrefix(rep[id], "fail") || !strings.Contains(rep[id], "could not be pasted") {
+				t.Errorf("%s = %s, want a failure saying the draft could not be pasted", id, rep[id])
+			}
+		}
+		if exit != 1 {
+			t.Errorf("exit %d, want 1", exit)
+		}
+	})
+
+	t.Run("a placeholder that is not dim is read as a draft", func(t *testing.T) {
+		// The driver tells a placeholder from typed text by its dimness, so a
+		// placeholder painted without it reads as a draft — and an empty composer
+		// that "holds a draft" makes every delivery refuse.
+		rep, exit := runFake(t, python, map[string]string{"FAKE_PLACEHOLDER": "plain"}, "F-COMPOSER")
+		if !strings.HasPrefix(rep["F-COMPOSER"], "fail") || !strings.Contains(rep["F-COMPOSER"], "placeholder was taken for a draft") {
+			t.Errorf("F-COMPOSER = %s, want a failure saying the placeholder was taken for a draft", rep["F-COMPOSER"])
+		}
+		if exit != 1 {
+			t.Errorf("exit %d, want 1", exit)
+		}
+	})
+
+	t.Run("an empty composer with no placeholder at all still passes", func(t *testing.T) {
+		// The real runtime sometimes paints no placeholder yet. That is a valid
+		// empty composer, and a check that demanded one would fail a healthy build.
+		rep, _ := runFake(t, python, nil, "F-COMPOSER")
+		if !strings.HasPrefix(rep["F-COMPOSER"], "pass") {
+			t.Errorf("F-COMPOSER = %s, want a pass", rep["F-COMPOSER"])
+		}
+	})
+}

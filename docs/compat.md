@@ -133,6 +133,11 @@ healthy launch clears.
 - While it runs, the throwaway sessions are visible to anything that lists the
   runtime's per-process records, as any session is. They are removed afterwards.
 
+One line on stderr is expected in every full run and is not a problem:
+`tmux: trust-seed: trustseed: refusing …/u: outside every configured root`. That is the
+driver's trust seeder declining to trust the deliberately untrusted directory, which is
+what lets the folder-trust dialog appear there.
+
 A run restricted with `--only` to checks that need no session (the static ones) never
 starts a server and creates no scratch directory.
 
@@ -259,4 +264,16 @@ build.
 | `F-LIMIT` | warn | The candidate still contains the usage-limit notice wording the screen classifier recognises. Static text only: the screen cannot be produced on demand. | `internal/drivers/tmux/classify.go#usageLimit` |
 | `F-APIERR` | warn | The candidate still contains the API-error wording the classifier reads to tell a failed turn from a finished one. Static text only: the screen cannot be produced on demand. | `internal/drivers/tmux/classify.go#lastTurnFailed` |
 | `H-RC` | warn | The candidate still contains the four remote-control footer labels the control-channel reader maps. Static text only: a check never attaches a bridge. | `internal/drivers/tmux/controlchannel.go#controlStates` |
+| `C1` | must | A working directory the driver seeds as trusted starts without the folder-trust dialog, so a session created there reaches its composer on its own. | `internal/trustseed/trustseed.go#Seeder` |
+| `F-TRUST` | must | A directory outside the trust root shows the folder-trust dialog, which the driver classifies as such, reads as an unnumbered menu, and can find exactly one affirmative option in. Observed only: the dialog is never answered. | `internal/drivers/tmux/classify.go#classifyPromptKind`, `internal/drivers/tmux/tmux.go#affirmativeOption` |
+| `B5` | must | A session started in bypass-permissions mode reaches its composer with no acceptance screen in the way, given the user setting that suppresses it. | `internal/drivers/tmux/tmux.go#claudeCodeCommand` |
+| `F-BYPASS` | warn | The bypass-acceptance screen, when it can be produced, is classified as such; otherwise the wording of its two options is still present in the candidate. Observed only: it is never answered. | `internal/drivers/tmux/tmux.go#acceptanceScreen` |
+| `D1` | must | The runtime's per-process session record appears within fifteen seconds of launch carrying the fields this service reads, with the expected types and values. | `internal/drivers/tmux/terminalpath2_transcript.go#processSessionRecord` |
+| `D3` | must | The record's process start time is UTC text that corroborates the running process, so the record can be trusted to belong to that process and not to a recycled pid. | `internal/drivers/tmux/terminalpath2_transcript.go#parseProcessSessionRecordStartTime` |
+| `D4` | must | With remote control off, the record carries no bridge id and the screen shows no control-channel label. The negative half only: the positive half needs a bridge, which a check never creates. | `internal/drivers/tmux/controlchannel.go#controlChannelOf` |
+| `F-COMPOSER` | must | The composer is the prompt glyph between two rules, an empty composer reads as empty even when a dim placeholder is painted in it, and a typed draft reads back exactly. | `internal/drivers/tmux/classify.go#composerText` |
+| `F-MLDRAFT` | must | A multi-line draft pasted into the composer reads back as the text that was pasted. | `internal/drivers/tmux/composertext.go#composerMatchesText` |
+| `F-PASTEMARK` | must | A long multi-line paste collapses to a [Pasted text #N +M lines] marker and one long line to a bare [Pasted text #N] marker, and both are counted the way delivery confirmation counts them. | `internal/drivers/tmux/tmux.go#markerCounts`, `internal/drivers/tmux/tmux.go#composerHoldsCollapsedPaste` |
+| `F-WRAP` | must | A draft longer than a row wraps onto rows of one width, and the wrapped rows read back as the text that was pasted. | `internal/drivers/tmux/composertext.go#composerRegion` |
+| `G6` | must | The prompt-mode characters behave as the input guard assumes: a leading ! in an empty composer enters shell mode, while the same text after a space, and a slash after a space, stay plain prompt text. | `internal/drivers/tmux/inputguard.go#refuseAsRuntimeSyntax` |
 <!-- compat:catalogue:end -->
