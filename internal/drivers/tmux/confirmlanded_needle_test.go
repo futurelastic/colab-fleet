@@ -77,7 +77,7 @@ func TestConfirmLandedNeedleNeverStraddlesTheNewline(t *testing.T) {
 			f.setCapture("%2", painted)
 			d := newTestDriver(f)
 
-			_, _, ok := d.confirmLanded(context.Background(), "%2", text, map[pasteKey]int{})
+			_, _, ok := d.confirmLandedV2(context.Background(), "%2", text, map[pasteKey]int{}, false, false)
 			if !ok {
 				t.Fatalf("confirmLanded did not confirm a landed multi-line paste "+
 					"(first line %d chars) against:\n%s", firstLineLen, painted)
@@ -148,7 +148,7 @@ func TestConfirmLandedMatchesTheTailWhenTheHeadScrolledOut(t *testing.T) {
 			f.setCapture("%2", painted)
 			d := newTestDriver(f)
 
-			_, _, ok := d.confirmLanded(context.Background(), "%2", full, map[pasteKey]int{})
+			_, _, ok := d.confirmLandedV2(context.Background(), "%2", full, map[pasteKey]int{}, false, false)
 			if !ok {
 				t.Fatalf("confirmLanded did not confirm a landed single-line paste "+
 					"wrapped to %d rows (window shows the last %d) against:\n%s",
@@ -208,7 +208,7 @@ func TestConfirmLandedMatchesTheLastLineWhenTheFirstLineScrolledOut(t *testing.T
 	f.setCapture("%2", painted)
 	d := newTestDriver(f)
 
-	_, _, ok := d.confirmLanded(context.Background(), "%2", text, map[pasteKey]int{})
+	_, _, ok := d.confirmLandedV2(context.Background(), "%2", text, map[pasteKey]int{}, false, false)
 	if !ok {
 		t.Fatalf("confirmLanded did not confirm a landed multi-line paste "+
 			"(first line scrolled fully out of the window) against:\n%s", painted)

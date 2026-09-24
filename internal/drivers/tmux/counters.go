@@ -215,6 +215,12 @@ const (
 	// confirmLandedV2's own doc comment (terminalpath2.go) for why this
 	// fallback exists at all and what a nonzero live rate for it would mean.
 	counterLandConfirmByLegacyNeedle = "land_confirm.by_legacy_needle"
+	// counterLandConfirmByClippedTail: a fresh send's composer grew past the
+	// visible top and its visible rows rendered a tail of the text (#149,
+	// decided by #180). counterLandConfirmByOwnMarker: a resume finished the
+	// driver's own collapsed paste by its recorded marker (#180 H1).
+	counterLandConfirmByClippedTail = "land_confirm.by_clipped_tail"
+	counterLandConfirmByOwnMarker   = "land_confirm.by_own_marker"
 
 	counterSubmitConfirmedByTranscript = "submit_confirm.by_transcript"
 

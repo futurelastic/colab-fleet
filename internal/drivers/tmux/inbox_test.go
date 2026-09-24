@@ -650,13 +650,13 @@ func TestSend_PaneFallbackCarriesTheSenderLabelAsFirstLine(t *testing.T) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	found := false
-	for _, pasted := range f.pasted {
+	for _, pasted := range f.pasteLog {
 		if strings.HasPrefix(pasted, want) {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("no pane received the labelled text %q; pasted = %q", want, f.pasted)
+		t.Errorf("no pane received the labelled text %q; pasted = %q", want, f.pasteLog)
 	}
 }
 

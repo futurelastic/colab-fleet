@@ -113,6 +113,71 @@ type fakeMux struct {
 	// exists at all; only a test that specifically wants to exercise the
 	// refusal sets a pane here.
 	bracketPasteOff map[string]bool
+	// echoOutsideFence restores this fake's original paste model: delivered
+	// text is appended AFTER the whole pre-armed screen instead of being
+	// rendered inside the composer's fence (renderInComposer). That is the
+	// shape of text echoed by something other than the composer — a shell
+	// under a leftover composer frame (#180 H2) — so a landed check must
+	// never be confirmed by it.
+	echoOutsideFence bool
+	// pasteLog is every payload delivered through the paste buffer, in
+	// order, whatever became of it on screen afterwards.
+	pasteLog []string
+}
+
+// renderInComposer models what the runtime does with a paste: the text
+// appears INSIDE the composer, between its fences, one row per logical line
+// (#180). A screen with no fenced composer is returned unchanged (ok=false),
+// and the caller falls back to appending — text a pane shows outside any
+// composer. Existing composer text (other than the dim placeholder) is kept
+// and the paste continues it, as a paste at the end of the line does.
+func renderInComposer(capture, pasted string) (string, bool) {
+	lines := strings.Split(capture, "\n")
+	last := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isRule(stripEscapes(lines[i])) {
+			last = i
+			break
+		}
+	}
+	if last <= 0 {
+		return "", false
+	}
+	prompt := -1
+	for i := last - 1; i >= 0; i-- {
+		plain := strings.TrimSpace(stripEscapes(lines[i]))
+		if isRule(plain) {
+			return "", false
+		}
+		if strings.HasPrefix(plain, composerRuneMarker) {
+			prompt = i
+			break
+		}
+	}
+	if prompt < 0 {
+		return "", false
+	}
+	var existing []string
+	if !allDim(afterMarker(lines[prompt])) {
+		if first := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(stripEscapes(lines[prompt])), composerRuneMarker)); first != "" {
+			existing = append(existing, first)
+		}
+		for i := prompt + 1; i < last; i++ {
+			if row := stripEscapes(lines[i]); strings.TrimSpace(row) != "" {
+				existing = append(existing, row)
+			}
+		}
+	}
+	rows := strings.Split(pasted, "\n")
+	if n := len(existing); n > 0 {
+		existing[n-1] += rows[0]
+		rows = append(existing, rows[1:]...)
+	}
+	out := append([]string{}, lines[:prompt]...)
+	out = append(out, composerRuneMarker+" "+rows[0])
+	out = append(out, rows[1:]...)
+	out = append(out, lines[last:]...)
+	return strings.Join(out, "\n"), true
 }
 
 // setBracketPasteOff arms the one pane shape terminal-path-v2's
@@ -350,6 +415,9 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 				}
 			}
 		}
+		if pane != "" {
+			f.pasteLog = append(f.pasteLog, content)
+		}
 		if pane != "" && !f.noEcho {
 			f.pasted[pane] += content
 		}
@@ -372,6 +440,11 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "-t" {
 				body := f.captures[args[i+1]] + "\n" + f.pasted[args[i+1]]
+				if p := f.pasted[args[i+1]]; p != "" && !f.echoOutsideFence {
+					if rendered, ok := renderInComposer(f.captures[args[i+1]], p); ok {
+						body = rendered
+					}
+				}
 				if !withEscapes {
 					body = stripEscapes(body)
 				}
@@ -590,6 +663,12 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 				// backwards.
 				if f.pasted[pane] != "" {
 					f.captures[pane] = composerHolding(f.pasted[pane])
+					// The text now lives in the screen itself; leaving it in
+					// f.pasted too would render it a second time inside the
+					// composer (renderInComposer).
+					if !f.echoOutsideFence {
+						delete(f.pasted, pane)
+					}
 				}
 			} else {
 				delete(f.pasted, pane)
@@ -1852,7 +1931,8 @@ func TestConfirmLandedIgnoresResidueAndAttributesOnlyTheNewMarker(t *testing.T) 
 	f := twoSessions()
 	f.setCapture("%1", residue)
 	d := newTestDriver(f)
-	before := d.paintedMarkers(context.Background(), "%1")
+	sc, _ := d.captureForClassify(context.Background(), "%1")
+	before := composerMarkers(sc)
 	if len(before) != 1 {
 		t.Fatalf("setup: before-snapshot = %v, want exactly the one pre-existing marker", before)
 	}
@@ -1878,7 +1958,7 @@ func TestConfirmLandedIgnoresResidueAndAttributesOnlyTheNewMarker(t *testing.T) 
 	// literal-match branch on the very first read, before this delivery's own
 	// marker (#11) ever appears, which is exactly the false positive this
 	// test exists to rule out. "q" appears nowhere in the fixture.
-	key, atCount, ok := d2.confirmLanded(context.Background(), "%1", strings.Repeat("q\n", 30), before)
+	key, atCount, ok := d2.confirmLandedV2(context.Background(), "%1", strings.Repeat("q\n", 30), before, false, false)
 	if !ok {
 		t.Fatal("never confirmed landed, even after this delivery's own marker appeared")
 	}

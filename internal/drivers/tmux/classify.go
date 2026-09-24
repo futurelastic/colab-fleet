@@ -1759,38 +1759,6 @@ func screenDigest(raw string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// composerTextDigest fingerprints composer TEXT (never a whole screen — see
-// screenDigest's own siblings below for that) for comparison ACROSS TIME:
-// the value published as a read's ComposerDigest, the value Discard's
-// `?expect=` and Keys' own composer-scope corroboration compare against it,
-// and the value strandedRecord.ComposerDigest and #112/#135's own digest
-// gates compare against a LATER read of the same field.
-//
-// # Review fix: normalised, not raw
-//
-// composerText's own continuation-line join inserts exactly one space at
-// every row boundary the TUI's word-wrap produced — correct when the TUI
-// wrapped at a real space (rejoining recovers the original byte for byte),
-// wrong when it hard-broke a long unbroken token (a URL, a path) with no
-// space to drop: that join then inserts a space the ORIGINAL TEXT NEVER HAD,
-// and WHERE it lands depends on the pane's width at capture time. A resize
-// between "this driver stranded a delivery" and "a later resume reads the
-// composer back" — a peer's client attaching at a different terminal size is
-// the ordinary way this happens — can therefore change composerText's own
-// output for byte-for-byte UNCHANGED underlying text, which raw
-// screenDigest(pending) reported as "the composer changed since this driver
-// last saw it": the #112/#135 digest gate refused the driver's own
-// unconfirmed delivery forever, with no consumer implementing the
-// `replaceIfStranded` escape the refusal named (review-regression's own
-// finding). normalizeForMatch's whitespace-insensitive comparison already
-// solves the identical problem for composerRegionMatch (terminalpath2.go);
-// reusing it here removes the same axis from the DIGEST instead of only from
-// the text-equality check, so the two can never disagree about whether a
-// resize alone changed anything.
-func composerTextDigest(pending string) string {
-	return screenDigest(normalizeForMatch(pending))
-}
-
 // resolveAmbiguity settles a classification using what the same pane looked
 // like last time, or leaves it unknown when there is nothing to settle it
 // with.

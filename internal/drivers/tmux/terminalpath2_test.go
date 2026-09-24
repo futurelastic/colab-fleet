@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
@@ -179,33 +180,47 @@ func TestConfirmLandedV2UsesComposerRegionMatchAsThePrimarySignal(t *testing.T) 
 	}
 }
 
-// TestConfirmLandedV2FallsBackToLegacyNeedleWhenComposerIsNotStructurallyRendered
-// documents the fallback this file's own doc comment names: a substrate
-// (here, this package's own fake) that echoes pasted bytes without
-// re-painting a fenced composer around them still confirms, via the OLD
-// needle — never a silent failure, and the counter says which path fired.
-func TestConfirmLandedV2FallsBackToLegacyNeedleWhenComposerIsNotStructurallyRendered(t *testing.T) {
+// TestLandedIsNeverConfirmedByTextOutsideTheComposer (#180 H2): text a pane
+// shows below the composer's closing rule — a shell echoing a command under
+// a composer frame the runtime left behind when it exited — must never read
+// as this delivery having landed, whatever it says.
+func TestLandedIsNeverConfirmedByTextOutsideTheComposer(t *testing.T) {
 	f := twoSessions()
+	f.echoOutsideFence = true
 	d := newTestDriver(f)
-	text := "raw appended text, not fenced"
-	// Bypass Send/paste-buffer and model the fake's raw-append shape
-	// directly, via the same load-buffer/paste-buffer call pasteBracketed
-	// itself makes — exercising the real code path rather than poking
-	// f.pasted by hand.
+	text := "touch a-file-that-must-not-be-created"
 	if err := d.pasteBracketed(context.Background(), "%1", text); err != nil {
 		t.Fatalf("pasteBracketed: %v", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, _, landed := d.confirmLandedV2(ctx, "%1", text, map[pasteKey]int{}, false, false); landed {
+		t.Fatal("text echoed below the composer's closing rule was taken as landed")
+	}
+}
 
-	_, _, landed := d.confirmLandedV2(context.Background(), "%1", text, map[pasteKey]int{}, false, false)
-	if !landed {
-		t.Fatal("confirmLandedV2 did not fall back to the legacy needle match")
+// TestConfirmLandedV2NeedleReadsOnlyTheComposersRows: the tail needle is
+// still a fallback for a composer that renders the text in a shape the row
+// model does not follow, but only inside the composer's own rows.
+func TestConfirmLandedV2NeedleReadsOnlyTheComposersRows(t *testing.T) {
+	text := "an opening line the composer shows differently\nand the closing line of the message"
+	f := twoSessions()
+	f.setCapture("%1", "  transcript\n"+rule+"\n❯ [Image #1] an opening line, re-rendered\n  and the closing line of the message\n"+rule+"\n  status")
+	d := newTestDriver(f)
+	if _, _, landed := d.confirmLandedV2(context.Background(), "%1", text, map[pasteKey]int{}, false, false); !landed {
+		t.Fatal("the needle inside the composer's own rows did not confirm")
 	}
-	snap := d.counters.Snapshot()
-	if snap[counterLandConfirmByLegacyNeedle] != 1 {
-		t.Errorf("counterLandConfirmByLegacyNeedle = %d, want 1", snap[counterLandConfirmByLegacyNeedle])
+	if n := d.counters.Snapshot()[counterLandConfirmByLegacyNeedle]; n != 1 {
+		t.Fatalf("counterLandConfirmByLegacyNeedle = %d, want 1", n)
 	}
-	if snap[counterLandConfirmByComposerMatch] != 0 {
-		t.Errorf("counterLandConfirmByComposerMatch = %d, want 0", snap[counterLandConfirmByComposerMatch])
+
+	f2 := twoSessions()
+	f2.setCapture("%1", "  and the closing line of the message\n"+rule+"\n❯ something else entirely\n"+rule+"\n  status")
+	d2 := newTestDriver(f2)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, _, landed := d2.confirmLandedV2(ctx, "%1", text, map[pasteKey]int{}, false, false); landed {
+		t.Fatal("the needle matched transcript text above the composer")
 	}
 }
 

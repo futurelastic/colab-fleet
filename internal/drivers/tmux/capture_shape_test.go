@@ -29,9 +29,6 @@ func TestClassifierCapturesAreBuiltInOnePlace(t *testing.T) {
 	const shapeFn = "func classifyCaptureArgs("
 	allowed := map[string]string{
 		"classifyCaptureArgs": "the one definition of the shape",
-		"confirmLanded":       "does not feed the classifier; strips attributes itself and wants -J",
-		"paintedMarkers":      "does not feed the classifier; shares confirmLanded's -J shape so a before/after marker reading is comparable",
-		"confirmLandedV2":     "does not feed the classifier; shares confirmLanded's own -J shape for its marker/legacy-needle fallback (terminal path v2 — its PRIMARY signal, composerRegionMatch, goes through captureForClassify, which does feed the classifier and needs no separate allowance)",
 	}
 
 	src := readDriverSource(t)

@@ -2432,7 +2432,8 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			// and "could not tell" are different findings, and only the
 			// first licenses treating the gap as harmless.
 			curDigest := composerTextDigest(pending)
-			if resumeRecord.ComposerDigest != "" && resumeRecord.ComposerDigest != curDigest {
+			if resumeRecord.ComposerDigest != "" && !composerDigestMatches(resumeRecord.ComposerDigest, pending) &&
+				!composerMatchesText(screenNow, text, false) {
 				return fleet.DeliveryReceipt{
 					Outcome: fleet.OutcomeRefused,
 					Reason: "resumeIfStranded requires the composer's current content to digest " +
@@ -2512,7 +2513,11 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			// reproduces) — every other fallback strict=true disables stays
 			// disabled regardless.
 			digestVerified := resumeRecord.ComposerDigest != ""
-			key, atCount, landed := d.confirmLandedV2(ctx, target.paneID, text, map[pasteKey]int{}, true, digestVerified)
+			land := d.landV2(ctx, target.paneID, text, landCheck{
+				strict: true, digestVerified: digestVerified,
+				ownMarker: resumeRecord.pasteKey(), ownMarkerOK: resumeRecord.PasteLanded,
+			})
+			key, atCount, landed := land.key, land.atCount, land.ok
 			if !landed {
 				return fleet.DeliveryReceipt{
 					Outcome: fleet.OutcomeUnknown,
@@ -2727,7 +2732,10 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// took. Everything confirmLandedV2 and confirmSubmittedV2 attribute to
 	// THIS delivery is a CHANGE relative to this snapshot; see markerCounts
 	// for why the presence of a marker was never enough on its own.
-	before := d.paintedMarkers(ctx, target.paneID)
+	before := map[pasteKey]int{}
+	if sc, ok := d.captureForClassify(ctx, target.paneID); ok {
+		before = composerMarkers(sc)
+	}
 
 	// Terminal path v2 / D2+D3: bracketed, literal-newline delivery
 	// (pasteBracketed, terminalpath2.go) replaces the plain, CR-converting
@@ -2772,7 +2780,8 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// where `C-m` submitted immediately, same text, seconds apart. They are
 	// the same character in principle; they are not the same in practice, and
 	// only one of them has been seen to work when the other did not.
-	key, atCount, landed := d.confirmLandedV2(ctx, target.paneID, text, before, false, false)
+	land := d.landV2(ctx, target.paneID, text, landCheck{before: before})
+	key, atCount, landed := land.key, land.atCount, land.ok
 	if !landed {
 		// The text is in the composer and was not submitted. Say so plainly:
 		// the caller must decide whether to retry or clear it, and silence
@@ -2793,6 +2802,16 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 		// re-pasting blind.
 		strandSrc, strandSrcOK := d.resolveTranscriptSource(ctx, ref, target)
 		d.noteStrandedWithTranscript(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), strandSrc, strandSrcOK)
+		if land.dialog {
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeUnknown,
+				Reason: d.withRestartNoteReason(ref.ID, "text was pasted, but a selection menu "+
+					"appeared on this pane before it could be confirmed in the composer; submit "+
+					"was not pressed, so nothing answered that menu. The text may be sitting in "+
+					"the composer unsent — once the menu is answered, retry the same send with "+
+					"resumeIfStranded to submit it"),
+			}, nil
+		}
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: d.withRestartNoteReason(ref.ID, "text was delivered to the composer but "+
@@ -2836,7 +2855,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// resolveTranscriptSource's own list-panes/`ps`/file-read window opened.
 	if d.refuseIfDialogAppeared(ctx, target.paneID) {
 		d.counters.incr(counterSendRefusedDialogRacePreSubmit)
-		d.noteStrandedWithTranscript(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK)
+		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: d.withRestartNoteReason(ref.ID, "text landed in the composer and was attributed "+
@@ -2871,7 +2890,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	submitConfirmed, submitEvidence, submitSignal := d.confirmSubmittedFromSource(ctx, target, text, key, atCount, src, srcOK)
 	tr.confirmedBy = submitSignal
 	if !submitConfirmed {
-		d.noteStrandedWithTranscript(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK)
+		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: d.withRestartNoteReason(ref.ID, "the text landed and was attributed to "+
@@ -3145,7 +3164,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 				"even though composerDigest is the name of a field IN the read response)",
 			ErrAmbiguousTarget, len(pending))
 	}
-	if got := composerTextDigest(pending); got != expectDigest {
+	if got := composerTextDigest(pending); !composerDigestMatches(expectDigest, pending) {
 		return fleet.Ack{}, fmt.Errorf(
 			"%w: the composer holds different text than the caller saw "+
 				"(expected digest %s, found %s) — somebody may be typing right now",
@@ -5069,121 +5088,6 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) readinessCheck 
 		reason: "the session is not visible to this driver right now"}
 }
 
-// confirmLanded waits until the composer actually shows the delivered text,
-// and reports WHICH collapsed-paste block — if any — belongs to this
-// delivery specifically.
-//
-// A render can lag a busy TUI by longer than a naive fixed pause, and giving
-// up too early is not free: the text is already in the box, so a premature
-// failure strands an instruction rather than losing it. The loop therefore
-// keeps reading while there is budget, rather than sampling a fixed number of
-// times — a sibling project measured a legitimate delivery failing a ~360 ms
-// verification budget while the text was, seconds later, fully and correctly
-// rendered.
-//
-// Matching is on the LAST LINE of the delivered text (see below for why the
-// last line and not the first), tail-truncated: the composer wraps long
-// input across lines and may decorate it, so requiring an exact whole-string
-// match would fail on precisely the long instructions that matter most.
-//
-// `before` is the composer's marker state captured immediately prior to this
-// delivery's own paste (see Send). A marker that was already there is
-// somebody else's — an earlier stranding this driver or a human left behind
-// — and it must never count as evidence for a delivery it has nothing to do
-// with. Any marker satisfied the check this replaced, which is exactly the
-// defect being fixed: a send into a composer already holding residue
-// confirmed against that residue, and the submit check that followed it
-// could then never pass, because the residue this delivery never touched
-// never leaves. Measured on a live session: one ~30-line instruction
-// produced two consecutive false negatives while the agent had received
-// exactly one clean copy and was acting on it, the composer meanwhile
-// holding two stacked placeholders.
-func (d *Driver) confirmLanded(ctx context.Context, paneID, text string, before map[pasteKey]int) (pasteKey, int, bool) {
-	needle := strings.TrimSpace(text)
-	if needle == "" {
-		return pasteKey{}, 0, true
-	}
-	// The LAST LINE only, never a needle spanning a real newline. The
-	// rendered composer indents continuation lines — a marker on the first
-	// line, plain leading whitespace after it — which the raw source text
-	// has no counterpart for. A needle straddling the newline therefore
-	// compares against a painted shape it can never equal, at any payload
-	// size: measured, a 38-byte three-line payload strands exactly like a
-	// 130-byte one (colab-fleet#143). Taking a single line at all removes
-	// the straddle entirely, so that failure can no longer happen.
-	//
-	// It is the LAST line specifically, not the first (as an earlier fix
-	// took it) — a composer taller than the capture window below scrolls to
-	// keep the cursor, parked at the end of a fresh paste, in view, so a
-	// genuinely multi-line payload's FIRST line can end up in a row the
-	// runtime never painted at all, even though none of its own lines
-	// individually wrapped. Measured live: a 10-line, 149-byte payload
-	// scrolled its first line fully off an `-S -6` window that still
-	// painted lines 5-11 (colab-fleet#145). The last line is the one
-	// guaranteed to still be on screen, because it is where the cursor sits.
-	if idx := strings.LastIndexByte(needle, '\n'); idx >= 0 {
-		needle = needle[idx+1:]
-	}
-	// The TAIL of that line, not the head. Even the last line can itself be
-	// long enough to wrap across several rows, and the same scroll-to-follow
-	// -the-cursor behavior then hides the head of THAT line too; no amount
-	// of capture depth recovers a row that was never rendered. The tail is
-	// what stays on screen regardless of how far the composer scrolled.
-	// Measured boundary: 7 wrapped rows pass, 8 strand, for a single-line
-	// payload (colab-fleet#143).
-	if len(needle) > 24 {
-		needle = needle[len(needle)-24:]
-	}
-	// ...except when the runtime does not echo the text at all.
-	//
-	// A MULTI-LINE paste is collapsed into a summary — "[Pasted text #1 +8
-	// lines]" — so the bytes just delivered appear nowhere on screen. Matching
-	// the text then fails forever, and every multi-line message is reported
-	// stranded: delivered, honestly refused, and sitting in the composer.
-	//
-	// Measured the first time a long message was sent to a live session, and
-	// it would have been every long message after it.
-	//
-	// The collapsed form is still positive evidence of landing — it says the
-	// composer accepted a paste — so it is accepted as such, but ONLY the
-	// marker `gained` attributes to this delivery: the one whose count rose
-	// relative to `before`. Two markers rising at once means something other
-	// than this delivery also wrote to the composer in the same window, and
-	// `gained` fails to no attribution rather than guessing between them —
-	// this loop keeps polling on that ambiguity exactly as it would on
-	// silence, because more evidence may yet resolve it before the deadline.
-	deadline := d.now().Add(submitConfirmWindow)
-	for {
-		// NOT classifyCaptureArgs, and deliberately so: this is the one
-		// capture in the driver that does not feed the classifier. It does a
-		// substring match against text this driver just pasted, strips the
-		// attributes itself, and wants -J so a wrapped paste matches as one
-		// line. Attributes would be discarded a line below regardless, so the
-		// escape-carrying shape would buy nothing here. `before` was captured
-		// with this same shape, in paintedMarkers, so the two readings are
-		// comparable.
-		out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID, "-S", "-6")
-		if err == nil {
-			painted := stripEscapes(string(out))
-			if strings.Contains(painted, needle) {
-				return pasteKey{}, 0, true
-			}
-			after := markerCounts(painted)
-			if key, ok := gained(before, after); ok {
-				return key, after[key], true
-			}
-		}
-		if d.now().After(deadline) || ctx.Err() != nil {
-			return pasteKey{}, 0, false
-		}
-		select {
-		case <-ctx.Done():
-			return pasteKey{}, 0, false
-		case <-time.After(submitConfirmInterval):
-		}
-	}
-}
-
 // pasteKey identifies one collapsed-paste summary well enough to tell it from
 // the one before it.
 //
@@ -5561,6 +5465,19 @@ type strandedRecord struct {
 	// that keeps working exactly as before, just without this corroboration).
 	TranscriptPath   string `json:"transcriptPath,omitempty"`
 	TranscriptOffset int64  `json:"transcriptOffset,omitempty"`
+
+	// PasteIndex/PasteLines/PasteLanded (#180 H1): the collapsed-paste
+	// marker this delivery was attributed by, when it landed as one. A long
+	// or many-line paste renders as "[Pasted text #N +L lines]", which no
+	// text comparison can read back; the marker this driver itself saw
+	// appear is what lets a resume recognise its own strand.
+	PasteIndex  int  `json:"pasteIndex,omitempty"`
+	PasteLines  int  `json:"pasteLines,omitempty"`
+	PasteLanded bool `json:"pasteLanded,omitempty"`
+}
+
+func (r strandedRecord) pasteKey() pasteKey {
+	return pasteKey{index: r.PasteIndex, lines: r.PasteLines}
 }
 
 // strandedFile is the durable document, one entry per session with a
@@ -5604,12 +5521,22 @@ func (d *Driver) noteStranded(id, cwd, text, composerDigest string) {
 // resolved at strand time) leaves TranscriptPath empty — the same honest
 // degrade every other caller of resolveTranscriptSource already makes.
 func (d *Driver) noteStrandedWithTranscript(id, cwd, text, composerDigest string, src transcriptSource, srcOK bool) {
+	d.noteStrandedLanding(id, cwd, text, composerDigest, src, srcOK, landing{})
+}
+
+// noteStrandedLanding is noteStrandedWithTranscript plus how the text was
+// confirmed landed, when it was: a delivery attributed by its collapsed-paste
+// marker keeps that marker, so a resume can finish it (#180 H1).
+func (d *Driver) noteStrandedLanding(id, cwd, text, composerDigest string, src transcriptSource, srcOK bool, l landing) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stranded == nil {
 		d.stranded = map[string]strandedRecord{}
 	}
 	rec := strandedRecord{Text: text, Cwd: cwd, At: d.now(), ComposerDigest: composerDigest}
+	if l.ok && l.by == landedByMarker {
+		rec.PasteIndex, rec.PasteLines, rec.PasteLanded = l.key.index, l.key.lines, true
+	}
 	if srcOK {
 		rec.TranscriptPath = src.path
 		rec.TranscriptOffset = src.offset
@@ -5706,7 +5633,7 @@ func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, t
 		}, false, nil
 	}
 
-	if record.ComposerDigest == "" || record.ComposerDigest != digest {
+	if record.ComposerDigest == "" || !composerDigestMatches(record.ComposerDigest, pending) {
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason: "composer holds a delivery this driver made into this session, but its " +
@@ -6822,10 +6749,12 @@ func (d *Driver) confirmSubmitted(ctx context.Context, paneID string, key pasteK
 				d.recordConfirmed(counterSubmitConfirmedByComposerEmpty, d.now().Sub(start))
 				return true
 			}
-		}
-		if atCount > 0 && d.paintedMarkers(ctx, paneID)[key] < atCount {
-			d.recordConfirmed(counterSubmitConfirmedByMarkerCleared, d.now().Sub(start))
-			return true
+			// #180 L2: the marker is counted inside the composer only, from
+			// the same capture, in the shape the landed check counted it.
+			if atCount > 0 && composerMarkers(sc)[key] < atCount {
+				d.recordConfirmed(counterSubmitConfirmedByMarkerCleared, d.now().Sub(start))
+				return true
+			}
 		}
 		if d.now().After(deadline) || ctx.Err() != nil {
 			d.counters.incr(counterSubmitConfirmTimeout)
@@ -6847,25 +6776,6 @@ func (d *Driver) confirmSubmitted(ctx context.Context, paneID string, key pasteK
 func (d *Driver) recordConfirmed(bySignal string, elapsed time.Duration) {
 	d.counters.incr(bySignal)
 	d.counters.incr(confirmLatencyBucket(elapsed))
-}
-
-// paintedMarkers captures a pane in the shape confirmLanded's own capture
-// uses — `-J`, so a marker that wraps at the runtime's column width still
-// joins onto one line — and returns its collapsed-paste marker counts.
-//
-// Not captureForClassify's shape: that one deliberately leaves continuation
-// lines unjoined, because the classifier parses wrapping itself. Marker
-// attribution needs the opposite — a bracket split across two physical lines
-// by a mid-word wrap is a bracket markerCounts cannot close, and it would
-// silently drop that block from the count rather than fail loudly. Sharing
-// this shape with confirmLanded is what keeps a "before" and an "after"
-// reading comparable at all.
-func (d *Driver) paintedMarkers(ctx context.Context, paneID string) map[pasteKey]int {
-	out, err := d.run(ctx, d.bin, "capture-pane", "-p", "-J", "-t", paneID, "-S", "-6")
-	if err != nil {
-		return map[pasteKey]int{}
-	}
-	return markerCounts(stripEscapes(string(out)))
 }
 
 // captureForClassify reads a pane in THE shape the classifier requires.
