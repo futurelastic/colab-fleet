@@ -140,6 +140,11 @@
 //	                       colab-fleet #163: setting this also adds the
 //	                       resolver's inbox_index.* counters to the terminal
 //	                       runtime's counters in GET /v1/health.
+//	                       colab-fleet #196: setting this REQUIRES a principal
+//	                       table (FLEET_CONFIG) on the tmux runtime — the
+//	                       service refuses to start otherwise, because who
+//	                       relays a person's messages must be a grant, not a
+//	                       header (cmd/colab-fleetd/inboxgate.go).
 //	FLEET_DELIVERY_MODULES ordered, comma-separated names of OPTIONAL external
 //	                       delivery modules to enable (colab-fleet #185), in order
 //	                       of preference. Empty or unset means none, and this
@@ -441,6 +446,14 @@ func main() {
 		// #119 existed. See inboxresolver.go for what the directory holds
 		// and why its shape is not the real runtime's own convention.
 		if dir := os.Getenv("FLEET_INBOX_INDEX"); dir != "" {
+			// colab-fleet #196 (ruled on #195): the inbox route is refused
+			// without a principal table, because who relays a person's
+			// messages has to be a grant and not a header. A refusal to start,
+			// like the token gate above — see inboxgate.go. Placed before the
+			// resolver is wired so nothing half-configured is left behind.
+			if err := requireTableForInbox(dir, cfgFile != nil); err != nil {
+				log.Fatalf("colab-fleetd: %v", err)
+			}
 			opts = append(opts, tmux.WithInboxResolver(newFileInboxResolver(dir)))
 			// colab-fleet #163: the resolver's own index counters join the
 			// terminal driver's counters in GET /v1/health. Wired only here,

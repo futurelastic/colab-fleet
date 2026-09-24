@@ -656,8 +656,8 @@ func checkRelay(principals []service.Principal, named string, peerCount int) doc
 // coming from the user and which cannot grant escalation. That is the failure
 // #184 was filed for, reproduced by a missing grant instead of a code path.
 //
-// A warning and never a failure (ADR 160): nothing is broken until an index
-// also emits a class, and a fleet whose callers are all agents has no person to
+// With a table, a warning and never a failure (ADR 160): nothing is broken until
+// an index also emits a class, and a fleet whose callers are all agents has no person to
 // relay and is right to hold no such principal — --skip=principals.human-relay
 // says so.
 //
@@ -668,11 +668,16 @@ func checkRelay(principals []service.Principal, named string, peerCount int) doc
 // "Does anyone hold it" is the question the row can answer; "is the holder the
 // right one" is not, and a pass says so.
 //
-// The row is decidable only where the grant exists to be held. Single-token
-// mode has no per-caller identity, so there is nothing to grant and nothing to
-// count — the row is skipped there, and says why rather than reading as "fine".
+// Single-token mode is the other half (#196, ruled on #195). It has no
+// per-caller identity, so there is no grant to hold — and the only way left to
+// say "this is a person" is a header any bearer of the token can set. So the
+// inbox route is not available there at all: the service refuses to start with
+// FLEET_INBOX_INDEX set and no principal table (requireTableForInbox), and this
+// row FAILS for that shape, under ADR 160's meaning of fail — "the service will
+// refuse to start". A single-token machine with no index is unaffected and
+// skips above: nothing is diverted into a peer message when there is no inbox.
 func checkHumanRelay(runtime, indexDir string, cfgFailed, tableMode bool, principals []service.Principal) doctorRow {
-	row := doctorRow{ID: "principals.human-relay", Refs: []int{184, 189}}
+	row := doctorRow{ID: "principals.human-relay", Refs: []int{184, 189, 195, 196}}
 	switch {
 	case cfgFailed:
 		row.Status = statusSkip
@@ -686,12 +691,11 @@ func checkHumanRelay(runtime, indexDir string, cfgFailed, tableMode bool, princi
 		row.Status = statusSkip
 		row.Summary = "FLEET_INBOX_INDEX unset — no delivery takes the inbox route, so who relays a person's messages does not matter here"
 		return row
-	case !tableMode:
-		row.Status = statusSkip
-		row.Summary = "single-token mode has no per-caller grants — there is no human-relay grant to hold"
-		row.Detail = "nothing identifies a caller in this mode, so the human-relay fact is honoured only from a request that " +
-			"asserts it (the peer-relay headers); a plain caller is not one, and once an index emits a permission-mode " +
-			"class its sends take the inbox. A principal table (docs/install.md step 5) is what makes the grant expressible"
+	case requireTableForInbox(indexDir, tableMode) != nil:
+		row.Status = statusFail
+		row.Summary = inboxNeedsTableSummary + " — the service refuses to start"
+		row.Detail = inboxNeedsTableRemedy + ". Single-token mode has no per-caller identity, so there is no " +
+			"human-relay grant to hold there; --skip=principals.human-relay hides this row but the service still refuses"
 		return row
 	}
 

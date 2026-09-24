@@ -129,11 +129,14 @@ order of this page and the order of its output are the same.
    machine you expected to deliver to an inbox. Where it is set, the writer
    must emit `mode_class` for each entry, and emit the class the session is
    actually running in — an entry without one cannot be attested and is sent
-   through the pane path (#148). Where a principal table is in use, the
-   principal that relays a person's messages must also hold `human-relay`
-   **before** the writer emits a class — otherwise its messages arrive through
-   the inbox as peer messages (#184; `docs/deploy.md`, "Turning the inbox route
-   on"). Rows: `inbox.index`, `inbox.mode-class`, `principals.human-relay`.
+   through the pane path (#148). **Setting it requires a principal table
+   (step 5): with none, the service refuses to start (#196)** — who relays a
+   person's messages has to be a grant the table holds, not a header a caller
+   sets. The principal that relays a person's messages must also hold
+   `human-relay` **before** the writer emits a class — otherwise its messages
+   arrive through the inbox as peer messages (#184; `docs/deploy.md`, "Turning
+   the inbox route on"). Rows: `inbox.index`, `inbox.mode-class`,
+   `principals.human-relay` (fails when an index is set and there is no table).
 
    **Optional external delivery modules** — `FLEET_DELIVERY_MODULES` (#185). A
    module is a separate helper program that delivers a message by a channel other

@@ -701,7 +701,10 @@ no module enabled the set, and the message, are exactly what they were.
   L3). ⚠️ With no principal table configured every caller presents the one
   shared token, nothing tells a relay from anyone else, and the relay assertions
   are honoured as they always were: on such a machine the rule above holds only
-  as far as the token does.
+  as far as the token does. Such a machine cannot have the inbox route on — the
+  service refuses to start with an inbox index and no principal table (#196) —
+  so the assertion there can only choose the terminal path, and a person's
+  message is never sent as a peer message whether or not it carries the header.
 - **An explicit `inbox` is refused when the session cannot take it, and nothing
   is written.** The receipt is `refused`, names `delivery.route: "inbox"`, and
   its `reason` says what stopped it: no inbox configured, no index entry, no
@@ -1629,10 +1632,10 @@ ordering is wrong rather than handing you a cursor that would skip.
   unlabelled, arriving as the user's own turn, and it may send a leading `/`.
   Nothing else confers this — no header, no `from`, no `relayOfHuman` — and it
   crosses a peer relay only as an assertion the owning machine honours from one
-  of its configured peers (or from anyone, on a machine with no principal table:
-  §3.3, `route`). It defaults to denied like every other grant, and it is not
-  something to hand to an agent: it is the grant that lets a message skip the
-  label.
+  of its configured peers (or from anyone, on a machine with no principal table,
+  which cannot have the inbox route on: §3.3, `route`). It defaults to denied
+  like every other grant, and it is not something to hand to an agent: it is the
+  grant that lets a message skip the label.
 - Each caller presents its own credential and holds per-verb grants (§6).
 - **`GET /v1/whoami` is the one read exempt from needing the `read` grant
   itself** (§3.1, session-abstraction.md §7.7, colab-fleet #106). It reports
