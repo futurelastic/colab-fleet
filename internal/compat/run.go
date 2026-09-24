@@ -167,29 +167,9 @@ func Run(ctx context.Context, s Suite, o RunOptions) ([]Result, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
-	only := map[string]bool{}
-	for _, id := range o.Only {
-		if _, ok := Lookup(id); !ok {
-			return nil, fmt.Errorf("unknown check id %q", id)
-		}
-		only[id] = true
-	}
-	var selected []Check
-	for _, c := range s.Checks {
-		if len(only) == 0 || only[c.ID] {
-			selected = append(selected, c)
-		}
-	}
-	for id := range only {
-		found := false
-		for _, c := range selected {
-			if c.ID == id {
-				found = true
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("check %q is in the catalogue but has no implementation in this build", id)
-		}
+	selected, err := selectChecks(s, o.Only)
+	if err != nil {
+		return nil, err
 	}
 
 	byID := map[string]Probe{}
@@ -259,6 +239,59 @@ func Run(ctx context.Context, s Suite, o RunOptions) ([]Result, error) {
 		results = append(results, evaluate(c, done))
 	}
 	return results, nil
+}
+
+// selectChecks returns the suite's checks that --only asks for (all of them
+// when only is empty). An ID the catalogue does not know, or one it knows but
+// this build has no implementation for, is an error: silently running nothing
+// for a typo is the failure class this command exists to prevent.
+func selectChecks(s Suite, only []string) ([]Check, error) {
+	want := map[string]bool{}
+	for _, id := range only {
+		if _, ok := Lookup(id); !ok {
+			return nil, fmt.Errorf("unknown check id %q", id)
+		}
+		want[id] = true
+	}
+	var selected []Check
+	have := map[string]bool{}
+	for _, c := range s.Checks {
+		have[c.ID] = true
+		if len(want) == 0 || want[c.ID] {
+			selected = append(selected, c)
+		}
+	}
+	for id := range want {
+		if !have[id] {
+			return nil, fmt.Errorf("check %q is in the catalogue but has no implementation in this build", id)
+		}
+	}
+	return selected, nil
+}
+
+// ErroredAll returns an error Result for every check the run would have
+// selected, all carrying the same reason. It is for the case where nothing can
+// be judged at all (the candidate cannot be identified, the isolated
+// multiplexer cannot start): each check then reports "could not run" — never a
+// pass and never a failure — so a caller retries instead of rejecting.
+func ErroredAll(s Suite, only []string, why string) ([]Result, error) {
+	if err := s.Validate(); err != nil {
+		return nil, err
+	}
+	selected, err := selectChecks(s, only)
+	if err != nil {
+		return nil, err
+	}
+	var out []Result
+	for _, c := range selected {
+		spec, _ := Lookup(c.ID)
+		out = append(out, Result{
+			ID: c.ID, Gate: spec.Gate, Error: true,
+			Detail:   withReliedOn(why, spec.ReliedOn),
+			ReliedOn: spec.ReliedOn,
+		})
+	}
+	return out, nil
 }
 
 // cause reports why ctx ended, distinguishing the deadline from a signal.

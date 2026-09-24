@@ -271,3 +271,29 @@ func TestSuiteValidate(t *testing.T) {
 		t.Errorf("an empty suite is valid: %v", err)
 	}
 }
+
+// When nothing can be judged at all, every selected check says so — as an
+// error a caller can retry, never a pass and never a failure.
+func TestErroredAll(t *testing.T) {
+	s := Suite{Checks: []Check{
+		{ID: "F-LIMIT", Eval: pass("x")},
+		{ID: "F-APIERR", Eval: pass("x")},
+		{ID: "H-RC", Eval: pass("x")},
+	}}
+	got, err := ErroredAll(s, nil, "the candidate could not be identified")
+	if err != nil || len(got) != 3 {
+		t.Fatalf("got %d results, %v; want one per check", len(got), err)
+	}
+	for _, r := range got {
+		if !r.Error || r.Pass || !strings.Contains(r.Detail, "could not be identified") || !strings.Contains(r.Detail, "relied on by") {
+			t.Errorf("%s = %+v", r.ID, r)
+		}
+	}
+	got, err = ErroredAll(s, []string{"H-RC"}, "why")
+	if err != nil || len(got) != 1 || got[0].ID != "H-RC" {
+		t.Errorf("--only H-RC gave %+v, %v", got, err)
+	}
+	if _, err := ErroredAll(s, []string{"NOPE"}, "why"); err == nil {
+		t.Error("an unknown --only id must still be refused here")
+	}
+}

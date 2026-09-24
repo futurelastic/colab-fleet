@@ -50,14 +50,26 @@ func TestRunUsage(t *testing.T) {
 
 // The subcommands are dispatched before runUsage in main; this pins that
 // they are not also claimed by it, so a reorder cannot silently turn
-// `doctor` or `principal` into a usage error.
+// `doctor`, `compat` or `principal` into a usage error.
 func TestRunUsageLeavesSubcommandsToTheirHandlers(t *testing.T) {
-	for _, sub := range []string{"doctor", "principal"} {
+	for _, sub := range []string{"doctor", "compat", "principal"} {
 		if handled, _ := runDoctor([]string{sub}, func(string) string { return "" }, &bytes.Buffer{}, &bytes.Buffer{}); sub == "doctor" && !handled {
 			t.Errorf("runDoctor did not claim %q", sub)
+		}
+		// `compat -h` prints its own usage and never reaches the checker.
+		if handled, _ := runCompat([]string{sub, "-h"}, func(string) string { return "" }, &bytes.Buffer{}, &bytes.Buffer{}); sub == "compat" && !handled {
+			t.Errorf("runCompat did not claim %q", sub)
 		}
 		if handled, _ := runPrincipal([]string{sub}); sub == "principal" && !handled {
 			t.Errorf("runPrincipal did not claim %q", sub)
 		}
+	}
+}
+
+// The top-level usage names every subcommand, so an operator running `-h`
+// learns that compat exists.
+func TestUsageTopNamesCompat(t *testing.T) {
+	if !strings.Contains(usageTop(), "compat") {
+		t.Errorf("usageTop() does not mention compat:\n%s", usageTop())
 	}
 }

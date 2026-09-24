@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -195,6 +196,9 @@ func TestCatalogueWellFormed(t *testing.T) {
 		if s.ID == "" || s.Asserts == "" || len(s.ReliedOn) == 0 {
 			t.Errorf("incomplete catalogue entry: %+v", s)
 		}
+		if strings.ContainsAny(s.Asserts, "|\n") {
+			t.Errorf("%s: the description must be one line without a pipe, or it breaks the doc table", s.ID)
+		}
 		if s.Gate != GateMust && s.Gate != GateWarn {
 			t.Errorf("%s: gate %q", s.ID, s.Gate)
 		}
@@ -202,5 +206,22 @@ func TestCatalogueWellFormed(t *testing.T) {
 			t.Errorf("duplicate id %s", s.ID)
 		}
 		seen[s.ID] = true
+	}
+}
+
+func TestWriteTextStatesWhatItCannotKnow(t *testing.T) {
+	r := sampleReport()
+	r.ColabFleet = Build{Commit: "0123456789abcdef0123", Modified: true}
+	var buf bytes.Buffer
+	WriteText(&buf, r)
+	out := buf.String()
+	for _, want := range []string{
+		"(unstamped) @ 0123456789ab + uncommitted changes", // an unidentifiable build says so
+		"partial run", // a partial pass is not a certification
+		"F-LIMIT", "warn", "ERROR",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text report lacks %q:\n%s", want, out)
+		}
 	}
 }

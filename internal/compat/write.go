@@ -24,7 +24,7 @@ func WriteText(w io.Writer, r Report) {
 	if r.Claude.Sha256 != "" {
 		fmt.Fprintf(w, "           sha256 %s  arch %s\n", r.Claude.Sha256, r.Claude.Arch)
 	}
-	fmt.Fprintf(w, "checked by colab-fleet %s (%s)\n\n", r.ColabFleet.Version, r.ColabFleet.Commit)
+	fmt.Fprintf(w, "checked by colab-fleet %s\n\n", describeBuild(r.ColabFleet))
 	for _, c := range r.Checks {
 		state := "pass"
 		switch {
@@ -45,4 +45,26 @@ func WriteText(w io.Writer, r Report) {
 	if len(r.Only) > 0 {
 		fmt.Fprintf(w, "partial run (--only %v): not a certification\n", r.Only)
 	}
+}
+
+// describeBuild says which colab-fleet code ran the checks, and says so
+// plainly when it cannot: an unstamped build, or one from a tree with
+// uncommitted changes, has no identity a reader can rely on.
+func describeBuild(b Build) string {
+	v := b.Version
+	if v == "" {
+		v = "(unstamped)"
+	}
+	commit := b.Commit
+	if len(commit) > 12 {
+		commit = commit[:12]
+	}
+	out := v
+	if commit != "" {
+		out += " @ " + commit
+	}
+	if b.Modified {
+		out += " + uncommitted changes"
+	}
+	return out
 }
