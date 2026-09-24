@@ -182,9 +182,24 @@ func TestWhoAmIUnderLegacyTokenMode(t *testing.T) {
 		srv := build(true, true)
 		_, report := whoami(t, srv, testToken, "")
 		for _, g := range Grants() {
+			// GrantHumanRelay is deliberately excluded from this "both flags
+			// implies everything" check (review-safety fix): it is never a
+			// coarser version of "can mutate" or "can relay" the way every
+			// other grant here is under legacy mode — it names a caller's
+			// own claim to BE a human-facing relay (route:"terminal" with no
+			// `from` label), which a blanket local-mutations flag says
+			// nothing about. It is granted only by explicit principal
+			// configuration (Config.Principals), never implied by the two
+			// legacy flags.
+			if g == GrantHumanRelay {
+				continue
+			}
 			if !hasGrant(report.Grants, g) {
 				t.Errorf("grants = %v, missing %s (both legacy flags are on)", report.Grants, g)
 			}
+		}
+		if hasGrant(report.Grants, GrantHumanRelay) {
+			t.Errorf("grants = %v, legacy mode must never imply human-relay", report.Grants)
 		}
 	})
 }

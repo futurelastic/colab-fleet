@@ -104,6 +104,27 @@ type fakeMux struct {
 	// "height unknown" — so every test that never sets it keeps treating all
 	// captured rows as visible, exactly as before.
 	heights map[string]int
+	// bracketPasteOff models the one pane shape terminal-path-v2's
+	// pasteBracketed refuses on: an occupant that has NOT asked the
+	// terminal for bracketed paste mode (`#{bracket_paste_flag}` reads 0).
+	// Every pane absent here answers "1" — matching round-1's own live
+	// measurement that every real Claude Code pane sampled reported
+	// bracket_paste_flag=1 — so no existing fixture has to know this query
+	// exists at all; only a test that specifically wants to exercise the
+	// refusal sets a pane here.
+	bracketPasteOff map[string]bool
+}
+
+// setBracketPasteOff arms the one pane shape terminal-path-v2's
+// pasteBracketed refuses delivery on — see bracketPasteOff's own doc
+// comment.
+func (f *fakeMux) setBracketPasteOff(paneID string, v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.bracketPasteOff == nil {
+		f.bracketPasteOff = map[string]bool{}
+	}
+	f.bracketPasteOff[paneID] = v
 }
 
 func (f *fakeMux) setCapChunkArgWall(n int) {
@@ -591,6 +612,18 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		}
 		return nil, nil
 	case "display-message":
+		// Terminal path v2: pasteBracketed's own standalone probe
+		// (`display-message -p -t <pane> "#{bracket_paste_flag}"`) — never
+		// chained with anything else, unlike every other display-message
+		// shape this fake models below. See bracketPasteOff's own doc
+		// comment for why the default answer is "1" rather than "0".
+		if len(args) == 5 && args[4] == "#{bracket_paste_flag}" {
+			pane := args[3]
+			if f.bracketPasteOff[pane] {
+				return []byte("0\n"), nil
+			}
+			return []byte("1\n"), nil
+		}
 		// The batched capture call: one chained invocation of
 		// "display-message -p <mark> ; capture-pane ... -t <pane> ; ..." per
 		// row, exactly as enumerate builds it (tmux.go's capArgs).
@@ -4303,29 +4336,33 @@ func TestResumeSubmitsOnlyWhatThisDriverStranded(t *testing.T) {
 	// doc comment describes — no record backing the composer's content meant
 	// an unconditional refusal regardless of either flag, "close to an hour"
 	// per #135's field report once the 30-minute strandedRetention window
-	// lapsed mid-retry. Both flags now fold /discard's own read-then-clear
-	// corroboration into Send instead: the composer is cleared and THIS
-	// call's text is delivered in its place. The safety property that
-	// survives is narrower but still real, and still worth this test's own
-	// name — this driver must never submit text it did not place. The FOREIGN
-	// text sitting in the composer is discarded, never delivered; only the
-	// caller's own new text may reach the pane. See stranded_test.go's
-	// dedicated #135 tests for the rest of the new behaviour (the #87 futile
-	// guard, a partial clear reported honestly, and a bare send with neither
-	// flag set still refusing with the original wording).
-	t.Run("resume clears foreign text and submits only what this driver placed", func(t *testing.T) {
+	// lapsed mid-retry. #135 originally folded BOTH flags' "no record" case
+	// into the identical clear-and-deliver door; a later review fix (see
+	// stranded_test.go's TestResumeIfStrandedRefusesWithNoStrandedRecord)
+	// narrowed that to replaceIfStranded alone — resumeIfStranded's own
+	// contract ("finish MY earlier delivery") has nothing to finish here and
+	// now refuses instead of guessing. This subtest is updated to exercise
+	// the door that still exists (replaceIfStranded), and keeps proving the
+	// same safety property it always did: this driver must never submit text
+	// it did not place. The FOREIGN text sitting in the composer is
+	// discarded, never delivered; only the caller's own new text may reach
+	// the pane. See stranded_test.go's dedicated #135 tests for the rest of
+	// the new behaviour (the #87 futile guard, a partial clear reported
+	// honestly, and a bare send with neither flag set still refusing with
+	// the original wording).
+	t.Run("replace clears foreign text and submits only what this driver placed", func(t *testing.T) {
 		f := twoSessions()
 		f.captures["%2"] = fixtureUnsent // a human's typing, nothing to do with us
 		d := newTestDriver(f)
 
 		r, err := d.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"},
-			"something else entirely", driver.SendOptions{Submit: true, ResumeIfStranded: true})
+			"something else entirely", driver.SendOptions{Submit: true, ReplaceIfStranded: true})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if r.Outcome != fleet.OutcomeQueued {
 			t.Errorf("outcome = %s (%s), want queued — #135: no record means nothing to resume, "+
-				"so resumeIfStranded clears the composer and delivers this call's own text instead",
+				"so replaceIfStranded clears the composer and delivers this call's own text instead",
 				r.Outcome, r.Reason)
 		}
 		// The ordinary delivery path this falls through to always pastes THIS

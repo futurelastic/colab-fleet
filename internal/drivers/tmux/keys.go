@@ -71,6 +71,35 @@ var tmuxKey = map[fleet.KeyName]string{
 
 // Keys delivers one raw key event to a session's screen (driver.KeySender).
 func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionRef, key fleet.KeyName, expectDigest string) (fleet.DeliveryReceipt, error) {
+	// Terminal path v2 / D4 — see Send's identical acquisition. Ahead of the
+	// key-name validation below on purpose, the same way Send's own lock
+	// runs ahead of its #53 guard: an unrecognised key name refuses without
+	// ever touching a pane either way, so there is no cost to holding the
+	// lock through it, and it keeps "acquire the lock first, always" a rule
+	// with no exception to remember at the other three call sites.
+	// Review fix (D4 lock ignoring the caller's deadline): Escape is the key
+	// a caller reaches for to get OUT of a stuck dialog, and it is the one
+	// key whose whole reason for existing is unblocking a session another
+	// call has occupied for a while (confirmLandedV2/confirmSubmittedV2 can
+	// each hold this session's lock for a full submitConfirmWindow). Making
+	// Escape wait behind that lock would refuse the escape hatch for
+	// exactly the situation it exists to escape. It still corroborates
+	// against expectDigest below exactly as every other key does — skipping
+	// the lock changes WHO gets to go first, not what this call is allowed
+	// to assume about the screen.
+	if key != fleet.KeyEscape {
+		unlockComposer, lockOK := d.lockComposerOpsCtx(ctx, ref.ID)
+		if !lockOK {
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason: "this session's composer is busy with another delivery, respond, or " +
+					"discard call and the caller's own deadline ran out waiting for it; retry " +
+					"(Escape alone does not wait for this lock)",
+			}, nil
+		}
+		defer unlockComposer()
+	}
+
 	send, ok := tmuxKey[key]
 	if !ok {
 		// Unreachable through the HTTP surface, which validates first. Kept
@@ -121,7 +150,7 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// screen holds RIGHT NOW, decided before the expectDigest check so the
 	// error messages below can already name the right field.
 	//
-	// composer holds unsent text -> composer scope, screenDigest(pending).
+	// composer holds unsent text -> composer scope, composerTextDigest(pending).
 	// This is the SAME value GET publishes as ComposerDigest (classify.go),
 	// and the SAME value Discard corroborates against (tmux.go) — chosen
 	// because every key this driver could deliver into that state is refused
@@ -163,7 +192,7 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 
 	var before string
 	if composerHoldsText {
-		before = screenDigest(pending)
+		before = composerTextDigest(pending)
 	} else {
 		before = screenDigest(text)
 	}

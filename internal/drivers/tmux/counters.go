@@ -189,6 +189,156 @@ const (
 	// kept running, since a snapshot of one fleet cannot speak for every
 	// runtime. See docs/adr/169-a-composer-is-read-from-the-visible-pane.md.
 	counterComposerClippedAboveVisiblePane = "composer_clipped.fence_above_visible_pane"
+
+	// Terminal path v2 (colab-fleet round-1 research, item f). Two families:
+	//
+	// land_confirm.* names which signal confirmLandedV2 (terminalpath2.go)
+	// used to decide text had rendered — by_composer_match for the new
+	// structural, wrap-tolerant composer-region comparison (D1's fix),
+	// by_marker for the pre-existing collapsed-paste marker attribution
+	// (unchanged from confirmLanded, kept for multi-line pastes the TUI
+	// summarises rather than echoes), timeout for neither ever firing inside
+	// submitConfirmWindow. Exactly one fires per confirmLandedV2 call that
+	// returns landed=true; by_marker and by_composer_match are mutually
+	// exclusive within one call because the loop returns on the first hit.
+	//
+	// submit_confirm.by_transcript is the new signal alongside the two
+	// confirmSubmitted already had (by_composer_empty, by_marker_cleared,
+	// counted under the SAME counterSubmitConfirmTimeout on a miss) — see
+	// terminalpath2_transcript.go's confirmSubmittedV2 for what "by
+	// transcript" means and why it is tried FIRST.
+	counterLandConfirmByComposerMatch = "land_confirm.by_composer_match"
+	counterLandConfirmByMarker        = "land_confirm.by_marker"
+	counterLandConfirmTimeout         = "land_confirm.timeout"
+	// counterLandConfirmByLegacyNeedle counts confirmLandedV2 falling back
+	// to confirmLanded's own pre-existing tail-needle substring match — see
+	// confirmLandedV2's own doc comment (terminalpath2.go) for why this
+	// fallback exists at all and what a nonzero live rate for it would mean.
+	counterLandConfirmByLegacyNeedle = "land_confirm.by_legacy_needle"
+
+	counterSubmitConfirmedByTranscript = "submit_confirm.by_transcript"
+
+	// counterBracketPasteFlagUnknown/Off count pasteBracketed's two refusal
+	// reasons separately (terminalpath2.go) — the query itself failing is a
+	// different fact from the query answering "no", and round-1 measured
+	// only the "yes" case live (see pasteBracketed's own doc comment), so
+	// telling these apart is what would show whether the "no" branch is
+	// ever actually exercised in the field.
+	counterBracketPasteFlagUnknown = "bracket_paste.flag_unknown"
+	counterBracketPasteFlagOff     = "bracket_paste.flag_off"
+
+	// counterComposerLockContended counts every composer-touching call
+	// (Send, Respond, Discard, Keys — terminalpath2_lock.go) that had to
+	// wait for another call on the SAME session id to release the per-
+	// session lock before it could start. Zero across real traffic would
+	// say the race D4 named (two concurrent /input calls merged into one
+	// user turn) was never actually being hit in the field, which is worth
+	// knowing independently of having fixed it.
+	counterComposerLockContended = "composer_lock.contended"
+	// counterComposerLockDeadlineExceeded counts a composer-touching call
+	// whose OWN caller deadline ran out while waiting for another call on
+	// the same session id to release the lock — the review fix for D4
+	// ignoring the caller's context entirely. Distinct from
+	// counterComposerLockContended, which fires on every wait regardless of
+	// how it ends; this one is the subset that timed out rather than
+	// eventually acquiring.
+	counterComposerLockDeadlineExceeded = "composer_lock.deadline_exceeded"
+
+	// counterTranscriptCacheStaleAfterClear counts resolveTranscriptSource
+	// discovering that its own cached record-root lookup (conversationStore,
+	// keyed on pane+created for the life of the daemon) names a DIFFERENT
+	// conversation id than the runtime's own live per-process identity file
+	// reports right now — the signature of Claude Code regenerating its
+	// session id under an unchanged tmux pane (a `/clear`, or an in-pane
+	// runtime restart) without this driver's cache ever being told. A
+	// nonzero live rate says this actually happens on real sessions, not
+	// only in the review's synthetic reproduction.
+	counterTranscriptCacheStaleAfterClear = "transcript_source.cache_stale_after_clear"
+
+	// counterTranscriptScannerUnreadable counts transcriptTailMatches'
+	// bufio.Scanner failing outright (not merely reaching EOF with no match)
+	// — e.g. one transcript line exceeding recordLineLimit. The review's own
+	// finding: this used to be silently folded into "no match", which is
+	// indistinguishable from a transcript that was read in full and simply
+	// disagreed. Both degrade to the same caller-visible outcome (this
+	// signal cannot confirm the send), but only one of them is this driver
+	// admitting it could not read what it was looking at.
+	counterTranscriptScannerUnreadable = "transcript_source.scanner_unreadable"
+
+	// counterSubmitConfirmedByScreenAfterSilentTranscript counts
+	// confirmSubmittedFromSource falling back to the screen-based signal
+	// (composer emptying, or this delivery's own marker clearing) AFTER a
+	// resolved transcript's own polling window found nothing — the review
+	// fix for the busy-session false "unknown": the exact queue-operation
+	// shape this driver parses is not independently verified against a real
+	// transcript (see terminalpath2_transcript.go's own top comment), so a
+	// resolved-but-silent transcript is now treated as "this signal has
+	// nothing to say", not as "the runtime never accepted this delivery" —
+	// the screen gets a chance to say otherwise before the caller is told
+	// unknown. A nonzero live rate is this driver's own admission that its
+	// transcript parsing missed a real acceptance; see also
+	// counterSubmitConfirmedByTranscript, which fires instead whenever the
+	// transcript itself was the one that confirmed it.
+	counterSubmitConfirmedByScreenAfterSilentTranscript = "submit_confirm.by_screen_after_silent_transcript"
+
+	// counterSendRefusedDialogRace counts confirmLandedV2 declining to treat
+	// a composer or marker match as "landed" because the SAME capture that
+	// produced the match also shows a selection menu on screen — the review
+	// fix for "pressing Enter after the landed check can approve a dialog":
+	// a modal appearing in the gap between this driver's last look and the
+	// submit keystroke must not have that keystroke land on "1. Yes"
+	// instead of on the message this driver meant to submit.
+	counterSendRefusedDialogRace = "land_confirm.refused_dialog_race"
+
+	// counterSendRefusedDialogRacePreSubmit is counterSendRefusedDialogRace's
+	// sibling for the SECOND review-safety finding of the same shape: a
+	// selection menu appearing not while confirmLandedV2 was polling, but in
+	// the extra window resolveTranscriptSource itself opens between the
+	// landed check returning and the submit keystroke — list-panes plus a
+	// batched capture, then `ps`, then file reads, measured 26.8-52.9ms on a
+	// private 25-pane tmux server. The fresh, cheap re-capture this counts is
+	// taken immediately before send-keys at both submit sites (Send's
+	// first-attempt path and its resumeIfStranded completion), specifically
+	// to close that gap.
+	counterSendRefusedDialogRacePreSubmit = "land_confirm.refused_dialog_race_presubmit"
+
+	// counterSendRefusedResumeNoRecord counts resumeIfStranded (without
+	// replaceIfStranded) landing on a busy composer this driver holds no
+	// stranded record for — review-safety's own fix: #135 originally treated
+	// this the same as replaceIfStranded (clear whatever is there and
+	// deliver), which is safe when the caller explicitly means "discard it"
+	// but not when the caller only means "finish MY earlier delivery" and the
+	// record for it was forgotten out from under them (Discard's own
+	// composerFound-empty forget, or a confirmed send elsewhere) — in which
+	// case #135's door silently submitted a person's own draft as this
+	// call's text. resumeIfStranded now refuses here instead of clearing.
+	counterSendRefusedResumeNoRecord = "send.refused_resume_no_record"
+
+	// counterResumeConfirmedByTranscriptOnEmptyComposer counts
+	// resumeIfStranded finding the composer ALREADY EMPTY (not busy) for a
+	// session with a matching stranded record, and confirming — from that
+	// record's own TranscriptPath/TranscriptOffset, resolved at strand time —
+	// that the runtime had already accepted the text, rather than silently
+	// falling through to the ordinary fresh-paste path and delivering a
+	// byte-for-byte duplicate (review-confirmation's own finding).
+	counterResumeConfirmedByTranscriptOnEmptyComposer = "resume.confirmed_by_transcript_on_empty_composer"
+
+	// counterResumeRefusedEmptyComposerUnconfirmed is
+	// counterResumeConfirmedByTranscriptOnEmptyComposer's negative sibling:
+	// the composer read empty for a matching stranded record, but this
+	// driver's own transcript record could not confirm the runtime accepted
+	// it either (no transcript resolved at strand time, or it resolved but
+	// disagreed/stayed silent). Per the same review fix, this refuses rather
+	// than silently pasting the same text again.
+	counterResumeRefusedEmptyComposerUnconfirmed = "resume.refused_empty_composer_unconfirmed"
+
+	// counterTranscriptDifferentTurnRecorded counts
+	// confirmSubmittedFromSource finding transcriptScanDifferentTurn — a
+	// candidate turn attributable to this delivery's own confirmation window
+	// that did NOT match the sent text — review-confirmation's own fix for
+	// "a transcript that records a different turn is treated as silence, and
+	// the screen fallback reports queued".
+	counterTranscriptDifferentTurnRecorded = "transcript_source.different_turn_recorded"
 )
 
 // confirmLatencyBucket maps an observed confirm latency onto one of the five

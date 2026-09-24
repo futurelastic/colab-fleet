@@ -364,6 +364,53 @@ func TestSendForwardsReplaceIfStranded(t *testing.T) {
 	}
 }
 
+// TestSendForwardsForceTerminalRoute is the review's regression test for the
+// SAME #33 trap this file's own doc comments already name twice over, this
+// time for terminal path v2 / D7's ForceTerminalRoute: Send's hand-built
+// body silently dropped it, so a human's terminal-routed send relayed to a
+// peer was evaluated for inbox-eligibility on the OWNING machine as if
+// route:"terminal" had never been asked for — undoing D7's whole purpose the
+// moment the (currently paused) inbox path is re-enabled.
+func TestSendForwardsForceTerminalRoute(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+	d := New("peerbox", srv.URL)
+
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "a human's message",
+		driver.SendOptions{Submit: true, ForceTerminalRoute: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	var body struct {
+		Route string `json:"route"`
+	}
+	if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+		t.Fatalf("body = %q: %v", rec.body, err)
+	}
+	if body.Route != "terminal" {
+		t.Fatalf("body = %q, want route:\"terminal\" carried through to the owning daemon (D7)", rec.body)
+	}
+}
+
+// TestSendOmitsRouteWhenNotForced proves the field stays absent (not merely
+// empty-string-but-present) on an ordinary send — the owning daemon's own
+// decoder treats an explicit unrecognised value as a caller error, so this
+// driver must never send a value a future, stricter decoder could reject for
+// a send that never asked to force anything.
+func TestSendOmitsRouteWhenNotForced(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+	d := New("peerbox", srv.URL)
+
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "an ordinary message",
+		driver.SendOptions{Submit: true}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rec.body, "route") {
+		t.Fatalf("body = %q, want no \"route\" field at all when ForceTerminalRoute is false", rec.body)
+	}
+}
+
 // colab-fleet #158: From is the third field Send's hand-built body has to be
 // told about (#33, #112). Machine must travel with it: this hop is the only
 // place it is on the wire, carrying the entering machine's own stamp.

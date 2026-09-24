@@ -75,6 +75,69 @@ func TestKeysDeliversToAnUnrecognisedDialogAndConfirmsTheRedraw(t *testing.T) {
 	}
 }
 
+// TestKeysEscapeSkipsTheComposerLockEvenWhileHeld is the review's regression
+// test for D4's lock ignoring the caller's deadline (terminalpath2_lock.go):
+// Escape is the key a caller reaches for to get OUT of a stuck dialog, and
+// making it wait behind another call's confirmLandedV2/confirmSubmittedV2
+// poll (up to ~2*submitConfirmWindow) would refuse the escape hatch for
+// exactly the situation it exists to escape. It must proceed even while this
+// session's composer lock is held by another, still-running call.
+func TestKeysEscapeSkipsTheComposerLockEvenWhileHeld(t *testing.T) {
+	f := dialogMux()
+	d := newTestDriver(f)
+	want := digestOf(t, d, "alpha💬")
+
+	unlock, ok := d.lockComposerOpsCtx(context.Background(), "alpha💬")
+	if !ok {
+		t.Fatal("setup: could not acquire the composer lock")
+	}
+	defer unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	got, err := d.Keys(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.KeyEscape, want)
+	if err != nil {
+		t.Fatalf("Keys(Escape): %v", err)
+	}
+	if got.Outcome != fleet.OutcomeSubmitted {
+		t.Fatalf("outcome = %q (%s), want submitted — Escape must not wait on a composer lock "+
+			"another call is holding", got.Outcome, got.Reason)
+	}
+}
+
+// TestKeysNonEscapeRefusesFastWhenTheComposerLockIsHeld is the positive
+// counterpart: every OTHER key still goes through the lock (D4's own
+// serialisation is unchanged for them), and a caller whose deadline runs out
+// waiting for it gets a fast, honest refusal rather than blocking past its
+// own declared patience.
+func TestKeysNonEscapeRefusesFastWhenTheComposerLockIsHeld(t *testing.T) {
+	f := dialogMux()
+	d := newTestDriver(f)
+	want := digestOf(t, d, "alpha💬")
+
+	unlock, ok := d.lockComposerOpsCtx(context.Background(), "alpha💬")
+	if !ok {
+		t.Fatal("setup: could not acquire the composer lock")
+	}
+	defer unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	got, err := d.Keys(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.KeyDown, want)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Keys(Down): %v", err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %q (%s), want refused — the composer lock is held by another call", got.Outcome, got.Reason)
+	}
+	if elapsed > 1*time.Second {
+		t.Fatalf("Keys(Down) took %s to refuse — the caller's own short deadline must not be held "+
+			"hostage by an unrelated call holding this session's composer lock", elapsed)
+	}
+}
+
 // A screen that did not move is reported as unknown, never as submitted. A
 // supervisor told a keypress landed stops trying.
 func TestKeysReportsUnknownWhenTheScreenDoesNotMove(t *testing.T) {

@@ -319,7 +319,7 @@ func TestReplaceIfStrandedRefusesWhenAPriorClearProvenFutile(t *testing.T) {
 	// A prior clear pass already spent a full window against this EXACT
 	// residue and made no progress — recorded directly, the same way
 	// Discard's own futility tests set this up.
-	digest := screenDigest(original)
+	digest := composerTextDigest(original)
 	d.noteFutile(ref.ID, "/work/alpha", digest)
 
 	got, err := d.Send(context.Background(), testCaller, ref, "something else",
@@ -431,7 +431,21 @@ func TestReplaceIfStrandedClearsComposerWithNoStrandedRecord(t *testing.T) {
 // the same outcome once there is no record to distinguish "finish the old
 // one" from "throw it away", because there is no old one either flag can
 // name.
-func TestResumeIfStrandedClearsComposerWithNoStrandedRecord(t *testing.T) {
+// Superseded by a later review fix (see review_round3_test.go's own
+// TestRV_ResumeIfStrandedRefusesWhenItsOwnRecordWasForgotten and
+// TestRV_ReplaceIfStrandedStillClearsAnUnrecordedComposer): #135 originally
+// gave resumeIfStranded and replaceIfStranded the identical "no record ->
+// clear and deliver" door this test pinned. That turned out to be unsafe
+// specifically for resumeIfStranded once a record could be forgotten out
+// from under a caller mid-retry (Discard's own composerFound-empty forget,
+// or a confirmed send elsewhere clearing an unrelated stranding): the
+// receipt that told a caller to "retry with resumeIfStranded" is, by the
+// time of the retry, indistinguishable from an ordinary resumeIfStranded
+// call against a composer a PERSON has since started typing into, and #135's
+// door would silently wipe that person's draft. replaceIfStranded keeps the
+// door (it is explicit about discarding whatever is there); resumeIfStranded
+// alone now refuses instead.
+func TestResumeIfStrandedRefusesWithNoStrandedRecord(t *testing.T) {
 	f := twoSessions()
 	d := newTestDriver(f)
 	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
@@ -441,9 +455,17 @@ func TestResumeIfStrandedClearsComposerWithNoStrandedRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != fleet.OutcomeQueued {
-		t.Fatalf("outcome = %s (%s), want queued — an unrecorded composer must still clear "+
-			"and deliver when resumeIfStranded opts in", got.Outcome, got.Reason)
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %s (%s), want refused — resumeIfStranded alone no longer clears "+
+			"an unrecorded composer (see the review fix this test's own comment names); "+
+			"replaceIfStranded is the door for that now", got.Outcome, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "replaceIfStranded") {
+		t.Errorf("reason = %q; must point at replaceIfStranded as the explicit door", got.Reason)
+	}
+	if n := countClears(f.callsSnapshot()); n != 0 {
+		t.Errorf("resumeIfStranded with no record must refuse BEFORE pressing any clear "+
+			"keystroke, got %d", n)
 	}
 }
 
@@ -464,7 +486,7 @@ func TestSendWithNeitherFlagNamesTheExactDiscardCall(t *testing.T) {
 	if got.Outcome != fleet.OutcomeRefused {
 		t.Fatalf("outcome = %s, want refused", got.Outcome)
 	}
-	if !strings.Contains(got.Reason, "discard?expect="+screenDigest(betaPendingText)) {
+	if !strings.Contains(got.Reason, "discard?expect="+composerTextDigest(betaPendingText)) {
 		t.Errorf("reason = %q; must name the exact discard call with the composer's own "+
 			"digest inlined, not just gesture at the concept", got.Reason)
 	}
@@ -484,7 +506,7 @@ func TestReplaceIfStrandedRefusesUnrecordedResidueAlreadyProvenFutile(t *testing
 	d := newTestDriver(f)
 	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
 
-	digest := screenDigest(betaPendingText)
+	digest := composerTextDigest(betaPendingText)
 	d.noteFutile(ref.ID, "/work/beta", digest)
 
 	got, err := d.Send(context.Background(), testCaller, ref, "something new",

@@ -118,6 +118,27 @@ type SendOptions struct {
 	// that driver's hand-built body forwards it (#33) — a label that
 	// vanished at the federation boundary would produce no symptom at all.
 	From *fleet.MessageFrom
+
+	// ForceTerminalRoute (terminal path v2, item g / D7) asks a driver that
+	// ALSO has a capability-detected inbox path (colab-fleet #119) to use
+	// the pane/composer path instead, even on a call that would otherwise
+	// be inboxEligible (Submit set, neither stranded flag set).
+	//
+	// # Why this exists at all
+	//
+	// #119's inbox path is a cross-session PEER delivery mechanism, paused
+	// fleet-wide pending #119's own remaining human ruling on credentials —
+	// but a caller sending on behalf of a HUMAN (a human-facing relay
+	// service, chiefly) needs a way to say "use the path a human's own typed
+	// message would use" independent of when the inbox path itself comes
+	// back for AGENT-to-agent traffic. Without this field the only lever is
+	// disabling the inbox path fleet-wide, which throws away the distinction
+	// entirely instead of letting one class of sender opt out on its own.
+	//
+	// A driver with no inbox capability at all is unaffected either way —
+	// see inboxEligible, the only place this field is read on the tmux
+	// driver.
+	ForceTerminalRoute bool
 }
 
 // SenderLabel renders from as "agent · session · machine", skipping empty

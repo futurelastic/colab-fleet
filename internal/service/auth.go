@@ -97,6 +97,29 @@ const (
 	// gains this by upgrading.
 	GrantLabel Grant = "label"
 	GrantRelay Grant = "relay" // have mutations proxied to peers
+	// GrantHumanRelay marks a principal as a HUMAN relay for terminal-path
+	// routing (colab-fleet round-3 review-safety fix): route:"terminal" on
+	// POST …/input forces the pane/composer delivery path even on a call
+	// that would otherwise be eligible for the capability-detected inbox
+	// path (colab-fleet #119) — see http.go's own handling of body.Route.
+	// Absent this grant, route:"terminal" still works, but ONLY when the
+	// request also carries a `from` label: while the inbox path stays
+	// paused fleet-wide this changes nothing observable, but once it comes
+	// back "for agents only" (D7's own stated intent), an agent able to set
+	// route:"terminal" without holding this grant could opt a delivery out
+	// of the inbox path and have it recorded as unlabelled, human-typed
+	// input — undoing the very separation D7 exists to create. A principal
+	// configured with this grant (the one human-facing relay
+	// today) may set route:"terminal" with no `from` at all: its own
+	// channel IS the human-identifying fact.
+	//
+	// Absent means denied, like every other grant, so no existing principal
+	// gains this by upgrading — every route:"terminal" call already in the
+	// field either goes unauthenticated (no principal table configured
+	// here at all) or already sets `from`, so this only tightens the one
+	// combination — unauthenticated-as-human AND unlabelled — nothing
+	// legitimate currently relies on.
+	GrantHumanRelay Grant = "human-relay"
 )
 
 // Grants is every grant this service defines, in the order an operator would
@@ -113,6 +136,7 @@ func Grants() []Grant {
 	return []Grant{
 		GrantRead, GrantCreate, GrantSend, GrantInterrupt,
 		GrantClose, GrantRename, GrantDiscard, GrantKeys, GrantLabel, GrantRelay,
+		GrantHumanRelay,
 	}
 }
 

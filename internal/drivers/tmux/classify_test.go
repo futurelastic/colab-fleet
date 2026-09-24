@@ -1117,7 +1117,7 @@ func TestComposerDigestIsOfTheComposerNotTheScreen(t *testing.T) {
 	if st.ComposerDigest == "" {
 		t.Fatal("no digest published, so the text cannot be discarded safely")
 	}
-	if want := screenDigest(pending); st.ComposerDigest != want {
+	if want := composerTextDigest(pending); st.ComposerDigest != want {
 		t.Errorf("digest = %s, want %s (the composer text, not the screen)", st.ComposerDigest, want)
 	}
 	if st.ComposerDigest == screenDigest(screenText) {

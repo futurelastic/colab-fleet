@@ -212,7 +212,7 @@ func TestDiscardRefusesAComposerWhoseFenceIsAboveTheVisiblePane(t *testing.T) {
 		}
 
 		_, err = d.Discard(context.Background(), testCaller,
-			fleet.SessionRef{Machine: "testbox", ID: "beta"}, screenDigest(stalePending), driver.DiscardOptions{})
+			fleet.SessionRef{Machine: "testbox", ID: "beta"}, composerTextDigest(stalePending), driver.DiscardOptions{})
 		if !errors.Is(err, fleet.ErrAmbiguousTarget) {
 			t.Fatalf("want ErrAmbiguousTarget, got %v", err)
 		}
@@ -260,9 +260,9 @@ func TestDiscardRefusesAComposerWhoseFenceIsAboveTheVisiblePane(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, s := range list.Items() {
-			if s.ID == "beta" && s.State.ComposerDigest != screenDigest(stalePending) {
+			if s.ID == "beta" && s.State.ComposerDigest != composerTextDigest(stalePending) {
 				t.Errorf("with no height, the composer should read as before: digest %q, want %q",
-					s.State.ComposerDigest, screenDigest(stalePending))
+					s.State.ComposerDigest, composerTextDigest(stalePending))
 			}
 		}
 		if got := d.Counters()[counterComposerClippedAboveVisiblePane]; got != 0 {

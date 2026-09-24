@@ -1200,6 +1200,14 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			// it comes from. Its Machine is replaced by stampSender below,
 			// never passed through.
 			From *fleet.MessageFrom `json:"from,omitempty"`
+			// Route (terminal path v2, item g / D7) forces the pane/composer
+			// delivery path even on a call that would otherwise be eligible
+			// for a driver's capability-detected inbox path (colab-fleet
+			// #119). The only recognised non-empty value today is
+			// "terminal"; anything else is a caller error, rejected below
+			// rather than silently ignored — the same discipline this
+			// service already applies to a malformed body.
+			Route string `json:"route,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "malformed JSON body", Machine: machine})
@@ -1209,6 +1217,47 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 
 		if ferr := rejectOverLength("text", body.Text, machine, svc.MaxInputBytes()); ferr != nil {
 			writeError(w, ferr)
+			return
+		}
+
+		// terminal path v2 / D7: "route" is a closed set of one value today.
+		// Rejected here, before a driver ever sees it, for the same reason
+		// #112's contradictory-flags check runs ahead of everything in
+		// Send: a caller error about the REQUEST'S OWN SHAPE should never
+		// depend on which session exists or whether a driver can be
+		// resolved for it.
+		var forceTerminalRoute bool
+		switch body.Route {
+		case "":
+		case "terminal":
+			// Review fix (review-safety): route:"terminal" is no longer
+			// honoured unconditionally from any caller holding the fleet
+			// token. A principal explicitly configured as a human relay
+			// (GrantHumanRelay — a human-facing relay)
+			// may set it with no further condition: its own channel IS the
+			// human-identifying fact route:"terminal" exists to preserve.
+			// Every other caller (no principal table configured here at
+			// all, or a principal without the grant) must ALSO carry a
+			// `from` label — refusing an unlabelled agent send from opting
+			// out of the (currently paused) inbox path and having it
+			// recorded as human-typed input, which is exactly the
+			// separation D7 exists to create once the inbox comes back
+			// "for agents only".
+			if p, ok := principalOf(r); !ok || !p.Allows(GrantHumanRelay) {
+				if from == nil {
+					writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
+						Message: "route \"terminal\" requires a \"from\" label unless the caller is " +
+							"a principal configured as a human relay (the human-relay grant) — an " +
+							"unlabelled terminal-routed send would be recorded as human-typed input",
+						Machine: machine})
+					return
+				}
+			}
+			forceTerminalRoute = true
+		default:
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
+				Message: fmt.Sprintf("route %q is not recognised; the only accepted non-empty value is \"terminal\"", body.Route),
+				Machine: machine})
 			return
 		}
 
@@ -1224,7 +1273,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, From: from})
+		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, From: from, ForceTerminalRoute: forceTerminalRoute})
 		if err != nil {
 			// A refusal from the driver is not this branch — Send returns
 			// it as a DeliveryReceipt value, not an error. Only a

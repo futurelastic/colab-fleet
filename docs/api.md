@@ -260,10 +260,25 @@ labels, the create is refused `unsupported` before anything is started there.
 
 ```json
 { "text": "…", "submit": true, "resumeIfStranded": false,
-  "from": { "agent": "…", "session": "…", "relayOfHuman": false } }
+  "from": { "agent": "…", "session": "…", "relayOfHuman": false },
+  "route": "terminal" }
 ```
 
 Returns `200` with a **delivery receipt** — always `200`, even on refusal.
+
+`route` (optional, terminal path v2) forces the pane/composer delivery path
+even on a call that would otherwise be eligible for a driver's
+capability-detected inbox path (colab-fleet #119, paused fleet-wide pending
+its own remaining human ruling on credentials). The only accepted non-empty
+value today is `"terminal"`; anything else is a `400` naming the field, before
+any driver is resolved — the same way an over-long `text` is rejected. Leave
+it out (or send `""`) and a call keeps its ordinary eligibility.
+
+Use this when the caller is relaying a **human's** own message (a human-facing relay
+service, chiefly) and wants the path a human's own typed message
+would take, independent of when the inbox path itself comes back for
+agent-to-agent traffic. A driver with no inbox capability at all is
+unaffected either way.
 
 `from` (optional) labels the message with who it comes from, so the receiving
 session sees `agent · session · machine` instead of an anonymous peer. Leave it

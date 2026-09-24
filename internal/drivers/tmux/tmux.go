@@ -492,6 +492,23 @@ type Driver struct {
 	// Nil means none, the same off-by-default contract as every seam above.
 	// See WithCounterSource.
 	counterSources []func() map[string]int64
+
+	// composerLocks is terminal-path-v2's per-session serialisation (D4) —
+	// see terminalpath2_lock.go. Zero value is ready to use, same as every
+	// sync.Mutex-based field above.
+	composerLocks composerLockTable
+
+	// processSessionsRoot is terminal-path-v2's second identity source
+	// (item c / D6): the directory the runtime writes one `<pid>.json` file
+	// into per running process, carrying that process's own sessionId —
+	// consulted only when d.conversations.lookup could not resolve a
+	// session's conversation by name (the ~18/75 "resumed sessions" gap
+	// round-1 measured). Empty means unconfigured, the same off-by-default
+	// contract as conversations/credentialPath/trustSeed above: a driver
+	// built for a test never reads a real `~/.claude/sessions` directory
+	// merely because it was constructed. See terminalpath2_transcript.go
+	// and WithProcessSessionsRoot.
+	processSessionsRoot string
 }
 
 type observation struct {
@@ -623,6 +640,21 @@ func WithRecordRoot(path string) Option {
 		}
 		d.conversations = newConversationStore(path)
 	}
+}
+
+// WithProcessSessionsRoot points this driver at the runtime's own per-process
+// identity directory (one `<pid>.json` file per running process, each
+// carrying that process's own `sessionId`, `procStart` and `cwd`) — the
+// second identity source terminal-path-v2's transcript-based submit
+// confirmation falls back to when d.conversations (WithRecordRoot) cannot
+// resolve a session's conversation by name. See terminalpath2_transcript.go.
+//
+// Same off-by-default contract as WithRecordRoot and every seam beside it:
+// a driver constructed without this reads nothing from a real
+// `~/.claude/sessions` directory, and an empty path disables it again,
+// explicitly.
+func WithProcessSessionsRoot(path string) Option {
+	return func(d *Driver) { d.processSessionsRoot = path }
 }
 
 // WithCredentialPath points this driver at the runtime's own local
@@ -2053,6 +2085,55 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 // message containing something like "C-c" is a live hazard; the paste
 // buffer takes bytes and interprets none of them.
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {
+	// Terminal path v2 / D4: every composer-touching operation on this
+	// session id is serialised through one lock, acquired before anything
+	// else runs and released on every return from here on
+	// (terminalpath2_lock.go). This runs even ahead of #53's own guard
+	// below, which is deliberately about the BYTES alone and untouched —
+	// the lock is about WHICH CALL gets to look at and change this
+	// session's composer next, a different axis, and there is no cost to
+	// acquiring it before a call that is about to refuse anyway.
+	unlockComposer, lockOK := d.lockComposerOpsCtx(ctx, ref.ID)
+	if !lockOK {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "this session's composer is busy with another delivery, respond, or discard " +
+				"call and the caller's own deadline ran out waiting for it; retry",
+		}, nil
+	}
+	defer unlockComposer()
+
+	// Review fix: sanitise ONCE, here, before anything downstream forms an
+	// opinion about these bytes — including the #53 guard immediately below.
+	// Every comparison and every delivery from this point on uses THIS same
+	// sanitised string: the guard, the inbox path, paneLabelled's label, the
+	// paste, confirmLandedV2/confirmSubmittedV2's comparisons, and the
+	// stranded record. Sanitising a second time later (pasteBracketed still
+	// does, defensively) is a no-op once this has already run.
+	//
+	// # Why this closes the #53 bypass
+	//
+	// The guard used to run on the CALLER'S text while pasteBracketed
+	// sanitised a COPY of it moments later — two different strings, one
+	// decision made against the wrong one. `"\v!id"` is not read as
+	// runtime syntax by the guard's own trim (it does not include \v), so it
+	// passed; the sanitiser then dropped the \v anyway and pasted `"!id"`,
+	// which IS runtime syntax — refused nowhere. Sanitising first means the
+	// guard sees exactly what will be pasted, so a control byte can no
+	// longer manufacture a leading "!" that only appears after the check
+	// that was supposed to catch it.
+	//
+	// # Why this closes the "sanitised vs unsanitised compare" gap
+	//
+	// composerRegionMatch, the legacy needle and transcriptTurnMatches used
+	// to compare the PASTED (sanitised) text against the CALLER'S (raw)
+	// text, so any payload containing a control byte could never confirm —
+	// the composer and the transcript both hold the sanitised form, and
+	// normalizeForMatch strips only whitespace, not control bytes. Using one
+	// sanitised string everywhere removes the mismatch structurally instead
+	// of teaching each comparison to sanitise its own side.
+	text = sanitizeForBracketedPaste(text)
+
 	// #53: fail closed on text this runtime reads as its own syntax rather
 	// than a message, BEFORE anything else. This is a decision about the
 	// BYTES, not about the moment — it must not depend on which session
@@ -2237,6 +2318,48 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 				clippedComposerRemedy,
 		}, nil
 	}
+	// Review fix (review-confirmation): resumeIfStranded against a composer
+	// that reads EMPTY must not silently fall through to the ordinary
+	// fresh-paste path below when this driver holds a matching stranded
+	// record — that fresh paste has no memory of the record at all, and
+	// delivers a byte-for-byte duplicate of text the runtime may already
+	// have accepted (composerText emptying is exactly what a genuine accept
+	// looks like). Checked BEFORE the composerFound-and-busy branch below,
+	// which only ever runs while the composer still holds something; this is
+	// its empty-composer sibling.
+	if opts.ResumeIfStranded && composerScanResult == composerFound && pending == "" {
+		if record, hasRecord := d.strandedRecordFor(ref.ID, target.cwd); hasRecord && record.Text == text {
+			if record.TranscriptPath != "" {
+				if result, _ := transcriptTailScan(record.TranscriptPath, record.TranscriptOffset, text); result == transcriptScanMatched {
+					d.forgetStranded(ref.ID)
+					d.counters.incr(counterResumeConfirmedByTranscriptOnEmptyComposer)
+					return fleet.DeliveryReceipt{
+						Outcome: fleet.OutcomeQueued,
+						Reason: "resumeIfStranded found the composer already empty, and this " +
+							"driver's own transcript record (resolved when the delivery first " +
+							"stranded) shows the runtime already accepted this exact text as a " +
+							"turn; not re-pasting a duplicate",
+					}, nil
+				}
+			}
+			// Either no transcript could be resolved at strand time, or it
+			// did not show this text accepted within its own window. Refuse
+			// rather than silently falling through to a fresh paste of the
+			// same text below — that fresh paste IS the duplicate-delivery
+			// hazard this check exists to prevent. The record is kept.
+			d.counters.incr(counterResumeRefusedEmptyComposerUnconfirmed)
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeUnknown,
+				Reason: d.withRestartNoteReason(ref.ID, "resumeIfStranded was set for a delivery "+
+					"this driver stranded earlier, and the composer no longer holds it, but this "+
+					"driver could not confirm from its own transcript record that the runtime "+
+					"accepted it either — pasting it again here risks delivering a duplicate. "+
+					"The record is kept; drop resumeIfStranded to send fresh text instead if the "+
+					"intent really is a new delivery, or read the session first"),
+			}, nil
+		}
+	}
+
 	if composerScanResult == composerFound && pending != "" {
 		// The one case where a busy composer is not somebody else's business:
 		// this driver put the text there itself, could not confirm it, and
@@ -2247,7 +2370,52 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// a multi-line paste renders as a collapsed summary, so the bytes are
 		// not there to compare (F49), and the messages most likely to strand
 		// are exactly the long ones.
-		if opts.ResumeIfStranded && d.strandedMatches(ref.ID, target.cwd, text) {
+		resumeRecord, hasResumeRecord := d.strandedRecordFor(ref.ID, target.cwd)
+		resumeSameText := opts.ResumeIfStranded && hasResumeRecord && resumeRecord.Text == text
+		if resumeSameText {
+			// Terminal path v2 / item e: when this driver DID manage to read
+			// a definite composer digest at the moment it stranded this
+			// delivery (record.ComposerDigest != ""), resumeIfStranded may
+			// only resubmit while the composer's CURRENT content still
+			// digests to that SAME value — the same corroboration #112's
+			// ReplaceIfStranded path already requires (tryReplaceStranded,
+			// below). Guards against a human attaching and typing something
+			// new into the composer in the gap between the strand and this
+			// call, which the wake key a few lines down would otherwise
+			// silently submit as if it were this driver's own text.
+			//
+			// An EMPTY record.ComposerDigest is deliberately NOT treated the
+			// same as a mismatch. It means this driver could not read a
+			// definite composer state at strand time — most commonly because
+			// the very reason the delivery stranded was that the paste had
+			// not rendered yet (the noEcho/slow-render shape confirmLanded's
+			// own timeout exists for), which is resumeIfStranded's PRIMARY,
+			// intended use: the text keeps landing after this driver gave up
+			// watching, and a later resume finishes it once it has. Refusing
+			// unconditionally on an empty digest would break exactly that
+			// case — there is nothing to corroborate against, so this falls
+			// back to the protection resume already had before this change:
+			// strandedMatches (id+cwd+text) above, plus confirmLandedV2's own
+			// fresh, live re-verification against the composer a few lines
+			// down. Empty-digest here is a fact about what this driver could
+			// observe, not permission to skip corroboration — it is the same
+			// distinction composerAbsent vs. composerClipped already draws
+			// elsewhere in this package (colab-fleet#134): "found nothing"
+			// and "could not tell" are different findings, and only the
+			// first licenses treating the gap as harmless.
+			curDigest := composerTextDigest(pending)
+			if resumeRecord.ComposerDigest != "" && resumeRecord.ComposerDigest != curDigest {
+				return fleet.DeliveryReceipt{
+					Outcome: fleet.OutcomeRefused,
+					Reason: "resumeIfStranded requires the composer's current content to digest " +
+						"to the one this driver recorded when it stranded this delivery, and it " +
+						"does not; something may have changed the composer since. Use " +
+						"replaceIfStranded to discard whatever is there now and deliver this text " +
+						"instead, or read the session and discard the composer directly first " +
+						"(discard?expect=" + curDigest + ")",
+				}, nil
+			}
+
 			// #101: this branch only ever runs when the composer is already
 			// holding OUR OWN pending delivery (strandedMatches, just above).
 			// opts.Submit is not re-checked here: resume is a completion of a
@@ -2305,7 +2473,18 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			// (below) already applies to identical evidence — the record is
 			// kept either way, so a later resume gets another chance once the
 			// paste has actually settled.
-			key, atCount, landed := d.confirmLanded(ctx, target.paneID, text, map[pasteKey]int{})
+			// digestVerified (review-regression fix): resumeRecord.ComposerDigest
+			// is either empty (this driver never corroborated the composer's
+			// content at strand time) or, by construction of the mismatch
+			// check just above, equal to curDigest — a mismatch already
+			// returned. So a non-empty recorded digest here IS a verified
+			// match, and confirmLandedV2's own suffix rule may safely be
+			// reintroduced for THIS resume alone (review-regression's own
+			// fix for the real, tall-composer tail-only render #143/M2
+			// reproduces) — every other fallback strict=true disables stays
+			// disabled regardless.
+			digestVerified := resumeRecord.ComposerDigest != ""
+			key, atCount, landed := d.confirmLandedV2(ctx, target.paneID, text, map[pasteKey]int{}, true, digestVerified)
 			if !landed {
 				return fleet.DeliveryReceipt{
 					Outcome: fleet.OutcomeUnknown,
@@ -2314,6 +2493,41 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 						"complete, attributable copy of it this time either — pressing submit now "+
 						"risks completing a partial paste instead of the full one; the record is "+
 						"kept — retry the same send with resumeIfStranded again"),
+				}, nil
+			}
+			// Review fix (transcript offset taken after Enter): resolve the
+			// transcript source, and with it the byte offset a match must
+			// come AFTER, BEFORE the submit keystroke below — not after, as
+			// confirmSubmittedV2 used to do internally. The runtime is
+			// measured to write its own transcript entry 0.1-0.6s after the
+			// keystroke; resolving the source afterwards (which itself costs
+			// a pane re-list plus a `ps` call on the pid-fallback path) could
+			// lose that race on a loaded host, missing a fast write and
+			// reporting unknown for a delivery that actually landed —
+			// exactly the false negative that then triggers a duplicate
+			// resume. See resolveTranscriptSource / confirmSubmittedFromSource.
+			src, srcOK := d.resolveTranscriptSource(ctx, ref, target)
+			// Review fix (review-safety): resolveTranscriptSource itself
+			// widens the window between the landed check above and the
+			// submit keystroke below (list-panes plus a batched capture,
+			// then `ps`, then file reads — measured 26.8-52.9ms on a private
+			// 25-pane tmux server); nothing re-checked whether a selection
+			// menu appeared in that gap before pressing Enter, so a modal
+			// painted there was approved instead of receiving this
+			// delivery's own submit. One more cheap capture, immediately
+			// before send-keys, closes it: refuse (keep the record) rather
+			// than press Enter into a screen this driver has not looked at
+			// since resolving the transcript source.
+			if d.refuseIfDialogAppeared(ctx, target.paneID) {
+				d.counters.incr(counterSendRefusedDialogRacePreSubmit)
+				return fleet.DeliveryReceipt{
+					Outcome: fleet.OutcomeUnknown,
+					Reason: d.withRestartNoteReason(ref.ID, "resumed a delivery this driver had "+
+						"stranded earlier and confirmed it landed, but a selection menu appeared on "+
+						"this pane in the moment before submit would have been pressed; pressing "+
+						"Enter now would answer that menu instead of submitting this message, so it "+
+						"was not pressed. The record is kept — retry the same send with "+
+						"resumeIfStranded again"),
 				}, nil
 			}
 			if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "Space", "C-m"); err != nil {
@@ -2336,7 +2550,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			// marker clearing. Delivering a receipt this driver did not earn
 			// is the exact conflation delivery.go's OutcomeSubmitted doc
 			// forbids.
-			if !d.confirmSubmitted(ctx, target.paneID, key, atCount) {
+			if confirmed, evidence := d.confirmSubmittedFromSource(ctx, target, text, key, atCount, src, srcOK); !confirmed {
 				// The record is KEPT, deliberately unlike the old behaviour: a
 				// swallowed keystroke here must leave something for a third
 				// attempt to resume, not discard the only trace of the text on
@@ -2345,7 +2559,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 					Outcome: fleet.OutcomeUnknown,
 					Reason: d.withRestartNoteReason(ref.ID, "resumed a delivery this driver had "+
 						"stranded earlier, but the submit could not be confirmed this time "+
-						"either; the record is kept — retry the same send with "+
+						"either ("+evidence+"); the record is kept — retry the same send with "+
 						"resumeIfStranded again"),
 				}, nil
 			}
@@ -2400,19 +2614,19 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 						"is different. resumeIfStranded finishes the ORIGINAL delivery; " +
 						"replaceIfStranded discards it and delivers this text instead; or " +
 						"discard the composer directly first (discard?expect=" +
-						screenDigest(pending) + ")",
+						composerTextDigest(pending) + ")",
 				}, nil
 			}
-		} else if opts.ResumeIfStranded || opts.ReplaceIfStranded {
+		} else if opts.ReplaceIfStranded {
 			// colab-fleet #135: this driver holds no record of having put
-			// anything in this composer — the ordinary reason a resume/
-			// replace request lands here at all — but both flags already
-			// declare the same intent ("deliver this text regardless of
-			// what's stuck in the composer"), and there is nothing to
-			// RESUME without a record of what was sent, so both flags take
-			// the identical door out: clear whatever is there and deliver
-			// THIS call's text, exactly as a caller was previously forced
-			// to do by hand in three round trips (read → discard → resend).
+			// anything in this composer — the ordinary reason a replace
+			// request lands here at all — but replaceIfStranded already
+			// declares the intent ("deliver this text regardless of what's
+			// stuck in the composer"), and there is nothing to RESUME
+			// without a record of what was sent, so it takes the door out:
+			// clear whatever is there and deliver THIS call's text, exactly
+			// as a caller was previously forced to do by hand in three round
+			// trips (read → discard → resend).
 			//
 			// Safety is not loosened, only relocated. /discard's own
 			// property is that expectDigest must match what the composer
@@ -2434,6 +2648,36 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			// Cleared: fall through — deliberately NOT a return — to the
 			// ordinary delivery path below, identical to tryReplaceStranded's
 			// own success path just above.
+		} else if opts.ResumeIfStranded {
+			// Review fix (review-safety): resumeIfStranded ALONE, with no
+			// record to resume, no longer takes #135's clear-and-deliver
+			// door — replaceIfStranded (above) is the only door that still
+			// does. #135's original reasoning ("both flags already declare
+			// the same intent") stopped holding once a record could be
+			// forgotten out from under a caller mid-retry: Discard's own
+			// composerFound-and-empty forget, or a confirmed send elsewhere
+			// clearing an unrelated stranding, both leave EXACTLY this state
+			// — no record, composer busy — and the caller's receipt for the
+			// ORIGINAL strand explicitly said "retry with resumeIfStranded",
+			// which by the time of the retry is indistinguishable from an
+			// ordinary resumeIfStranded call against a composer a PERSON has
+			// since started typing into. #135's door would silently wipe
+			// that person's draft with C-u and submit this call's text in
+			// its place — the review's own reproduction. replaceIfStranded
+			// says "discard whatever is there" explicitly; resumeIfStranded
+			// says "finish MY earlier delivery", which there is nothing here
+			// to finish, so it refuses instead of guessing which of the two
+			// the caller meant.
+			d.counters.incr(counterSendRefusedResumeNoRecord)
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason: "this driver holds no record of a stranded delivery for this session, " +
+					"so there is nothing for resumeIfStranded to resume; the composer holds text " +
+					"it did not put there, which may be a person's own draft. Use " +
+					"replaceIfStranded if the intent is to discard whatever is there and deliver " +
+					"this text instead, or read the session and discard the composer directly " +
+					"first (discard?expect=" + composerTextDigest(pending) + ")",
+			}, nil
 		} else {
 			return fleet.DeliveryReceipt{
 				Outcome: fleet.OutcomeRefused,
@@ -2441,40 +2685,30 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 					"with text a human typed and has not submitted (§2.4). Set " +
 					"resumeIfStranded or replaceIfStranded on this same call to clear it " +
 					"and deliver this text instead, or read the session and discard the " +
-					"composer directly first (discard?expect=" + screenDigest(pending) + ")",
+					"composer directly first (discard?expect=" + composerTextDigest(pending) + ")",
 			}, nil
 		}
 	}
 
-	// load-buffer reads from stdin when given "-"; this driver writes to a
-	// temp file instead so the payload never traverses argv (§5.3's
-	// rationale generalises: a shared namespace is a shared namespace).
-	f, err := os.CreateTemp("", "fleet-send-*")
-	if err != nil {
-		return fleet.DeliveryReceipt{}, fmt.Errorf("send: staging payload: %w", err)
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.WriteString(text); err != nil {
-		f.Close()
-		return fleet.DeliveryReceipt{}, fmt.Errorf("send: staging payload: %w", err)
-	}
-	f.Close()
-
 	// The composer's marker state, read immediately before this delivery's
 	// own paste — not reused from screenNow above, which was captured before
 	// the pending-composer gate and can be stale by however long that check
-	// took. Everything confirmLanded and confirmSubmitted attribute to THIS
-	// delivery is a CHANGE relative to this snapshot; see markerCounts for
-	// why the presence of a marker was never enough on its own.
+	// took. Everything confirmLandedV2 and confirmSubmittedV2 attribute to
+	// THIS delivery is a CHANGE relative to this snapshot; see markerCounts
+	// for why the presence of a marker was never enough on its own.
 	before := d.paintedMarkers(ctx, target.paneID)
 
-	bufName := "fleet-" + d.nonce()
-	args := []string{
-		"load-buffer", "-b", bufName, f.Name(), ";",
-		"paste-buffer", "-b", bufName, "-t", target.paneID, "-d",
-	}
-	if _, err := d.run(ctx, d.bin, args...); err != nil {
-		return fleet.DeliveryReceipt{}, fmt.Errorf("send: delivering: %w", err)
+	// Terminal path v2 / D2+D3: bracketed, literal-newline delivery
+	// (pasteBracketed, terminalpath2.go) replaces the plain, CR-converting
+	// `paste-buffer -d` call this line used to make directly — see
+	// pasteBracketed's own doc comment for the defect this closes and why a
+	// refusal, not a silent fallback to the old call, is what happens when
+	// bracketed paste cannot be confirmed available.
+	if err := d.pasteBracketed(ctx, target.paneID, text); err != nil {
+		if errors.Is(err, errBracketPasteUnavailable) {
+			return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: err.Error()}, nil
+		}
+		return fleet.DeliveryReceipt{}, err
 	}
 
 	// colab-fleet #111: this is the single write site for a delivery mark —
@@ -2507,7 +2741,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// where `C-m` submitted immediately, same text, seconds apart. They are
 	// the same character in principle; they are not the same in practice, and
 	// only one of them has been seen to work when the other did not.
-	key, atCount, landed := d.confirmLanded(ctx, target.paneID, text, before)
+	key, atCount, landed := d.confirmLandedV2(ctx, target.paneID, text, before, false, false)
 	if !landed {
 		// The text is in the composer and was not submitted. Say so plainly:
 		// the caller must decide whether to retry or clear it, and silence
@@ -2521,8 +2755,13 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// will not guess which is ours. Either way the honest instruction is
 		// the same as before.
 		// Record what we left behind, so the caller has a way to finish this
-		// rather than being told where the text is and left there.
-		d.noteStranded(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID))
+		// rather than being told where the text is and left there. Also
+		// resolves and records a transcript source (review-confirmation fix)
+		// so a LATER resumeIfStranded finding this composer empty can check
+		// whether the runtime accepted it in the meantime instead of
+		// re-pasting blind.
+		strandSrc, strandSrcOK := d.resolveTranscriptSource(ctx, ref, target)
+		d.noteStrandedWithTranscript(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), strandSrc, strandSrcOK)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: d.withRestartNoteReason(ref.ID, "text was delivered to the composer but "+
@@ -2552,6 +2791,30 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// longer changes nothing downstream. Do NOT tidy it with a `BSpace` before
 	// the newline — that puts a non-printable key back in the first-keystroke
 	// slot, which is precisely the untested case.
+	//
+	// Review fix (transcript offset taken after Enter — see the resume site's
+	// identical fix above for the full reasoning): resolve the transcript
+	// source, and the byte offset that goes with it, BEFORE this keystroke,
+	// not after.
+	src, srcOK := d.resolveTranscriptSource(ctx, ref, target)
+	// Review fix (review-safety): the same dialog-race close as the resume
+	// site above — one cheap, fresh capture immediately before send-keys,
+	// refusing (and recording the stranded text with its own transcript
+	// source, exactly as the timeout path just above does) rather than
+	// pressing Enter into a screen this driver has not looked at since
+	// resolveTranscriptSource's own list-panes/`ps`/file-read window opened.
+	if d.refuseIfDialogAppeared(ctx, target.paneID) {
+		d.counters.incr(counterSendRefusedDialogRacePreSubmit)
+		d.noteStrandedWithTranscript(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK)
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeUnknown,
+			Reason: d.withRestartNoteReason(ref.ID, "text landed in the composer and was attributed "+
+				"to this delivery, but a selection menu appeared on this pane in the moment before "+
+				"submit would have been pressed; pressing Enter now would answer that menu instead "+
+				"of submitting this message, so it was not pressed. It is sitting there unsent; "+
+				"retry the same send with resumeIfStranded to submit it"),
+		}, nil
+	}
 	if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "Space", "C-m"); err != nil {
 		return fleet.DeliveryReceipt{}, fmt.Errorf("send: submitting: %w", err)
 	}
@@ -2574,17 +2837,24 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// was only written when the text failed to RENDER, so a submit that went
 	// nowhere left nothing behind, the resume was refused for lack of a
 	// record, and every later send was refused for a busy composer.
-	if !d.confirmSubmitted(ctx, target.paneID, key, atCount) {
-		d.noteStranded(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID))
+	submitConfirmed, submitEvidence := d.confirmSubmittedFromSource(ctx, target, text, key, atCount, src, srcOK)
+	if !submitConfirmed {
+		d.noteStrandedWithTranscript(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: d.withRestartNoteReason(ref.ID, "the text landed and was attributed to "+
 				"this delivery, and a submit was issued, but this delivery's own block did "+
 				"not clear and the composer did not empty — the submit did not register for "+
-				"it. It is sitting there unsent; retry the same send with resumeIfStranded "+
-				"to submit it"),
+				"it ("+submitEvidence+"). It is sitting there unsent; retry the same send with "+
+				"resumeIfStranded to submit it"),
 		}, nil
 	}
+
+	// Terminal path v2 / item e: a confirmed send clears any stranded record
+	// this driver was still holding for this session — whatever it recorded
+	// no longer describes the composer's current, just-confirmed state (see
+	// Discard's own two Accepted:true returns for the matching fix there).
+	d.forgetStranded(ref.ID)
 
 	return fleet.DeliveryReceipt{
 		Outcome: fleet.OutcomeQueued,
@@ -2593,8 +2863,7 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		// ConfirmsDelivery stays false for exactly that distinction. What the
 		// confirmation buys is that this receipt no longer covers the case
 		// where nothing was submitted at all.
-		Reason: "text rendered in the composer and the submit registered (the composer " +
-			"emptied); agent receipt is not observable on this substrate",
+		Reason: "text rendered in the composer and the submit registered; " + submitEvidence,
 	}, nil
 }
 
@@ -2756,6 +3025,18 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 // above runs identically whether Force is set or not, because a forced
 // clear is MORE destructive, not less.
 func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.SessionRef, expectDigest string, opts driver.DiscardOptions) (fleet.Ack, error) {
+	// Terminal path v2 / D4 — see Send's identical acquisition for why this
+	// is the very first thing every composer-touching entry point does, and
+	// lockComposerOpsCtx's own doc comment for why the caller's ctx (not a
+	// bare, uninterruptible Lock()) governs the wait.
+	unlockComposer, lockOK := d.lockComposerOpsCtx(ctx, ref.ID)
+	if !lockOK {
+		return fleet.Ack{}, fmt.Errorf(
+			"discard: this session's composer is busy with another delivery, respond, or " +
+				"discard call and the caller's own deadline ran out waiting for it; retry")
+	}
+	defer unlockComposer()
+
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -2802,6 +3083,26 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	if pending == "" {
 		// Already clear — including the case where what looked like text was
 		// the dim placeholder, which is not text at all and never was.
+		//
+		// Terminal path v2 / item e, review-narrowed: forget any stranded
+		// record this driver holds for this session, but ONLY when scan
+		// actually confirmed a composer and found it empty (composerFound) —
+		// never on composerAbsent. A screen with NO fenced composer at all
+		// is not proof the composer emptied: it is exactly the shape a
+		// full-screen dialog paints (composerSpan's own doc comment), and a
+		// dialog covering this driver's own still-stranded text is not the
+		// same fact as that text having gone away. Forgetting the record
+		// there would lose the only trace of an undelivered message the
+		// moment the dialog closes and the composer reappears holding it.
+		// composerText's own contract already tells the two findings apart
+		// (composerAbsent is POSITIVE — "structurally no composer" — but
+		// that is a fact about the SCREEN, not a corroborated fact about
+		// what this driver's own stranded record describes); this is the
+		// first caller that had to act on the distinction rather than just
+		// pass composerClipped through unchanged.
+		if scan == composerFound {
+			d.forgetStranded(ref.ID)
+		}
 		return fleet.Ack{Accepted: true}, nil
 	}
 	if expectDigest == "" {
@@ -2812,7 +3113,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 				"even though composerDigest is the name of a field IN the read response)",
 			ErrAmbiguousTarget, len(pending))
 	}
-	if got := screenDigest(pending); got != expectDigest {
+	if got := composerTextDigest(pending); got != expectDigest {
 		return fleet.Ack{}, fmt.Errorf(
 			"%w: the composer holds different text than the caller saw "+
 				"(expected digest %s, found %s) — somebody may be typing right now",
@@ -2857,6 +3158,8 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 			return fleet.Ack{}, fmt.Errorf("discard: %w", sweepErr)
 		}
 		if cleared {
+			// Terminal path v2 / item e.
+			d.forgetStranded(ref.ID)
 			return fleet.Ack{Accepted: true}, nil
 		}
 		return fleet.Ack{}, d.withRestartNote(ref.ID, discardIncomplete(pending, left))
@@ -2868,6 +3171,8 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		return fleet.Ack{}, fmt.Errorf("discard: %w", err)
 	}
 	if cleared {
+		// Terminal path v2 / item e.
+		d.forgetStranded(ref.ID)
 		return fleet.Ack{Accepted: true}, nil
 	}
 	return fleet.Ack{}, d.withRestartNote(ref.ID, discardIncomplete(pending, left))
@@ -3127,7 +3432,7 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 		// First time this exact residue has been seen not to move — record
 		// it so a caller that retries against the SAME residue is refused
 		// (futileClearAttempts) before spending another full pass on it.
-		d.noteFutile(id, cwd, screenDigest(pending))
+		d.noteFutile(id, cwd, composerTextDigest(pending))
 	}
 	return left, moved, false, nil
 }
@@ -3978,6 +4283,22 @@ func safeArgvValue(v string) bool {
 // past its first question — which is how a fleet loses a session to a dialog
 // nobody can reach.
 func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.SessionRef, resp fleet.Response) (fleet.DeliveryReceipt, error) {
+	// Terminal path v2 / D4 — see Send's identical acquisition, and
+	// lockComposerOpsCtx's own doc comment for why the caller's ctx governs
+	// the wait rather than a bare, uninterruptible Lock(). Answering a
+	// dialog is exactly the call this matters most for: it must not queue
+	// for seconds behind an unrelated, unconfirmable send on the same
+	// session.
+	unlockComposer, lockOK := d.lockComposerOpsCtx(ctx, ref.ID)
+	if !lockOK {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "this session's composer is busy with another delivery, respond, or discard " +
+				"call and the caller's own deadline ran out waiting for it; retry",
+		}, nil
+	}
+	defer unlockComposer()
+
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -4874,7 +5195,23 @@ func markerCounts(painted string) map[pasteKey]int {
 			inside := rest[open+1 : open+shut]
 			rest = rest[open+shut:]
 			lower := strings.ToLower(inside)
-			if !strings.Contains(lower, "line") || !strings.ContainsAny(lower, "0123456789") {
+			// Review fix (single-line pastes over ~800 bytes never confirm
+			// landed): a COLLAPSED SINGLE-LINE paste renders as bare
+			// "Pasted text #N" — no "+K lines" suffix at all, because there
+			// is only the one line to summarise. The original check required
+			// both "line" AND a digit, so this exact shape — round-1's own
+			// 900/1500/1900-byte single-line probes — was silently skipped
+			// here, confirmLandedV2 never saw a marker gain, and the
+			// delivery could never be confirmed landed at any length past
+			// the collapse threshold. "Pasted text #<digits>" alone is
+			// accepted now, with lines defaulting to 0 (numberAfter's own
+			// convention for a missing count, matching how a multi-line
+			// marker with no printed count was already treated) — the two
+			// shapes are told apart by whether "#" is followed by digits at
+			// all, not by requiring the word "line" to be present.
+			hasIndex := strings.Contains(inside, "#") && strings.ContainsAny(lower, "0123456789")
+			hasLineCount := strings.Contains(lower, "line")
+			if !hasIndex && !hasLineCount {
 				continue
 			}
 			out[pasteKey{index: numberAfter(inside, '#'), lines: numberAfter(inside, '+')}]++
@@ -5167,6 +5504,22 @@ type strandedRecord struct {
 	// existed — degrades to the honest refusal naming `discard`, never a
 	// guess. Empty on a record from before colab-fleet #112.
 	ComposerDigest string `json:"composerDigest,omitempty"`
+
+	// TranscriptPath/TranscriptOffset (review-confirmation fix): the
+	// transcript this driver resolved for this session AT STRAND TIME, and
+	// the byte offset a match must come after — the identical pair
+	// resolveTranscriptSource produces for an ordinary send, captured here so
+	// a LATER resumeIfStranded call that finds the composer already EMPTY
+	// (Send's own empty-composer check) can check whether the runtime
+	// accepted this text sometime between the strand and the resume, instead
+	// of blindly pasting it again — see noteStrandedWithTranscript's own doc
+	// comment. Empty when no transcript could be resolved at strand time
+	// (the ordinary case on a fresh session/`/clear`, when
+	// WithProcessSessionsRoot/WithRecordRoot are not configured, or for a
+	// record noted through the plain noteStranded — every existing caller of
+	// that keeps working exactly as before, just without this corroboration).
+	TranscriptPath   string `json:"transcriptPath,omitempty"`
+	TranscriptOffset int64  `json:"transcriptOffset,omitempty"`
 }
 
 // strandedFile is the durable document, one entry per session with a
@@ -5194,12 +5547,33 @@ const strandedFileName = "stranded"
 // at the moment of this call — see strandedRecord.ComposerDigest for why
 // this is not simply screenDigest(text).
 func (d *Driver) noteStranded(id, cwd, text, composerDigest string) {
+	d.noteStrandedWithTranscript(id, cwd, text, composerDigest, transcriptSource{}, false)
+}
+
+// noteStrandedWithTranscript is noteStranded plus the review-confirmation
+// fix: it also records WHERE this driver would look, and from what offset,
+// to find out later whether the runtime accepted this exact text — src/srcOK
+// is resolveTranscriptSource's own return, resolved by the caller at the
+// moment this delivery stranded. A LATER resumeIfStranded call that finds
+// the composer already empty (see Send's own empty-composer check, above the
+// composerFound-and-busy branch) uses exactly this pair to tell "the runtime
+// already accepted it" apart from "nothing confirms it either way", instead
+// of falling through to a fresh paste that could duplicate an already-
+// accepted delivery. srcOK=false (no transcript configured, or none could be
+// resolved at strand time) leaves TranscriptPath empty — the same honest
+// degrade every other caller of resolveTranscriptSource already makes.
+func (d *Driver) noteStrandedWithTranscript(id, cwd, text, composerDigest string, src transcriptSource, srcOK bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stranded == nil {
 		d.stranded = map[string]strandedRecord{}
 	}
-	d.stranded[id] = strandedRecord{Text: text, Cwd: cwd, At: d.now(), ComposerDigest: composerDigest}
+	rec := strandedRecord{Text: text, Cwd: cwd, At: d.now(), ComposerDigest: composerDigest}
+	if srcOK {
+		rec.TranscriptPath = src.path
+		rec.TranscriptOffset = src.offset
+	}
+	d.stranded[id] = rec
 	d.saveStrandedLocked()
 }
 
@@ -5245,7 +5619,7 @@ func (d *Driver) currentComposerDigest(ctx context.Context, paneID string) strin
 	if scan != composerFound || pending == "" {
 		return ""
 	}
-	return screenDigest(pending)
+	return composerTextDigest(pending)
 }
 
 // tryReplaceStranded is colab-fleet #112's opt-in door out of the busy-
@@ -5274,7 +5648,7 @@ func (d *Driver) currentComposerDigest(ctx context.Context, paneID string) strin
 // can tell whether the row it is about to press against is blank
 // (colab-fleet#132) — see clearComposer's own doc comment for why.
 func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, target *paneRow, record strandedRecord, pending string, expectedLines int, sc screen) (receipt fleet.DeliveryReceipt, cleared bool, err error) {
-	digest := screenDigest(pending)
+	digest := composerTextDigest(pending)
 
 	// #87: refuse outright, before pressing anything, if a full,
 	// content-sized pass against this EXACT residue already proved it will
@@ -5369,7 +5743,7 @@ func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, t
 // returned receipt IS Send's answer. err is non-nil only for a failed
 // multiplexer call, never for an honest "did not clear".
 func (d *Driver) tryClearUnrecordedComposer(ctx context.Context, ref fleet.SessionRef, target *paneRow, pending string, expectedLines int, sc screen, opts driver.SendOptions) (receipt fleet.DeliveryReceipt, cleared bool, err error) {
-	digest := screenDigest(pending)
+	digest := composerTextDigest(pending)
 	flag := "replaceIfStranded"
 	if opts.ResumeIfStranded {
 		flag = "resumeIfStranded"
@@ -6361,6 +6735,36 @@ func (d *Driver) awaitReceptive(ctx context.Context, paneID string) (ready, bloc
 // the callers: there are two of them (an ordinary send and the
 // resumeIfStranded path), and duplicating this at each would risk exactly
 // the drift #104 is trying to make observable.
+// refuseIfDialogAppeared is the review-safety fix for the dialog-race window
+// resolveTranscriptSource itself opens between a landed check returning
+// (confirmLandedV2, terminalpath2.go — which already refuses the SAME race
+// during its own poll, via awaitingSelection on the capture that produced a
+// match) and the submit keystroke a caller presses a few lines later. That
+// call resolves the transcript's identity chain — a pane re-list plus a
+// batched capture, then possibly `ps`, then file reads — measured at
+// 26.8-52.9ms on a private 25-pane tmux server; before this fix nothing
+// re-checked whether a selection menu appeared on the pane during that gap,
+// so a modal painted there received Enter as its own approval instead of
+// this delivery's submit.
+//
+// One more capture, taken immediately before send-keys at both submit sites
+// (Send's first-attempt path and its resumeIfStranded completion), closes
+// it — not the whole gap (a dialog could still appear in the handful of
+// instructions between THIS capture and the send-keys call itself), but the
+// much larger window resolveTranscriptSource opened.
+//
+// true means "do not press Enter" — covering both an actually-showing
+// selection menu AND an unreadable capture (!ok): a caller that cannot even
+// take this cheap a look must not treat that as licence to press Enter
+// regardless (§5.6, degrade rather than emulate).
+func (d *Driver) refuseIfDialogAppeared(ctx context.Context, paneID string) bool {
+	sc, ok := d.captureForClassify(ctx, paneID)
+	if !ok {
+		return true
+	}
+	return awaitingSelection(sc)
+}
+
 func (d *Driver) confirmSubmitted(ctx context.Context, paneID string, key pasteKey, atCount int) bool {
 	start := d.now()
 	deadline := start.Add(submitConfirmWindow)

@@ -302,6 +302,16 @@ func main() {
 		} else if home, err := os.UserHomeDir(); err == nil {
 			opts = append(opts, tmux.WithRecordRoot(filepath.Join(home, ".claude", "projects")))
 		}
+		// Terminal path v2 (item c / D6): the runtime's per-process identity
+		// directory, consulted only when the record-root lookup above cannot
+		// resolve a session's conversation by name (a resumed session, most
+		// often). Same override/off pattern as FLEET_RECORD_ROOT immediately
+		// above — FLEET_PROCESS_SESSIONS_ROOT set empty turns it off.
+		if root, ok := os.LookupEnv("FLEET_PROCESS_SESSIONS_ROOT"); ok {
+			opts = append(opts, tmux.WithProcessSessionsRoot(root))
+		} else if home, err := os.UserHomeDir(); err == nil {
+			opts = append(opts, tmux.WithProcessSessionsRoot(filepath.Join(home, ".claude", "sessions")))
+		}
 		// Where the runtime keeps its own local credential material —
 		// stat'ed, never read, to answer #12 (SessionState.CredentialGeneration,
 		// EventMachineAccount). Same off-by-default reasoning as

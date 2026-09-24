@@ -320,7 +320,7 @@ func mapInboxOutcome(o inboxclient.Outcome) fleet.Outcome {
 // asking for the pane, so Send skips the inbox attempt entirely rather than
 // let sendViaInbox reinterpret a pane-shaped request.
 func inboxEligible(opts driver.SendOptions) bool {
-	return opts.Submit && !opts.ResumeIfStranded && !opts.ReplaceIfStranded
+	return opts.Submit && !opts.ResumeIfStranded && !opts.ReplaceIfStranded && !opts.ForceTerminalRoute
 }
 
 // panePrefix opens the first line the terminal path adds for a labelled send.
