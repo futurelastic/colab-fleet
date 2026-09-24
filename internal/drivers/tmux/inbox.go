@@ -435,7 +435,10 @@ func mapInboxOutcome(o inboxclient.Outcome) fleet.Outcome {
 // let sendViaInbox reinterpret a pane-shaped request. A forced terminal route
 // (#184) is the fourth: the caller has asked for the terminal by name.
 func inboxEligible(opts driver.SendOptions) bool {
-	return opts.Submit && !opts.ResumeIfStranded && !opts.ReplaceIfStranded && opts.Route != fleet.RouteTerminal
+	// #185: only auto and inbox itself ever reach the inbox; a forced terminal
+	// or a forced delivery module names another path by name.
+	inboxRoute := opts.Route == "" || opts.Route == fleet.RouteAuto || opts.Route == fleet.RouteInbox
+	return opts.Submit && !opts.ResumeIfStranded && !opts.ReplaceIfStranded && inboxRoute
 }
 
 // panePrefix opens the first line the terminal path adds for a labelled send.

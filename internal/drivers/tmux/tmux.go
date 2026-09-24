@@ -517,6 +517,12 @@ type Driver struct {
 	// built-in terminal path (delivery_module.go).
 	module delivery.Module
 
+	// modCfg and mods are the optional external delivery modules (#185). Nil
+	// means none is enabled — the default, and every path then behaves exactly
+	// as it did before the field existed. See modulelane.go.
+	modCfg *ModulesConfig
+	mods   *moduleHost
+
 	// processSessionsRoot is terminal-path-v2's second identity source
 	// (item c / D6): the directory the runtime writes one `<pid>.json` file
 	// into per running process, carrying that process's own sessionId. It is
@@ -801,6 +807,7 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 	d.loadDelivery()
 	d.loadResumeIntents()
 	d.loadCreateRecords()
+	d.initModules()
 	return d
 }
 
@@ -924,6 +931,9 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 			Agent:  true,
 		},
 		DeadlineMs: d.deadline.Milliseconds(),
+		// #185: the optional external delivery modules enabled here and how
+		// each is wired; absent when none is.
+		DeliveryModules: d.moduleStatuses(),
 		// A local driver is describing itself, so this is observed by
 		// definition — there is no network between the claim and its
 		// subject.
@@ -1620,6 +1630,10 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		// same prior records and matched the same way — so a rename, ours or
 		// a second actor's, leaves it on the session it describes.
 		s.Marker = markerFor(r, priorRecords, assertedByRun)
+		// #185: which delivery lane this session's input takes, when an
+		// external module is enabled here. Nil for a session with no lane
+		// record — absent is "not stated", never "terminal".
+		s.Delivery = d.mods.laneView(r.session)
 		// #84/#85/#86: this session's own create record, if one is still on
 		// file — see createrecord.go. Absent means either nothing was
 		// requested that this record would carry, or the record already
@@ -2200,11 +2214,23 @@ func (d *Driver) send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	if route == "" {
 		route = fleet.RouteAuto
 	}
-	if !route.Valid() {
+	if !route.Valid() && !d.deliveryModuleEnabled(string(route)) {
 		return d.observeEarly(delivery.Refused, fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
 			Reason:  fmt.Sprintf("route %q is not one this driver accepts (auto, terminal or inbox)", string(route)),
 		}), nil
+	}
+	if d.deliveryModuleEnabled(string(route)) && (!opts.Submit || opts.ResumeIfStranded || opts.ReplaceIfStranded) {
+		// #185: the same shape rule the service applies, stated again because a
+		// driver can be called without it. A module has no composer, so a
+		// forced module route is never quietly turned into a composer
+		// operation.
+		return d.observeEarly(delivery.Refused, fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: fmt.Sprintf("route %q delivers a message as a turn: it cannot be combined with "+
+				"submit:false, resumeIfStranded or replaceIfStranded, which name a composer a delivery "+
+				"module does not have. Nothing was written", string(route)),
+		}.WithModule(string(route))), nil
 	}
 	if route == fleet.RouteInbox && (!opts.Submit || opts.ResumeIfStranded || opts.ReplaceIfStranded) {
 		// The same shape rule the service applies, stated again because a driver
@@ -2278,6 +2304,16 @@ func (d *Driver) send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			if res.Tried {
 				d.counters.incr(counterRouteAutoFallback)
 			}
+		}
+	}
+
+	// #185: an optional external delivery module, when this session holds a
+	// lane and the send is eligible for it (modulelane_send.go). Nothing has
+	// been written when it hands the send back, so the built-in module below
+	// carries it — for `auto` only; a forced module route is refused instead.
+	if forced, ok := d.moduleRouteChoice(route, opts); ok {
+		if receipt, handled := d.sendViaModule(ctx, req, ref, text, labelled, opts, forced); handled {
+			return receipt, nil
 		}
 	}
 
@@ -4013,6 +4049,8 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 	// if a second actor on the machine undoes it later. This is what
 	// List's identityDrift/reassertNames read.
 	d.noteRenamed(ref.ID, to, live.cwd, live.paneID, live.created)
+	// #185: a delivery lane belongs to the process, not the name.
+	d.mods.rekey(ref.ID, to)
 
 	return fleet.Ack{Accepted: true}, nil
 }
@@ -4035,6 +4073,10 @@ func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fl
 	// into a composer that no longer exists — forget it the same way and
 	// for the same reason as the stranded record just above.
 	d.forgetDelivery(ref.ID)
+	// #185: tell the session's delivery module its lane is finished. The kill
+	// above is the authority; a failure here never blocks it and is retried
+	// when the module is next ready.
+	d.mods.closeLane(ref.ID)
 	return fleet.Ack{Accepted: true}, nil
 }
 
@@ -4143,6 +4185,11 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if err := delivery.CheckReservedEnv(spec.Env, d.ReservedEnv()); err != nil {
 		return fleet.Session{}, fmt.Errorf("create: %w", err)
 	}
+	// #185: and by prefix — a module declares those in its own handshake, and
+	// the guard holds whether or not it is installed or running right now.
+	if err := delivery.CheckReservedEnvPrefixes(spec.Env, d.ReservedEnvPrefixes()); err != nil {
+		return fleet.Session{}, fmt.Errorf("create: %w", err)
+	}
 	mergedEnv, err := d.provisionSessionEnv(spec)
 	if err != nil {
 		return fleet.Session{}, err
@@ -4230,8 +4277,14 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// trusted to be what the agent starts in. A bare-exec session has no shell
 	// to do the `cd`, so it stays exposed to a server with a dead directory;
 	// that is part of what opting out of the wrapper costs.
-	envPath, err := d.stageEnv(spec.Env)
+	//
+	// #185: an enabled delivery module may add environment of its own here —
+	// the ONLY way a name it reserves gets set. It can only add a lane, never
+	// stop a create: on any refusal the session simply launches without one.
+	launchEnv, _ := d.mods.offerLane(ctx, name, string(spec.Cwd), spec.Env, !d.bareExec)
+	envPath, err := d.stageEnv(launchEnv)
 	if err != nil {
+		d.mods.abandon(name)
 		_ = d.idem.release(key)
 		return fleet.Session{}, fmt.Errorf("create: staging env: %w", err)
 	}
@@ -4260,6 +4313,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		// The create demonstrably failed, so the reservation describes
 		// nothing. Releasing it keeps a retry from being answered with a
 		// session that was never started.
+		d.mods.abandon(name)
 		_ = d.idem.release(key)
 		// And the staged file is now certain to have no reader. It may hold a
 		// credential, so it goes now rather than at the sweep below.
@@ -4274,6 +4328,9 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		// and a file of values must not outlive the session it was staged for.
 		go d.sweepStagedEnv(envPath)
 	}
+	// #185: the process exists now, so the module can be asked to attach —
+	// asynchronously; this create's response never waits on it.
+	d.mods.launched(name)
 
 	ref := fleet.SessionRef{Machine: d.machine, ID: name, Name: name}
 	if err := d.idem.complete(key, ref); err != nil {

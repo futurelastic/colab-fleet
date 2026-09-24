@@ -226,9 +226,19 @@ func (d *Driver) provisionSessionEnv(spec fleet.SessionSpec) (map[string]string,
 		return spec.Env, nil
 	}
 
+	// #185: a name a delivery module reserves by prefix is the module's to
+	// set. A configured entry naming one is dropped here — the prefixes are
+	// only known once a module has declared them, so this cannot be refused at
+	// startup the way an exact name is.
+	reservedPrefixes := d.ReservedEnvPrefixes()
+
 	var merged map[string]string
 	for _, entry := range d.sessionEnv {
 		if !entry.AppliesTo.matches(spec) {
+			continue
+		}
+		if delivery.HasReservedPrefix(entry.Name, reservedPrefixes) {
+			d.counters.incr("module.session_env_dropped")
 			continue
 		}
 
