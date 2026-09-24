@@ -221,6 +221,14 @@ you whether the identifier was *matched* (`derived`) or observed at creation
 is the one mistake this field was added to make impossible — so branch on
 `source`, and treat an absent field as "I don't know", never as "there is none".
 
+`evidence` is for people, but it does tell you which rule answered. A session that
+*continued* a conversation begun before it (a resumed session), or that has no name to
+match, is identified from the runtime's own record of the running process — the
+evidence begins `per-process record, start time corroborated` — because the name-based
+match cannot answer for either. `source` reads `derived` for both rules. When the two
+name different conversations the answer is `"known": false` and the evidence names
+both; neither is chosen, so do not treat that as "no conversation".
+
 **This costs one round trip and, on the multiplexer driver, a constant number
 of subprocess spawns regardless of session count.** You are not being charged
 per session, so do not build a per-session read loop to "avoid a big response".

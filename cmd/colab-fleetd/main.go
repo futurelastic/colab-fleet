@@ -329,11 +329,14 @@ func main() {
 		} else if home, err := os.UserHomeDir(); err == nil {
 			opts = append(opts, tmux.WithRecordRoot(filepath.Join(home, ".claude", "projects")))
 		}
-		// Terminal path v2 (item c / D6): the runtime's per-process identity
-		// directory, consulted only when the record-root lookup above cannot
-		// resolve a session's conversation by name (a resumed session, most
-		// often). Same override/off pattern as FLEET_RECORD_ROOT immediately
-		// above — FLEET_PROCESS_SESSIONS_ROOT set empty turns it off.
+		// Terminal path v2 (item c / D6) and #182: the runtime's per-process
+		// identity directory. It names the conversation each running process
+		// is in, which is how a session is identified that the record-root
+		// lookup above cannot answer by name — a resumed session, or one
+		// created without a name — and how a delivery is confirmed against the
+		// right transcript. Same override/off pattern as FLEET_RECORD_ROOT
+		// immediately above — FLEET_PROCESS_SESSIONS_ROOT set empty turns it
+		// off, and every session then resolves by name alone.
 		if root, ok := os.LookupEnv("FLEET_PROCESS_SESSIONS_ROOT"); ok {
 			opts = append(opts, tmux.WithProcessSessionsRoot(root))
 		} else if home, err := os.UserHomeDir(); err == nil {
