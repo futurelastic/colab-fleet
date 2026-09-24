@@ -577,16 +577,30 @@ func parseProcessSessionRecordStartTime(s string) (time.Time, error) {
 	return time.ParseInLocation(psStartTimeLayout, s, time.UTC)
 }
 
+// processSessionRecordBytes returns the raw bytes of one process-sessions file,
+// or false when this driver has no such root configured or the file cannot be
+// read. It is the ONE place that maps a pid to that file, so a caller that needs
+// more of the record than the four fields parsed below (colab-fleetd compat
+// checks the record's whole shape, #183) reads the same bytes rather than
+// building a second reader that could disagree about where the file is.
+func (d *Driver) processSessionRecordBytes(pid int) ([]byte, bool) {
+	if d.processSessionsRoot == "" {
+		return nil, false
+	}
+	b, err := os.ReadFile(filepath.Join(d.processSessionsRoot, fmt.Sprintf("%d.json", pid)))
+	if err != nil {
+		return nil, false
+	}
+	return b, true
+}
+
 // readProcessSessionRecord reads and parses one process-sessions file. ok is
 // false for anything short of a complete, well-formed record — a caller with
 // a partial answer has no safe use for it (§5.4: never resume/verify
 // identity on a guess).
 func (d *Driver) readProcessSessionRecord(pid int) (processSessionRecord, bool) {
-	if d.processSessionsRoot == "" {
-		return processSessionRecord{}, false
-	}
-	b, err := os.ReadFile(filepath.Join(d.processSessionsRoot, fmt.Sprintf("%d.json", pid)))
-	if err != nil {
+	b, ok := d.processSessionRecordBytes(pid)
+	if !ok {
 		return processSessionRecord{}, false
 	}
 	var rec processSessionRecord

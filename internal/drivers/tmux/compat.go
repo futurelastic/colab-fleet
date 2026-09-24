@@ -2,10 +2,12 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/godx-jp/colab-fleet/internal/compat"
@@ -85,6 +87,11 @@ func RunCompat(ctx context.Context, o CompatOptions) (compat.Report, error) {
 	}
 
 	h := &compatHarness{getenv: getenv, log: o.Log}
+	// Teardown is deferred as soon as the harness exists, so a panic anywhere
+	// below still removes the private server; it is also called explicitly
+	// before the report is built so that a cleanup problem can be reported.
+	// It is idempotent, and does nothing when no session was ever started.
+	defer h.teardown()
 	suite := newCompatSuite(h)
 	// Validate the suite and --only before any expensive work, so a typo costs
 	// nothing.
@@ -113,6 +120,8 @@ func RunCompat(ctx context.Context, o CompatOptions) (compat.Report, error) {
 		h.cand = cand
 		results, err = compat.Run(ctx, suite, compat.RunOptions{Only: only, Log: o.Log})
 	}
+	// Everything the run made goes away before the verdict is assembled.
+	h.teardown()
 	if err != nil {
 		return compat.Report{}, err
 	}
@@ -121,12 +130,16 @@ func RunCompat(ctx context.Context, o CompatOptions) (compat.Report, error) {
 	rep.DurationMs = time.Since(started).Milliseconds()
 	rep.Finalize()
 
+	var problems []error
 	if pack != nil {
 		if perr := pack.writeReport(rep); perr != nil {
-			return rep, fmt.Errorf("--pack: %w", perr)
+			problems = append(problems, fmt.Errorf("--pack: %w", perr))
 		}
 	}
-	return rep, nil
+	// A cleanup that could not finish is reported, not swallowed: the verdict
+	// is still returned, but the caller must know something may be left behind.
+	problems = append(problems, h.tearErrs...)
+	return rep, errors.Join(problems...)
 }
 
 // compatHarness holds what one run learns. Probes write into it; check
@@ -142,6 +155,13 @@ type compatHarness struct {
 
 	// markers holds which static marker strings the candidate contains.
 	markers map[string]bool
+
+	// world is the isolated multiplexer environment, nil until a probe that
+	// needs a session has started it. teardown removes it; it is safe to call
+	// any number of times, and when nothing was ever started.
+	world    *compatWorld
+	tearOnce sync.Once
+	tearErrs []error
 }
 
 func (h *compatHarness) logf(format string, a ...any) {
@@ -156,6 +176,7 @@ func (h *compatHarness) logf(format string, a ...any) {
 func newCompatSuite(h *compatHarness) compat.Suite {
 	var s compat.Suite
 	h.addStatic(&s)
+	h.addWorld(&s)
 	return s
 }
 

@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/compat"
@@ -448,5 +451,155 @@ func TestCompatSuiteCoversTheCatalogue(t *testing.T) {
 	}
 	for id := range have {
 		t.Errorf("the suite has a check %q that is not in the catalogue", id)
+	}
+}
+
+// The wrapper is the one door to the multiplexer, so its text is checked as
+// carefully as code: every value quoted, nothing expanded, the environment
+// cleared, and the socket named exactly once.
+func TestMuxScript(t *testing.T) {
+	s := muxScript([]string{"HOME=/h o'me", "DISABLE_UPDATES=1"}, "/usr/bin/tmux", "/tmp/cfc-x/m", "cfc-x")
+	for _, want := range []string{
+		"#!/bin/sh\nexec /usr/bin/env -i ",
+		`'HOME=/h o'\''me'`, // an embedded quote survives
+		"'DISABLE_UPDATES=1'",
+		"'TMUX_TMPDIR=/tmp/cfc-x/m'",
+		"'/usr/bin/tmux' -L 'cfc-x' -f /dev/null \"$@\"",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("wrapper lacks %q:\n%s", want, s)
+		}
+	}
+	if strings.Count(s, "-L") != 1 || strings.Contains(s, "$TMUX") || strings.Contains(s, "-S ") {
+		t.Errorf("the wrapper must name exactly one socket, by label, and inherit nothing:\n%s", s)
+	}
+}
+
+// A candidate is launched by the resolved path, never the bare word the driver
+// would normally use; its name reaches it with -n even though remote control is
+// off; and a session's extra arguments are added to that session alone.
+func TestCompatCommandBuilder(t *testing.T) {
+	w := &compatWorld{resolved: "/opt/cand/claude", extraArgs: map[string][]string{"cfc-x-c": {"--settings", `{"k":false}`}}}
+	build := w.commandBuilder()
+	off := false
+	argv := build(fleet.SessionSpec{Name: "cfc-x-a", Model: "haiku", Effort: "low", RemoteControl: &off}, "")
+	if argv[0] != "/opt/cand/claude" {
+		t.Errorf("argv[0] = %q, want the resolved candidate", argv[0])
+	}
+	joined := " " + strings.Join(argv, " ") + " "
+	for _, want := range []string{" -n cfc-x-a ", " --model haiku ", " --effort low "} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv lacks %q: %v", want, argv)
+		}
+	}
+	if strings.Contains(joined, "--remote-control") {
+		t.Errorf("remote control must stay off: %v", argv)
+	}
+	if strings.Contains(joined, "--settings") {
+		t.Errorf("another session's extra arguments leaked: %v", argv)
+	}
+	argv = build(fleet.SessionSpec{Name: "cfc-x-c", RemoteControl: &off}, "")
+	if !strings.Contains(strings.Join(argv, " "), `--settings {"k":false}`) {
+		t.Errorf("the session's own extra arguments are missing: %v", argv)
+	}
+	// Bypass mode reaches the candidate only when asked for.
+	argv = build(fleet.SessionSpec{Name: "cfc-x-b", RemoteControl: &off, PermissionMode: fleet.PermissionModeBypass}, "")
+	if !containsArg(argv, "--dangerously-skip-permissions") {
+		t.Errorf("bypass was requested: %v", argv)
+	}
+}
+
+func TestCompatDirsAndStore(t *testing.T) {
+	d := compatDirs("/tmp/cfc-abc")
+	if !strings.HasPrefix(d["a"], "/tmp/cfc-abc/t/") || !strings.HasPrefix(d["b"], "/tmp/cfc-abc/t/") {
+		t.Errorf("trusted directories must sit under the trust root: %v", d)
+	}
+	if strings.HasPrefix(d["u"], "/tmp/cfc-abc/t/") {
+		t.Errorf("the untrusted directory must sit OUTSIDE the trust root: %v", d)
+	}
+	// The awkward directory exists to break a naive encoder.
+	for _, ch := range []string{".", "_", " ", "ñ"} {
+		if !strings.Contains(d["a"], ch) {
+			t.Errorf("directory a lacks %q: %s", ch, d["a"])
+		}
+	}
+	// Every directory maps to a transcript directory that carries the nonce, so
+	// a deletion guarded by it can never reach a real project's.
+	for role, dir := range d {
+		if !containsNonce(recordDirFor(dir), "abc") {
+			t.Errorf("%s: %q lost the nonce in its encoded form", role, recordDirFor(dir))
+		}
+	}
+
+	s, err := compatStoreFrom(env("HOME", "/home/x"))
+	if err != nil || s.projects != "/home/x/.claude/projects" || s.sessions != "/home/x/.claude/sessions" || s.trustState != "/home/x/.claude.json" {
+		t.Errorf("default store = %+v, %v", s, err)
+	}
+	s, _ = compatStoreFrom(env("HOME", "/home/x", "FLEET_RECORD_ROOT", "/r", "FLEET_PROCESS_SESSIONS_ROOT", "/p", "FLEET_TRUST_STATE_PATH", "/t.json"))
+	if s.projects != "/r" || s.sessions != "/p" || s.trustState != "/t.json" {
+		t.Errorf("overridden store = %+v", s)
+	}
+}
+
+// A deletion must never reach a path that does not carry this run's nonce.
+func TestContainsNonce(t *testing.T) {
+	if !containsNonce("/tmp/cfc-0123456789/t/b", "0123456789") {
+		t.Error("a path with the nonce must match")
+	}
+	for _, p := range []string{"/tmp/cfc-other/t/b", "/home/x/project", "/tmp/cfc-", ""} {
+		if containsNonce(p, "0123456789") {
+			t.Errorf("%q must not match", p)
+		}
+	}
+}
+
+// Teardown on a harness that never started a world is a no-op, and calling it
+// again does nothing more.
+func TestTeardownWithoutAWorldIsANoOp(t *testing.T) {
+	h := &compatHarness{}
+	h.teardown()
+	h.teardown()
+	if len(h.tearErrs) != 0 {
+		t.Errorf("errors from a no-op teardown: %v", h.tearErrs)
+	}
+}
+
+// The watchdog covers a harness that was killed outright. It removes only
+// paths whose name marks them as this command's, and it waits for the pid it
+// was given to disappear first.
+func TestWatchdogRemovesOnlyMarkedPaths(t *testing.T) {
+	root := t.TempDir()
+	marked := filepath.Join(root, "cfc-marked")
+	alsoMarked := filepath.Join(root, "-private-x-cfc-encoded")
+	unmarked := filepath.Join(root, "real-project")
+	for _, d := range []string{marked, alsoMarked, unmarked} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "f"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	child := exec.Command("sleep", "1")
+	if err := child.Start(); err != nil {
+		t.Skip(err)
+	}
+	go child.Wait()
+	cmd := exec.Command("sh", "-c", watchdogScript, "sh", fmt.Sprint(child.Process.Pid), marked, alsoMarked, unmarked)
+	cmd.Env = []string{"PATH=/usr/bin:/bin"} // no $TMUX: the final kill has nothing to aim at
+	start := time.Now()
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) < 500*time.Millisecond {
+		t.Error("the watchdog did not wait for the harness pid to disappear")
+	}
+	for _, d := range []string{marked, alsoMarked} {
+		if _, err := os.Stat(d); err == nil {
+			t.Errorf("%s survived the watchdog", d)
+		}
+	}
+	if _, err := os.Stat(unmarked); err != nil {
+		t.Errorf("the watchdog removed a path that is not marked as ours: %v", err)
 	}
 }

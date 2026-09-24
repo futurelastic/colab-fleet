@@ -58,6 +58,15 @@ func runCompat(args []string, getenv func(string) string, stdout, stderr io.Writ
 	if len(args) == 0 || args[0] != "compat" {
 		return false, 0
 	}
+	// A panic anywhere below has already run the harness's teardown while
+	// unwinding (it is deferred), so all that is left to do is say so and exit
+	// with "could not certify" rather than a stack trace and an ambiguous code.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(stderr, "colab-fleetd compat: internal error: %v\n", r)
+			handled, code = true, 2
+		}
+	}()
 	opts := tmux.CompatOptions{Getenv: getenv, Log: stderr}
 	timeout := compatDefaultTimeout
 	asJSON := false

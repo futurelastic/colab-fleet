@@ -54,6 +54,67 @@ When a `must` check has failed *and* another `must` check could not run, the exi
 code is `1`: a proven failure outranks "could not certify", because retrying
 cannot clear it.
 
+## Isolation — what a run touches, and what it never does
+
+A check that needs a session runs it in a **private multiplexer server** started
+for that run alone:
+
+- **One door.** The driver is built with a small wrapper script as its multiplexer
+  binary, and that script is the only thing that names a socket:
+  `env -i <minimal environment> tmux -L <label> -f /dev/null "$@"`. `env -i` matters
+  as much as `-L`: it drops `$TMUX`, so no command can fall back to an implicit
+  "current server", and it makes the server's own environment — which every
+  session inherits — exactly the minimal set below. The harness never runs the
+  multiplexer except through that script.
+- **Proven before it is trusted.** The server must report the expected socket path
+  and list only its own keeper session, or the run stops and every check that
+  needs a session is `error`.
+- **A minimal environment.** `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `TMPDIR`,
+  `TERM`, a bare `PATH`, and `DISABLE_UPDATES=1` and `DISABLE_AUTOUPDATER=1`, so a
+  check can never update the binary it is checking. Nothing else is inherited: not
+  the caller's variables, and no `CLAUDE_*` names.
+- **Throwaway working directories** under a scratch directory (`/tmp/cfc-<nonce>`):
+  a trusted root, with folder trust seeded through the driver's own path so that
+  path is exercised too, and one directory outside it that is *not* trusted. Every
+  one carries a project-local setting that turns remote control off — a
+  project-local `false` wins over the user's own setting — so no check registers
+  anything outside the machine.
+- **The candidate by its resolved path**, as the first word of the command line —
+  never `claude` looked up on `PATH`.
+- **Cheap model settings** for the few checks that need a turn: the smallest model at
+  low effort, synthetic nonce-tagged prompts only. The report's `turns` counts them.
+- **The service's own sessions are never addressed.** The harness only ever talks
+  to the server it started, and finds its own processes by asking that server, not
+  the process table. A test runs the whole thing with `$TMUX` pointing at a
+  stand-in server that has a session of its own, and requires that server's session
+  ids and panes to be identical afterwards.
+
+### Teardown always runs
+
+On failure, on a panic, and on `SIGINT`, `SIGTERM` or `SIGHUP`, on its own deadline
+(so a cancelled run still cleans up): the private server is killed, the socket
+removed, the throwaway transcript directories and per-process records deleted, any
+straggling process ended (only after its pid *and* start time are verified
+unchanged, so a recycled pid is never touched), and the scratch directory removed.
+Every step is attempted, and every failure is reported: the report is still printed,
+the problems go to stderr, and the exit code is `2`. Every deletion is guarded by
+the run's own nonce, so a path that does not carry it is never removed. For the one
+case teardown cannot cover — the process being killed outright with `SIGKILL` — the
+keeper session runs a small watchdog that waits for the process to disappear and then
+removes what it left.
+
+### What a run does leave
+
+- **One folder-trust entry per run** in the runtime's own state file. There is no API
+  to remove one, and editing that file while live sessions rewrite it is the race the
+  trust seeder exists to survive.
+- **The model turns it spent**, against whatever account the runtime is signed in to.
+- While it runs, the throwaway sessions are visible to anything that lists the
+  runtime's per-process records, as any session is. They are removed afterwards.
+
+A run restricted with `--only` to checks that need no session (the static ones) never
+starts a server and creates no scratch directory.
+
 ## The report
 
 The report is a **public, versioned contract**. This is a complete example:
