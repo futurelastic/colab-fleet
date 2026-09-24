@@ -5,8 +5,11 @@
 ## What happened
 
 A freshly built daemon was run with `-h`, meaning to read its usage. It
-has no usage flag: an argument that is neither `doctor` nor a principal
-subcommand is ignored and the service starts. The shell it ran in was an
+had no usage flag then: an argument that was neither `doctor` nor a principal
+subcommand was ignored and the service started. (#177 fixed that part: `-h`
+now prints usage, and any other unknown argument is refused with exit 2
+before any startup work. A bare invocation still starts the service, so the
+rule below still stands.) The shell it ran in was an
 operator's shell, which exports the installed service's `FLEET_*`
 settings, so it came up as that service, with the same configuration file,
 state directory, multiplexer binary, trust roots and peers. Before it could
