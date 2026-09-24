@@ -2981,7 +2981,29 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 		}, nil
 	}
 	if _, err := d.run(ctx, d.bin, "send-keys", "-t", target.paneID, "Space", "C-m"); err != nil {
-		return fleet.DeliveryReceipt{}, fmt.Errorf("send: submitting: %w", err)
+		// #192: the paste was CONFIRMED in the composer just above, so a
+		// keystroke that fails outright leaves this delivery's text sitting
+		// there, unsent as far as this driver can tell (a call that died on its
+		// own deadline may still have delivered the keys) — the same state as
+		// every other way the submit goes wrong below and above this line, and
+		// it must leave the same record.
+		// Returning the error alone left the composer holding text nothing
+		// remembered: a follow-up auto send saw no unconfirmed terminal
+		// delivery (terminalUnconfirmed) and took the inbox, delivering the
+		// text once as a peer message with a copy still waiting to be
+		// submitted, and a resumeIfStranded retry was refused for want of a
+		// record. The record is what both of those, and #184's route guard,
+		// read. Noted before returning, with the transcript source resolved
+		// before the keystroke so a later resume can still ask the runtime
+		// whether it took the text in the meantime.
+		//
+		// The composer digest is read AFTER the failure and is empty when that
+		// read fails too (the usual case when tmux itself is gone); an empty
+		// digest is the documented honest degrade — resume then falls back to
+		// the id+cwd+text match and its own live re-verification.
+		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land, false)
+		return fleet.DeliveryReceipt{}, fmt.Errorf("send: submitting (the text may be sitting in the composer "+
+			"unsent, and a stranded record was kept for it — retry the same send with resumeIfStranded to submit it): %w", err)
 	}
 
 	// Queued, not submitted: see Capabilities. The bytes were handed to
