@@ -38,7 +38,9 @@ import (
 // reason: the sequence continued, this service simply cannot replay that far
 // back. Persisting the window would buy transparent restarts at the cost of
 // durably storing every event, which is a much larger mechanism than the
-// problem justifies.
+// problem justifies. The one question a lost window leaves a consumer unable
+// to answer — which sessions ended, and when — has its own small record
+// instead (history.go, colab-fleet #179).
 type eventSequence struct {
 	Epoch  string `json:"epoch"`
 	Cursor int64  `json:"cursor"`
@@ -96,6 +98,16 @@ type Service struct {
 	// labels is where caller-supplied session labels live (colab-fleet
 	// #153) — see labels.go for why the service stores them, not a driver.
 	labels *labelStore
+
+	// history keeps one record per ended local session for a bounded time
+	// (colab-fleet #179) — see history.go.
+	history *historyStore
+
+	// sweepMu guards the background re-listing a local session.closed event
+	// asks for (requestSweep).
+	sweepMu    sync.Mutex
+	sweeping   bool
+	sweepAgain bool
 
 	// events is the service-wide event plane: §7.3's cursor and epoch live
 	// here because they are per service instance, not per driver.
@@ -215,6 +227,9 @@ func NewWithState(self fleet.MachineId, st *state.Store) (*Service, error) {
 	if err := svc.labels.load(st); err != nil {
 		return nil, err
 	}
+	if err := svc.history.load(st); err != nil {
+		return nil, err
+	}
 
 	var seq eventSequence
 	found, err := st.Load("events", &seq)
@@ -253,6 +268,7 @@ func newService(self fleet.MachineId) *Service {
 		peers:     make(map[fleet.MachineId]driver.Driver),
 		events:    newHub(self, now.UTC().Format(time.RFC3339Nano)),
 		labels:    newLabelStore(),
+		history:   newHistoryStore(self),
 		// #130: every instance starts with the shipped default in force,
 		// not a zero value a caller could mistake for "no limit" — see the
 		// field's own doc comment.
@@ -487,9 +503,13 @@ func (s *Service) ListSessions(ctx context.Context, req fleet.Request, scope Sco
 		its, srcs := s.callList(ctx, req, s.self, d, filter, callerDeadline)
 		// Only a complete, unfiltered answer may prune: anything narrower
 		// proves nothing about which sessions are gone (§5.7).
-		if filter.IsZero() && allSourcesOK(srcs) {
+		complete := filter.IsZero() && allSourcesOK(srcs)
+		if complete {
 			s.labels.retain(rt, its, listedAt)
 		}
+		// Closed-session records (#179) take the same rule: only a complete
+		// answer may end anything, but every answer is a sighting.
+		s.history.observe(rt, its, complete, listedAt)
 		for i := range its {
 			its[i].Labels = s.labels.get(rt, its[i].ID, its[i].StartedAt)
 		}

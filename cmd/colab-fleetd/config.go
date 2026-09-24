@@ -111,6 +111,14 @@ type fileConfig struct {
 	// once at boot, never a refusal manufactured per request. Changing it
 	// needs the same restart those settings do.
 	MaxInputBytes int `json:"maxInputBytes,omitempty"`
+
+	// ClosedRetentionDays is how long this machine keeps its record of each
+	// session that ended (colab-fleet #179, GET /v1/sessions/closed). Absent
+	// or zero means the shipped default (service.DefaultClosedRetention, 14
+	// days). Config-file-only and per machine, like the settings above:
+	// records live in this machine's state directory and are read from it.
+	// A negative value is refused at startup.
+	ClosedRetentionDays int `json:"closedRetentionDays,omitempty"`
 }
 
 func loadConfig(path string) (*fileConfig, error) {

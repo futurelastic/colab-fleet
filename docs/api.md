@@ -71,6 +71,7 @@ every configured peer, exactly one hop — peers never recurse.
 | `GET` | `/v1/whoami` | What the presented credential may do | none — authentication only | no |
 | `GET` | `/v1/runtimes` | Drivers present and the capabilities they declare | — ⚠️ | always |
 | `GET` | `/v1/sessions` | List sessions, filtered | — ⚠️ | `scope` |
+| `GET` | `/v1/sessions/closed` | Sessions that ended within the retention window | — ⚠️ | `scope` |
 | `GET` | `/v1/sessions/watch` | Long-poll the event feed | — ⚠️ | `scope` |
 | `GET` | `/v1/events` | Same feed as SSE | — ⚠️ | `scope` |
 | `POST` | `/v1/machines/{machine}/sessions` | Start a session | `create` | yes |
@@ -192,6 +193,29 @@ Returns `{items, sources, complete, feed?}`.
 `feed: {cursor, epoch}` appears **only** once something is subscribed to the
 feed. Its absence is the service telling you that you are doing the sequence
 backwards — see *Events* below.
+
+### `GET /v1/sessions/closed`
+
+Parameters: `since` (RFC 3339; keeps records that closed at or after it) and
+`scope`. Returns `{items, sources, complete}` of closed-session records, newest
+first (#179).
+
+The answer to "which sessions ran here in the last N days, and when did each
+end" — without keeping your own copy of session state. Each machine keeps one
+record per ended session for `closedRetentionDays` (config file, default 14),
+across restarts. A record carries the live record's metadata as last seen —
+`machine`, `id`, `name`, `runtime`, `cwd`, `startedAt`, `conversation` when it
+was known — plus:
+
+- `closedBy: "close"` — closed through this service; `closedAt` is exact.
+- `closedBy: "absent"` — the session ended on its own and was found missing by
+  the next complete read (a live event stream, a listing, or the service's own
+  start-up read). The end lies after `lastSeenAt` and no later than `closedAt`;
+  read the two together, never `closedAt` alone as the moment it died.
+
+A rename is not an end. A peer on a build that predates the route shows up in
+`sources` as `degraded`, so a fleet read is `complete: false` rather than
+claiming that machine closed nothing. Content is never included.
 
 ### `GET /v1/machines/{machine}/sessions/{id}`
 

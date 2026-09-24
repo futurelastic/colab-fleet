@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
 )
@@ -196,6 +197,15 @@ type ListFilter struct {
 // result is the complete set of a driver's sessions.
 func (f ListFilter) IsZero() bool {
 	return f.Status == "" && f.Agent == "" && f.CwdPrefix == "" && len(f.Labels) == 0
+}
+
+// ClosedLister is an OPTIONAL capability: a driver fronting a PEER that can
+// read that peer's own closed-session records (colab-fleet #179). Local
+// drivers never implement it — the records are kept by the service, not by a
+// runtime. A peer driver without it is reported as a source that cannot
+// answer, never as a peer with nothing closed.
+type ClosedLister interface {
+	ListClosed(ctx context.Context, req fleet.Request, since time.Time) (fleet.Collection[fleet.ClosedSession], error)
 }
 
 // LabelRelayer is an OPTIONAL capability: a driver fronting a PEER that can

@@ -538,6 +538,12 @@ func (s *Service) drainStream(ctx context.Context, stream driver.EventStream) er
 				ev.Payload = sess
 			}
 		}
+		// A local session gone from the stream is either an end or a rename's
+		// retired id; a re-listing tells them apart and records the end with
+		// a timely closedAt (#179, history.go).
+		if ev.Kind == fleet.EventSessionClosed && (ev.Machine == "" || ev.Machine == s.self) {
+			s.requestSweep()
+		}
 		s.events.publish(ev)
 	}
 }
