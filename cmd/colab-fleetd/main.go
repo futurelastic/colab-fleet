@@ -140,6 +140,26 @@
 //	                       colab-fleet #163: setting this also adds the
 //	                       resolver's inbox_index.* counters to the terminal
 //	                       runtime's counters in GET /v1/health.
+//	FLEET_DELIVERY_MODULES ordered, comma-separated names of OPTIONAL external
+//	                       delivery modules to enable (colab-fleet #185), in order
+//	                       of preference. Empty or unset means none, and this
+//	                       daemon behaves exactly as it did before they existed.
+//	                       Set the same value in every machine's service
+//	                       environment for a fleet-wide choice; override it in one
+//	                       machine's own for a per-machine one. A name whose
+//	                       executable is absent is logged once and skipped: a
+//	                       machine that could not fetch a module is a supported
+//	                       state.
+//	FLEET_MODULES_DIR      where module executables live, one file per module named
+//	                       by the module. Defaults to
+//	                       <prefix>/libexec/colab-fleet/modules, <prefix> being the
+//	                       parent of this binary's directory after symlinks
+//	                       resolve — set it explicitly when the binary is reached
+//	                       through a symlink.
+//	FLEET_DELIVERY_MODULE_ENV
+//	                       comma-separated environment names forwarded to a module
+//	                       child; nothing else is, beyond PATH HOME USER LANG
+//	                       TMPDIR FLEET_STATE_DIR, and a FLEET_ name never is.
 //	FLEET_CAPTURE_LINES    how many lines of each pane this driver captures
 //	                       to classify it. Absent, or not a positive
 //	                       integer, means the built-in default is used and
@@ -303,6 +323,9 @@ func main() {
 	var (
 		localDriver driver.Driver
 		runtimeID   fleet.RuntimeId
+		// #185: the optional external delivery modules this machine enabled.
+		// The zero value (nothing enabled) is the default and changes nothing.
+		deliveryModules deliveryModuleSetup
 	)
 	switch name := getenv("FLEET_RUNTIME", "tmux"); name {
 	case "tmux":
@@ -449,6 +472,18 @@ func main() {
 				log.Printf("colab-fleetd: pane capture window set to %d lines (#148)", n)
 			}
 		}
+		// #185: optional external delivery modules. Off unless
+		// FLEET_DELIVERY_MODULES names one; resolved here, started after
+		// reconciliation below, so a slow module never delays startup.
+		exe, _ := os.Executable()
+		deliveryModules = loadDeliveryModules(os.Getenv, exe, os.Getenv("FLEET_STATE_DIR"))
+		for _, line := range deliveryModules.describe() {
+			log.Print("colab-fleetd: " + line)
+		}
+		if len(deliveryModules.Enabled) > 0 {
+			deliveryModules.Config.Logf = log.Printf
+			opts = append(opts, tmux.WithDeliveryModules(deliveryModules.Config))
+		}
 		d := tmux.New(self, opts...)
 		// #180: this machine's own sessionEnv may not name a variable the
 		// delivery module reserves either — the module is the sole setter.
@@ -542,6 +577,12 @@ func main() {
 			log.Fatalf("colab-fleetd: %v", err)
 		}
 		log.Printf("colab-fleetd: input length limit %d bytes configured (#130)", cfgFile.MaxInputBytes)
+	}
+	// #185: the names a caller may force with `route`. The service checks them
+	// in its request-shape switch, before any driver is resolved, so this is
+	// set whether or not the module's executable is present.
+	if err := svc.SetDeliveryModuleRoutes(deliveryModules.Enabled); err != nil {
+		log.Fatalf("colab-fleetd: %v", err)
 	}
 	if cfgFile != nil && cfgFile.ClosedRetentionDays != 0 {
 		if cfgFile.ClosedRetentionDays < 0 {
@@ -675,7 +716,19 @@ func main() {
 			for _, s := range got.Vanished {
 				log.Printf("colab-fleetd:   vanished %q (%s)", s.ID, s.State.Evidence)
 			}
+			// #185: an adopted session's delivery lane stays, to be re-attached
+			// when its module is ready; a vanished one's is closed and dropped.
+			if lr, ok := localDriver.(interface{ ReconcileLanes(tmux.Reconciliation) }); ok {
+				lr.ReconcileLanes(got)
+			}
 		}
+	}
+
+	// #185: start the delivery modules last among the startup work, without
+	// blocking: each child comes up on its own schedule and a create that lands
+	// first takes the built-in lane.
+	if sm, ok := localDriver.(interface{ StartDeliveryModules() }); ok {
+		sm.StartDeliveryModules()
 	}
 
 	// Sessions that ended while this service was down are found missing by
@@ -733,6 +786,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+
+	// #185: closing a module's stdin makes it drop its connections and keep
+	// its on-disk state, so the next start can re-attach.
+	if sm, ok := localDriver.(interface{ StopDeliveryModules() }); ok {
+		sm.StopDeliveryModules()
+	}
 
 	// This process spawned the opencode server; nothing else will stop it.
 	if opencodeDriver != nil {
