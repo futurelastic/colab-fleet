@@ -100,6 +100,25 @@ something a reviewer can check. The map is left in place — populated or not �
 rather than deleted, for the next field that earns an entry on the same
 terms.
 
+## The compat report against `compat.md` (`internal/compat` and `internal/drivers/tmux`)
+
+`colab-fleetd compat` prints a versioned report, and [`../compat.md`](../compat.md)
+is its published contract. Six tests hold the two together, so the contract cannot
+drift from the code the way §2.3 once drifted from `SessionState`:
+
+| Test | Direction it guards |
+|---|---|
+| `TestCatalogueMatchesDoc` | The check catalogue table in the doc against the catalogue in the code — order, gate, description and relied-on list. A check with no row, or a row with no check, fails. |
+| `TestReportFieldsMatchDoc` | The doc's field table against the `Report` type, found by reflection: same paths, same JSON types, and the *required core* exactly as declared in the test. A field added to the type and not documented fails. |
+| `TestDocExampleParses` | The doc's JSON example, decoded strictly into `Report`: an example that names a field the type lacks fails. |
+| `TestShippedIDsStable` | `internal/compat/testdata/shipped-ids.txt` against the catalogue. Removing or renaming a check ID is a schema bump; this makes it a deliberate edit to two files instead of an accident. |
+| `TestReliedOnEntriesResolveToSource` | Every `<file>#<identifier>` a check says it protects, resolved against the source with `go/parser`. A rename in the driver that leaves a check pointing at nothing fails. |
+| `TestCompatSuiteCoversTheCatalogue` | The checks implemented by the driver against the catalogue: a catalogued check with no evaluator would be silently absent from every report. |
+
+Like `TestSpecTypeBlocksMatchGoFields`, the doc is read as the person reading it
+would read it — a table between two markers is the claim — and the code is what
+is checked, in both directions.
+
 ## Why field-name-only is the check, not a rewrite of these docs into a schema
 
 The tempting stronger version of this check is a real schema — JSON Schema

@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "claude": {
+    "path": "/opt/candidate/claude",
+    "version": "9.9.9",
+    "resolved": "/opt/candidate/versions/9.9.9",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "arch": "x86_64"
+  },
+  "colabFleet": {
+    "version": "v0.0.0",
+    "commit": "abc1234"
+  },
+  "checks": [
+    {
+      "id": "F-LIMIT",
+      "gate": "warn",
+      "pass": false,
+      "error": false,
+      "detail": "missing",
+      "reliedOn": [
+        "internal/drivers/tmux/classify.go#usageLimit"
+      ]
+    },
+    {
+      "id": "F-APIERR",
+      "gate": "warn",
+      "pass": true,
+      "error": false,
+      "detail": "found",
+      "reliedOn": [
+        "internal/drivers/tmux/classify.go#lastTurnFailed"
+      ]
+    },
+    {
+      "id": "H-RC",
+      "gate": "warn",
+      "pass": false,
+      "error": true,
+      "detail": "could not read the file",
+      "reliedOn": [
+        "internal/drivers/tmux/controlchannel.go#controlStates"
+      ]
+    }
+  ],
+  "turns": 3,
+  "pass": true,
+  "only": [
+    "F-LIMIT",
+    "F-APIERR",
+    "H-RC"
+  ],
+  "durationMs": 1234
+}

@@ -168,6 +168,13 @@
 //	                                  directory, inbox index, peers (doctor.go,
 //	                                  colab-fleet #160). Run it under the service
 //	                                  unit's environment.
+//	colab-fleetd compat --claude PATH check a candidate build of the agent runtime
+//	                                  against the assumptions this service makes
+//	                                  about it, in an isolated multiplexer
+//	                                  server, and print a versioned report
+//	                                  (compat.go, docs/compat.md, colab-fleet
+//	                                  #183). Reports only; never installs,
+//	                                  pins or promotes a build.
 //	colab-fleetd -h | --help          print usage and exit 0
 //
 // Any other argument is a usage error (exit 2) and starts nothing
@@ -208,6 +215,12 @@ func main() {
 	// doctor (colab-fleet #160) is read-only and never needs the environment
 	// to be complete either — reporting that it is not is its whole job.
 	if handled, code := runDoctor(os.Args[1:], os.Getenv, os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
+	// compat (colab-fleet #183) checks a candidate runtime build in a private
+	// multiplexer server. It never starts the service and never touches the
+	// service's own sessions, so like doctor it needs none of its environment.
+	if handled, code := runCompat(os.Args[1:], os.Getenv, os.Stdout, os.Stderr); handled {
 		os.Exit(code)
 	}
 	if handled, err := runPrincipal(os.Args[1:]); handled {
@@ -887,6 +900,7 @@ func usageTop() string {
 	return strings.Join([]string{
 		"usage: colab-fleetd                      start the service (configured by FLEET_* environment only)",
 		"       colab-fleetd doctor [--json] ...  read-only installation check (colab-fleetd doctor --help)",
+		"       colab-fleetd compat --claude PATH  check a candidate runtime build (colab-fleetd compat --help)",
 		"       colab-fleetd principal add|list   enrol or list clients (colab-fleetd principal)",
 		"       colab-fleetd -h | --help          print this usage",
 		"",

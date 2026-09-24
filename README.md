@@ -403,6 +403,7 @@ denied, on a fresh deployment as much as an established one.
 | Know the wire protocol exactly | [`docs/spec/api-http.md`](docs/spec/api-http.md) — normative |
 | Adopt this in an existing system | [`docs/adoption.md`](docs/adoption.md) — staged so each step is reversible; §2 is the precondition that surprised us |
 | Work on the service | [`docs/internals.md`](docs/internals.md) — measurements, decided questions, known gaps |
+| Check a runtime build before the fleet takes it | [`docs/compat.md`](docs/compat.md) — `colab-fleetd compat`: a versioned report of whether a candidate build still behaves as this service assumes |
 | Install it on a new machine | [`docs/install.md`](docs/install.md) — from nothing to a running service, ending with `colab-fleetd doctor` |
 | Deploy it | [`docs/deploy.md`](docs/deploy.md) — from a merged commit to a service that already runs |
 | Declare a machine-wide session identity | [`docs/session-identity.md`](docs/session-identity.md) — `sessionEnv`, precedence against a caller, verification |
