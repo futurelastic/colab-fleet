@@ -744,6 +744,20 @@ between. Picking the most recently written one is the failure this section
 exists to prevent: a guess shaped like a reading, right often enough that
 nobody checks it.
 
+**A second witness, when the runtime keeps one.** Matching a record to a session by
+name and date is right for a session that began its conversation and wrong for one
+that continued a conversation begun before it (a resumed session), or that was never
+given a name. Where the runtime also keeps a record of each running process naming
+the conversation that process is in, a driver may identify the conversation from it —
+provided the record is corroborated as belonging to the process running now (its start
+time equals the live process's), names the session's own working directory, and carries
+an identifier that can only be one file's name inside the record root. A record that
+cannot be corroborated is not used, and the answer is the name-based one with the
+reason it was not. Where the two sources name different conversations the driver
+refuses, exactly as above: `known` is false and the evidence names both. `source` is
+unchanged — the identifier was matched to the session by this service, not dictated —
+and the evidence says which rule answered (colab-fleet #182).
+
 ### 2.10 ResumeOutcome
 
 ```

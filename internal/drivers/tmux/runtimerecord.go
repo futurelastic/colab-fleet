@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -457,14 +458,15 @@ func (d *Driver) turnsFor(id, cwd string, conv *fleet.ConversationRef) *int {
 // for this to report, so it costs one map read and nothing more — the same
 // "only a flagged/marked session ever opens a record" discipline List's own
 // turns loop and #56's LastTurn upgrade both already follow.
-func (d *Driver) upgradeTurnsFromRecord(st fleet.SessionState, cwd, name string, created time.Time, paneID string) fleet.SessionState {
+func (d *Driver) upgradeTurnsFromRecord(ctx context.Context, st fleet.SessionState, cwd, name string, created time.Time, paneID string, pid int) fleet.SessionState {
 	if d.conversations == nil {
 		return st
 	}
 	if _, ok := d.deliveryMarkFor(name, cwd); !ok {
 		return st
 	}
-	ref := d.conversations.lookup(conversationKey{pane: paneID, created: created}, cwd, name, created)
+	ref := d.conversations.lookup(conversationKey{pane: paneID, created: created}, cwd, name, created,
+		d.liveConversationSource(ctx, pid, cwd))
 	st.Turns = d.turnsFor(name, cwd, ref)
 	return st
 }
@@ -494,11 +496,12 @@ func (d *Driver) recordFactFor(s fleet.Session) (apiErrorFact, recordVerdict) {
 // read) or no record store is configured or the record cannot be matched —
 // in every one of those cases the screen-derived TurnEnd, or its absence,
 // is left exactly as classify.go built it.
-func (d *Driver) upgradeLastTurnFromRecord(st fleet.SessionState, cwd, name string, created time.Time, paneID string) fleet.SessionState {
+func (d *Driver) upgradeLastTurnFromRecord(ctx context.Context, st fleet.SessionState, cwd, name string, created time.Time, paneID string, pid int) fleet.SessionState {
 	if st.LastTurn == nil || d.conversations == nil {
 		return st
 	}
-	ref := d.conversations.lookup(conversationKey{pane: paneID, created: created}, cwd, name, created)
+	ref := d.conversations.lookup(conversationKey{pane: paneID, created: created}, cwd, name, created,
+		d.liveConversationSource(ctx, pid, cwd))
 	if ref == nil || !ref.Known {
 		return st
 	}

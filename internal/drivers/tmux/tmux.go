@@ -510,10 +510,11 @@ type Driver struct {
 
 	// processSessionsRoot is terminal-path-v2's second identity source
 	// (item c / D6): the directory the runtime writes one `<pid>.json` file
-	// into per running process, carrying that process's own sessionId —
-	// consulted only when d.conversations.lookup could not resolve a
-	// session's conversation by name (the ~18/75 "resumed sessions" gap
-	// round-1 measured). Empty means unconfigured, the same off-by-default
+	// into per running process, carrying that process's own sessionId. It is
+	// read for a session's conversation whenever one is looked up (#182 —
+	// the ~18/75 "resumed sessions" gap round-1 measured: a session whose
+	// conversation began before it did is not findable by name), and again
+	// by the transcript path to confirm a delivery. Empty means unconfigured, the same off-by-default
 	// contract as conversations/credentialPath/trustSeed above: a driver
 	// built for a test never reads a real `~/.claude/sessions` directory
 	// merely because it was constructed. See terminalpath2_transcript.go
@@ -655,9 +656,10 @@ func WithRecordRoot(path string) Option {
 // WithProcessSessionsRoot points this driver at the runtime's own per-process
 // identity directory (one `<pid>.json` file per running process, each
 // carrying that process's own `sessionId`, `procStart` and `cwd`) — the
-// second identity source terminal-path-v2's transcript-based submit
-// confirmation falls back to when d.conversations (WithRecordRoot) cannot
-// resolve a session's conversation by name. See terminalpath2_transcript.go.
+// second identity source: it identifies a session's conversation when the
+// name-based lookup of d.conversations (WithRecordRoot) cannot, or disagrees
+// (#182, conversationprocess.go), and terminal-path-v2's transcript-based
+// submit confirmation reads it too. See terminalpath2_transcript.go.
 //
 // Same off-by-default contract as WithRecordRoot and every seam beside it:
 // a driver constructed without this reads nothing from a real
@@ -1553,6 +1555,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		cwd     string
 		name    string
 		started time.Time
+		pid     int
 	}
 	var pending []pendingConversation
 
@@ -1644,6 +1647,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 				cwd:     r.cwd,
 				name:    r.session,
 				started: r.created,
+				pid:     r.pid,
 			})
 		}
 		sessions = append(sessions, s)
@@ -1670,7 +1674,8 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	// that can answer "I looked and could not tell" — which is a different
 	// answer from the absent field a driver with no store leaves behind.
 	for _, p := range pending {
-		conv := d.conversations.lookup(p.key, p.cwd, p.name, p.started)
+		conv := d.conversations.lookup(p.key, p.cwd, p.name, p.started,
+			d.liveConversationSource(ctx, p.pid, p.cwd))
 		sessions[p.index].Conversation = conv
 		// #72: a session whose CREATE asked to resume a conversation gets
 		// that intent compared against what actually resolved, so a resume
@@ -2029,15 +2034,15 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		// SessionState, not a Session), so this does its own lookup; that
 		// lookup memoises successes in conversationStore, so a session List
 		// already resolved this cycle costs a map read here, not a rescan.
-		st = d.upgradeLastTurnFromRecord(st, r.cwd, r.session, r.created, r.paneID)
+		st = d.upgradeLastTurnFromRecord(ctx, st, r.cwd, r.session, r.created, r.paneID, r.pid)
 		// Same record upgrade List applies to ControlChannel.Reason (#69),
 		// same reason State does its own lookup rather than reusing a
 		// resolved Conversation.
-		st = d.upgradeControlChannelFromRecord(st, r.cwd, r.session, r.created, r.paneID)
+		st = d.upgradeControlChannelFromRecord(ctx, st, r.cwd, r.session, r.created, r.paneID, r.pid)
 		// #111: same split as the two upgrades just above — List resolves
 		// `turns` from its own pre-resolved Conversation, State does its own
 		// lookup.
-		st = d.upgradeTurnsFromRecord(st, r.cwd, r.session, r.created, r.paneID)
+		st = d.upgradeTurnsFromRecord(ctx, st, r.cwd, r.session, r.created, r.paneID, r.pid)
 		// Same rewrite List applies, generalised to a one-session read (#10)
 		// — see quotaBlockedState's own comment for why a session's own
 		// state must not be reported as an unqualified "starting"/"idle"/

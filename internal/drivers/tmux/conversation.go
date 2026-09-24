@@ -66,7 +66,7 @@ import (
 // restore or file-sync that rewrites mtimes, which is the same reason
 // SessionEnvironment records what it read instead of pointing at a file.
 //
-// # A create that opts out of remote control is unresolvable, permanently
+// # A create that opts out of remote control is unresolvable BY NAME, permanently
 //
 // claudeCodeCommand passes the session name to the runtime only inside the
 // remote-control branch. A session created with remote control explicitly
@@ -74,6 +74,16 @@ import (
 // a name-keyed lookup — not "not yet", ever. That coupling is load-bearing
 // here. Changing it changes what a create does, which belongs with capturing
 // the identifier at creation rather than with reading it afterwards.
+//
+// # Two cases the name cannot answer, and what answers them (#182)
+//
+// A RESUMED session continues a record that began before the session did, so
+// the date rule above rules out exactly the right record. And a session with no
+// name has no title to match. Both are answered by the runtime's own
+// per-process record instead (conversationprocess.go), corroborated by process
+// start time. This derivation stays as the fallback, and is still asked when a
+// per-process record is usable, because two sources that disagree are reported
+// rather than reconciled by choosing one.
 
 const (
 	// recordScanLines bounds how far into a record this driver reads. The
@@ -172,7 +182,12 @@ func newConversationStore(root string) *conversationStore {
 
 // lookup answers for one session, and returns nil only when there is nothing to
 // look in — which is "nobody looked", not "nothing was found".
-func (s *conversationStore) lookup(key conversationKey, cwd, name string, started time.Time) *fleet.ConversationRef {
+//
+// live is the runtime's per-process record as a second source (#182), or nil
+// when there is none to ask — in which case this is the name-and-date
+// derivation alone, exactly as it was before that source existed. It is asked
+// only on a cache miss, and never while the store's lock is held.
+func (s *conversationStore) lookup(key conversationKey, cwd, name string, started time.Time, live liveConversationSource) *fleet.ConversationRef {
 	if s == nil || s.root == "" {
 		return nil
 	}
@@ -184,6 +199,20 @@ func (s *conversationStore) lookup(key conversationKey, cwd, name string, starte
 	s.mu.Unlock()
 
 	ref := s.derive(cwd, name, started)
+	if live != nil {
+		lv := live()
+		if lv.id != "" {
+			// #180 L5, applied at the point the per-process id is first
+			// used: it is about to name a file, so it must name one inside
+			// the record root. The reader already refuses anything that is
+			// not UUID-shaped; this is the check that does not depend on
+			// that one staying in front of it.
+			if _, ok := s.recordPathWithin(cwd, lv.id); !ok {
+				lv = liveConversation{evidence: "the per-process record's conversation id would resolve to a file outside the record root"}
+			}
+		}
+		ref = reconcileConversation(ref, lv)
+	}
 	if ref != nil && ref.Known {
 		s.mu.Lock()
 		s.resolved[key] = ref
@@ -262,12 +291,28 @@ func (s *conversationStore) derive(cwd, name string, started time.Time) *fleet.C
 // `entry.id`), so a caller holding a resolved fleet.ConversationRef can ask
 // for the same file directly instead of re-deriving it (#56).
 func (s *conversationStore) recordPath(cwd, id string) string {
-	p := filepath.Join(s.root, recordDirFor(cwd), id+".jsonl")
-	// #180 L5: never a path outside the record root, whatever id holds.
-	if rel, err := filepath.Rel(s.root, p); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return filepath.Join(s.root, "invalid-record-id.jsonl")
+	if p, ok := s.recordPathWithin(cwd, id); ok {
+		return p
 	}
-	return p
+	// #180 L5: never a path outside the record root, whatever id holds.
+	return filepath.Join(s.root, "invalid-record-id.jsonl")
+}
+
+// recordPathWithin is recordPath that says whether the path it built is one
+// this store may open (#182). An identifier is one file's name: it must not
+// be empty, must not be a path element that means somewhere else, and must
+// not carry a separator that would turn it into a path of its own — which
+// would name a file in ANOTHER working directory's records without ever
+// leaving the record root, so checking the root alone does not catch it.
+func (s *conversationStore) recordPathWithin(cwd, id string) (string, bool) {
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\`) {
+		return "", false
+	}
+	p := filepath.Join(s.root, recordDirFor(cwd), id+".jsonl")
+	if rel, err := filepath.Rel(s.root, p); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return p, true
 }
 
 func (s *conversationStore) entryFor(path string) (recordEntry, bool) {
