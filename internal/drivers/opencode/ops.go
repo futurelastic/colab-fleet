@@ -172,6 +172,16 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			Reason:  "route \"inbox\" was requested but this runtime has no inbox delivery. Nothing was written",
 		}.WithRoute(fleet.RouteInbox), nil
 	}
+	// #185: a route naming an external delivery module (anything but auto,
+	// terminal or inbox, which the service has already validated) cannot be
+	// honoured here either: this runtime has one path and no modules.
+	// Refused with nothing sent, never served by the one path there is.
+	if opts.Route != "" && opts.Route != fleet.RouteAuto && opts.Route != fleet.RouteTerminal && opts.Route != fleet.RouteInbox {
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason:  fmt.Sprintf("route %q names a delivery module but this runtime has none. Nothing was written", string(opts.Route)),
+		}, nil
+	}
 	if !opts.Submit {
 		return fleet.DeliveryReceipt{}, driver.ErrUnsupported
 	}

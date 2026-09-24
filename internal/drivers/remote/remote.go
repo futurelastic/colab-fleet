@@ -1250,12 +1250,19 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 // Kept as its own function so the ONE place this type becomes that string is
 // visible in a diff, rather than an inline expression easy to re-derive wrong
 // at a second call site later.
+//
+// #185: any other value is an enabled delivery module's own name — the only
+// other thing the service lets through — and travels verbatim. The owning
+// machine, which holds the lane, makes the real decision; a peer built before
+// #185 answers an unknown route with a 400, which is the right answer to a
+// forced request and never a silent downgrade. driver.SendOptions.
+// TerminalFromAuto is deliberately NOT forwarded: a relayed human send reaches
+// the owner as an explicit "terminal", so it stays on the built-in path there.
 func routeWireValue(r fleet.Route) string {
-	switch r {
-	case fleet.RouteTerminal, fleet.RouteInbox:
-		return string(r)
+	if r == "" || r == fleet.RouteAuto {
+		return ""
 	}
-	return ""
+	return string(r)
 }
 
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {

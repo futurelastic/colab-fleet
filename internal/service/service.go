@@ -21,6 +21,7 @@ import (
 	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
+	"github.com/godx-jp/colab-fleet/internal/delivery"
 	"github.com/godx-jp/colab-fleet/internal/driver"
 	"github.com/godx-jp/colab-fleet/internal/state"
 )
@@ -141,6 +142,17 @@ type Service struct {
 	// SetMaxInputBytes, meant to be called at most once, at startup, the
 	// same one-shot-config rule defaultRuntime above follows.
 	maxInputBytes int
+
+	// deliveryModuleRoutes is the set of names a caller may write as a send's
+	// `route` to force an external delivery module (#185): exactly the modules
+	// this machine's operator enabled, whether or not their executables are
+	// present right now. A name is a route because the caller means THAT
+	// module, and an unknown name is refused as the request's own shape rather
+	// than discovered per session. Nil/empty means none are enabled — the
+	// route vocabulary is then exactly what it was before #185. Set once at
+	// startup by SetDeliveryModuleRoutes, the same one-shot-config rule
+	// defaultRuntime and maxInputBytes follow.
+	deliveryModuleRoutes []string
 
 	// selfGrants evaluates this machine's own authorization model for a
 	// credential — installed by NewMux, which is where the model lives. Nil
@@ -440,6 +452,52 @@ func (s *Service) SetMaxInputBytes(n int) error {
 	s.maxInputBytes = n
 	s.mu.Unlock()
 	return nil
+}
+
+// SetDeliveryModuleRoutes tells the service which external delivery module
+// names a caller may force with a send's `route` (#185). Meant to be called at
+// most once, at startup. A name outside the module-name grammar, or one that
+// would shadow a fixed route ("auto", "terminal", "inbox", "module"), is
+// refused: a typo in an operator's list is a message read once at boot, never
+// a route that silently means something else.
+func (s *Service) SetDeliveryModuleRoutes(names []string) error {
+	seen := map[string]bool{}
+	var out []string
+	for _, n := range names {
+		if !delivery.ValidModuleName(n) {
+			return fmt.Errorf("service: %q is not a legal delivery module name (#185): lowercase "+
+				"letters, digits and hyphens, starting with a letter, at most 32 bytes, and never "+
+				"one of the fixed routes", n)
+		}
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	s.mu.Lock()
+	s.deliveryModuleRoutes = out
+	s.mu.Unlock()
+	return nil
+}
+
+// deliveryModuleRouteNames returns the module names a caller may force, in the
+// operator's configured order of preference. The slice is never mutated after
+// SetDeliveryModuleRoutes, so it is safe to return without copying.
+func (s *Service) deliveryModuleRouteNames() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.deliveryModuleRoutes
+}
+
+// isDeliveryModuleRoute reports whether name is one of this machine's enabled
+// delivery modules.
+func (s *Service) isDeliveryModuleRoute(name string) bool {
+	for _, n := range s.deliveryModuleRouteNames() {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // MaxInputBytes reports this machine's effective limit on `prompt` (create)
