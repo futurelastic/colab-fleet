@@ -174,6 +174,12 @@ absent key means an older build, never "not listed".
 before relying on a capability — a driver that cannot do something says so here
 rather than failing at the call.
 
+`capabilities.deliveryModules` (#185) lists the optional external delivery
+modules this machine enabled — `name`, `status` (`starting`, `available`,
+`unavailable` or `disabled`), a `reason` when it is not available, the module's
+`protocol`, `version`, `platform` and `peerCheck`, and per-lane state counts.
+It is **absent** when none is enabled, which is the ordinary state, not a fault.
+
 ### `GET /v1/sessions`
 
 Filters: `status`, `agent`, `cwdPrefix`, `label`, and `scope`.
@@ -264,7 +270,7 @@ labels, the create is refused `unsupported` before anything is started there.
 { "text": "…", "submit": true, "resumeIfStranded": false,
   "replaceIfStranded": false, "expect": "<composerDigest>",
   "from": { "agent": "…", "session": "…", "relayOfHuman": false },
-  "route": "auto" }
+  "route": "auto" }   // or "terminal", "inbox", or an enabled module's name
 ```
 
 Returns `200` with a **delivery receipt** — always `200`, even on refusal.
@@ -274,8 +280,10 @@ Returns `200` with a **delivery receipt** — always `200`, even on refusal.
 ```
 
 **`route`** (optional, #184) chooses the delivery path: `"auto"` (the default —
-omitted and `""` mean the same), `"terminal"` or `"inbox"`. Anything else is a
-`400` naming all three, before any driver is resolved.
+omitted and `""` mean the same), `"terminal"`, `"inbox"` or — when the machine
+has enabled an optional external delivery module (#185) — that module's name.
+Anything else is a `400` naming every accepted value, before any driver is
+resolved.
 
 - **`auto` decides by who is sending.** A principal holding the `human-relay`
   grant (a human-facing relay) goes through the **terminal, unlabelled** — the
@@ -305,6 +313,14 @@ omitted and `""` mean the same), `"terminal"` or `"inbox"`. Anything else is a
   to the terminal. `route: "inbox"` combined with `submit: false`,
   `resumeIfStranded` or `replaceIfStranded` is a `400`: those name a composer the
   inbox does not have.
+- **`route: "<module>"`** (#185) forces one enabled external delivery module. A
+  module delivers the user's own turn, so it follows the terminal's rules: a
+  caller without the `human-relay` grant needs a `from` that prints, or it is a
+  `400`; `submit: false`, `resumeIfStranded` or `replaceIfStranded` is a `400`; and
+  when the session's module lane is not live right now the receipt is
+  **`refused`**, says why and that **nothing was written** — never a quiet
+  fall back to the terminal. Under `auto` the same reasons hand the send to the
+  built-in path for that one send.
 - **A session is inbox-eligible** only when the machine has an inbox configured
   and an index entry for the session, the entry names its permission-mode class
   (#148), the text can be carried in a peer-message envelope that is guaranteed
@@ -313,8 +329,12 @@ omitted and `""` mean the same), `"terminal"` or `"inbox"`. Anything else is a
   terminal carries what the inbox cannot — but `deliversToInbox` on
   `GET /v1/runtimes` is a statement about wiring, not a promise about a send.
 
-**`delivery.route`** names the path that produced the receipt: `inbox` or
-`terminal`. It is **absent** when the receipt names no path — a refusal made
+**`delivery.route`** names the path that produced the receipt: `inbox`,
+`terminal`, or `module` (#185) — in which case `delivery.module` names which. A
+module that confirmed the runtime took the message answers **`queued`**, never
+`submitted`, and one that wrote it and cannot say whether it landed answers
+**`unknown` and is never followed by a second send of the same text on any
+path**, for the same 30 minutes the inbox holds. It is **absent** when the receipt names no path — a refusal made
 before any path was chosen (a busy composer, the runtime-syntax guard,
 contradictory flags), or a peer built before the field. Treat absent as "not
 stated"; it is never either value.
@@ -582,6 +602,7 @@ not in the response.
   "startedAt": "…", "attach": {…}, "conversation": {…}, "resumeOutcome": {…},
   "marker": "…",
   "labels": { "issue": "153" },
+  "delivery": { "lane": "terminal", "clientConnected": false, "evidence": "…", "since": "…" },
   "state": {
     "status": "waiting_input",
     "confidence": "observed",
@@ -607,6 +628,13 @@ proxied answer never looks more certain than the original.
 
 **`waitingOn`** — `prompt` (a dialog is attached) or `unsent-input` (the
 composer holds text nobody submitted; do not send to it).
+
+**`delivery`** (#185) — which delivery lane the session's input takes when an
+optional external module is enabled on the machine that owns it: `lane` is the
+module's name while its lane is live and `"terminal"` otherwise, with
+`clientConnected` and prose `evidence`. **Absent means "not configured or not
+probed", never "terminal"** — a machine with no module enabled, a session this
+service did not launch itself, or a peer on an older build has no `delivery` key.
 
 **`labels`** — always present, `{}` when there are none. A session read
 through a peer on an older build has no `labels` key at all.

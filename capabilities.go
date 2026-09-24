@@ -139,6 +139,13 @@ type DriverCapabilities struct {
 
 	SupportsPin PinSupport `json:"supportsPin"`
 
+	// DeliveryModules reports the optional external delivery modules this
+	// machine's driver has enabled and how each is wired (#185; see
+	// DeliveryModuleStatus). Absent means none are enabled — the built-in
+	// terminal path is the only lane, which is a first-class state and not a
+	// fault.
+	DeliveryModules []DeliveryModuleStatus `json:"deliveryModules,omitempty"`
+
 	// DeadlineMs is mandatory (§4.4): "a driver that can block without a
 	// bound is a specification violation, not a slow driver." Measured
 	// directly against a stopped peer, an undeadlined call was still

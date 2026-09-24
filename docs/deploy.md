@@ -290,6 +290,31 @@ hardcoded fallback. If your convention is a token file at
 `~/.config/colab-fleet/token`, set `FLEET_HEALTH_TOKEN_FILE` to that path
 explicitly; it is no longer assumed on your behalf.
 
+### Optional delivery modules (#185)
+
+Two more variables, both optional; when `FLEET_MODULE_SOURCES` is unset or empty
+this step does not run at all and a deploy is what it always was.
+
+- `FLEET_MODULE_SOURCES` — space-separated `name=source` entries, one per
+  optional delivery module to install beside the daemon. A source is a Go package
+  path with a version (`<package>@<version>`), fetched and built with **this
+  user's own access**, or an absolute directory holding a `main` package. A source
+  this user cannot fetch installs **nothing and says nothing**: a machine with only
+  the built-in module is a supported state, not a deploy problem, and a failed
+  fetch never removes a module an earlier deploy installed. A malformed entry gets
+  one warning line naming its position and never its source.
+- `FLEET_MODULES_DIR` — where the modules are installed on the host. Default: the
+  parent of the directory `REMOTE_PATH` lives in, plus
+  `libexec/colab-fleet/modules` — the place the daemon looks. If you set it here,
+  set the same value in the service's own environment.
+
+The module is built for the target's `GOOS`/`GOARCH`, uploaded beside its final
+name and renamed into place, as the daemon binary is. The daemon lists its
+modules directory at startup, so the restart step is what makes a newly installed
+module visible; it also needs `FLEET_DELIVERY_MODULES` naming the module in the
+service's environment (`install.md`). Nothing here enables a module on any
+machine by itself.
+
 ## Running the backup and the revert
 
 ```sh

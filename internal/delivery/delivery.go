@@ -104,6 +104,11 @@ const (
 	SignalNone       Signal = ""
 	SignalTranscript Signal = "transcript"
 	SignalScreen     Signal = "screen"
+	// SignalModule: an external delivery module said the message was accepted
+	// (#185). The module reads the runtime's own record of the turn, so this is
+	// the same standard of evidence as SignalTranscript, but colab-fleet did not
+	// see the record itself and does not claim to.
+	SignalModule Signal = "module"
 )
 
 // Result is a module's answer to one Delivery.
@@ -111,6 +116,19 @@ type Result struct {
 	Receipt     fleet.DeliveryReceipt
 	Class       Class
 	ConfirmedBy Signal
+
+	// Declined is non-empty when the module wrote NOTHING and is handing the
+	// send back (#185): it is not live for this session, it went unavailable
+	// before the write, or it was refused the runtime build. It says why, for
+	// the operator. Receipt and Class are meaningless alongside it.
+	//
+	// It is not a receipt because a receipt is an answer to the caller, and
+	// "this lane could not take it" is a fact the DRIVER acts on — falling back
+	// to the built-in module for an `auto` send, refusing for a forced route.
+	// A module that DID write and cannot say whether it landed does not
+	// decline: that is Receipt.Outcome unknown, and a decline after a write
+	// would license a second delivery of the same text.
+	Declined string
 }
 
 // CounterPrefix is the family every module counter lives under.
@@ -153,4 +171,63 @@ func CheckReservedEnv(env map[string]string, reserved []string) error {
 	sort.Strings(hit)
 	return fmt.Errorf("env: %s is reserved by this machine's delivery module: the service "+
 		"sets it for the agent process, so a caller may not", strings.Join(hit, ", "))
+}
+
+// CheckReservedEnvPrefixes refuses env naming any variable that begins with a
+// reserved prefix (#185). The error names every offending variable, sorted.
+// Prefixes are matched case-sensitively, as environment names are.
+func CheckReservedEnvPrefixes(env map[string]string, prefixes []string) error {
+	if len(env) == 0 || len(prefixes) == 0 {
+		return nil
+	}
+	var hit []string
+	for name := range env {
+		if HasReservedPrefix(name, prefixes) {
+			hit = append(hit, name)
+		}
+	}
+	if len(hit) == 0 {
+		return nil
+	}
+	sort.Strings(hit)
+	return fmt.Errorf("env: %s is reserved by this machine's delivery module: the service "+
+		"sets it for the agent process, so a caller may not", strings.Join(hit, ", "))
+}
+
+// HasReservedPrefix reports whether name begins with any of prefixes. An empty
+// prefix is ignored rather than matching everything: a malformed reservation
+// must never turn into "every variable is reserved".
+func HasReservedPrefix(name string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if p != "" && strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidModuleName reports whether name is a legal external delivery module
+// name (#185): lowercase letters, digits and hyphens, starting with a letter,
+// at most 32 bytes — the shape of a file name that is safe in a counter name,
+// a URL field and a modules-directory lookup with nothing to escape. The
+// names the route vocabulary already uses are refused, so a module can never
+// shadow "terminal", "inbox", "auto" or the receipt's own "module".
+func ValidModuleName(name string) bool {
+	if len(name) == 0 || len(name) > 32 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case i > 0 && (c >= '0' && c <= '9' || c == '-'):
+		default:
+			return false
+		}
+	}
+	switch name {
+	case "auto", "terminal", "inbox", "module":
+		return false
+	}
+	return true
 }

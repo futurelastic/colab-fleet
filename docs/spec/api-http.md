@@ -666,13 +666,16 @@ POST /v1/machines/{machine}/sessions/{id}/input
 { "text": "...", "submit": true, "resumeIfStranded": false, "replaceIfStranded": false,
   "expect": "<composerDigest>",
   "from": { "agent": "...", "session": "...", "relayOfHuman": false },
-  "route": "auto" | "terminal" | "inbox" }
+  "route": "auto" | "terminal" | "inbox" | "<module>" }
 ```
 
 **`route` (colab-fleet #184) is optional and chooses the delivery path.**
 Absent, `""` and `"auto"` mean the same thing, so a caller that sends nothing
-new behaves as it always did. A value outside the three is `invalid` (400) naming
-all of them, before any driver is resolved.
+new behaves as it always did. A value outside the closed set is `invalid` (400)
+naming every accepted value, before any driver is resolved. The set is
+`"auto"`, `"terminal"`, `"inbox"` and — since #185 — the name of each optional
+external delivery module this machine has **enabled** (`<module>` above). With
+no module enabled the set, and the message, are exactly what they were.
 
 | `route` | Who | Path |
 |---|---|---|
@@ -681,6 +684,9 @@ all of them, before any driver is resolved.
 | `auto` | anyone else, session not eligible | the terminal, **with the sender label** |
 | `terminal` | any caller, with a printable label unless the caller holds human-relay | the terminal |
 | `inbox` | any caller | the inbox — or a **refusal**, never a downgrade |
+| `auto` | a principal holding the human-relay grant, session holds a **live module lane** | that module — the message arrives as the user's own turn, unlabelled (#185) |
+| `auto` | anyone else, inbox not taken, session holds a **live module lane** | that module, **with the sender label** (#185) |
+| `<module>` | any caller, with a printable label unless the caller holds human-relay | that module — or a **refusal**, never a downgrade (#185) |
 
 - **The label is mandatory for everyone but a human relay.** A caller that does
   not name itself is labelled with the one fact the service holds — the
@@ -712,6 +718,21 @@ all of them, before any driver is resolved.
 - **`route` travels through a peer relay** as `""` for auto and as itself
   otherwise. A peer built before #184 answers an explicit `"inbox"` with its own
   `invalid`; the caller gets that answer, never a downgrade.
+- **A module route (colab-fleet #185) follows the terminal's authority rules,
+  not the inbox's**, because a module delivers the user's own turn. A caller that
+  is not a human relay must carry a label that prints, as for `route:
+  "terminal"`; `submit: false`, `resumeIfStranded` or `replaceIfStranded` is
+  `invalid` (400), because a module has no composer; and a forced module the
+  session cannot use right now — not live for this session, unavailable, refused
+  the runtime build — is a **refusal with nothing written**, never a fall back
+  to the terminal. Under `auto` the same reasons hand the send to the built-in
+  path, for that send only. A module that reports it cannot verify its peer
+  (`peerCheck: false`) is treated as not live: nothing is delivered without that
+  check.
+- **An `auto` from a human relay reaches a module lane only on the machine that
+  owns the session.** The entering service turns it into `terminal` before the
+  relay, so a relayed one arrives at the owner as an explicit `terminal` and
+  stays on the built-in path there; the human can still name the module.
 
 **`from` (colab-fleet #158) is optional and labels the message with its
 sender.** Absent means the service labels the message itself for any caller that
@@ -1008,7 +1029,8 @@ POST /v1/machines/{machine}/sessions/{id}/input?runtime=
 
 → 200 { "outcome": "submitted" | "queued" | "refused" | "unknown",
         "reason": "prompt holds unsent input",
-        "delivery": { "route": "terminal" | "inbox" } }
+        "delivery": { "route": "terminal" | "inbox" | "module",
+                      "module"?: "<name>" } }
 ```
 
 **`delivery.route` (colab-fleet #184) names the path that made the receipt.** It
@@ -1021,6 +1043,18 @@ the field. Absent means "not stated", never either value, and a value this build
 does not recognise is read as absent: the outcome is the part that matters. It
 is a `DeliveryReceipt` field (session-abstraction.md §2.4) and travels through a
 peer relay untouched.
+
+**`delivery.route: "module"` (colab-fleet #185) says an optional external
+delivery module carried the send, and `delivery.module` names which.** It is
+present exactly when the route is `module`. A module that confirmed the runtime
+accepted the message answers `queued` — the same bar as the terminal's
+transcript confirmation: a user-origin turn the runtime took is not an
+acknowledgement from the agent, so it is never `submitted`. A module that wrote
+the message and cannot say whether it landed answers `unknown`, and **the message
+is not sent again on any path**: for `strandedRetention` (30 minutes), or until
+the module confirms it, every further send of the same text from the same sender
+to the same session is answered with the same `unknown`, exactly as for the
+inbox. A receipt naming `module` with no module name reads as absent.
 
 **A driver that delivers over a target session's own inbox instead of the
 terminal surface (colab-fleet #119) can additionally answer `delivered` |

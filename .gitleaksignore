@@ -1,0 +1,8 @@
+# Two test fixtures in an earlier commit of the delivery-modules branch were
+# 16-character hex strings named "laneKey", which the generic-api-key rule reads
+# as a credential. They are not: they are made-up opaque handles for a fake
+# module. The fixtures are changed on the branch, but the commit that carried
+# them stays reachable from the ref, so the scan is told about those two
+# fingerprints (commit:file:rule:line) and nothing else.
+129d6da63b69817f5fdc5c7163ec3fcb0486cdc7:internal/drivers/tmux/modulelane_create_test.go:generic-api-key:141
+129d6da63b69817f5fdc5c7163ec3fcb0486cdc7:internal/drivers/tmux/modulelane_create_test.go:generic-api-key:176

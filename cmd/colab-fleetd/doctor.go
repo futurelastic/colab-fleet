@@ -374,6 +374,9 @@ func runChecks(ctx context.Context, env doctorEnv) []doctorRow {
 		c.add(checkModeClass(indexDir))
 	}
 
+	// --- delivery modules (#185) -----------------------------------------------
+	c.add(checkDeliveryModules(getenv))
+
 	// --- peers ----------------------------------------------------------------
 	if peerErr != nil {
 		c.add(doctorRow{ID: "peers.config", Status: statusFail,

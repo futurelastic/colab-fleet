@@ -209,6 +209,7 @@ const (
 	counterRouteGuardInboxUnconfirmed  = "route.guard.inbox_unconfirmed"
 	counterRouteGuardTerminalUnconfirm = "route.guard.terminal_unconfirmed"
 	counterRouteGuardLateConfirmed     = "route.guard.late_confirmed"
+	counterModuleLedgerEntryWritten    = "module.unconfirmed_ledger_written"
 
 	// The number #150's decision reads. attest_checked counts every call
 	// that reached attestation; attest_body_lookalike counts those whose

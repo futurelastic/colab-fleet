@@ -1013,6 +1013,16 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 				return
 			}
 		}
+		// #185: the same guard by prefix. A delivery module declares the
+		// prefixes it reserves in its own handshake, so they cannot be listed
+		// ahead of time; the driver answers from what it last recorded, which
+		// is why this holds whether or not the module is running right now.
+		if pr, ok := d.(driver.ReservedEnvPrefixReporter); ok {
+			if err := delivery.CheckReservedEnvPrefixes(body.Env, pr.ReservedEnvPrefixes()); err != nil {
+				writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error() + " (#185)", Machine: machine})
+				return
+			}
+		}
 
 		spec := fleet.SessionSpec{
 			// Machine is filled from the URL path, not the request body
@@ -1287,8 +1297,49 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			}
 			route = fleet.RouteInbox
 		default:
+			// #185: an enabled delivery module's own name forces that module.
+			// The set is this machine's configuration, so it is checked here,
+			// in the request-shape switch, before any driver is resolved — an
+			// unknown name is a 400 whatever session or runtime it targets.
+			if svc.isDeliveryModuleRoute(body.Route) {
+				// A module carries the user's own turn exactly as the
+				// terminal path does, so the terminal path's authority rule
+				// applies unchanged: an unlabelled agent send must not be
+				// recorded as human-typed input just because it named a lane.
+				if !humanRelay && inboxclient.SenderName(driver.SenderLabel(from)) == "" {
+					writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
+						Message: fmt.Sprintf("route %q requires a \"from\" label that prints — a non-empty "+
+							"agent, session or machine that survives label normalisation — unless the caller "+
+							"is a principal configured as a human relay (the human-relay grant); a "+
+							"module-routed send arrives as the user's own turn and an unlabelled one would "+
+							"be recorded as human-typed input", body.Route),
+						Machine: machine})
+					return
+				}
+				// A module has no composer: submit:false, or a resume/replace
+				// of a delivery stranded in one, names a concept it cannot
+				// honour. Refused up front, never discovered per session.
+				if !body.Submit || body.ResumeIfStranded || body.ReplaceIfStranded {
+					writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
+						Message: fmt.Sprintf("route %q delivers a message as a turn: it cannot be combined with "+
+							"submit:false, resumeIfStranded or replaceIfStranded, which name a composer a "+
+							"delivery module does not have", body.Route),
+						Machine: machine})
+					return
+				}
+				route = fleet.Route(body.Route)
+				break
+			}
+			accepted := `"auto" (or omitted), "terminal" and "inbox"`
+			if names := svc.deliveryModuleRouteNames(); len(names) > 0 {
+				quoted := make([]string, len(names))
+				for i, n := range names {
+					quoted[i] = strconv.Quote(n)
+				}
+				accepted = `"auto" (or omitted), "terminal", "inbox" and ` + strings.Join(quoted, ", ")
+			}
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
-				Message: fmt.Sprintf("route %q is not recognised; the accepted values are \"auto\" (or omitted), \"terminal\" and \"inbox\"", body.Route),
+				Message: fmt.Sprintf("route %q is not recognised; the accepted values are %s", body.Route, accepted),
 				Machine: machine})
 			return
 		}
@@ -1301,9 +1352,15 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		// then prefers the inbox, where the runtime itself marks it as not from
 		// the user. The decision reads the principal's own grant (or a trusted
 		// relay's assertion of it), never a header or a `from` a caller set.
+		terminalFromAuto := false
 		if humanRelay {
 			if route == fleet.RouteAuto {
 				route = fleet.RouteTerminal
+				// #185: remembered because a delivery module carries a user
+				// turn too, so this call's auto may use a live module lane
+				// where an EXPLICIT terminal never does. Never a caller's
+				// field, and never forwarded to a peer.
+				terminalFromAuto = true
 			}
 		} else {
 			from = svc.labelledSender(r, from)
@@ -1321,7 +1378,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, ExpectComposerDigest: body.Expect, From: from, Route: route, HumanRelay: humanRelay})
+		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, ExpectComposerDigest: body.Expect, From: from, Route: route, HumanRelay: humanRelay, TerminalFromAuto: terminalFromAuto})
 		if err != nil {
 			// A refusal from the driver is not this branch — Send returns
 			// it as a DeliveryReceipt value, not an error. Only a

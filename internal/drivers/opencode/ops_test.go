@@ -118,6 +118,32 @@ func TestSend_RouteInboxIsRefusedNotDowngraded(t *testing.T) {
 	}
 }
 
+// #185: a route naming an external delivery module cannot be honoured by a
+// runtime with one path and no modules. Refused with nothing sent, and the
+// receipt names no path: it would be a lie to name a module that was never
+// involved.
+func TestSend_ModuleRouteRefusedNothingSent(t *testing.T) {
+	f := newFakeServer(t)
+	d := newTestDriver(t, f)
+	ref := createOne(t, d, "/work/x", "key-1")
+
+	before := len(f.requestsSnapshot())
+	receipt, err := d.Send(context.Background(), fleet.RequestFrom(fleet.Caller{}),
+		fleet.SessionRef{ID: ref.ID}, "hello", driver.SendOptions{Submit: true, Route: "relay-a"})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if receipt.Outcome != fleet.OutcomeRefused || receipt.Delivery != nil {
+		t.Fatalf("receipt = %+v, want a refusal naming no path", receipt)
+	}
+	if !strings.Contains(receipt.Reason, "relay-a") || !strings.Contains(receipt.Reason, "Nothing was written") {
+		t.Errorf("reason = %q, want it to name the module and say nothing was written", receipt.Reason)
+	}
+	if got := len(f.requestsSnapshot()); got != before {
+		t.Errorf("a refused module route made %d HTTP calls, want 0", got-before)
+	}
+}
+
 func TestSend_SubmitFalseIsUnsupported_NoComposerToStageIn(t *testing.T) {
 	f := newFakeServer(t)
 	d := newTestDriver(t, f)

@@ -135,12 +135,29 @@ order of this page and the order of its output are the same.
    the inbox as peer messages (#184; `docs/deploy.md`, "Turning the inbox route
    on"). Rows: `inbox.index`, `inbox.mode-class`, `principals.human-relay`.
 
+   **Optional external delivery modules** — `FLEET_DELIVERY_MODULES` (#185). A
+   module is a separate helper program that delivers a message by a channel other
+   than the terminal; this service uses it for sessions it launches itself, and
+   falls back to the built-in terminal path for everything else. Unset or empty
+   means none — the ordinary state, and byte-for-byte what a build without the
+   feature does. To enable one, put its executable in the modules directory
+   (`FLEET_MODULES_DIR`, default `<prefix>/libexec/colab-fleet/modules` where
+   `<prefix>` is the parent of the daemon binary's directory — set it explicitly
+   when the binary is reached through a symlink), one file per module named by
+   the module, mode not group- or world-writable, and list the name. A name with
+   no executable is logged once and skipped: a machine that could not fetch the
+   module is a supported state. `scripts/deploy.sh` can install one for you
+   (`deploy.md`, "Optional delivery modules"). Row: `delivery.modules`, which
+   only ever warns.
+
 8. **Write the service unit.** Whatever the machine's service manager is, the
    unit must:
 
    - execute the absolute path from step 1, with no arguments;
    - set `FLEET_MACHINE`, `FLEET_ADDR`, `FLEET_STATE_DIR`, `FLEET_CONFIG`, and
-     where they apply `FLEET_INBOX_INDEX` and `FLEET_PEERS`;
+     where they apply `FLEET_INBOX_INDEX`, `FLEET_PEERS` and
+     `FLEET_DELIVERY_MODULES` (with `FLEET_MODULES_DIR` and
+     `FLEET_DELIVERY_MODULE_ENV` if you use them);
    - set `FLEET_TMUX_BIN` to the multiplexer's absolute path — a service
      manager starts processes with a bare `PATH` that usually lacks it, and
      the failure appears only under the manager, never in your shell

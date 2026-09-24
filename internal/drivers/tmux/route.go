@@ -65,6 +65,14 @@ type unconfirmedEntry struct {
 	// Partial is true when the write itself broke part-way, as opposed to a
 	// complete write nothing recorded.
 	Partial bool `json:"partial,omitempty"`
+
+	// Module, LaneKey and SendID are set instead of the transcript fields when
+	// the unconfirmed write went to an external delivery module's lane (#185):
+	// they are how the module is asked, later, whether it arrived. LaneKey is
+	// the module's opaque handle and is never put in a path.
+	Module  string `json:"module,omitempty"`
+	LaneKey string `json:"laneKey,omitempty"`
+	SendID  string `json:"sendId,omitempty"`
 }
 
 // deliveryKey identifies one delivery for the ledger. The text is the
@@ -145,7 +153,11 @@ func (d *Driver) noteUnconfirmed(id string, e unconfirmedEntry) {
 	}
 	d.unconfirmed[id] = list
 	d.saveStrandedLocked()
-	d.counters.incr(counterInboxLedgerEntryWritten)
+	if e.Module != "" {
+		d.counters.incr(counterModuleLedgerEntryWritten)
+	} else {
+		d.counters.incr(counterInboxLedgerEntryWritten)
+	}
 }
 
 // unconfirmedFor returns the live entry for this delivery, if there is one,
@@ -229,6 +241,12 @@ func (d *Driver) answerFromLedger(ctx context.Context, ref fleet.SessionRef, key
 			d.dropUnconfirmed(ref.ID, key)
 			return fleet.DeliveryReceipt{}, false
 		}
+	}
+
+	if entry.Module != "" {
+		// #185: the earlier write went to a module's lane; the module, not a
+		// transcript this driver reads, is who can say whether it arrived.
+		return d.answerFromModuleLedger(ctx, ref, key, entry)
 	}
 
 	if entry.TranscriptPath != "" {

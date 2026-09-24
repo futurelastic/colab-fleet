@@ -130,31 +130,56 @@ const (
 	// RouteInbox is the runtime's own messaging socket: the text arrives as a
 	// cross-session peer message, marked by the runtime as not from the user.
 	RouteInbox Route = "inbox"
+	// RouteModule is the RECEIPT's name for a delivery an optional external
+	// delivery module carried (#185): the text arrived as the user's own turn,
+	// like RouteTerminal, over a lane the module holds instead of the
+	// composer. It is only ever a receipt value, and it is always paired with
+	// DeliveryPath.Module, which names WHICH module — the module's own name is
+	// what a caller writes in a request's `route` to force it, so the request
+	// side has no fixed spelling and is validated against the machine's
+	// enabled list, not against this constant.
+	RouteModule Route = "module"
 )
 
-// Valid reports whether r is a route a caller may request. The zero value is
-// not one: callers treat empty as auto before asking.
+// Valid reports whether r is a route a caller may request from the fixed set.
+// The zero value is not one: callers treat empty as auto before asking. An
+// enabled delivery module's name is also a route a caller may request; that
+// set is per-machine configuration, so the service checks it (#185), and
+// RouteModule itself is a receipt value and is not requestable.
 func (r Route) Valid() bool {
 	return r == RouteAuto || r == RouteTerminal || r == RouteInbox
 }
 
-// IsPath reports whether r names a path a delivery can take — the two
-// values a receipt may carry.
-func (r Route) IsPath() bool { return r == RouteTerminal || r == RouteInbox }
+// IsPath reports whether r names a path a delivery can take — the values a
+// receipt may carry.
+func (r Route) IsPath() bool {
+	return r == RouteTerminal || r == RouteInbox || r == RouteModule
+}
 
 // DeliveryPath is the receipt's account of how a send was carried out. It is
 // an object, not a bare string, so a later field (a delivery module's name,
 // #185) can join it without breaking a consumer.
 type DeliveryPath struct {
 	Route Route `json:"route"`
+
+	// Module names the delivery module that carried the send (#185). It is
+	// present exactly when Route is RouteModule and absent otherwise.
+	Module string `json:"module,omitempty"`
 }
 
 // MarshalJSON refuses a path it cannot name, the same discipline Outcome
 // applies: a receipt that claimed a route outside the set would decode on the
-// other end as an unnamed fourth state.
+// other end as an unnamed fourth state. A module route with no module name,
+// or a module name on any other route, is the same kind of incoherence.
 func (p DeliveryPath) MarshalJSON() ([]byte, error) {
 	if !p.Route.IsPath() {
 		return nil, fmt.Errorf("fleet: %q is not a route a delivery can take", string(p.Route))
+	}
+	if p.Route == RouteModule && p.Module == "" {
+		return nil, fmt.Errorf("fleet: a %q delivery path must name its module", string(RouteModule))
+	}
+	if p.Route != RouteModule && p.Module != "" {
+		return nil, fmt.Errorf("fleet: only a %q delivery path may name a module", string(RouteModule))
 	}
 	type wire DeliveryPath
 	return json.Marshal(wire(p))
@@ -171,7 +196,8 @@ func (r *DeliveryReceipt) UnmarshalJSON(b []byte) error {
 		Outcome  Outcome `json:"outcome"`
 		Reason   string  `json:"reason,omitempty"`
 		Delivery *struct {
-			Route Route `json:"route"`
+			Route  Route  `json:"route"`
+			Module string `json:"module,omitempty"`
 		} `json:"delivery,omitempty"`
 	}
 	var w wire
@@ -180,19 +206,45 @@ func (r *DeliveryReceipt) UnmarshalJSON(b []byte) error {
 	}
 	*r = DeliveryReceipt{Outcome: w.Outcome, Reason: w.Reason}
 	if w.Delivery != nil && w.Delivery.Route.IsPath() {
-		r.Delivery = &DeliveryPath{Route: w.Delivery.Route}
+		switch {
+		case w.Delivery.Route == RouteModule && w.Delivery.Module != "":
+			r.Delivery = &DeliveryPath{Route: RouteModule, Module: w.Delivery.Module}
+		case w.Delivery.Route != RouteModule:
+			r.Delivery = &DeliveryPath{Route: w.Delivery.Route}
+		}
+		// A module route naming no module is a path nobody could act on; it
+		// reads as "not stated", like a value this build does not know.
 	}
 	return nil
 }
 
 // WithRoute returns r stating the path that made it. A route that is not one a
 // delivery can take leaves the receipt unchanged, so a caller cannot stamp
-// "auto" onto a receipt by accident.
+// "auto" onto a receipt by accident. Naming a module is WithModule's job.
 func (r DeliveryReceipt) WithRoute(route Route) DeliveryReceipt {
-	if route.IsPath() {
+	// RouteModule is not stampable here: it is meaningless without the
+	// module's name, and WithModule is the one place that supplies both.
+	if route.IsPath() && route != RouteModule {
 		r.Delivery = &DeliveryPath{Route: route}
 	}
 	return r
+}
+
+// WithModule returns r stating that the delivery module named module carried
+// it (#185). An empty name leaves the receipt unchanged.
+func (r DeliveryReceipt) WithModule(module string) DeliveryReceipt {
+	if module != "" {
+		r.Delivery = &DeliveryPath{Route: RouteModule, Module: module}
+	}
+	return r
+}
+
+// ModuleOf reports the delivery module r names, or "" when it names none.
+func (r DeliveryReceipt) ModuleOf() string {
+	if r.Delivery == nil || r.Delivery.Route != RouteModule {
+		return ""
+	}
+	return r.Delivery.Module
 }
 
 // RouteOf reports the path r names, or "" when it names none.

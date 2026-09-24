@@ -234,3 +234,65 @@ func TestDeliveryReceipt_UnknownOutcomeStillRejected(t *testing.T) {
 		t.Fatal("the lenient route decoding must not have loosened the outcome check")
 	}
 }
+
+// #185: a delivery module is a third path a receipt can name, and it always
+// names WHICH module — the route alone would be an unnamed fourth state.
+
+func TestDeliveryReceipt_ModuleRouteRoundTrip(t *testing.T) {
+	in := DeliveryReceipt{Outcome: OutcomeQueued, Reason: "why"}.WithModule("relay-a")
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"outcome":"queued","reason":"why","delivery":{"route":"module","module":"relay-a"}}`
+	if string(b) != want {
+		t.Fatalf("wire shape = %s, want %s", b, want)
+	}
+	var out DeliveryReceipt
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.RouteOf() != RouteModule || out.ModuleOf() != "relay-a" {
+		t.Fatalf("round trip: got %+v", out.Delivery)
+	}
+	// The other two paths never name a module.
+	for _, route := range []Route{RouteTerminal, RouteInbox} {
+		r := DeliveryReceipt{Outcome: OutcomeDelivered}.WithRoute(route)
+		if r.ModuleOf() != "" {
+			t.Errorf("route %q names module %q", route, r.ModuleOf())
+		}
+	}
+}
+
+func TestDeliveryReceipt_ModuleRouteWithoutNameRefused(t *testing.T) {
+	// Marshal refuses the incoherent shapes rather than emitting them.
+	for _, bad := range []*DeliveryPath{
+		{Route: RouteModule},
+		{Route: RouteTerminal, Module: "relay-a"},
+		{Route: RouteInbox, Module: "relay-a"},
+	} {
+		if _, err := json.Marshal(DeliveryReceipt{Outcome: OutcomeQueued, Delivery: bad}); err == nil {
+			t.Errorf("Marshal accepted %+v", bad)
+		}
+	}
+	// WithRoute cannot stamp a nameless module; WithModule("") is a no-op.
+	if r := (DeliveryReceipt{Outcome: OutcomeQueued}).WithRoute(RouteModule); r.Delivery != nil {
+		t.Errorf("WithRoute(module) stamped %+v", r.Delivery)
+	}
+	if r := (DeliveryReceipt{Outcome: OutcomeQueued}).WithModule(""); r.Delivery != nil {
+		t.Errorf("WithModule(\"\") stamped %+v", r.Delivery)
+	}
+	// A peer's nameless module route decodes as "not stated", never a guess;
+	// the outcome (the part that matters) survives.
+	var got DeliveryReceipt
+	if err := json.Unmarshal([]byte(`{"outcome":"queued","delivery":{"route":"module"}}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != OutcomeQueued || got.Delivery != nil {
+		t.Errorf("got %+v / %+v, want queued and no path", got, got.Delivery)
+	}
+	// module is a receipt value, never a route a caller may request.
+	if RouteModule.Valid() {
+		t.Error("RouteModule.Valid() = true; a caller requests a module by ITS name")
+	}
+}

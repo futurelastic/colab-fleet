@@ -463,6 +463,12 @@ type Session struct {
 	// rule ResumeOutcome's own nil follows for resume.
 	PromptDelivery *PromptDelivery `json:"promptDelivery,omitempty"`
 
+	// Delivery is which delivery lane this session's input takes, when an
+	// optional external delivery module is configured on the machine that owns
+	// the session (#185; see DeliveryLane). Nil means nothing is configured or
+	// nothing has been probed for this session — never "terminal".
+	Delivery *DeliveryLane `json:"delivery,omitempty"`
+
 	// IdentityAssertion is what this machine last asserted this session's
 	// identity to be, and whether the runtime still carries it (colab-fleet
 	// #97, #102; see IdentityAssertion). Nil means this machine has asserted
