@@ -86,7 +86,7 @@ func RunCompat(ctx context.Context, o CompatOptions) (compat.Report, error) {
 		return compat.Report{}, err
 	}
 
-	h := &compatHarness{getenv: getenv, log: o.Log}
+	h := &compatHarness{getenv: getenv, log: o.Log, settleAge: compatSettleAge}
 	// Teardown is deferred as soon as the harness exists, so a panic anywhere
 	// below still removes the private server; it is also called explicitly
 	// before the report is built so that a cleanup problem can be reported.
@@ -162,6 +162,11 @@ type compatHarness struct {
 	world    *compatWorld
 	tearOnce sync.Once
 	tearErrs []error
+
+	// settleAge is how long teardown lets a launched session live before
+	// stopping it (compatSettleAge in a real run). A test that drives a
+	// synthetic runtime, which has no such bookkeeping, leaves it zero.
+	settleAge time.Duration
 }
 
 func (h *compatHarness) logf(format string, a ...any) {

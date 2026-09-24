@@ -603,3 +603,58 @@ func TestWatchdogRemovesOnlyMarkedPaths(t *testing.T) {
 		t.Errorf("the watchdog removed a path that is not marked as ours: %v", err)
 	}
 }
+
+// A session killed while young leaves a failed-start record in the runtime's
+// machine-wide state, and enough of those change how every real session on the
+// machine renders. Teardown therefore waits for the youngest session to reach a
+// safe age — and only for that long, and only when it has to.
+func TestSettleLaunchesWaitsForYoungSessionsOnly(t *testing.T) {
+	ctx := context.Background()
+	elapsed := func(h *compatHarness, w *compatWorld, ctx context.Context) time.Duration {
+		start := time.Now()
+		h.settleLaunches(ctx, w)
+		return time.Since(start)
+	}
+	young := &compatWorld{created: []compatCreated{{label: "a", at: time.Now()}}}
+	old := &compatWorld{created: []compatCreated{{label: "a", at: time.Now().Add(-time.Hour)}}}
+
+	if d := elapsed(&compatHarness{settleAge: 400 * time.Millisecond}, young, ctx); d < 300*time.Millisecond {
+		t.Errorf("a session started just now was not waited for (%s)", d)
+	}
+	if d := elapsed(&compatHarness{settleAge: 400 * time.Millisecond}, old, ctx); d > 100*time.Millisecond {
+		t.Errorf("an old session made teardown wait %s", d)
+	}
+	if d := elapsed(&compatHarness{settleAge: 0}, young, ctx); d > 100*time.Millisecond {
+		t.Errorf("with the rule off, teardown waited %s", d)
+	}
+	if d := elapsed(&compatHarness{settleAge: 400 * time.Millisecond}, &compatWorld{}, ctx); d > 100*time.Millisecond {
+		t.Errorf("no sessions, and teardown waited %s", d)
+	}
+	// The wait is bounded by teardown's own deadline: a cleanup that hangs is
+	// worse than one that leaves a strike behind.
+	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if d := elapsed(&compatHarness{settleAge: time.Hour}, young, short); d > time.Second {
+		t.Errorf("the wait outlived the deadline (%s)", d)
+	}
+}
+
+// The youngest session decides: one old session does not excuse a young one.
+func TestSettleLaunchesUsesTheYoungestSession(t *testing.T) {
+	w := &compatWorld{created: []compatCreated{
+		{label: "old", at: time.Now().Add(-time.Hour)},
+		{label: "young", at: time.Now()},
+	}}
+	start := time.Now()
+	(&compatHarness{settleAge: 300 * time.Millisecond}).settleLaunches(context.Background(), w)
+	if time.Since(start) < 200*time.Millisecond {
+		t.Error("the young session was not waited for")
+	}
+}
+
+// The real run applies the rule; only a test with a synthetic runtime turns it off.
+func TestRunCompatEnablesTheSettlingRule(t *testing.T) {
+	if compatSettleAge < 12*time.Second {
+		t.Errorf("compatSettleAge = %s: the runtime clears a launch's record after about ten seconds, so anything much shorter still leaves a failed start behind", compatSettleAge)
+	}
+}

@@ -45,10 +45,33 @@ import (
 // survive), and the model turns spent.
 
 const (
-	compatKeeper       = "cfc-keep"
-	compatTeardownWait = 20 * time.Second
+	compatKeeper = "cfc-keep"
+	// compatTeardownWait bounds the whole teardown, including the settling
+	// wait below.
+	compatTeardownWait = 45 * time.Second
 	compatPaneCols     = 120
 	compatPaneRows     = 40
+
+	// compatSettleAge is how long a launched candidate must have been alive
+	// before it is killed.
+	//
+	// # Why a run must not kill a young session
+	//
+	// The runtime records each launch in a machine-wide state file and clears the
+	// record once the launch has been alive for about ten seconds, which also
+	// clears the count of failed launches. A launch that dies sooner is counted as
+	// a failed start by the NEXT launch, and enough of those switch the runtime's
+	// fullscreen renderer off for that version on the whole machine — measured,
+	// not assumed: the record appeared one second after a session started and was
+	// cleared, together with the strike count, at eleven. A compat run that killed
+	// short-lived sessions could therefore change how every real session on the
+	// machine renders, silently and durably.
+	//
+	// So teardown lets every session it started reach this age first. It is judged
+	// by age, not by reading the runtime's private state, so it does not depend on
+	// a key name that may change; the margin covers a slow boot. A full run lasts
+	// minutes and never waits; only a run that ends within seconds of a boot does.
+	compatSettleAge = 15 * time.Second
 )
 
 // compatStore is where the runtime keeps what the checks read back. It is the
@@ -118,6 +141,7 @@ type compatCreated struct {
 	label string
 	ref   fleet.SessionRef
 	cwd   string
+	at    time.Time // when the launch was requested
 }
 
 var compatRequest = fleet.Request{Caller: fleet.Caller{Principal: "compat"}}
@@ -362,7 +386,7 @@ func (w *compatWorld) create(ctx context.Context, label, dirRole string, mutate 
 	if err != nil {
 		return fleet.SessionRef{}, err
 	}
-	w.created = append(w.created, compatCreated{label: label, ref: sess.SessionRef, cwd: cwd})
+	w.created = append(w.created, compatCreated{label: label, ref: sess.SessionRef, cwd: cwd, at: time.Now()})
 	return sess.SessionRef, nil
 }
 
@@ -416,6 +440,8 @@ func (h *compatHarness) teardown() {
 		for _, s := range stragglers {
 			pids = append(pids, s.PID)
 		}
+
+		h.settleLaunches(ctx, w)
 
 		if _, err := os.Stat(w.mux); err == nil {
 			if out, err := w.tmux(ctx, "kill-server"); err != nil && !strings.Contains(out, "no server running") &&
@@ -540,4 +566,30 @@ func (d *Driver) processIdentityOfPID(ctx context.Context, pid int) (ProcessIden
 		return ProcessIdentity{}, err
 	}
 	return ProcessIdentity{PID: pid, StartedAt: started}, nil
+}
+
+// settleLaunches waits until the youngest session this run started is old
+// enough to be killed without leaving a failed-start record behind (see
+// compatSettleAge). It waits only when it has to, and never past the teardown's
+// own deadline: a cleanup that hangs is worse than one that leaves a strike.
+func (h *compatHarness) settleLaunches(ctx context.Context, w *compatWorld) {
+	if h.settleAge <= 0 || len(w.created) == 0 {
+		return
+	}
+	var youngest time.Time
+	for _, c := range w.created {
+		if c.at.After(youngest) {
+			youngest = c.at
+		}
+	}
+	wait := h.settleAge - time.Since(youngest)
+	if wait <= 0 {
+		return
+	}
+	h.logf("teardown: waiting %s for the youngest session to reach a safe age before it is stopped",
+		wait.Round(100*time.Millisecond))
+	select {
+	case <-time.After(wait):
+	case <-ctx.Done():
+	}
 }

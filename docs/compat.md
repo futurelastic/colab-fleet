@@ -96,12 +96,33 @@ On failure, on a panic, and on `SIGINT`, `SIGTERM` or `SIGHUP`, on its own deadl
 removed, the throwaway transcript directories and per-process records deleted, any
 straggling process ended (only after its pid *and* start time are verified
 unchanged, so a recycled pid is never touched), and the scratch directory removed.
+Before it stops a session, teardown lets the youngest one reach an age of fifteen
+seconds — see [A session must not be killed young](#a-session-must-not-be-killed-young).
 Every step is attempted, and every failure is reported: the report is still printed,
 the problems go to stderr, and the exit code is `2`. Every deletion is guarded by
 the run's own nonce, so a path that does not carry it is never removed. For the one
 case teardown cannot cover — the process being killed outright with `SIGKILL` — the
 keeper session runs a small watchdog that waits for the process to disappear and then
 removes what it left.
+
+### A session must not be killed young
+
+The runtime records every launch in a machine-wide state file and clears the record
+once the launch has been alive for about ten seconds, which also clears the count of
+failed launches. A launch that dies sooner is counted as a **failed start** by the
+next launch, and enough of those switch the runtime's fullscreen renderer off for that
+version on the whole machine. That was measured, not inferred: the record appeared one
+second after a session started and was cleared, together with the count, at eleven.
+
+A compat run that stopped short-lived sessions could therefore change how every real
+session on the machine renders, silently and durably. So teardown lets every session
+it started reach fifteen seconds of age before stopping it. It judges by age, not by
+reading the runtime's private state, so it does not depend on a key name that may
+change. A full run lasts minutes and never waits; only a run that ends within seconds
+of a boot does, and only for as long as it has to. The one case this cannot cover is
+the process being killed outright (`SIGKILL`), which the watchdog handles without the
+courtesy of waiting — at worst one failed start is left behind, which the next
+healthy launch clears.
 
 ### What a run does leave
 
