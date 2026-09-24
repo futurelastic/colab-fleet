@@ -28,7 +28,45 @@ jobs:
           sudo mv gitleaks /usr/local/bin/gitleaks
           rm -f gitleaks.tar.gz
       - name: gitleaks detect
-        run: gitleaks detect --source . --no-banner
+        env:
+          # Passed through env, never interpolated into the script below: on a
+          # public repository a branch name is attacker-controlled input.
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          TRUNK: ${{ github.event.repository.default_branch }}
+        run: |
+          # A run answers for what triggered it, not for every ref that happens
+          # to be on the remote. `fetch-depth: 0` fetches every branch, and a
+          # bare `gitleaks detect` walks `git log --all` — so trunk's verdict
+          # used to depend on whatever unmerged branches were pushed at that
+          # moment, and a fixture on one of them turned trunk red on an
+          # unrelated commit.
+          #
+          #   push to trunk       -> trunk's own history (everything HEAD reaches)
+          #   anything else       -> only the commits this ref adds over trunk
+          #                          (a pull request's own commits)
+          #
+          # Widening `on.push.branches` later needs no change here: a branch
+          # push falls into the second case.
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "$TRUNK" ]; then
+            scope="HEAD"
+          else
+            scope="origin/${TRUNK}..HEAD"
+          fi
+
+          # Resolve the scope ourselves before handing it over. gitleaks does
+          # NOT fail on a scope it cannot resolve: given a revision git rejects
+          # it logs an error, scans 0 commits and exits 0 with "no leaks found"
+          # (measured, 8.30.1). A scan that quietly looks at nothing is a green
+          # gate over an unread tree, so the failure has to happen here.
+          # See docs/gotchas.d/197-gitleaks-unresolvable-scope-exits-zero.md
+          count="$(git rev-list --count "$scope")" || {
+            echo "::error::cannot resolve the scan scope '${scope}' — refusing to scan nothing"
+            exit 1
+          }
+          echo "gitleaks scope: git log ${scope} (${count} commits)"
+
+          gitleaks detect --source . --no-banner --log-opts="$scope"
 
   go:
     name: Build, vet and test
