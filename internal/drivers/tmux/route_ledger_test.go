@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -22,9 +23,17 @@ import (
 // so the send ends unknown with a ledger entry.
 func unconfirmedRig(t *testing.T, extra ...Option) (*Driver, *fakeMux, *inboxReceiver) {
 	t.Helper()
+	return unconfirmedRigFrom(t, nil, extra...)
+}
+
+// unconfirmedRigFrom is unconfirmedRig with the first send carrying `from`.
+func unconfirmedRigFrom(t *testing.T, from *fleet.MessageFrom, extra ...Option) (*Driver, *fakeMux, *inboxReceiver) {
+	t.Helper()
 	rcv := newInboxReceiver(t)
 	d, f := newRoutedDriver(t, rcv, attestableResolver(inboxclient.ModeBypass), rcv.dialer(receiverSilent), extra...)
-	first, err := d.Send(context.Background(), testCaller, alphaRef, "hello", routeOpts(fleet.RouteAuto))
+	opts := routeOpts(fleet.RouteAuto)
+	opts.From = from
+	first, err := d.Send(context.Background(), testCaller, alphaRef, "hello", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +108,153 @@ func TestLedger_DifferentTextOrSender_NotBlocked(t *testing.T) {
 	}
 	if n := deliveries(rcv, f); n != 3 {
 		t.Fatalf("%d deliveries after the same text from another sender, want 3", n)
+	}
+}
+
+// #191: the machine a request entered through is where it arrived, not who sent
+// it, and a caller that fails over to the peer changes it while everything else
+// stays the same. The retry must meet the entry the first send left.
+func TestLedger_RetryThroughAnotherMachine_IsHeld(t *testing.T) {
+	first := &fleet.MessageFrom{Agent: "planner", Session: "s-1", Machine: "machine-a"}
+	d, f, rcv := unconfirmedRigFrom(t, first)
+
+	for _, tc := range []struct {
+		name string
+		opts driver.SendOptions
+	}{
+		{"a fresh auto send", routeOpts(fleet.RouteAuto)},
+		{"a resumeIfStranded retry", driver.SendOptions{Submit: true, ResumeIfStranded: true}},
+		{"a forced terminal send", routeOpts(fleet.RouteTerminal)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			retry := tc.opts
+			retry.From = &fleet.MessageFrom{Agent: "planner", Session: "s-1", Machine: "machine-b"}
+			got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", retry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Outcome != fleet.OutcomeUnknown || !strings.Contains(got.Reason, "NOT been sent again") {
+				t.Fatalf("retry through the other machine = %+v, want the earlier send's unknown", got)
+			}
+			if n := deliveries(rcv, f); n != 1 {
+				t.Fatalf("%d deliveries after a retry through the other machine, want still 1", n)
+			}
+		})
+	}
+	if d.Counters()[counterRouteGuardInboxUnconfirmed] != 3 {
+		t.Errorf("route.guard.inbox_unconfirmed = %d, want 3", d.Counters()[counterRouteGuardInboxUnconfirmed])
+	}
+}
+
+// The other half of #191: leaving the machine out must not make different
+// senders one. A different agent or session is a different message; and a
+// message that named nothing, labelled by the service with only its machine, is
+// not the same as an unlabelled one — a human relay's words go to the terminal
+// with no label, and an anonymous peer's identical text must not hold them.
+func TestLedger_SenderIdentityStillSeparatesMessages(t *testing.T) {
+	anonymous := &fleet.MessageFrom{Machine: "machine-a"}
+	d, f, rcv := unconfirmedRigFrom(t, anonymous)
+
+	// The same anonymous sender through the other machine: held.
+	retry := routeOpts(fleet.RouteAuto)
+	retry.From = &fleet.MessageFrom{Machine: "machine-b"}
+	got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", retry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Reason, "NOT been sent again") {
+		t.Fatalf("an anonymous retry through the other machine was not held: %+v", got)
+	}
+	if n := deliveries(rcv, f); n != 1 {
+		t.Fatalf("%d deliveries after the anonymous retry, want 1", n)
+	}
+
+	// An unlabelled send (a human relay: no `from`, terminal): not held.
+	got, err = d.Send(context.Background(), testCaller, alphaRef, "hello", routeOpts(fleet.RouteTerminal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got.Reason, "NOT been sent again") {
+		t.Fatalf("an unlabelled send was held for an anonymous peer's identical text: %+v", got)
+	}
+	if n := deliveries(rcv, f); n != 2 {
+		t.Fatalf("%d deliveries after the unlabelled send, want 2", n)
+	}
+
+	// A named sender: not held either.
+	named := routeOpts(fleet.RouteTerminal)
+	named.From = &fleet.MessageFrom{Agent: "planner", Machine: "machine-b"}
+	got, err = d.Send(context.Background(), testCaller, alphaRef, "hello", named)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got.Reason, "NOT been sent again") {
+		t.Fatalf("a named sender was held for an anonymous peer's identical text: %+v", got)
+	}
+}
+
+// deliveryKey, unit-sized: what is in the key and what is not.
+func TestDeliveryKey(t *testing.T) {
+	from := func(agent, session string, machine fleet.MachineId, relay bool) *fleet.MessageFrom {
+		return &fleet.MessageFrom{Agent: agent, Session: session, Machine: machine, RelayOfHuman: relay}
+	}
+	base := deliveryKey("hello", from("planner", "s-1", "machine-a", false))
+
+	for _, tc := range []struct {
+		name string
+		key  string
+		same bool
+	}{
+		{"the same sender entering through another machine", deliveryKey("hello", from("planner", "s-1", "machine-b", false)), true},
+		{"the same sender with no machine stamped", deliveryKey("hello", from("planner", "s-1", "", false)), true},
+		{"a different agent", deliveryKey("hello", from("reviewer", "s-1", "machine-a", false)), false},
+		{"a different session", deliveryKey("hello", from("planner", "s-2", "machine-a", false)), false},
+		{"different text", deliveryKey("goodbye", from("planner", "s-1", "machine-a", false)), false},
+		{"a human-relay declaration", deliveryKey("hello", from("planner", "s-1", "machine-a", true)), false},
+		{"no sender at all", deliveryKey("hello", nil), false},
+	} {
+		if got := tc.key == base; got != tc.same {
+			t.Errorf("%s: key equal = %v, want %v", tc.name, got, tc.same)
+		}
+	}
+
+	anon := deliveryKey("hello", from("", "", "machine-a", false))
+	if anon != deliveryKey("hello", from("", "", "machine-b", false)) {
+		t.Error("an anonymous sender through two machines should be one delivery")
+	}
+	if anon == deliveryKey("hello", nil) {
+		t.Error("an anonymous labelled sender must not equal an unlabelled one")
+	}
+	if deliveryKey("hello", &fleet.MessageFrom{}) != deliveryKey("hello", nil) {
+		t.Error("a `from` that renders no label is unlabelled, and should key like nil")
+	}
+}
+
+// The ledger holds unconfirmedPerSession entries for a session (ADR 184, The
+// cross-path ledger): one more distinct unconfirmed message evicts the oldest,
+// and a retry of the evicted one is no longer held. That is a known limit, pinned
+// here so a change to it is a decision rather than an accident.
+func TestLedger_BoundEvictsTheOldest(t *testing.T) {
+	rcv := newInboxReceiver(t)
+	d, _ := newRoutedDriver(t, rcv, attestableResolver(inboxclient.ModeBypass), rcv.dialer(receiverSilent))
+
+	total := unconfirmedPerSession + 1
+	for i := 0; i < total; i++ {
+		got, err := d.Send(context.Background(), testCaller, alphaRef, fmt.Sprintf("message %d", i), routeOpts(fleet.RouteAuto))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Outcome != fleet.OutcomeUnknown || got.RouteOf() != fleet.RouteInbox {
+			t.Fatalf("message %d = %+v, want unknown on the inbox", i, got)
+		}
+	}
+	if _, held := d.unconfirmedFor("alpha💬", deliveryKey("message 0", nil)); held {
+		t.Errorf("the oldest of %d unconfirmed messages is still held; the bound is %d", total, unconfirmedPerSession)
+	}
+	for i := 1; i < total; i++ {
+		if _, held := d.unconfirmedFor("alpha💬", deliveryKey(fmt.Sprintf("message %d", i), nil)); !held {
+			t.Errorf("message %d fell out of the ledger before the bound of %d was exceeded", i, unconfirmedPerSession)
+		}
 	}
 }
 
