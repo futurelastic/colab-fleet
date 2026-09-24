@@ -89,6 +89,11 @@ var specFieldTypes = map[string]any{
 	"RuntimeSurfaceRef":  RuntimeSurfaceRef{},
 	"IdentityAssertion":  IdentityAssertion{},
 	"PeerStanding":       PeerStanding{},
+
+	// #185: the optional external delivery module surface.
+	"DeliveryPath":         DeliveryPath{},
+	"DeliveryLane":         DeliveryLane{},
+	"DeliveryModuleStatus": DeliveryModuleStatus{},
 }
 
 // specFieldExceptions records a Go field that a normative type block

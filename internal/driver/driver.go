@@ -158,6 +158,17 @@ type SendOptions struct {
 	// Like ResumeIfStranded, this has no effect on a remote driver unless that
 	// driver's hand-built body forwards it (#33).
 	Route fleet.Route
+
+	// TerminalFromAuto says the service turned this call's `auto` into
+	// fleet.RouteTerminal because the caller is a human relay (#184), rather
+	// than the caller having asked for the terminal path by name (#185). The
+	// two differ for exactly one reason: a delivery module carries the user's
+	// own turn just as the terminal path does, so a human relay's `auto` may
+	// use a live module lane, while an EXPLICIT `terminal` never does. Set by
+	// the service, never by a caller's body, and never forwarded to a peer —
+	// the machine that owns the session re-derives it from its own principal
+	// table, and a peer built earlier would not know the field.
+	TerminalFromAuto bool
 }
 
 // SenderLabel renders from as "agent · session · machine", skipping empty
@@ -612,4 +623,19 @@ type PeerStandingReporter interface {
 // what GET /v1/machines?verify=1 asks for, instead of the cached cycle.
 type CapabilityRefresher interface {
 	RefreshCapabilities(ctx context.Context, req fleet.Request) error
+}
+
+// ReservedEnvPrefixReporter is the prefix form of ReservedEnvReporter (#185): a
+// driver whose delivery module reserves every environment name beginning with
+// some prefix, not one exact name. A module states its prefixes in its own
+// handshake, so a machine cannot list them ahead of time the way #180's exact
+// names are listed.
+//
+// The rule it feeds is the same one ReservedEnvReporter feeds: session create
+// refuses caller-supplied env naming a reserved variable, and a configured
+// per-machine session env naming one is dropped at launch. It must hold
+// whether or not the module that declared the prefix is currently running, so
+// an implementation answers from what it last recorded, not from a live probe.
+type ReservedEnvPrefixReporter interface {
+	ReservedEnvPrefixes() []string
 }

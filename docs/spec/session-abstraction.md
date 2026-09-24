@@ -396,7 +396,8 @@ DeliveryReceipt {
 }
 
 DeliveryPath {
-  route : "terminal" | "inbox"
+  route   : "terminal" | "inbox" | "module"
+  module? : string          // the delivery module that carried it; present exactly when route is "module"
 }
 ```
 
@@ -1063,6 +1064,43 @@ closes. The operational need is met elsewhere, outside this wire contract. A
 field added to a published contract later is additive; retracting one is not
 — so the narrower shape is the one that ships.
 
+### 2.15 DeliveryLane
+
+Which delivery lane a session's input takes, when an optional external delivery
+module is configured on the machine that owns the session (colab-fleet #185).
+Optional on `Session` as `delivery`.
+
+```
+DeliveryLane {
+  lane            : string    // the module's name while its lane is live, else "terminal"
+  clientConnected : boolean   // a module holds a live channel to this session's agent process
+  evidence        : string    // prose for humans: what the answer rests on — do not parse
+  since           : Timestamp // when `lane` last changed value
+}
+
+DeliveryModuleStatus {
+  name      : string          // the module's name; also the value a caller writes in `route` to force it
+  status    : "starting" | "available" | "unavailable" | "disabled"
+  reason?   : string          // why status is not "available"
+  protocol? : number          // what the module reported in its handshake
+  version?  : string
+  platform? : string
+  peerCheck?: boolean         // the module can verify who is on the other end of its channel
+  lanes?    : { [state: string]: number }   // sessions by lane state
+}
+```
+
+**Absent is not `terminal`.** The `delivery` field is absent when nothing is
+configured or nothing has been probed for this session: a machine with no module
+enabled, a session this machine did not launch itself, or a peer built before the
+field existed. A consumer reads absent as "not stated". This is the rule
+`DeliveryReceipt.delivery` and `Session.attach` already follow (§5.7).
+
+**A module that cannot check its peer is not live.** A module that reports
+`peerCheck: false` is treated as not live for every session, and sends fall back
+to the built-in path. Nothing is delivered over a channel whose far end the
+module cannot verify.
+
 ---
 
 ## 3. Operations
@@ -1279,6 +1317,7 @@ DriverCapabilities {
   supportsResume  : boolean   // sessions survive a service restart
   deliversToInbox : boolean   // has an inbox delivery path wired for at least some targets
   supportsPin     : { model: boolean, effort: boolean, agent: boolean }
+  deliveryModules? : DeliveryModuleStatus[]   // optional external delivery modules enabled here (§2.15); absent = none
   deadlineMs      : number    // declared upper bound on any single call
   source          : "observed" | "assumed"
   observedAt?     : Timestamp | null
