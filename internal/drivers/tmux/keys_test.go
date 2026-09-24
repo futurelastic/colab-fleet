@@ -428,3 +428,187 @@ func TestKeysAndStateReadAgreeOnEveryReadOfOneScreen(t *testing.T) {
 		})
 	}
 }
+
+// idleMux is a session at an idle, EMPTY composer with no dialog on screen —
+// the state BTab exists for, and the one the arrow-key guard (#180 L7) refuses
+// every move key in. keyRepaint models the runtime rewriting its mode indicator
+// under the key, which is what a real Shift+Tab does to the footer.
+func idleMux() *fakeMux {
+	f := twoSessions()
+	f.keyRepaint = map[string]bool{"%1": true}
+	return f
+}
+
+// sendKeyCalls returns the key names of every send-keys the driver made, in
+// order, so an assertion is about what reached the multiplexer and not about
+// what the driver said it did.
+func sendKeyCalls(f *fakeMux) [][]string {
+	var out [][]string
+	for _, c := range f.callsSnapshot() {
+		if len(c) > 0 && c[0] == "send-keys" {
+			out = append(out, sentKeys(c))
+		}
+	}
+	return out
+}
+
+// #188: BTab is delivered to an idle, empty composer, spelled as the
+// multiplexer spells it, and confirmed by the footer repainting. This is the
+// test that separates BTab from the arrows: TestKeysRefusesArrowsOnAnEmptyComposer
+// refuses every one of them on this exact screen, and BTab's whole use is here.
+func TestKeysDeliversBTabToAnIdleEmptyComposer(t *testing.T) {
+	f := idleMux()
+	d := newTestDriver(f)
+	want := digestOf(t, d, "alpha💬")
+
+	got, err := d.Keys(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.KeyBTab, want)
+	if err != nil {
+		t.Fatalf("Keys(BTab): %v", err)
+	}
+	if got.Outcome != fleet.OutcomeSubmitted {
+		t.Fatalf("outcome = %q (%s); BTab on an idle composer must be delivered and "+
+			"confirmed by the repaint — the arrow-key guard must not catch it", got.Outcome, got.Reason)
+	}
+	sent := sendKeyCalls(f)
+	if len(sent) != 1 || len(sent[0]) != 1 || sent[0][0] != "BTab" {
+		t.Errorf("multiplexer saw %v; want exactly one send-keys of the literal name BTab", sent)
+	}
+}
+
+// The counterpart to the test above, so the pair proves the guard is keyed on
+// the KEY and not simply switched off for this screen: an arrow on the very
+// same idle composer is still refused, and a BTab is still delivered.
+func TestKeysBTabIsExemptFromTheArrowGuardAndArrowsAreNot(t *testing.T) {
+	f := idleMux()
+	d := newTestDriver(f)
+	want := digestOf(t, d, "alpha💬")
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+
+	arrow, err := d.Keys(context.Background(), testCaller, ref, fleet.KeyLeft, want)
+	if err != nil {
+		t.Fatalf("Keys(Left): %v", err)
+	}
+	if arrow.Outcome != fleet.OutcomeRefused || !strings.Contains(arrow.Reason, "arrow") {
+		t.Fatalf("Left on an idle composer = %s (%s); the arrow guard must still hold", arrow.Outcome, arrow.Reason)
+	}
+	if n := len(sendKeyCalls(f)); n != 0 {
+		t.Fatalf("a refused arrow still reached the multiplexer (%d send-keys)", n)
+	}
+
+	btab, err := d.Keys(context.Background(), testCaller, ref, fleet.KeyBTab, want)
+	if err != nil {
+		t.Fatalf("Keys(BTab): %v", err)
+	}
+	if btab.Outcome != fleet.OutcomeSubmitted {
+		t.Fatalf("BTab on the same screen = %s (%s); want submitted", btab.Outcome, btab.Reason)
+	}
+}
+
+// Every refusal that protects the other keys protects BTab too. Each case is a
+// screen on which a key must not be delivered, and each is checked against the
+// multiplexer's own call log — a driver that said "refused" and pressed anyway
+// would pass a test that only read the receipt.
+func TestKeysBTabIsRefusedWhereEveryOtherKeyIs(t *testing.T) {
+	cases := []struct {
+		name    string
+		screen  string
+		digest  func(*testing.T, *Driver) string
+		mention string
+	}{
+		{"composer holds unsent text", fixtureUnsent,
+			func(t *testing.T, d *Driver) string { return composerDigestOf(t, d, "alpha💬") }, "unsent text"},
+		{"a prompt respond can answer", fixtureMenu,
+			func(t *testing.T, d *Driver) string { return digestOf(t, d, "alpha💬") }, "respond"},
+		{"a composer taller than the capture window", clippedComposerFixture(),
+			func(t *testing.T, d *Driver) string { return digestOf(t, d, "alpha💬") }, "capture window"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := idleMux()
+			f.captures["%1"] = tc.screen
+			d := newTestDriver(f)
+			want := tc.digest(t, d)
+
+			got, err := d.Keys(context.Background(), testCaller,
+				fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.KeyBTab, want)
+			if err != nil {
+				t.Fatalf("Keys(BTab): %v", err)
+			}
+			if got.Outcome != fleet.OutcomeRefused || !strings.Contains(got.Reason, tc.mention) {
+				t.Fatalf("outcome = %s (%s); want refused naming %q", got.Outcome, got.Reason, tc.mention)
+			}
+			if sent := sendKeyCalls(f); len(sent) != 0 {
+				t.Errorf("a refused BTab reached the multiplexer: %v", sent)
+			}
+		})
+	}
+}
+
+// BTab changes what an unattended agent may do, so a caller who has not read
+// the screen — or read a screen that has since moved — must not be able to
+// press it. Both are refusals with no key sent.
+func TestKeysBTabNeedsACurrentDigest(t *testing.T) {
+	f := idleMux()
+	d := newTestDriver(f)
+	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
+
+	if _, err := d.Keys(context.Background(), testCaller, ref, fleet.KeyBTab, ""); err == nil {
+		t.Error("BTab with no digest at all must be refused")
+	}
+	if _, err := d.Keys(context.Background(), testCaller, ref, fleet.KeyBTab, "a-digest-from-some-other-screen"); err == nil {
+		t.Error("BTab against a digest from another screen must be refused")
+	}
+	if sent := sendKeyCalls(f); len(sent) != 0 {
+		t.Errorf("an uncorroborated BTab reached the multiplexer: %v", sent)
+	}
+}
+
+// A footer that did not repaint is reported unknown, never submitted, exactly
+// as for every other key. For BTab this is the sentence a mode-changing client
+// most needs to be true: `submitted` means the screen changed and nothing more,
+// so `unknown` must stay available for the press the runtime swallowed.
+func TestKeysBTabReportsUnknownWhenTheScreenDoesNotMove(t *testing.T) {
+	f := idleMux()
+	f.keyRepaint = nil
+	d := newTestDriver(f)
+	want := digestOf(t, d, "alpha💬")
+
+	got, err := d.Keys(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.KeyBTab, want)
+	if err != nil {
+		t.Fatalf("Keys(BTab): %v", err)
+	}
+	if got.Outcome != fleet.OutcomeUnknown {
+		t.Errorf("outcome = %q (%s); an unchanged screen confirms nothing", got.Outcome, got.Reason)
+	}
+}
+
+// BTab is NOT Escape: it is not the escape hatch, so it queues behind the
+// composer lock like every other key and refuses fast when the caller's
+// deadline runs out, instead of being waved through because it sits next to a
+// key that is. (The Escape exemption exists for one reason, stated in Keys.)
+func TestKeysBTabWaitsBehindTheComposerLockLikeAnyOtherKey(t *testing.T) {
+	f := idleMux()
+	d := newTestDriver(f)
+	want := digestOf(t, d, "alpha💬")
+
+	unlock, ok := d.lockComposerOpsCtx(context.Background(), "alpha💬")
+	if !ok {
+		t.Fatal("setup: could not acquire the composer lock")
+	}
+	defer unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	got, err := d.Keys(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, fleet.KeyBTab, want)
+	if err != nil {
+		t.Fatalf("Keys(BTab): %v", err)
+	}
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %q (%s); BTab must not skip the lock the way Escape does", got.Outcome, got.Reason)
+	}
+	if sent := sendKeyCalls(f); len(sent) != 0 {
+		t.Errorf("a BTab that lost the lock still reached the multiplexer: %v", sent)
+	}
+}

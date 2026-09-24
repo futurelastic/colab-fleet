@@ -82,7 +82,10 @@ order of this page and the order of its output are the same.
    the same principal name, with the same grants, on every machine** — a
    machine added later with a differently named principal lacking one grant
    is exactly the drift nothing else surfaces. `keys` is its own grant and is
-   denied by default (#68); `relay` is only needed where peers exist.
+   denied by default (#68), and it is the grant that can **escalate** a session —
+   it delivers `BTab`, which cycles the permission mode (#188) — so give it to a
+   principal you would trust to loosen any session it can reach; `relay` is only
+   needed where peers exist.
    Rows: `config.load`, `token.source`, `principals.supervisor`,
    `principals.relay`, `local.mutations`.
 

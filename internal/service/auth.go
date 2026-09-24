@@ -78,6 +78,16 @@ const (
 	// and §6 makes grants per verb so that a distinct power can be withheld on
 	// its own.
 	//
+	// ⚠️ This grant is also the one that lets a caller ESCALATE a session
+	// (colab-fleet #188, ruled option A). The vocabulary includes BTab
+	// (Shift+Tab), which cycles the runtime's permission mode — toward
+	// accept-edits or auto, which widen what the agent may do unattended, as
+	// readily as toward plan. There is deliberately no grant of its own for
+	// that, and none that separates escalating from de-escalating: any
+	// principal holding `keys` can move any session it can reach into a looser
+	// mode. Granting `keys` is therefore granting that, and an operator should
+	// read it so.
+	//
 	// Absent means denied, like every other grant, so no existing principal
 	// gains this by upgrading.
 	GrantKeys Grant = "keys"

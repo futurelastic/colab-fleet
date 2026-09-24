@@ -654,7 +654,9 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		if pane != "" && f.keyRepaint[pane] {
 			for _, a := range args {
 				switch a {
-				case "Up", "Down", "Left", "Right", "Escape", "C-m":
+				case "Up", "Down", "Left", "Right", "Escape", "C-m", "BTab":
+					// BTab repaints too: on an idle composer it rewrites the
+					// mode indicator in the footer (#188).
 					f.captures[pane] += "\n  selection moved by " + a
 				}
 			}

@@ -143,6 +143,7 @@ evidence, not on taste.
 | A remote peer is just another driver | proven — spec §4.2 |
 | Go, and zero dependencies | below |
 | Delivery goes through a module seam; the draft rule; terminal path v2 | [ADR 180](adr/180-delivery-module-and-terminal-path-v2.md) |
+| `BTab` (Shift+Tab) is a `keys` key under the `keys` grant, so `keys` can escalate a session | [ADR 188](adr/188-btab-rides-the-keys-grant.md) |
 
 **Go, zero dependencies.** Chosen at zero lines of code, on the reasoning that
 language cost is lowest at the start and compounds afterwards. A static binary

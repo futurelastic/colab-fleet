@@ -60,6 +60,16 @@ const (
 // other. `Enter` is sent as C-m for the reason measured elsewhere in this
 // driver: a prompt that swallows Enter leaves the session blocked, and C-m is
 // what actually lands.
+//
+// `BTab` (#188) is the multiplexer's own name for Shift+Tab, and it is the one
+// entry here that is not a dialog key: it cycles the runtime's permission mode
+// from an IDLE composer. It rides every check Keys already makes — digest,
+// recognised-prompt refusal, unsent-text refusal, composer lock, and the
+// confirm-by-repaint — and is deliberately NOT caught by the arrow-key guard
+// below, which exists to keep a move key off an idle composer while BTab's
+// whole use is an idle composer. It is not a mode setter: this driver does not
+// read the mode indicator, so `submitted` says the screen repainted under the
+// key and nothing about which mode the session is now in.
 var tmuxKey = map[fleet.KeyName]string{
 	fleet.KeyUp:     "Up",
 	fleet.KeyDown:   "Down",
@@ -67,6 +77,7 @@ var tmuxKey = map[fleet.KeyName]string{
 	fleet.KeyRight:  "Right",
 	fleet.KeyEnter:  "C-m",
 	fleet.KeyEscape: "Escape",
+	fleet.KeyBTab:   "BTab",
 }
 
 // Keys delivers one raw key event to a session's screen (driver.KeySender).

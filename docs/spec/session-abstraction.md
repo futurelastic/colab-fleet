@@ -1091,8 +1091,9 @@ carries `labels`, `{}` when there are none; one read from a service that predate
 such key, and that absence is how a relaying service tells the two apart.
 
 **`keys` delivers one raw key event** — `Up`/`Down`/`Left`/`Right`/`Enter`/
-`Escape` (api-http.md §3.3, `POST …/keys`) — to the full-screen dialogs
-`respond` cannot answer, corroborated by `SessionState.screenDigest` (§2.3)
+`Escape`, and `BTab` (Shift+Tab, which cycles the runtime's permission mode and
+is not a dialog key; ADR 188) (api-http.md §3.3, `POST …/keys`) — to the
+full-screen dialogs `respond` cannot answer, corroborated by `SessionState.screenDigest` (§2.3)
 the same way `discard` corroborates against `composerDigest`. A driver
 declares whether it can do this at all through
 `DriverCapabilities.deliversRawKeys` (§4.3); one that lacks a screen to

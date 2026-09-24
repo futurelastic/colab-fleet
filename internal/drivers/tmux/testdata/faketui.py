@@ -16,13 +16,21 @@ FAKE_NO_BRACKET=1 never asks the terminal for bracketed paste (no ESC[?2004h).
 FAKE_PLACEHOLDER=1 paints a DIM (SGR 2) placeholder in an empty composer, the way
 the real runtime does, which the driver must read as an empty composer.
 FAKE_PLACEHOLDER=plain paints the same placeholder WITHOUT dim, which the driver
-must (and can only) read as typed text."""
+must (and can only) read as typed text.
+
+FAKE_MODES=1 (#188) models the permission-mode footer: Shift+Tab (ESC[Z) cycles
+default -> accept edits -> plan -> auto and repaints the footer line, the way the
+real runtime rewrites its mode indicator. Off by default, so no other test sees a
+different footer."""
 import os, sys, tty, termios, codecs, shutil
 SWALLOW = int(os.environ.get("FAKE_SWALLOW", "0"))
 LOG = os.environ.get("FAKE_LOG", "")
 GLYPH = os.environ.get("FAKE_GLYPH", "❯")
 NO_BRACKET = os.environ.get("FAKE_NO_BRACKET", "") == "1"
 PLACEHOLDER = os.environ.get("FAKE_PLACEHOLDER", "")
+MODES = os.environ.get("FAKE_MODES", "") == "1"
+MODE_NAMES = ["default", "accept edits on", "plan mode on", "auto mode on"]
+mode = 0
 transcript = ["fake tui ready (synthetic, not the real runtime)"]
 buf = ""
 pastes = {}
@@ -41,7 +49,10 @@ def render():
         dim_on, dim_off = ("\x1b[2m", "\x1b[0m") if PLACEHOLDER == "1" else ("", "")
         comp = [GLYPH + "\u00a0" + dim_on + 'Try "synthetic"' + dim_off]
     rule = "─" * cols
-    tail = [rule] + comp + [rule, "  ? for shortcuts"]
+    footer = "  ? for shortcuts"
+    if MODES and mode:
+        footer = "  \u23f5\u23f5 " + MODE_NAMES[mode] + " (shift+tab to cycle)"
+    tail = [rule] + comp + [rule, footer]
     room = lines - len(tail)
     head = transcript[-room:] if room > 0 else []
     frame = head + [""] * max(0, room - len(head)) + tail
@@ -62,7 +73,7 @@ def submit():
     buf = ""
 
 def main():
-    global buf, n_paste
+    global buf, n_paste, mode
     fd = 0
     old = termios.tcgetattr(fd)
     tty.setraw(fd)
@@ -99,6 +110,9 @@ def main():
                 if s.startswith("\x1b[200~", i):
                     in_paste = True; i += 6; continue
                 c = s[i]
+                if MODES and s.startswith("\x1b[Z", i):
+                    mode = (mode + 1) % len(MODE_NAMES)
+                    i += 3; continue
                 if c == "\x1b":
                     if len(s) - i < 6 and "\x1b[200~".startswith(s[i:]):
                         pending = s[i:]; break
