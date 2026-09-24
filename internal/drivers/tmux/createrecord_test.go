@@ -166,7 +166,12 @@ func TestPromptDeliveryAlwaysResolves(t *testing.T) {
 			t.Errorf("record = %+v (found=%v), want resolved unknown (still stranded after the retry)", rec, ok)
 		}
 		if !strings.Contains(rec.PromptEvidence, "unsent") {
-			t.Errorf("evidence = %q, does not say the text is sitting there unsent", rec.PromptEvidence)
+			t.Errorf("evidence = %q, does not say the text may be sitting there unsent", rec.PromptEvidence)
+		}
+		// #180 M1: and it says what the retry itself answered, rather than
+		// asserting a cause the retry never established.
+		if !strings.Contains(rec.PromptEvidence, "the retry answered refused") {
+			t.Errorf("evidence = %q, does not carry the retry's own answer", rec.PromptEvidence)
 		}
 	})
 

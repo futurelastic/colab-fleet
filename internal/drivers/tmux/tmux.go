@@ -2374,21 +2374,32 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 					}, nil
 				}
 			}
-			// Either no transcript could be resolved at strand time, or it
-			// did not show this text accepted within its own window. Refuse
-			// rather than silently falling through to a fresh paste of the
-			// same text below — that fresh paste IS the duplicate-delivery
-			// hazard this check exists to prevent. The record is kept.
-			d.counters.incr(counterResumeRefusedEmptyComposerUnconfirmed)
-			return fleet.DeliveryReceipt{
-				Outcome: fleet.OutcomeUnknown,
-				Reason: d.withRestartNoteReason(ref.ID, "resumeIfStranded was set for a delivery "+
-					"this driver stranded earlier, and the composer no longer holds it, but this "+
-					"driver could not confirm from its own transcript record that the runtime "+
-					"accepted it either — pasting it again here risks delivering a duplicate. "+
-					"The record is kept; drop resumeIfStranded to send fresh text instead if the "+
-					"intent really is a new delivery, or read the session first"),
-			}, nil
+			// #180 M1: a delivery whose paste never rendered and for which
+			// no Enter was ever pressed cannot have become a turn unless the
+			// transcript just checked says so, and it did not. Paste it
+			// again, through the ordinary path below — every check a fresh
+			// delivery makes (the foreground, the landed check, the last look
+			// before Enter) still applies.
+			if record.NeverRendered {
+				d.counters.incr(counterResumeRepastedNeverRendered)
+				tr.resumed = true
+			} else {
+				// Either no transcript could be resolved at strand time, or it
+				// did not show this text accepted within its own window. Refuse
+				// rather than silently falling through to a fresh paste of the
+				// same text below — that fresh paste IS the duplicate-delivery
+				// hazard this check exists to prevent. The record is kept.
+				d.counters.incr(counterResumeRefusedEmptyComposerUnconfirmed)
+				return fleet.DeliveryReceipt{
+					Outcome: fleet.OutcomeUnknown,
+					Reason: d.withRestartNoteReason(ref.ID, "resumeIfStranded was set for a delivery "+
+						"this driver stranded earlier, and the composer no longer holds it, but this "+
+						"driver could not confirm from its own transcript record that the runtime "+
+						"accepted it either — pasting it again here risks delivering a duplicate. "+
+						"The record is kept; drop resumeIfStranded to send fresh text instead if the "+
+						"intent really is a new delivery, or read the session first"),
+				}, nil
+			}
 		}
 	}
 
@@ -2811,7 +2822,10 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 		// whether the runtime accepted it in the meantime instead of
 		// re-pasting blind.
 		strandSrc, strandSrcOK := d.resolveTranscriptSource(ctx, ref, target)
-		d.noteStrandedWithTranscript(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), strandSrc, strandSrcOK)
+		// #180 M1: nothing rendered and no Enter was pressed — the one class
+		// a later resume may paste again when it finds the composer empty.
+		strandDigest := d.currentComposerDigest(ctx, target.paneID)
+		d.noteStrandedLanding(ref.ID, target.cwd, text, strandDigest, strandSrc, strandSrcOK, land, strandDigest == "")
 		if land.dialog {
 			return fleet.DeliveryReceipt{
 				Outcome: fleet.OutcomeUnknown,
@@ -2864,7 +2878,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// pressing Enter into a screen this driver has not looked at since
 	// resolveTranscriptSource's own list-panes/`ps`/file-read window opened.
 	if v := d.preSubmitCheck(ctx, target, text, landCheck{before: before}); v != preSubmitOK {
-		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land)
+		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land, false)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason:  d.withRestartNoteReason(ref.ID, preSubmitReason(v, false)),
@@ -2895,7 +2909,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	submitConfirmed, submitEvidence, submitSignal := d.confirmSubmittedFromSource(ctx, target, text, key, atCount, src, srcOK)
 	tr.confirmedBy = submitSignal
 	if !submitConfirmed {
-		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land)
+		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land, false)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
 			Reason: d.withRestartNoteReason(ref.ID, "the text landed and was attributed to "+
@@ -4847,9 +4861,20 @@ func (d *Driver) deliverInitialPrompt(ctx context.Context, req fleet.Request, re
 	// not be confirmed submitted after one retry; it is sitting there
 	// unsent, exactly as the log line above and d.stranded already record,
 	// now also readable from the create response without a log to grep.
+	// #180 M1: say what the retry actually found, not a guess. A retry can
+	// end unknown for more than one reason — the text sitting unsent is one,
+	// a transcript that could not confirm is another — and the old fixed
+	// sentence asserted the first whatever happened.
+	why := "the retry failed"
+	switch {
+	case err != nil:
+		why = "the retry failed: " + err.Error()
+	case retry.Reason != "":
+		why = "the retry answered " + string(retry.Outcome) + ": " + retry.Reason
+	}
 	d.notePromptDelivered(ref.ID, fleet.OutcomeUnknown,
-		"the text reached the composer and could not be confirmed submitted after one "+
-			"retry; it is sitting there unsent — see resumeIfStranded")
+		"the create-time prompt could not be confirmed delivered after one retry. The first "+
+			"attempt answered unknown: "+receipt.Reason+" — and "+why)
 }
 
 // consentableKinds maps each boot question a caller may consent to onto the
@@ -5479,6 +5504,14 @@ type strandedRecord struct {
 	PasteIndex  int  `json:"pasteIndex,omitempty"`
 	PasteLines  int  `json:"pasteLines,omitempty"`
 	PasteLanded bool `json:"pasteLanded,omitempty"`
+
+	// NeverRendered (#180 M1): the delivery stranded because nothing it
+	// pasted ever showed in the composer, and no Enter was pressed for it.
+	// Only this class may be pasted again by a resume that finds the
+	// composer empty: with no Enter, the runtime cannot have taken it as a
+	// turn unless its own transcript says so, and a resume checks that
+	// first.
+	NeverRendered bool `json:"neverRendered,omitempty"`
 }
 
 func (r strandedRecord) pasteKey() pasteKey {
@@ -5527,13 +5560,13 @@ func (d *Driver) noteStranded(id, cwd, text, composerDigest string) {
 // resolved at strand time) leaves TranscriptPath empty — the same honest
 // degrade every other caller of resolveTranscriptSource already makes.
 func (d *Driver) noteStrandedWithTranscript(id, cwd, text, composerDigest string, src transcriptSource, srcOK bool) {
-	d.noteStrandedLanding(id, cwd, text, composerDigest, src, srcOK, landing{})
+	d.noteStrandedLanding(id, cwd, text, composerDigest, src, srcOK, landing{}, false)
 }
 
 // noteStrandedLanding is noteStrandedWithTranscript plus how the text was
 // confirmed landed, when it was: a delivery attributed by its collapsed-paste
 // marker keeps that marker, so a resume can finish it (#180 H1).
-func (d *Driver) noteStrandedLanding(id, cwd, text, composerDigest string, src transcriptSource, srcOK bool, l landing) {
+func (d *Driver) noteStrandedLanding(id, cwd, text, composerDigest string, src transcriptSource, srcOK bool, l landing, neverRendered bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stranded == nil {
@@ -5546,6 +5579,7 @@ func (d *Driver) noteStrandedLanding(id, cwd, text, composerDigest string, src t
 	if l.ok && l.by == landedByMarker {
 		rec.PasteIndex, rec.PasteLines, rec.PasteLanded = l.key.index, l.key.lines, true
 	}
+	rec.NeverRendered = neverRendered
 	if srcOK {
 		rec.TranscriptPath = src.path
 		rec.TranscriptOffset = src.offset

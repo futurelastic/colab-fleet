@@ -351,6 +351,10 @@ const (
 	// disagreed/stayed silent). Per the same review fix, this refuses rather
 	// than silently pasting the same text again.
 	counterResumeRefusedEmptyComposerUnconfirmed = "resume.refused_empty_composer_unconfirmed"
+	// counterResumeRepastedNeverRendered (#180 M1): a resume found the
+	// composer empty for a delivery that never rendered and never had Enter
+	// pressed, the transcript showed nothing, and it was pasted again.
+	counterResumeRepastedNeverRendered = "resume.repasted_never_rendered"
 
 	// counterTranscriptDifferentTurnRecorded counts
 	// confirmSubmittedFromSource finding transcriptScanDifferentTurn — a
