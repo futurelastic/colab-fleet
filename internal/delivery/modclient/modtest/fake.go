@@ -148,6 +148,9 @@ type Request struct {
 	Args        json.RawMessage
 	Incarnation int
 	// Ctx is done when the incarnation ends, so a blocking handler can leave.
+	// What it returns once Ctx is done is discarded: an incarnation that has
+	// ended answers nothing, so a handler may simply return (nil, nil, 0) there
+	// without that turning into a scripted success on the wire.
 	Ctx context.Context
 }
 
@@ -627,6 +630,17 @@ func (e *executor) handle(line []byte) {
 				werr = &WireError{Code: "internal", Message: err.Error()}
 			}
 		}
+	}
+
+	// An incarnation that has ended answers nothing. Ending cancels e.ctx before
+	// the pipes close, so a handler released by that cancellation (the usual way
+	// to hold a request until the module dies) returns while the output pipe is
+	// still open; writing what it returned would hand the client a success
+	// from a dead process, ahead of the exit it is meant to observe. Whatever the
+	// handler returned after the end is discarded here, at the one place every
+	// answer passes through.
+	if e.ctx.Err() != nil {
+		return
 	}
 
 	env := map[string]any{"id": id, "ok": werr == nil}
