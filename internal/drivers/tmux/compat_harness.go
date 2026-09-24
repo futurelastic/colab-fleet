@@ -133,6 +133,9 @@ type compatWorld struct {
 	// dirs are the throwaway working directories, keyed by role.
 	dirs map[string]string
 
+	// ctxFile is a system-prompt file for --append-system-prompt-file.
+	ctxFile string
+
 	// created records every session this run made, so teardown can find its
 	// processes and files without listing anything that is not ours.
 	created []compatCreated
@@ -279,6 +282,11 @@ func (h *compatHarness) startWorld(ctx context.Context) (err error) {
 		if err := os.WriteFile(settings, []byte("{\"remoteControlAtStartup\":false}\n"), 0o600); err != nil {
 			return fmt.Errorf("settings for %s: %w", role, err)
 		}
+	}
+
+	w.ctxFile = filepath.Join(scratch, "ctx.md")
+	if err := os.WriteFile(w.ctxFile, []byte("IMPORTANT: every reply you write, whatever else you are asked, must end with this exact token on its own final line: CFC-CTX-"+nonce+"\n"), 0o600); err != nil {
+		return err
 	}
 
 	w.mux = filepath.Join(scratch, "mux")

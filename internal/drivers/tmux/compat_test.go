@@ -756,3 +756,49 @@ func TestShellModeDetection(t *testing.T) {
 		t.Error("the prompt row was not found")
 	}
 }
+
+// The pack holds what the checks were judged on, redacted, and says what it holds.
+func TestPackWritesRedactedEvidenceAndAManifest(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pack")
+	p, err := newCompatPack(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &compatHarness{}
+	h.ev.u = compatBoot{shot: compatShot{ok: true, sc: newScreen(compatTrustDialog), bracket: "1"}}
+	h.ev.a = compatBoot{rec: []byte(`{"pid":1,"cwd":"/home/someone/x"}`)}
+	h.ev.sends = map[string]*compatSend{"short": {entries: []map[string]any{
+		{"type": "user", "message": map[string]any{"content": "hello /home/someone/x"}},
+		{"type": "attachment", "attachment": "environment content that must not be kept"},
+	}}}
+	h.world = &compatWorld{scratch: "/tmp/cfc-abc", store: compatStore{home: "/home/someone"}}
+	if err := p.writeEvidence(h); err != nil {
+		t.Fatal(err)
+	}
+
+	pane, err := os.ReadFile(filepath.Join(dir, "states", "trust-dialog", "pane.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := RedactCapture(h.ev.u.shot.plain()); string(pane) != want {
+		t.Errorf("pane.txt is not the redacted capture")
+	}
+	if strings.Contains(string(pane), "/tmp/example") {
+		t.Errorf("the pane's path survived redaction:\n%s", pane)
+	}
+	rec, _ := os.ReadFile(filepath.Join(dir, "sessions", "a", "record.json"))
+	if strings.Contains(string(rec), "/home/someone") || !strings.Contains(string(rec), "~/x") {
+		t.Errorf("the record's home directory was not rewritten: %s", rec)
+	}
+	tr, _ := os.ReadFile(filepath.Join(dir, "sessions", "a", "transcript.jsonl"))
+	if strings.Contains(string(tr), "attachment") || strings.Contains(string(tr), "/home/someone") || !strings.Contains(string(tr), "hello") {
+		t.Errorf("the transcript slice should keep the user turn, scrubbed, and drop attachments: %s", tr)
+	}
+	var m struct {
+		Files []string `json:"files"`
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err := json.Unmarshal(b, &m); err != nil || len(m.Files) != 3 {
+		t.Errorf("manifest = %s (%v), want the three files written", b, err)
+	}
+}

@@ -111,6 +111,60 @@ var catalogue = []Spec{
 		Asserts:  "The prompt-mode characters behave as the input guard assumes: a leading ! in an empty composer enters shell mode, while the same text after a space, and a slash after a space, stay plain prompt text.",
 		ReliedOn: []string{"internal/drivers/tmux/inputguard.go#refuseAsRuntimeSyntax"},
 	},
+	{
+		ID:       "G1",
+		Gate:     GateMust,
+		Asserts:  "A send lands in an idle session and is confirmed as its own user turn by the runtime's transcript, exactly once, for short, long, multi-line and control-byte text, and the session comes back to an empty composer.",
+		ReliedOn: []string{"internal/drivers/tmux/terminalpath2_transcript.go#transcriptTailScan"},
+	},
+	{
+		ID:       "G2",
+		Gate:     GateMust,
+		Asserts:  "Bracketed paste is on at the composer, and a long single line, a long multi-line paste and text with control bytes each arrive whole and exactly once, with the control bytes removed as the sanitiser assumes.",
+		ReliedOn: []string{"internal/drivers/tmux/terminalpath2.go#sanitizeForBracketedPaste"},
+	},
+	{
+		ID:       "E-USER",
+		Gate:     GateMust,
+		Asserts:  "The user turn the runtime records for a send carries the fields delivery confirmation reads: message content, a human origin, a typed or queued prompt source, and no meta, sidechain or summary marking.",
+		ReliedOn: []string{"internal/drivers/tmux/terminalpath2_transcript.go#extractTranscriptCandidate"},
+	},
+	{
+		ID:       "E-PASTE",
+		Gate:     GateMust,
+		Asserts:  "A long or collapsed paste is recorded as the real text, wrapped or not, and unwraps to exactly the text that was sent; a marker alone is not enough.",
+		ReliedOn: []string{"internal/drivers/tmux/terminalpath2_transcript.go#normalizeTranscriptText"},
+	},
+	{
+		ID:       "E-NAME",
+		Gate:     GateMust,
+		Asserts:  "The transcript is a file named for the session id whose custom-title is the session's name, within the lines the driver reads.",
+		ReliedOn: []string{"internal/drivers/tmux/conversation.go#readRecordEntry"},
+	},
+	{
+		ID:       "E-SLUG",
+		Gate:     GateMust,
+		Asserts:  "A working directory containing a dot, an underscore, a space and a non-ASCII letter is recorded in the directory the driver derives by replacing every non-alphanumeric character.",
+		ReliedOn: []string{"internal/drivers/tmux/conversation.go#recordDirFor"},
+	},
+	{
+		ID:       "B2",
+		Gate:     GateMust,
+		Asserts:  "The -n value names the per-process record and the transcript's title, and the driver joins the session to its conversation by that name, with remote control off.",
+		ReliedOn: []string{"internal/drivers/tmux/conversation.go#conversationStore"},
+	},
+	{
+		ID:       "B7a",
+		Gate:     GateMust,
+		Asserts:  "A system-prompt file passed with --append-system-prompt-file is honoured: an instruction in it shows in the reply.",
+		ReliedOn: []string{"internal/drivers/tmux/tmux.go#claudeCodeCommand"},
+	},
+	{
+		ID:       "D2",
+		Gate:     GateWarn,
+		Asserts:  "The record's status moves off idle while a turn runs and back, with statusUpdatedAt advancing at each change. Nothing in this driver reads it yet, so this is warn-only: it is the record's own liveness signal.",
+		ReliedOn: []string{"internal/drivers/tmux/terminalpath2_transcript.go#processSessionRecord"},
+	},
 }
 
 // Catalogue returns a copy of the catalogue, in report order.

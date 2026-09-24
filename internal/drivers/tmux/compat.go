@@ -132,6 +132,9 @@ func RunCompat(ctx context.Context, o CompatOptions) (compat.Report, error) {
 
 	var problems []error
 	if pack != nil {
+		if perr := pack.writeEvidence(h); perr != nil {
+			problems = append(problems, fmt.Errorf("--pack evidence: %w", perr))
+		}
 		if perr := pack.writeReport(rep); perr != nil {
 			problems = append(problems, fmt.Errorf("--pack: %w", perr))
 		}
@@ -187,8 +190,10 @@ func newCompatSuite(h *compatHarness) compat.Suite {
 	h.addWorld(&s)
 	h.addBoot(&s)
 	h.addDrafts(&s)
+	h.addSends(&s)
 	h.addBootChecks(&s)
 	h.addComposerChecks(&s)
+	h.addSendChecks(&s)
 	return s
 }
 

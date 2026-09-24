@@ -276,4 +276,103 @@ build.
 | `F-PASTEMARK` | must | A long multi-line paste collapses to a [Pasted text #N +M lines] marker and one long line to a bare [Pasted text #N] marker, and both are counted the way delivery confirmation counts them. | `internal/drivers/tmux/tmux.go#markerCounts`, `internal/drivers/tmux/tmux.go#composerHoldsCollapsedPaste` |
 | `F-WRAP` | must | A draft longer than a row wraps onto rows of one width, and the wrapped rows read back as the text that was pasted. | `internal/drivers/tmux/composertext.go#composerRegion` |
 | `G6` | must | The prompt-mode characters behave as the input guard assumes: a leading ! in an empty composer enters shell mode, while the same text after a space, and a slash after a space, stay plain prompt text. | `internal/drivers/tmux/inputguard.go#refuseAsRuntimeSyntax` |
+| `G1` | must | A send lands in an idle session and is confirmed as its own user turn by the runtime's transcript, exactly once, for short, long, multi-line and control-byte text, and the session comes back to an empty composer. | `internal/drivers/tmux/terminalpath2_transcript.go#transcriptTailScan` |
+| `G2` | must | Bracketed paste is on at the composer, and a long single line, a long multi-line paste and text with control bytes each arrive whole and exactly once, with the control bytes removed as the sanitiser assumes. | `internal/drivers/tmux/terminalpath2.go#sanitizeForBracketedPaste` |
+| `E-USER` | must | The user turn the runtime records for a send carries the fields delivery confirmation reads: message content, a human origin, a typed or queued prompt source, and no meta, sidechain or summary marking. | `internal/drivers/tmux/terminalpath2_transcript.go#extractTranscriptCandidate` |
+| `E-PASTE` | must | A long or collapsed paste is recorded as the real text, wrapped or not, and unwraps to exactly the text that was sent; a marker alone is not enough. | `internal/drivers/tmux/terminalpath2_transcript.go#normalizeTranscriptText` |
+| `E-NAME` | must | The transcript is a file named for the session id whose custom-title is the session's name, within the lines the driver reads. | `internal/drivers/tmux/conversation.go#readRecordEntry` |
+| `E-SLUG` | must | A working directory containing a dot, an underscore, a space and a non-ASCII letter is recorded in the directory the driver derives by replacing every non-alphanumeric character. | `internal/drivers/tmux/conversation.go#recordDirFor` |
+| `B2` | must | The -n value names the per-process record and the transcript's title, and the driver joins the session to its conversation by that name, with remote control off. | `internal/drivers/tmux/conversation.go#conversationStore` |
+| `B7a` | must | A system-prompt file passed with --append-system-prompt-file is honoured: an instruction in it shows in the reply. | `internal/drivers/tmux/tmux.go#claudeCodeCommand` |
+| `D2` | warn | The record's status moves off idle while a turn runs and back, with statusUpdatedAt advancing at each change. Nothing in this driver reads it yet, so this is warn-only: it is the record's own liveness signal. | `internal/drivers/tmux/terminalpath2_transcript.go#processSessionRecord` |
 <!-- compat:catalogue:end -->
+
+## Probes, stages and cost
+
+A check never drives anything itself. A **probe** drives one shared session into a
+state and records what it saw; a **check** judges the record. One booted session
+therefore serves every check that reads it, and the expensive parts are paid once.
+A probe fails only when the *environment* did — a multiplexer error, a timeout. What
+the candidate did is evidence however surprising, so the check that reads it can say
+"behaves differently" (a failure) instead of "could not run" (an `error`). Two cases
+follow from that and are worth knowing: a candidate that never shows a composer, and
+one whose composer cannot be cleared, **fail** the checks that depend on them, with the
+reason; they do not report them as unable to run.
+
+| Stage | What runs | Model turns |
+|---|---|---|
+| 0 | One scan of the candidate for the wording the screen classifiers read (F-LIMIT, F-APIERR, H-RC, and F-BYPASS as a fallback). | 0 |
+| 1 | The isolated multiplexer server. | 0 |
+| 2 | Four sessions: a trusted directory (C1, D1, D3, D4, B2, E-*…), an untrusted one (F-TRUST), and two in bypass mode (B5, F-BYPASS). | 0 |
+| 3 | Drafts pasted into the composer and cleared again (F-COMPOSER, F-MLDRAFT, F-PASTEMARK, F-WRAP), and a session used once to enter shell mode (G6). | 0 |
+| 4 | Five sends on the trusted session: a first one that creates the transcript, then a short one, a single line over 800 bytes, a 40-line paste, and text with control bytes and a tab (G1, G2, E-USER, E-PASTE, E-NAME, E-SLUG, B2, B7a, D2). | 5 |
+
+Measured on one full run against a current supported build: **24 checks, 5 model turns,
+about 42 seconds.** Every turn is a synthetic, nonce-tagged prompt at the smallest model
+and lowest effort. The first send is made only to create the transcript, because the
+runtime writes it at the first turn and the driver confirms a send by the screen until it
+exists; the confirmation checks are asserted on the sends after it.
+
+## Pack layout
+
+`--pack DIR` saves what the checks were judged on, so a tool outside this repository can
+replay its own classifiers over the same states without driving the candidate again. What
+those tools are is none of this repository's business. The directory must be new or empty.
+
+```
+manifest.json                     what the pack holds, file by file
+report.json                       the report this run printed
+states/<name>/pane.txt            the pane as the driver captured it, redacted
+states/<name>/pane.ansi.txt       the same, with escape sequences, redacted
+states/<name>/pane.json           width, height, bracketed-paste flag, driver status
+sessions/a/record.json            the per-process record, home directory rewritten
+sessions/a/transcript.jsonl       the transcript entries the checks read
+```
+
+States are `boot`, `trust-dialog`, `boot-bypass`, `bypass-attempt`, `shell-mode`, and one
+`draft-<name>` per draft. Pane captures pass through `RedactCapture`, which keeps only fixed
+runtime vocabulary and layout and discards everything else, so a pane's prose — a path, a
+name, a reply — never reaches the pack. The record and transcript have the home directory
+and the scratch path rewritten, and only `user`, `assistant`, `queue-operation`,
+`custom-title` and `system` entries are kept: the runtime's other entries (attachments,
+snapshots) can carry environment content. The pack is local data, created `0700`. `report.json`
+records the `--claude` path exactly as it was given.
+
+## Proving the command can fail
+
+A check is only worth having if it can fail, and fail with the right ID. The test suite
+does this against a synthetic runtime (`internal/drivers/tmux/testdata/faketui.py`) that
+takes three opt-in knobs, all defaulting to ordinary behaviour:
+
+| Knob | What it breaks |
+|---|---|
+| `FAKE_GLYPH=<char>` | The prompt glyph the driver looks for. |
+| `FAKE_NO_BRACKET=1` | Bracketed paste is never switched on. |
+| `FAKE_PLACEHOLDER=1` / `plain` | A placeholder painted dim (read as empty), or not dim (read as a draft). |
+
+With them, a healthy synthetic candidate passes the composer checks and each broken one fails
+exactly the checks that depend on the broken behaviour, with exit `1` and a reason. To try it
+against a real build, wrap the binary in a small script that changes one behaviour and pass the
+script as `--claude`. These tests need a multiplexer and are gated behind
+`FLEET_TMUX_INTEGRATION=1`, like the driver's other multiplexer tests.
+
+## Not checked
+
+The checks above are the ones that were built. Everything else the runtime does is out of
+scope **by the maintainers' ruling**, not deferred — delivery is now confirmed from the
+transcript rather than the screen, so the checks that existed to guard the screen path are
+not needed. If one is ever needed it gets a new issue. Not built:
+
+- launch and resume: `--resume` continuing the same conversation (**B1**);
+- busy-session delivery and its queue entries (**G4**, **E-QUEUE**), interrupt (**G7**), and
+  pasted text not answering an open dialog (**G5**);
+- the spinner and the permission, question and multi-select dialogs (**F-SPIN**, **F-PERM**,
+  **F-ASKQ**, **F-MULTI**), and the respond and multi-select key paths (**G3**);
+- local-command entries and `/rename` (**E-CMD**, **H-RENAME**);
+- the umbrella comparison of every transcript entry type's key paths (**E-SCHEMA**), and replay of
+  the committed classifier corpus against a candidate (**F-CORPUS**).
+
+Also outside every version of this command, on purpose: paths that register a bridge with an outside
+service (a check never attaches one, so the remote-control checks are static or negative-only), the
+inbox path, and quota and API-error screens, which cannot be produced on demand and are checked as
+wording only.

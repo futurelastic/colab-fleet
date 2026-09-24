@@ -194,6 +194,7 @@ type compatEvidence struct {
 	bypassSetting    string // "true", "false", "absent" or an error text
 	bypassSettingErr error
 	drafts           map[string]*compatDraft
+	sends            map[string]*compatSend
 	// bang is the session used to enter shell mode; it is never reused.
 	bang compatBoot
 	// dirty is set when a draft could not be cleared. Every later draft would be
@@ -293,7 +294,9 @@ func (h *compatHarness) addBoot(s *compat.Suite) {
 	s.Probes = append(s.Probes,
 		// A: trusted directory, default permission mode.
 		compat.Probe{ID: "boot.a", Stage: 2, Needs: up, Budget: 90 * time.Second, Run: func(ctx context.Context) error {
-			if err := h.boot(ctx, &h.ev.a, "a", "a", nil, compatReady, compatBootWait); err != nil {
+			// Session A carries a system-prompt file, so B7a can check it is honoured.
+			withContext := func(sp *fleet.SessionSpec) { sp.ContextRef = fleet.AbsolutePath(h.world.ctxFile) }
+			if err := h.boot(ctx, &h.ev.a, "a", "a", withContext, compatReady, compatBootWait); err != nil {
 				return err
 			}
 			h.awaitBracket(ctx, &h.ev.a)
