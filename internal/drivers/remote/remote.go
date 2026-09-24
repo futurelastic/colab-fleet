@@ -1213,9 +1213,10 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		Submit            bool               `json:"submit"`
 		ResumeIfStranded  bool               `json:"resumeIfStranded,omitempty"`
 		ReplaceIfStranded bool               `json:"replaceIfStranded,omitempty"`
+		Expect            string             `json:"expect,omitempty"`
 		From              *fleet.MessageFrom `json:"from,omitempty"`
 		Route             string             `json:"route,omitempty"`
-	}{Text: text, Submit: opts.Submit, ResumeIfStranded: opts.ResumeIfStranded, ReplaceIfStranded: opts.ReplaceIfStranded, From: opts.From, Route: forceTerminalRouteWireValue(opts.ForceTerminalRoute)}
+	}{Text: text, Submit: opts.Submit, ResumeIfStranded: opts.ResumeIfStranded, ReplaceIfStranded: opts.ReplaceIfStranded, Expect: opts.ExpectComposerDigest, From: opts.From, Route: forceTerminalRouteWireValue(opts.ForceTerminalRoute)}
 
 	var out fleet.DeliveryReceipt
 	path := fmt.Sprintf("/v1/machines/%s/sessions/%s/input",

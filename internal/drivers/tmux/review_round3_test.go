@@ -224,24 +224,44 @@ func TestRV_ResumeIfStrandedRefusesWhenItsOwnRecordWasForgotten(t *testing.T) {
 	}
 }
 
-// TestRV_ReplaceIfStrandedStillClearsAnUnrecordedComposer pins that the
-// EXPLICIT door (#135's original intent) stays open: replaceIfStranded alone
-// (never resumeIfStranded) still clears an unrecorded composer and delivers.
-func TestRV_ReplaceIfStrandedStillClearsAnUnrecordedComposer(t *testing.T) {
-	f := twoSessions()
-	d := newTestDriver(f)
+// TestReplaceIfStrandedRefusesAnUnrecordedComposerWithoutExpect (#180 M9,
+// the draft rule): with no record, replaceIfStranded alone is a wish, not
+// proof — the composer may hold a person's draft, and only the send grant
+// stood between it and C-u. The caller's expect digest, matching the
+// composer now, is the proof that opens the door; a stale one keeps it shut.
+func TestReplaceIfStrandedRefusesAnUnrecordedComposerWithoutExpect(t *testing.T) {
 	ref := fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}
-
-	f.setCapture("%1", composerHolding("some unrecorded text"))
-
-	got, err := d.Send(context.Background(), testCaller, ref, "the replacement text",
-		driver.SendOptions{Submit: true, ReplaceIfStranded: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Outcome != fleet.OutcomeQueued {
-		t.Fatalf("outcome = %s (%s), want queued — replaceIfStranded's explicit clear-and-deliver "+
-			"door must still work with no record", got.Outcome, got.Reason)
+	const draft = "some unrecorded text"
+	for _, tc := range []struct {
+		name   string
+		expect string
+		want   fleet.Outcome
+	}{
+		{"no expect", "", fleet.OutcomeRefused},
+		{"stale expect", composerTextDigest("what the caller saw earlier"), fleet.OutcomeRefused},
+		{"matching expect", composerTextDigest(draft), fleet.OutcomeQueued},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := twoSessions()
+			d := newTestDriver(f)
+			f.setCapture("%1", composerHolding(draft))
+			got, err := d.Send(context.Background(), testCaller, ref, "the replacement text",
+				driver.SendOptions{Submit: true, ReplaceIfStranded: true, ExpectComposerDigest: tc.expect})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Outcome != tc.want {
+				t.Fatalf("outcome = %s (%s), want %s", got.Outcome, got.Reason, tc.want)
+			}
+			if tc.want == fleet.OutcomeRefused {
+				if n := countClears(f.callsSnapshot()); n != 0 {
+					t.Fatalf("%d clear keystroke(s) pressed on text nobody proved was anyone's to clear", n)
+				}
+				if n := d.Counters()["delivery.tmux.refused.draft_kept"]; n != 1 {
+					t.Fatalf("delivery.tmux.refused.draft_kept = %d, want 1", n)
+				}
+			}
+		})
 	}
 }
 

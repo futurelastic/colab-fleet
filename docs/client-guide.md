@@ -477,8 +477,8 @@ One consequence worth planning for: this class of stranding leaves no record, so
 a plain retry with `resumeIfStranded`/`replaceIfStranded` used to not apply to it
 at all, and every later `send` to that session was refused for holding unsent
 input with no automated way back in — re-reading state and calling `discard`
-yourself was the only move. Colab-fleet #135 closed that gap: both flags now
-also cover the no-record case, described below.
+yourself was the only move. Colab-fleet #135 closed that gap, and #180 bounded
+it with the draft rule, described below.
 
 **If `send` answers `unknown`, retry it with `resumeIfStranded: true`.** That
 outcome means the text reached the composer but could not be confirmed in time,
@@ -488,18 +488,25 @@ establish from its own record that the composer holds the text it delivered, the
 resume submits it — send the *same* text: this finishes one delivery, it does
 not start another.
 
-**When no record backs the composer at all — the create-time-prompt case above,
-a record that outlived `strandedRetention` (30 minutes), or a session this
-service never touched — `resumeIfStranded`/`replaceIfStranded` still work
-(colab-fleet #135), just differently: nothing is left to *resume*, so both
-flags clear the composer and deliver THIS call's text in its place**, folding
-`discard`'s own read-then-clear corroboration into the one call rather than
-making you do it by hand across three round trips (read → discard → resend).
-Send whatever text you actually want delivered — not necessarily the same text
-as a prior attempt, since there is no prior delivery of this service's own to
-match against. The composer's own foreign content is discarded, never
-resubmitted. A bare `send` with **neither** flag set still refuses untouched,
-exactly as it always has.
+**The draft rule (#180): the service never clears or submits composer text it
+cannot prove is its own, unless you prove you saw it.** When no live record
+backs the composer — the create-time-prompt case above, a record that outlived
+`strandedRetention` (30 minutes), or a session this service never touched —
+the flags alone are not enough, because the text there may be a person's
+draft:
+
+- If the service placed that text itself and its record merely lapsed, it
+  still recognises the text (it keeps a longer-lived record for exactly this),
+  and `resumeIfStranded` clears it and delivers your text.
+- Otherwise, read the session, and if the composer's content is yours to
+  replace, send again with `replaceIfStranded` and `expect: <composerDigest>`
+  from that read. The service clears exactly what you saw and delivers your
+  text; if the composer changed since you read it, the call is refused and
+  the text kept.
+
+Send whatever text you actually want delivered. The composer's own foreign
+content is discarded, never resubmitted. A bare `send` with **neither** flag
+set still refuses untouched, exactly as it always has.
 
 **To clear text without sending anything, use `discard`.** `POST …/discard?expect=<composerDigest>`
 — the digest comes from the same read that told you `waitingOn: unsent-input`.

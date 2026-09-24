@@ -831,6 +831,16 @@ func intToStr(i int) string {
 // newTestDriver injects no control-mode dialer, so anything that dials —
 // Subscribe above all — attaches REAL multiplexer clients to whatever server
 // the test machine has. Subscription tests use newSubDriver instead (#162).
+// pendingOf is the composer text a fixture shows, as composerText reads it.
+func pendingOf(t *testing.T, fixture string) string {
+	t.Helper()
+	p, scan := composerText(newScreen(fixture))
+	if scan != composerFound || p == "" {
+		t.Fatalf("setup: fixture holds no composer text")
+	}
+	return p
+}
+
 func newTestDriver(f *fakeMux) *Driver {
 	return New("testbox",
 		withExec(f.exec),
@@ -4436,7 +4446,8 @@ func TestResumeSubmitsOnlyWhatThisDriverStranded(t *testing.T) {
 		d := newTestDriver(f)
 
 		r, err := d.Send(ctx, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"},
-			"something else entirely", driver.SendOptions{Submit: true, ReplaceIfStranded: true})
+			"something else entirely", driver.SendOptions{Submit: true, ReplaceIfStranded: true,
+				ExpectComposerDigest: composerTextDigest(pendingOf(t, fixtureUnsent))})
 		if err != nil {
 			t.Fatal(err)
 		}

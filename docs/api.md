@@ -260,6 +260,7 @@ labels, the create is refused `unsupported` before anything is started there.
 
 ```json
 { "text": "…", "submit": true, "resumeIfStranded": false,
+  "replaceIfStranded": false, "expect": "<composerDigest>",
   "from": { "agent": "…", "session": "…", "relayOfHuman": false },
   "route": "terminal" }
 ```
@@ -323,14 +324,30 @@ this table alone.
 confirmation of. It only ever resubmits text the service's own record says it
 placed there — never text a human typed.
 
-`resumeIfStranded` and `replaceIfStranded` also clear a composer the service
-holds **no** record for at all (colab-fleet #135), instead of dead-ending at
-the busy-composer refusal — both flags already declare "deliver this text
-regardless of what's stuck in the composer", so the driver folds `discard`'s
-own read-then-clear corroboration into this one call rather than making the
-caller do it by hand across three round trips (read → discard → resend). It
-never resubmits the foreign text itself — only ever THIS call's own — and a
-bare `input` with neither flag set keeps refusing exactly as before.
+**The draft rule (#180).** The service never clears or submits text sitting in
+a session's composer unless **(a)** its own record proves the text is its own
+stranded delivery, or **(b)** the call carries `expect` — the composer's
+current digest, as a session read reports it in `composerDigest` — proving the
+caller saw exactly what it is asking to have cleared. Otherwise the call is
+`refused` and the text stays: it may be a person's draft. The flags alone are
+a wish, never proof.
+
+- `resumeIfStranded` finishes the service's own stranded delivery when its
+  record still matches the composer. When the live record has lapsed (it is
+  kept 30 minutes) the service keeps a longer-lived record of the text it
+  placed, and if the composer still holds exactly that text, the call clears
+  it and delivers this call's text — colab-fleet #135's case, still covered.
+- `replaceIfStranded` clears the service's own stranded delivery and
+  delivers this call's text instead. For any composer the service cannot
+  prove is its own, it needs `expect`.
+- An `expect` that does not match the composer as it is now refuses — it
+  changed after it was read, possibly because a person typed into it.
+
+A refusal under this rule names the composer's current digest and both ways
+forward: send again with `replaceIfStranded` and that `expect`, or `discard`
+it. `expect` has no effect without one of the two flags, and it never
+permits anything by itself — it is compared with the composer at the moment
+of acting.
 
 > A `POST` to `/input` is not the same thing as an instruction delivered. If you
 > write one client rule from this document, make it: read the outcome.

@@ -391,14 +391,15 @@ const betaPendingText = "yes, update the skill"
 // ReplaceIfStranded's door: with no record at all, there is nothing to
 // "replace" in the record sense — this is #135's headline case, the one
 // that used to dead-end at the unconditional §2.4 refusal regardless of
-// either flag.
+// either flag. Since #180 the door needs the draft rule's proof: here, the
+// caller's expect digest of what it read.
 func TestReplaceIfStrandedClearsComposerWithNoStrandedRecord(t *testing.T) {
 	f := twoSessions()
 	d := newTestDriver(f)
 	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
 
 	got, err := d.Send(context.Background(), testCaller, ref, "something new entirely",
-		driver.SendOptions{Submit: true, ReplaceIfStranded: true})
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true, ExpectComposerDigest: composerTextDigest(betaPendingText)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +544,8 @@ func TestReplaceIfStrandedReportsAnUnrecordedComposerThatOnlyPartlyClears(t *tes
 	ref := fleet.SessionRef{Machine: "testbox", ID: "beta"}
 
 	got, err := d.Send(context.Background(), testCaller, ref, "something new",
-		driver.SendOptions{Submit: true, ReplaceIfStranded: true})
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true,
+			ExpectComposerDigest: composerTextDigest(strings.Join(lines, " "))})
 	if err != nil {
 		t.Fatal(err)
 	}

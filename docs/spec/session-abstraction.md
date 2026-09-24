@@ -1132,24 +1132,26 @@ after an unconfirmed delivery the text is in the composer, a second send is
 refused by the very rule protecting it, and nothing else submits.
 
 A driver may honour it by establishing, from its own record of what it
-delivered, that the text is its own — never by reading the screen back, since a
-long message is collapsed to a summary and cannot be compared (F49), and the
-messages most likely to strand are exactly the long ones. Text the driver did
-not place is never submitted: composer contents are not evidence that anybody
-meant to send them.
+delivered, that the text is its own: the composer digest it took when the
+delivery stranded, the recorded text read back against the composer's rows,
+or — for a long message the runtime collapsed to a summary (F49) — the
+summary marker it saw that paste land as. Text the driver did not place is
+never submitted: composer contents are not evidence that anybody meant to
+send them.
 
-Colab-fleet #135: when no such record exists at all, `resumeIfStranded` and its
-sibling **replaceIfStranded** (colab-fleet #112, which clears a delivery the
-driver's own record shows is its own and delivers different text in its place)
-converge on one further door rather than dead-ending at §2.4's refusal — since
-neither has anything of the driver's own to resume or replace without a
-record. A driver may clear the composer using the SAME read of its current
-content as the corroborating proof (the property `discard`'s own
-`ComposerDigest` check enforces below, folded into this one call instead of
-requiring a separate one), then deliver THIS call's text. The foreign text
-itself is still never submitted — only ever the caller's own, on this same
-call — and a caller that sets neither flag still gets the original, unqualified
-refusal.
+**The draft rule (#180)** governs every clear and every submit of composer
+text, for `resumeIfStranded` and its sibling **replaceIfStranded** (colab-fleet
+#112) alike: a driver never clears or submits text in a composer unless (a)
+its own record proves the text is its own stranded delivery — a live record,
+or one kept after the live record lapsed or was replaced, used only as this
+proof — or (b) the caller supplies the composer's current digest (`send`'s
+expect, the same `ComposerDigest` `discard` quotes back below), proving it saw
+what it asks to have cleared. Otherwise the driver refuses and keeps the text:
+it may be a person's draft, and a flag on the request is a wish, not proof.
+When either proof holds and no live record backs the composer, both flags
+converge on one door (colab-fleet #135): clear the composer, then deliver THIS
+call's text. The foreign text itself is never submitted, and a caller that sets
+neither flag still gets the original, unqualified refusal.
 
 `discard` removes unsent composer text **without submitting it** — the verb
 between "run it" and "destroy the session holding it", which was missing. `send`

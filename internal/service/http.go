@@ -1207,6 +1207,10 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			// ResumeIfStranded is: it has no effect unless explicitly set,
 			// so a caller that never sets it sees no symptom at all.
 			ReplaceIfStranded bool `json:"replaceIfStranded,omitempty"`
+			// Expect (#180) is the composer digest the caller read and is
+			// prepared to have cleared or submitted — the draft rule's
+			// caller-supplied proof. See driver.SendOptions.
+			Expect string `json:"expect,omitempty"`
 			// From (colab-fleet #158) labels the message with who it says
 			// it comes from. Its Machine is replaced by stampSender below,
 			// never passed through.
@@ -1284,7 +1288,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, From: from, ForceTerminalRoute: forceTerminalRoute})
+		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, ExpectComposerDigest: body.Expect, From: from, ForceTerminalRoute: forceTerminalRoute})
 		if err != nil {
 			// A refusal from the driver is not this branch — Send returns
 			// it as a DeliveryReceipt value, not an error. Only a

@@ -382,6 +382,10 @@ type Driver struct {
 	// for the lifetime a durable record needs that an in-memory one never
 	// did.
 	stranded map[string]strandedRecord
+	// tombstones are what remains of stranded records that lapsed or were
+	// replaced: the draft rule's proof that composer text is this driver's
+	// own after the live record is gone (draftrule.go, #180 M2).
+	tombstones map[string][]strandedTombstone
 
 	// delivered remembers, per session, the most recent delivery THIS DRIVER
 	// made into that session's composer — the denominator colab-fleet #111's
@@ -2434,6 +2438,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			curDigest := composerTextDigest(pending)
 			if resumeRecord.ComposerDigest != "" && !composerDigestMatches(resumeRecord.ComposerDigest, pending) &&
 				!composerMatchesText(screenNow, text, false) {
+				tr.draftKept = true
 				return fleet.DeliveryReceipt{
 					Outcome: fleet.OutcomeRefused,
 					Reason: "resumeIfStranded requires the composer's current content to digest " +
@@ -2620,6 +2625,21 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 		// refusal was collapsing into one.
 		if record, hasRecord := d.strandedRecordFor(ref.ID, target.cwd); hasRecord {
 			if opts.ReplaceIfStranded {
+				// The draft rule (#180): the record must still prove the
+				// composer holds exactly its text, or the caller's expect
+				// digest must match the composer as it is now.
+				if !recordProves(record, pending, screenNow) && !expectProves(opts.ExpectComposerDigest, pending) {
+					tr.draftKept = true
+					return fleet.DeliveryReceipt{
+						Outcome: fleet.OutcomeRefused,
+						Reason: "composer holds a delivery this driver made into this session, but its " +
+							"content has changed since that delivery was recorded and this driver " +
+							"cannot confirm it is still only its own text — it may now include a " +
+							"person's edits, and it was kept. Pass expect=" + composerTextDigest(pending) +
+							" with replaceIfStranded to clear exactly what is there now, or discard the " +
+							"composer directly (discard?expect=" + composerTextDigest(pending) + ")",
+					}, nil
+				}
 				expectedLines, _ := composerVisualLines(screenNow)
 				receipt, cleared, err := d.tryReplaceStranded(ctx, ref, target, record, pending, expectedLines, screenNow)
 				if err != nil {
@@ -2653,26 +2673,40 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 						composerTextDigest(pending) + ")",
 				}, nil
 			}
-		} else if opts.ReplaceIfStranded {
-			// colab-fleet #135: this driver holds no record of having put
-			// anything in this composer — the ordinary reason a replace
-			// request lands here at all — but replaceIfStranded already
-			// declares the intent ("deliver this text regardless of what's
-			// stuck in the composer"), and there is nothing to RESUME
-			// without a record of what was sent, so it takes the door out:
-			// clear whatever is there and deliver THIS call's text, exactly
-			// as a caller was previously forced to do by hand in three round
-			// trips (read → discard → resend).
-			//
-			// Safety is not loosened, only relocated. /discard's own
-			// property is that expectDigest must match what the composer
-			// holds AT THE MOMENT OF CLEARING — proof nothing changed
-			// between "look" and "destroy", not proof of whose text it is.
-			// pending/screenNow above were captured moments before this
-			// point in the same call, so their digest supplies that exact
-			// proof without a separate round trip; the caller's proof of
-			// intent is the opt-in flag on this very request, in place of a
-			// previously-read digest it would otherwise have to quote back.
+		} else if opts.ReplaceIfStranded || opts.ResumeIfStranded {
+			// No live record for this composer. The draft rule (#180): clear
+			// it and deliver this call's text (colab-fleet #135's door) only
+			// on proof the text there is this driver's own — a tombstone of
+			// a lapsed record — or the caller's expect digest matching it
+			// now. Before #180, replaceIfStranded alone was taken as proof
+			// and a person's draft was cleared with nothing but the send
+			// grant (M9); resumeIfStranded alone had been refused outright,
+			// which also refused #135's own case, a retry that outlived its
+			// record (M2).
+			flag := "replaceIfStranded"
+			if opts.ResumeIfStranded {
+				flag = "resumeIfStranded"
+			}
+			proof, mismatch := d.mayClearUnrecorded(ref.ID, target.cwd, pending, screenNow, opts.ExpectComposerDigest)
+			if proof == proofNone {
+				tr.draftKept = true
+				if opts.ResumeIfStranded {
+					d.counters.incr(counterSendRefusedResumeNoRecord)
+				}
+				digest := composerTextDigest(pending)
+				reason := "the composer holds text this driver has no record of placing, so it may " +
+					"be a person's draft; " + flag + " alone does not prove otherwise, and the text " +
+					"was kept. Read the session, and if the text there is yours to replace, send " +
+					"again with replaceIfStranded and expect=" + digest + " — the composer's current " +
+					"digest — or discard it directly (discard?expect=" + digest + ")"
+				if mismatch {
+					reason = "the expect digest on this call does not match the composer as it is " +
+						"now (" + digest + "): it changed after it was read, possibly because a " +
+						"person typed into it, and it was kept. Read the session again before " +
+						"deciding to replace it"
+				}
+				return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
+			}
 			expectedLines, _ := composerVisualLines(screenNow)
 			receipt, cleared, clearErr := d.tryClearUnrecordedComposer(ctx, ref, target, pending, expectedLines, screenNow, opts)
 			if clearErr != nil {
@@ -2681,47 +2715,18 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			if !cleared {
 				return receipt, nil
 			}
-			// Cleared: fall through — deliberately NOT a return — to the
-			// ordinary delivery path below, identical to tryReplaceStranded's
-			// own success path just above.
-		} else if opts.ResumeIfStranded {
-			// Review fix (review-safety): resumeIfStranded ALONE, with no
-			// record to resume, no longer takes #135's clear-and-deliver
-			// door — replaceIfStranded (above) is the only door that still
-			// does. #135's original reasoning ("both flags already declare
-			// the same intent") stopped holding once a record could be
-			// forgotten out from under a caller mid-retry: Discard's own
-			// composerFound-and-empty forget, or a confirmed send elsewhere
-			// clearing an unrelated stranding, both leave EXACTLY this state
-			// — no record, composer busy — and the caller's receipt for the
-			// ORIGINAL strand explicitly said "retry with resumeIfStranded",
-			// which by the time of the retry is indistinguishable from an
-			// ordinary resumeIfStranded call against a composer a PERSON has
-			// since started typing into. #135's door would silently wipe
-			// that person's draft with C-u and submit this call's text in
-			// its place — the review's own reproduction. replaceIfStranded
-			// says "discard whatever is there" explicitly; resumeIfStranded
-			// says "finish MY earlier delivery", which there is nothing here
-			// to finish, so it refuses instead of guessing which of the two
-			// the caller meant.
-			d.counters.incr(counterSendRefusedResumeNoRecord)
-			return fleet.DeliveryReceipt{
-				Outcome: fleet.OutcomeRefused,
-				Reason: "this driver holds no record of a stranded delivery for this session, " +
-					"so there is nothing for resumeIfStranded to resume; the composer holds text " +
-					"it did not put there, which may be a person's own draft. Use " +
-					"replaceIfStranded if the intent is to discard whatever is there and deliver " +
-					"this text instead, or read the session and discard the composer directly " +
-					"first (discard?expect=" + composerTextDigest(pending) + ")",
-			}, nil
+			// Cleared on proof: fall through — deliberately NOT a return — to
+			// the ordinary delivery path below.
 		} else {
+			tr.draftKept = true
 			return fleet.DeliveryReceipt{
 				Outcome: fleet.OutcomeRefused,
 				Reason: "composer holds unsent input; delivering would concatenate " +
-					"with text a human typed and has not submitted (§2.4). Set " +
-					"resumeIfStranded or replaceIfStranded on this same call to clear it " +
-					"and deliver this text instead, or read the session and discard the " +
-					"composer directly first (discard?expect=" + composerTextDigest(pending) + ")",
+					"with text a human typed and has not submitted (§2.4). If it is text this " +
+					"driver left there, resumeIfStranded finishes it; if it is yours to replace, " +
+					"send again with replaceIfStranded and expect=" + composerTextDigest(pending) +
+					" — the composer's current digest — or discard it directly first " +
+					"(discard?expect=" + composerTextDigest(pending) + ")",
 			}, nil
 		}
 	}
@@ -5485,7 +5490,8 @@ func (r strandedRecord) pasteKey() pasteKey {
 // concern), never folded into idempotency.json — a create key and a
 // delivery-in-progress are different concerns with different shapes.
 type strandedFile struct {
-	Records map[string]strandedRecord `json:"records"`
+	Records    map[string]strandedRecord      `json:"records"`
+	Tombstones map[string][]strandedTombstone `json:"tombstones,omitempty"`
 }
 
 const strandedFileName = "stranded"
@@ -5532,6 +5538,9 @@ func (d *Driver) noteStrandedLanding(id, cwd, text, composerDigest string, src t
 	defer d.mu.Unlock()
 	if d.stranded == nil {
 		d.stranded = map[string]strandedRecord{}
+	}
+	if prior, ok := d.stranded[id]; ok && (prior.Text != text || prior.Cwd != cwd) {
+		d.buryLocked(id, prior)
 	}
 	rec := strandedRecord{Text: text, Cwd: cwd, At: d.now(), ComposerDigest: composerDigest}
 	if l.ok && l.by == landedByMarker {
@@ -5633,16 +5642,8 @@ func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, t
 		}, false, nil
 	}
 
-	if record.ComposerDigest == "" || !composerDigestMatches(record.ComposerDigest, pending) {
-		return fleet.DeliveryReceipt{
-			Outcome: fleet.OutcomeRefused,
-			Reason: "composer holds a delivery this driver made into this session, but its " +
-				"content has changed since that delivery was recorded (or the record " +
-				"predates this check) and this driver cannot confirm it is still only its " +
-				"own text — refusing to guess. discard the composer directly " +
-				"(discard?expect=" + digest + ") before sending again",
-		}, false, nil
-	}
+	// The draft rule's proof — the record or the caller's expect digest —
+	// was established by the caller (Send) against this same read.
 
 	left, moved, didClear, err := d.clearComposer(ctx, target.paneID, ref.ID, target.cwd, pending, expectedLines, sc)
 	if err != nil {
@@ -5792,6 +5793,9 @@ func (d *Driver) sweepStrandedLocked() {
 	now := d.now()
 	for id, rec := range d.stranded {
 		if now.Sub(rec.At) > strandedRetention {
+			// #180 M2: the record lapses, the proof that this text is the
+			// driver's own does not — see draftrule.go.
+			d.buryLocked(id, rec)
 			delete(d.stranded, id)
 		}
 	}
@@ -5883,7 +5887,7 @@ func (d *Driver) saveStrandedLocked() {
 	if d.store == nil {
 		return
 	}
-	_ = d.store.Save(strandedFileName, strandedFile{Records: d.stranded})
+	_ = d.store.Save(strandedFileName, strandedFile{Records: d.stranded, Tombstones: d.tombstones})
 }
 
 // loadStranded restores stranded-delivery records at startup, sweeping
@@ -5896,12 +5900,14 @@ func (d *Driver) loadStranded() {
 	}
 	var f strandedFile
 	found, err := d.store.Load(strandedFileName, &f)
-	if err != nil || !found || len(f.Records) == 0 {
+	if err != nil || !found || (len(f.Records) == 0 && len(f.Tombstones) == 0) {
 		return
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.stranded = f.Records
+	d.tombstones = f.Tombstones
+	d.sweepTombstonesLocked()
 	d.sweepStrandedLocked()
 	d.saveStrandedLocked()
 }

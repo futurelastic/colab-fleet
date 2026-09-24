@@ -1049,3 +1049,28 @@ func TestCreateForwardsMcpConfigPathsVerbatim(t *testing.T) {
 		}
 	}
 }
+
+// TestSendForwardsExpect (#180): the draft rule's caller-supplied proof is
+// one more field Send's hand-built body must carry, or a relayed
+// replaceIfStranded with a correct expect digest is refused on the owning
+// machine for want of proof the caller did supply (#33's trap, again).
+func TestSendForwardsExpect(t *testing.T) {
+	var rec capture
+	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
+	d := New("peerbox", srv.URL)
+
+	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "replacement",
+		driver.SendOptions{Submit: true, ReplaceIfStranded: true, ExpectComposerDigest: "0123456789abcdef"}); err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Expect            string `json:"expect"`
+		ReplaceIfStranded bool   `json:"replaceIfStranded"`
+	}
+	if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+		t.Fatalf("body = %q: %v", rec.body, err)
+	}
+	if body.Expect != "0123456789abcdef" || !body.ReplaceIfStranded {
+		t.Fatalf("body = %q, want expect and replaceIfStranded carried to the owning daemon", rec.body)
+	}
+}
