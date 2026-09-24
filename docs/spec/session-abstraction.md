@@ -2268,13 +2268,23 @@ was healthy and answering throughout.
   context: §4.4 governs *session operations*, whose point is that they must
   not block unboundedly, and a probe whose purpose is to discover bounds is
   not one of them.
+- **Mitigation, implemented (#175): announce less than you enforce.** The
+  same confusion has a second source on the announcing side. A proxy that
+  tells the peer the exact bound it enforces makes both timers expire
+  together, so a peer that is up but slow answers honestly and is still
+  recorded as `unreachable`, because its answer is in transit when the proxy
+  gives up. A remote driver now announces its remaining budget minus a
+  transit reserve (capped at 250 ms and at one fifth of what remains, never
+  below 1 ms). The waiting side's margin and the announcing side's reserve
+  are separate allowances and are not merged.
 - **Still open:** the general rule. A fleet more than two machines deep, or
   one where a peer raises its deadline at runtime, needs deadline composition
-  stated in this document rather than implemented in one driver. Note also
-  that a chain of proxies would need each hop's budget to *shrink*, which is
-  the opposite direction from the one hop case — the two requirements are not
-  obviously reconcilable, and §13.1's one-hop rule is currently what keeps the
-  question from arising.
+  stated in this document rather than implemented in one driver. The transit
+  reserve does make each hop's announced budget *shrink*, which is the
+  direction a chain of proxies needs, but only as an implementation choice in
+  one driver, not as a rule this document states. How the reserve should
+  compound across more than one hop is unanswered, and §13.1's one-hop rule is
+  currently what keeps the question from arising.
 
 ### D8 — Events do not cross machines · §5.5, §13 — **RESOLVED**
 
