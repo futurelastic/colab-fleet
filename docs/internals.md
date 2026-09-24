@@ -34,24 +34,35 @@ a client never has to import a driver.
 
 ## Which agent-CLI versions this is tested against
 
-**A span, not a version: `2.1.220` through `2.1.223`.** Those are the versions
-actually being driven on the machines this runs on, measured from the running
-processes rather than from what is installed.
+**There is no hand-written span here.** The supported range is the set of runtime
+builds that have a passing compatibility report — the output of
+`colab-fleetd compat` ([`compat.md`](compat.md)) — and the report's
+`claude.version` and `claude.sha256` are the record of which build that was. A
+version written into prose goes stale the day a release ships: this section used
+to say `2.1.220` through `2.1.223` and was about sixty patch releases behind the
+builds actually running when this paragraph replaced it.
 
-A single "tested against X" line would be true and misleading, because **a
-session keeps the binary it was started with**. Long-lived sessions therefore
+The report answers one question — *does this candidate build still behave the way
+this driver assumes?* — before a fleet takes it. It does not answer a second one,
+*which builds are running right now?*, and that second question is the one below.
+
+A single "tested against X" line would be true and misleading anyway, because
+**a session keeps the binary it was started with**. Long-lived sessions therefore
 outlive upgrades, and one machine drives several versions at once. Measured on
-two machines whose *installed* CLI is identical (`2.1.223` on both):
+two machines whose *installed* CLI was identical, at the time this section was
+first written (builds since superseded, so read it for its shape, not its
+numbers):
 
 | | versions running concurrently |
 |---|---|
-| one machine | `2.1.223` ×48 · `2.1.222` ×21 |
-| the other | `2.1.220` ×18 · `2.1.223` ×10 · `2.1.222` ×4 · `2.1.221` ×2 |
+| one machine | one build ×48 · the release before it ×21 |
+| the other | four consecutive builds at once: ×18 · ×10 · ×4 · ×2 |
 
 Four patch releases live at once on one box, the oldest three releases behind
 what is installed. So **the installed version tells you very little about what
 this driver is talking to**, and upgrading the CLI does not migrate the
-sessions already running.
+sessions already running. A passing report certifies a build; it does not say
+that no other build is still in use.
 
 ### Why this matters more here than it usually would
 
