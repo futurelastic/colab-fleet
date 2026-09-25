@@ -1550,6 +1550,13 @@ func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
 		return fleet.PromptFolderTrust
 	case hasOption("trust", "settings"):
 		return fleet.PromptSettingsTrust
+	case hasOption("allow", "external", "imports") && hasOption("disable", "external", "imports"):
+		// Both halves, each in ONE option: the runtime offers this question as
+		// an accept and a decline of the same thing, and a screen that carries
+		// only one of them is a screen this rule has not been measured on. It
+		// fails to empty rather than to a kind a consent would then answer
+		// (colab-fleet #211).
+		return fleet.PromptExternalImports
 	case hasOption("don't ask again"), hasOption("allow this"):
 		return fleet.PromptToolPermission
 	}
@@ -1564,6 +1571,12 @@ func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
 	//	Yes, I trust this folder        No, continue without these permissions
 	//	Yes, I trust these settings     No, exit Claude Code
 	//	Yes, I accept                   No, exit
+	//	Yes, allow external imports     No, disable external imports
+	//
+	// (The last pair was added when the second boot question, about a directory's
+	// instruction files importing a file from outside it, was measured on a
+	// session that never got past it — colab-fleet #211. Unlike the rows above
+	// it IS classified, because both of its options carry its identifying words.)
 	//
 	// (Read from one installed build; this repository's README pins the span
 	// it is tested against, and that build sits outside it. A fact read from one

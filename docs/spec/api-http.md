@@ -517,6 +517,18 @@ prior conversations and nothing in them identifies the one the caller named —
 consent there would be a coin flip, and losing it resumes a stranger's work. Same
 `send` grant as `trustCwd`.
 
+`external-imports` is consentable: the runtime's second boot question about a
+directory, "allow external imports", raised when the instruction files its
+working directory loads import a file from outside it. Its highlight defaults to
+the decline, so it is answered by index like every other consent. It is a wider
+agreement than folder trust — the caller vouches for the directory, not for a
+listed set of files, and the question's own warning is never to allow it for a
+repository the caller does not own — so pass it only for a directory you own.
+Its scope is unchanged: this one question, on the one session being created,
+nothing standing. A consent names a question, so `["folder-trust"]` leaves this
+one standing and the reverse. A create carrying only a consent, with no `prompt`
+and no `trustCwd`, is answered too.
+
 **`env` is delivered out of band, never on a command line.** Values are staged in
 a 0600 file the session reads and unlinks; nothing reaches an argv, because the
 payload likeliest to be a credential must not be the one exception to §5.3. Names
@@ -1218,8 +1230,8 @@ permission-mode class (#148) is deliberately not a source: it has two values
 prompting modes apart nor follow a press of `BTab`.
 
 `state.prompt.kind` — when present — names what is being asked
-(`resume-chooser`, `folder-trust`, `settings-trust`, `tool-permission`).
-`bypass-permissions` is deliberately absent from what CLASSIFICATION can produce:
+(`resume-chooser`, `folder-trust`, `external-imports`, `settings-trust`,
+`tool-permission`). `bypass-permissions` is deliberately absent from what CLASSIFICATION can produce:
 its options are generic and its identifying words sit in the question, which this
 service does not read. See the client guide.
 It is **advisory and fails to absent**: an unrecognised prompt carries no kind.

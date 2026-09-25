@@ -84,6 +84,33 @@ const (
 	// internal/trustseed's package doc for the mechanism and colab-fleet
 	// issue #47 for where this line was drawn.
 	PromptFolderTrust PromptKind = "folder-trust"
+	// PromptExternalImports: "allow external CLAUDE.md file imports" — the
+	// runtime's second boot question about a directory, raised when the
+	// instruction files its working directory chain loads import a file from
+	// OUTSIDE that directory. It holds a new session exactly as folder trust
+	// does, before any bridge or conversation id exists, so a host cannot even
+	// link to the session (colab-fleet #211). It is answered per project, and
+	// the runtime's own default highlight is the DECLINE, so an answer must go
+	// by index, never by the highlight.
+	//
+	// # Recognised from the options, and consentable
+	//
+	// Its two options are fixed strings the runtime emits ("No, disable
+	// external imports" / "Yes, allow external imports"), which is the only
+	// material classification may read. Like folder trust it is answered in two
+	// standing ways that are both the OPERATOR's decision rather than this
+	// layer's: internal/trustseed writes the runtime's own answer ahead of time
+	// for every directory under the configured trust roots, and a create may
+	// carry it in SessionSpec.Consents.
+	//
+	// The consent is a wider agreement than folder trust's, and the difference
+	// is worth stating. A caller who names a directory can vouch for the
+	// directory; it did not list the files that directory imports, and the
+	// question's own warning is never to allow this for a repository the caller
+	// does not own. So the consent is scoped exactly as narrowly as the rest of
+	// the table — this one question, this one session, nothing standing — and it
+	// takes the same `send` grant on top of `create` that every consent takes.
+	PromptExternalImports PromptKind = "external-imports"
 	// PromptSettingsTrust: an ADMINISTRATOR's managed-policy payload asking to
 	// be approved. Not a working directory's own settings at all — read out of
 	// the runtime binary, its neighbours are `policySettings`,

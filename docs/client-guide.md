@@ -370,7 +370,8 @@ POST /v1/machines/{machine}/sessions/{id}/respond
 - `choice` is 1-based. Omit it to accept the highlighted default, and `cancel:
   true` dismisses instead of answering.
 - `kind` names the question when the service recognises it — `resume-chooser`,
-  `folder-trust`, `settings-trust`, `tool-permission`. Filter on it if you
+  `folder-trust`, `external-imports`, `settings-trust`, `tool-permission`.
+  Filter on it if you
   automate answers, so you only ever answer questions you know. **An absent
   kind is not permission**: it means the service did not recognise the prompt,
   and answering it blind is how an automation kills a session.
@@ -667,7 +668,7 @@ Idempotency-Key: 4f1c9e2a-…          ← REQUIRED
   "remoteControl": true,             ← optional; OMITTED IS NOT false (see below)
   "prompt": "first instruction",     ← optional, delivered once the agent is ready
   "trustCwd": true,                  ← optional consent to the folder-trust question (see below)
-  "consents": ["folder-trust"],      ← optional, the general form of the line above
+  "consents": ["folder-trust"],      ← optional, the general form of the line above; also "external-imports"
   "env": {"MY_SESSION_ID": "…"},     ← optional, delivered out of band — never argv
   "resume": "<conversation id>",     ← optional, continue a prior conversation
   "permissionMode": "bypass",        ← optional, needs the send grant
@@ -812,7 +813,28 @@ If you do not send it, nothing changes: the driver answers nothing, and
 
 **`consents` is the general form**, and `trustCwd` is now shorthand for
 `["folder-trust"]` — both work, and sending both is agreement rather than
-conflict. Today's other consentable question is `bypass-permissions`, the
+conflict. A consent names a question, so it answers that question and no other:
+`["folder-trust"]` leaves an imports question standing, and the reverse. Send
+only `consents` — no `prompt` and no `trustCwd` — and it is still answered.
+
+**`external-imports` is the runtime's second question about a directory.** When
+the instruction files its working directory loads import a file from outside it,
+the runtime asks "allow external imports" before the agent can do anything, and
+holds the session on it exactly as it does the trust question — with no bridge
+and no conversation id, so a host cannot even link to the session. Its
+highlight defaults to the decline; the driver picks the affirmative row by
+index. It is a wider agreement than folder trust: you vouch for the directory,
+not for a list of files you never saw, and the question's own warning is never
+to allow it for a repository you do not own. Consent to it only for a directory
+that is yours.
+
+On a machine whose operator configured `trustRoots`, you rarely need to: every
+repository and worktree under a root has both questions answered ahead of time,
+whoever started the session and whether or not it went through this service. A
+directory outside every root still shows the question, and
+`state.prompt.kind` reads `external-imports`.
+
+The other consentable question is `bypass-permissions`, the
 acceptance screen a non-default `permissionMode` raises — and it comes with a
 condition worth understanding, because it explains something you will otherwise
 find puzzling in `state.prompt`.
@@ -838,7 +860,7 @@ way you safely can elsewhere. It is the one screen whose absence of a kind is
 expected rather than informative.
 
 `resume-chooser` is deliberately **not** consentable and a create asking for it
-is refused. The other two ask yes/no about something you described in your own
+is refused. The others ask yes/no about something you described in your own
 request; the chooser asks *which* conversation, and its options are summaries of
 prior sessions with nothing in the text identifying yours. Read `state.prompt`
 and answer that one by index.

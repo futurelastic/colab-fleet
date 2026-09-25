@@ -1,8 +1,8 @@
-// Package trustseed pre-answers one boot question a session-running runtime
-// asks, by writing the answer into the runtime's own state file before the
-// question is ever raised.
+// Package trustseed pre-answers the boot questions a session-running runtime
+// asks about a directory, by writing the answers into the runtime's own state
+// file before the questions are ever raised.
 //
-// # The question
+// # The questions
 //
 // The runtime this fleet drives asks, the first time it is pointed at a
 // directory, "do you trust the files in this folder" — and blocks until a
@@ -14,16 +14,31 @@
 // fleet are not created that way — a supervisor spawns the runtime directly —
 // so no create request exists for the consent to travel on.
 //
+// It asks a second question of the same shape whenever the instruction files
+// the directory carries import a file from OUTSIDE it: "allow external
+// imports". Like the first it holds a new session forever, with no bridge and
+// no conversation id for a host to link to, and like the first it is asked
+// again for every directory on a workspace whose folders all import the same
+// shared file from one place (colab-fleet #211).
+//
 // # What this package does instead
 //
-// The runtime remembers its answer as a per-directory key in its own state
-// file: projects["<dir>"].hasTrustDialogAccepted. This package writes that
-// key ahead of time, under a machine-local, operator-configured set of
-// roots — so the question never gets asked in the first place, for any
-// session, whoever started it. It is the same shape the consent table
-// already commits to on create, extended from one request to a standing
-// policy: the operator, not this service, is the party saying which
-// directories are trusted, once, in the machine's own configuration.
+// The runtime remembers each answer as a per-directory key in its own state
+// file: projects["<dir>"].hasTrustDialogAccepted for the first question, and
+// projects["<dir>"].hasClaudeMdExternalIncludesApproved (with its companion
+// hasClaudeMdExternalIncludesWarningShown) for the second. This package
+// writes those keys ahead of time, under a machine-local,
+// operator-configured set of roots — so neither question gets asked in the
+// first place, for any session, whoever started it. It is the same shape the
+// consent table already commits to on create, extended from one request to a
+// standing policy: the operator, not this service, is the party saying which
+// directories are theirs, once, in the machine's own configuration.
+//
+// One statement covers both questions on purpose. The roots hold the
+// operator's own work, and the files those directories import are the
+// operator's own shared files; there is no second list to keep in step with
+// the first, and no directory the operator called theirs but not theirs to
+// import from.
 //
 // # The hazard this is built against
 //
@@ -50,19 +65,42 @@ import (
 	"sync"
 )
 
-// trustKey is the field this package ensures on a project entry. Named once
-// so a future rename shows every place it matters.
-const trustKey = "hasTrustDialogAccepted"
+// The fields this package ensures on a project entry. Named once so a future
+// rename shows every place it matters.
+const (
+	// trustKey answers "do you trust the files in this folder".
+	trustKey = "hasTrustDialogAccepted"
+	// importsApprovedKey answers "allow external CLAUDE.md file imports" —
+	// the runtime saves it per project, and the project is the enclosing
+	// repository root when there is one, otherwise the directory itself
+	// (colab-fleet #211), which is the same key-per-root rule trustKey follows.
+	importsApprovedKey = "hasClaudeMdExternalIncludesApproved"
+	// importsShownKey is the runtime's record that it has already put that
+	// question on screen. It is set beside importsApprovedKey so the two never
+	// disagree about a project this package answered.
+	importsShownKey = "hasClaudeMdExternalIncludesWarningShown"
+)
 
 // Counter names. Kept beside the registry rather than scattered at call
 // sites, the same discipline the tmux driver's counters.go applies to its
 // own names.
 const (
-	// CounterGranted counts every key this package actually set to true —
-	// the one number that says the feature is doing its job. Compare its
-	// rate against uptime (as GET /v1/health already lets a caller do for
+	// CounterGranted counts every folder-trust key this package actually set
+	// to true — the number that says the feature is doing its job. Compare
+	// its rate against uptime (as GET /v1/health already lets a caller do for
 	// the tmux driver's own counters) to notice it stopping.
+	//
+	// It counts the TRUST key only. The imports key has a counter of its own,
+	// so a caller can tell which of the two keys is being written
+	// (colab-fleet #211): a fleet whose trust counter moves and whose imports
+	// counter never does is one whose runtime stopped storing the second
+	// answer where this package writes it.
 	CounterGranted = "trust_seed.granted"
+	// CounterImportsGranted counts every project entry whose external-imports
+	// approval this package set to true. The companion "warning shown" key is
+	// written in the same commit and is not counted apart: it is bookkeeping
+	// for the question, and never moves without the approval it accompanies.
+	CounterImportsGranted = "trust_seed.imports_granted"
 	// CounterLostRace counts a write abandoned because the state file
 	// changed between being read and being committed — see the package doc.
 	// Expected to be rare and always eventually followed by a granted count
@@ -87,9 +125,9 @@ const (
 // an expected, harmless outcome, not a failure.
 var errLostRace = errors.New("trustseed: state file changed since it was read; abandoning this write")
 
-// Seeder maintains projects[...].hasTrustDialogAccepted in one runtime state
-// file, for every repository or worktree root under a fixed set of
-// configured roots.
+// Seeder maintains the trust and external-imports keys in projects[...] of one
+// runtime state file, for every repository or worktree root under a fixed set
+// of configured roots.
 //
 // The zero value is not usable; use New. A nil *Seeder is a valid, disabled
 // one everywhere a method is called on it — the same off-by-default contract
@@ -207,9 +245,13 @@ type Result struct {
 	// Islands is how many repository/worktree roots were found under every
 	// configured root this pass.
 	Islands int
-	// Granted is how many of those actually had the key written this pass —
-	// zero on a steady-state pass where everything was already set.
+	// Granted is how many of those actually had the trust key written this
+	// pass — zero on a steady-state pass where everything was already set.
 	Granted int
+	// ImportsGranted is how many project entries had the external-imports
+	// approval written this pass. Counted apart from Granted so a caller can
+	// see which of the two keys moved (colab-fleet #211).
+	ImportsGranted int
 	// RootsMissing lists configured roots not found on disk this pass. See
 	// CounterRootMissing.
 	RootsMissing []string
@@ -221,14 +263,14 @@ type Result struct {
 }
 
 func (r Result) String() string {
-	return fmt.Sprintf("islands=%d granted=%d roots_missing=%d lost_race=%v",
-		r.Islands, r.Granted, len(r.RootsMissing), r.LostRace)
+	return fmt.Sprintf("islands=%d granted=%d imports_granted=%d roots_missing=%d lost_race=%v",
+		r.Islands, r.Granted, r.ImportsGranted, len(r.RootsMissing), r.LostRace)
 }
 
 // SeedAll walks every configured root, finds every repository and worktree
 // root under it (point 2 of the issue's proposed shape: "only roots need a
 // key; ordinary subdirectories inherit"), and ensures each carries the trust
-// key. Meant to be called once at startup and again on an interval, so a
+// key and the two external-imports keys. Meant to be called once at startup and again on an interval, so a
 // worktree created a minute ago is seeded before anything launches into it.
 //
 // Never returns an error for a missing root or a lost race — both are
@@ -256,13 +298,15 @@ func (s *Seeder) SeedAll() (Result, error) {
 	if err != nil {
 		return result, err
 	}
-	result.Granted = granted
-	s.add(CounterGranted, granted)
+	result.Granted = granted.trust
+	result.ImportsGranted = granted.imports
+	s.add(CounterGranted, granted.trust)
+	s.add(CounterImportsGranted, granted.imports)
 	return result, nil
 }
 
-// SeedPath ensures the trust key for one directory's enclosing repository or
-// worktree root — or the directory itself, when it sits inside no
+// SeedPath ensures the trust and external-imports keys for one directory's
+// enclosing repository or worktree root — or the directory itself, when it sits inside no
 // repository at all, the same "only roots need a key" rule SeedAll applies
 // to a full sweep. Meant to be called just before a session is started at
 // this directory, closing the race a periodic-only pass leaves open for a
@@ -306,7 +350,8 @@ func (s *Seeder) SeedPath(dir string) error {
 	if err != nil {
 		return err
 	}
-	s.add(CounterGranted, granted)
+	s.add(CounterGranted, granted.trust)
+	s.add(CounterImportsGranted, granted.imports)
 	return nil
 }
 
@@ -409,24 +454,43 @@ func skipDescent(name string) bool {
 	return false
 }
 
+// grants is what one committed write set, by which key. The two are counted
+// apart (see CounterGranted and CounterImportsGranted) so a caller can tell
+// which of the questions this package is answering.
+type grants struct {
+	trust   int // project entries whose folder-trust key was set to true
+	imports int // project entries whose external-imports approval was set to true
+}
+
+// seededKeys are the fields ensureKeys sets on every target's project entry,
+// each independently: a project the runtime already knows to be trusted still
+// gets the imports keys, and one whose imports were already approved still gets
+// the trust key. A key that is already true is left exactly as it is.
+var seededKeys = []string{trustKey, importsApprovedKey, importsShownKey}
+
 // ensureKeys is the add-only, race-tolerant writer every exported method
-// funnels through. It sets trustKey true for every path variant of every
-// target that does not already carry it, and commits the whole batch in one
-// write — or abandons the whole batch (errLostRace) the moment the state
+// funnels through. It sets every key in seededKeys true for every path variant
+// of every target that does not already carry it, and commits the whole batch
+// in one write — or abandons the whole batch (errLostRace) the moment the state
 // file is found to have changed since it was read. There is no partial
 // commit: a caller that wants some of a batch seeded even when the rest
 // raced would be reading a promise this function does not make.
-func (s *Seeder) ensureKeys(targets []string) (granted int, err error) {
+//
+// Each key is judged on its own, so a project entry the runtime wrote with the
+// imports keys present and false (its default, measured on a real state file)
+// is answered, not skipped because a neighbouring key was already true. A key
+// already true is never rewritten and no key is ever removed.
+func (s *Seeder) ensureKeys(targets []string) (granted grants, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	before, err := os.Stat(s.statePath)
 	if err != nil {
-		return 0, fmt.Errorf("trustseed: %s: %w", s.statePath, err)
+		return grants{}, fmt.Errorf("trustseed: %s: %w", s.statePath, err)
 	}
 	raw, err := os.ReadFile(s.statePath)
 	if err != nil {
-		return 0, fmt.Errorf("trustseed: reading %s: %w", s.statePath, err)
+		return grants{}, fmt.Errorf("trustseed: reading %s: %w", s.statePath, err)
 	}
 	if s.afterRead != nil {
 		s.afterRead()
@@ -434,21 +498,18 @@ func (s *Seeder) ensureKeys(targets []string) (granted int, err error) {
 
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
-		return 0, fmt.Errorf("trustseed: %s is not the expected object shape: %w", s.statePath, err)
+		return grants{}, fmt.Errorf("trustseed: %s is not the expected object shape: %w", s.statePath, err)
 	}
 	projects := map[string]json.RawMessage{}
 	if pr, ok := top["projects"]; ok {
 		if err := json.Unmarshal(pr, &projects); err != nil {
-			return 0, fmt.Errorf("trustseed: %s#projects is not the expected object shape: %w", s.statePath, err)
+			return grants{}, fmt.Errorf("trustseed: %s#projects is not the expected object shape: %w", s.statePath, err)
 		}
 	}
 
 	dirty := false
 	for _, target := range targets {
 		for _, key := range lookupKeys(target) {
-			if projectHasTrust(projects, key) {
-				continue
-			}
 			entry := map[string]json.RawMessage{}
 			if existing, ok := projects[key]; ok {
 				if err := json.Unmarshal(existing, &entry); err != nil {
@@ -458,30 +519,57 @@ func (s *Seeder) ensureKeys(targets []string) (granted int, err error) {
 					// understand with one it invented.
 					continue
 				}
+				if entry == nil {
+					// A JSON null decodes to a nil map, which cannot be
+					// assigned into. It is not a shape this package would
+					// have invented either, but it holds no information a
+					// fresh entry would overwrite.
+					entry = map[string]json.RawMessage{}
+				}
 			}
-			entry[trustKey] = json.RawMessage("true")
-			encoded, err := json.Marshal(entry)
-			if err != nil {
+			var set grants
+			changed := false
+			for _, k := range seededKeys {
+				if isTrue(entry[k]) {
+					continue
+				}
+				entry[k] = json.RawMessage("true")
+				changed = true
+				switch k {
+				case trustKey:
+					set.trust++
+				case importsApprovedKey:
+					set.imports++
+				}
+			}
+			if !changed {
 				continue
 			}
+			encoded, err := json.Marshal(entry)
+			if err != nil {
+				// Nothing is committed for this entry, so nothing it would have
+				// set is counted: a failure to encode is not a grant.
+				continue
+			}
+			granted.trust += set.trust
+			granted.imports += set.imports
 			projects[key] = encoded
 			dirty = true
-			granted++
 		}
 	}
 
 	if !dirty {
-		return 0, nil
+		return grants{}, nil
 	}
 
 	encodedProjects, err := json.Marshal(projects)
 	if err != nil {
-		return 0, fmt.Errorf("trustseed: encoding projects: %w", err)
+		return grants{}, fmt.Errorf("trustseed: encoding projects: %w", err)
 	}
 	top["projects"] = encodedProjects
 	out, err := json.Marshal(top)
 	if err != nil {
-		return 0, fmt.Errorf("trustseed: encoding %s: %w", s.statePath, err)
+		return grants{}, fmt.Errorf("trustseed: encoding %s: %w", s.statePath, err)
 	}
 
 	// The check this whole package exists for: the state file is rewritten
@@ -492,27 +580,27 @@ func (s *Seeder) ensureKeys(targets []string) (granted int, err error) {
 	// next one.
 	after, statErr := os.Stat(s.statePath)
 	if statErr != nil || !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
-		return 0, errLostRace
+		return grants{}, errLostRace
 	}
 
 	if err := writeFileAtomic(s.statePath, out, before.Mode()); err != nil {
-		return 0, fmt.Errorf("trustseed: writing %s: %w", s.statePath, err)
+		return grants{}, fmt.Errorf("trustseed: writing %s: %w", s.statePath, err)
 	}
 	return granted, nil
 }
 
-func projectHasTrust(projects map[string]json.RawMessage, key string) bool {
-	raw, ok := projects[key]
-	if !ok {
+// isTrue reports whether one project-entry field is the JSON literal true.
+// Absent, false, null and any other type all read as "not yet answered" — the
+// runtime itself writes the imports keys as false before they are answered.
+func isTrue(raw json.RawMessage) bool {
+	if len(raw) == 0 {
 		return false
 	}
-	var entry struct {
-		HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
-	}
-	if err := json.Unmarshal(raw, &entry); err != nil {
+	var b bool
+	if err := json.Unmarshal(raw, &b); err != nil {
 		return false
 	}
-	return entry.HasTrustDialogAccepted
+	return b
 }
 
 // lookupKeys returns the path forms the runtime is known to check a project
