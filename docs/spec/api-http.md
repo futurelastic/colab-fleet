@@ -1257,6 +1257,30 @@ read back — the tick state has changed, so the old nonce is refused too; read
 the state again and send the same set with the new nonce. The set names the
 end state, so boxes already flipped are not flipped twice.
 
+A question whose options carry a preview is drawn with the option list and a
+box side by side, and `state.prompt` reads the LIST only (colab-fleet issue
+#204): `options` are the labels — a label that wraps across rows is one string —
+and never the box's rows beside them, and `question` is the question, not the
+dialog's tab bar and not the prose printed above the dialog. `nonce` follows the
+prompt and not the highlight: moving the highlight repaints the box but changes
+neither the question nor the options, so it does not change the nonce, while
+answering one tab of a tabbed dialog, or moving to another, does. A preview
+taller than the capture window no longer hides the dialog: the runtime clamps a
+pane to 24 lines, which with the dialog's chrome is more rows than the classifier
+scans, and a session blocked on it used to read as `idle`.
+
+`respond` answers such a question in two keys, because on this layout a digit only
+MOVES the highlight (and the box) and Enter commits the highlighted row and
+advances. The two are never sent together — the runtime keeps one key of several
+sent at once, so "2, Enter" recorded the default and not 2 — and the highlight is
+read back on the chosen row before Enter is pressed. A receipt says which question
+of a tabbed dialog it answered ("on question 1 of 2"), and `submitted` means the
+answered prompt is no longer on screen: moving on to the next tab counts. If the
+highlight does not arrive the receipt is `unknown`, no confirm key was sent, and
+the question is still up. When the highlight sits on no option — on the row below
+the list — `respond` refuses, because a digit sent from there may be typed into a
+field.
+
 **Send `nonce`.** It is `SessionPrompt.nonce` from the state you read, and it
 is the whole of the protection: a caller reads a prompt, shows it to a human,
 and answers a minute later — by which time the session may be showing a

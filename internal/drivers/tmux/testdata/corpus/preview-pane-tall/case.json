@@ -1,0 +1,41 @@
+{
+  "name": "preview-pane-tall",
+  "for": "A preview taller than the runtime will draw: it clamps the pane to 24 lines and paints a divider row where it cut. The pane is 27 rows and the whole dialog more than promptScanDepth, so option 1 — on the pane's top row — fell out of the scan window and a session blocked on the dialog read as IDLE, not waiting_input. Pins that the window is widened to the pane's top, that the divider row belongs to the pane, and that a tall dialog still reads as a prompt.",
+  "source": "#204",
+  "redactedFrom": "real capture, redacted by corpus-redact (one runtime build, 2026-09-25); the labels and preview text were synthetic to begin with",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "waiting_input",
+      "wantOptions": [
+        "[redacted]",
+        "[redacted]",
+        "[redacted]"
+      ],
+      "wantQuestion": "[redacted]",
+      "wantPreviewPane": true,
+      "wantTab": {
+        "at": 1,
+        "of": 1
+      }
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "waiting_input",
+      "wantOptions": [
+        "[redacted]",
+        "[redacted]",
+        "[redacted]"
+      ],
+      "wantQuestion": "[redacted]",
+      "wantPreviewPane": true,
+      "wantTab": {
+        "at": 1,
+        "of": 1
+      }
+    }
+  ]
+}

@@ -99,9 +99,18 @@ func TestMultiSelectIsRecognisedOnTheMeasuredScreens(t *testing.T) {
 				t.Errorf("ticks = %s, want %s", got, c.ticks)
 			}
 			// The flag is derived from the options, so it must not move the
-			// nonce: a caller holding a nonce from before this field existed
-			// still quotes a valid one.
-			if p.Nonce != promptNonce(&fleet.SessionPrompt{Question: p.Question, Options: p.Options}) {
+			// nonce: it is the question, the options and the dialog's header
+			// (#204 — the header used to ride inside the question) and nothing
+			// else. These fixtures carry no escapes, so no tab is read as
+			// current.
+			header := ""
+			for _, l := range strings.Split(c.screen, "\n") {
+				if isDialogTabBar(strings.TrimSpace(l)) {
+					header = l
+					break
+				}
+			}
+			if want := promptNonceWithHeader(&fleet.SessionPrompt{Question: p.Question, Options: p.Options}, header, tabPosition{}); p.Nonce != want {
 				t.Error("MultiSelect leaked into the nonce")
 			}
 			if p.Kind != "" || classifyPromptKind(p) != "" {

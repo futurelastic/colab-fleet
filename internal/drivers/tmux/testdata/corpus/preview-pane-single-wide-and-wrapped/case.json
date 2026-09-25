@@ -1,0 +1,41 @@
+{
+  "name": "preview-pane-single-wide-and-wrapped",
+  "for": "A SINGLE-question dialog with a preview pane, which paints a lone ☐ chip as its header instead of the tab bar. Its first label is Japanese, so the pane starts after fewer characters on that row than on the others (a wide character takes two screen columns and a capture emits it once — the box is misaligned in rune terms in this file exactly as in the capture), and its second label is long enough to wrap inside the list column, so the option spans five rows. Pins: the pane is found by the gap in front of it and not by a column, a wrapped label is one option (the five rows join with single spaces), and a chip header keeps the prose above the dialog out of the question. The preview content itself carried box art of its own, which must not be taken for the pane's edge.",
+  "source": "#204",
+  "redactedFrom": "real capture, redacted by corpus-redact (one runtime build, 2026-09-25); the labels and preview text were synthetic to begin with",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "waiting_input",
+      "wantOptions": [
+        "[redacted]",
+        "[redacted] [redacted] [redacted] [redacted] [redacted]",
+        "[redacted]"
+      ],
+      "wantQuestion": "[redacted]",
+      "wantPreviewPane": true,
+      "wantTab": {
+        "at": 1,
+        "of": 1
+      }
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "waiting_input",
+      "wantOptions": [
+        "[redacted]",
+        "[redacted] [redacted] [redacted] [redacted] [redacted]",
+        "[redacted]"
+      ],
+      "wantQuestion": "[redacted]",
+      "wantPreviewPane": true,
+      "wantTab": {
+        "at": 1,
+        "of": 1
+      }
+    }
+  ]
+}
