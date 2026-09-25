@@ -18,10 +18,15 @@ the real runtime does, which the driver must read as an empty composer.
 FAKE_PLACEHOLDER=plain paints the same placeholder WITHOUT dim, which the driver
 must (and can only) read as typed text.
 
-FAKE_MODES=1 (#188) models the permission-mode footer: Shift+Tab (ESC[Z) cycles
-default -> accept edits -> plan -> auto and repaints the footer line, the way the
-real runtime rewrites its mode indicator. Off by default, so no other test sees a
-different footer."""
+The footer always paints the permission-mode row the real runtime paints (#194): the
+default mode says "manual mode on", and a launch with --dangerously-skip-permissions
+starts in bypass, as a real session does.
+
+FAKE_MODES=1 (#188) makes Shift+Tab (ESC[Z) cycle the mode and repaint that row, the
+way the real runtime rewrites its indicator: manual -> accept edits -> plan -> auto
+-> manual for a default launch; bypass -> auto -> manual -> accept edits -> plan ->
+bypass for a bypass launch (the ring measured on a real build). Off by default, so a
+test that does not press the key never sees the mode move."""
 import os, sys, tty, termios, codecs, shutil
 SWALLOW = int(os.environ.get("FAKE_SWALLOW", "0"))
 LOG = os.environ.get("FAKE_LOG", "")
@@ -29,8 +34,28 @@ GLYPH = os.environ.get("FAKE_GLYPH", "❯")
 NO_BRACKET = os.environ.get("FAKE_NO_BRACKET", "") == "1"
 PLACEHOLDER = os.environ.get("FAKE_PLACEHOLDER", "")
 MODES = os.environ.get("FAKE_MODES", "") == "1"
-MODE_NAMES = ["default", "accept edits on", "plan mode on", "auto mode on"]
-mode = 0
+# The footer rows are what a real runtime build (2.1.282) painted after each press
+# of Shift+Tab, measured in #194. The default mode is NOT a bare "? for shortcuts":
+# it says "manual mode on", and the "(shift+tab to cycle)" hint appears only in
+# the other modes.
+MODE_ROWS = {
+    "bypass": "\u23f5\u23f5 bypass permissions on (shift+tab to cycle) \u00b7 \u2190 for agents",
+    "auto": "\u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+    "manual": "\u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents",
+    "accept": "\u23f5\u23f5 accept edits on (shift+tab to cycle) \u00b7 \u2190 for agents",
+    "plan": "\u23f8 plan mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+}
+# FAKE_MODE_WORDING=reworded models a candidate build that rewords every indicator
+# row (#194): the wording the mode reader matches is gone, so a session reads as
+# an indicator area naming no known mode.
+if os.environ.get("FAKE_MODE_WORDING", "") == "reworded":
+    MODE_ROWS = {k: v.replace(" on", " active") for k, v in MODE_ROWS.items()}
+BYPASS = "--dangerously-skip-permissions" in sys.argv[1:]
+# The measured ring. A launch without bypass never lands on it.
+RING = ["bypass", "auto", "manual", "accept", "plan"]
+if not BYPASS:
+    RING = RING[1:]
+mode = 0 if BYPASS else RING.index("manual")
 transcript = ["fake tui ready (synthetic, not the real runtime)"]
 buf = ""
 pastes = {}
@@ -49,9 +74,7 @@ def render():
         dim_on, dim_off = ("\x1b[2m", "\x1b[0m") if PLACEHOLDER == "1" else ("", "")
         comp = [GLYPH + "\u00a0" + dim_on + 'Try "synthetic"' + dim_off]
     rule = "─" * cols
-    footer = "  ? for shortcuts"
-    if MODES and mode:
-        footer = "  \u23f5\u23f5 " + MODE_NAMES[mode] + " (shift+tab to cycle)"
+    footer = "  " + MODE_ROWS[RING[mode]]
     tail = [rule] + comp + [rule, footer]
     room = lines - len(tail)
     head = transcript[-room:] if room > 0 else []
@@ -111,7 +134,7 @@ def main():
                     in_paste = True; i += 6; continue
                 c = s[i]
                 if MODES and s.startswith("\x1b[Z", i):
-                    mode = (mode + 1) % len(MODE_NAMES)
+                    mode = (mode + 1) % len(RING)
                     i += 3; continue
                 if c == "\x1b":
                     if len(s) - i < 6 and "\x1b[200~".startswith(s[i:]):

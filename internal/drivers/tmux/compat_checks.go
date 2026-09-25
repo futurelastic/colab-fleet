@@ -169,6 +169,56 @@ func (h *compatHarness) addBootChecks(s *compat.Suite) {
 			return compat.Passed("the screen could not be produced here (the runtime did not show it when told the setting is off); the wording of its two options is still in the candidate")
 		}},
 
+		// F-MODE (#194). Two of the five indicator rows are read off live sessions
+		// the harness already boots — the default mode (session A) and bypass
+		// (session B) — so what is asserted is the driver's own read of the
+		// candidate's real screen, not the wording in a table. The other three
+		// cannot be entered without pressing keys in a session other checks share,
+		// so their wording is checked statically instead, the way H-RC does.
+		//
+		// Warn, not must: a candidate whose indicator wording changed still
+		// delivers, confirms and classifies dialogs exactly as before — only the
+		// mode read goes to `unknown`. That is loud enough to be seen in the report
+		// before a fleet takes the build, and it is not a reason to reject one.
+		// The gate is data, not shape (docs/compat.md, Schema): a maintainer who
+		// decides a mode control is load-bearing can make it must without a bump.
+		compat.Check{ID: "F-MODE", Probes: []string{"boot.a", "boot.b", "static.markers"}, Eval: func() compat.Verdict {
+			var bad, seen []string
+			live := func(name string, b compatBoot, want fleet.PermissionModeState) {
+				switch {
+				case !b.ready:
+					// A session with no composer is reported by the check that owns
+					// that (C1, B5); there is no indicator to read here.
+					bad = append(bad, name+" never showed a composer, so its indicator could not be read")
+				case b.mode.state.PermissionMode != want:
+					got := string(b.mode.state.PermissionMode)
+					if got == "" {
+						got = fmt.Sprintf("nothing within %s (the row under the composer never became readable)", compatModeWait)
+					}
+					bad = append(bad, fmt.Sprintf("%s reads as %s, want %s (the pane shows: %s)",
+						name, got, string(want), screenTail(b.mode.sc, 2)))
+				default:
+					seen = append(seen, fmt.Sprintf("%s reads as %s", name, string(want)))
+				}
+			}
+			live("a session started in the default mode", h.ev.a, fleet.PermissionModeDefault)
+			live("a session started in bypass-permissions mode", h.ev.b, fleet.PermissionModeBypass)
+			var missing []string
+			for _, m := range compatStaticMarkers["F-MODE"] {
+				if !h.markers[m] {
+					missing = append(missing, fmt.Sprintf("%q", m))
+				}
+			}
+			if len(missing) > 0 {
+				bad = append(bad, "the candidate no longer contains "+strings.Join(missing, ", "))
+			}
+			if len(bad) > 0 {
+				return compat.Failed(strings.Join(bad, "; ") +
+					": the mode reader may report `unknown` for sessions in a mode the candidate now words differently")
+			}
+			return compat.Passed(strings.Join(seen, "; ") + fmt.Sprintf("; the wording of the other %d indicator rows is still in the candidate", len(compatStaticMarkers["F-MODE"])))
+		}},
+
 		compat.Check{ID: "D1", Probes: []string{"boot.a"}, Eval: func() compat.Verdict {
 			b := h.ev.a
 			if !b.ran || b.rec == nil {

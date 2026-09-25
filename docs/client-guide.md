@@ -445,14 +445,25 @@ On an idle composer the runtime cycles its permission mode on Shift+Tab, and
 dropdown on it:
 
 - **It is one press, not "go to mode X".** `POST …/keys` with `{"key":"BTab"}`
-  presses once. The service does not read the mode, `state` publishes no
-  permission mode, and the receipt never says which mode the session is in
+  presses once, and the receipt never says which mode the session is in
   afterwards. `submitted` means the screen changed under the key; `unknown` means
-  it did not (the press was swallowed, or there was nothing to cycle). A control
-  that must land on a named mode has to learn the current mode from a source of
-  its own and press until it sees the one it wants — re-reading `state` for a
-  fresh `screenDigest` before **each** press, the same one-key-per-request rule
-  as every other key.
+  it did not (the press was swallowed, or there was nothing to cycle). The mode is
+  in `state.permissionMode` (colab-fleet #194): one of `default`, `acceptEdits`,
+  `plan`, `auto`, `bypass`, or `unknown`. A control that must land on a named mode
+  presses, reads that field, and repeats — re-reading `state` for a fresh
+  `screenDigest` before **each** press, the same one-key-per-request rule as
+  every other key. The loop, precisely:
+  1. Read `state`. If `permissionMode` is the target, stop.
+  2. If it is **absent**, nothing was read (a dialog owns the screen, or this
+     driver does not look — check `observesPermissionMode`): read again, do not
+     press. If it is **`unknown`**, stop and tell the user: the mode indicator
+     was there and named no mode you know, so you cannot say what the next press
+     does.
+  3. Otherwise press once with `?expect=<the digest from that read>`, then go to 1.
+  4. **Bound it.** The runtime's cycle is a ring of at most six stops and skips
+     the ones a build or model does not offer (`auto` is not on every model), so
+     never count presses; give up after a full lap (six presses) without meeting
+     the target — it is not offered here.
 - **It can escalate the session, and so can anyone holding `keys`.** Accept-edits
   and auto let the agent act unattended with less asking; the runtime's cycle
   order decides whether a press loosens or tightens, and this API does not

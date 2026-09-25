@@ -33,8 +33,9 @@ import (
 //
 // The consequence is stated here and in the docs on purpose. Cycling toward
 // accept-edits or auto ESCALATES what the agent may do unattended, and which
-// mode a press lands in is the runtime's cycle order, which this service
-// neither reads nor controls. So BTab under the `keys` grant means any
+// mode a press lands in is the runtime's cycle order, which this service does
+// not control — it only reports where a session landed, as
+// SessionState.PermissionMode (#194). So BTab under the `keys` grant means any
 // principal holding `keys` can escalate any session that principal can reach.
 // The ruling on #188 chose that over a grant of its own (or separate
 // escalate/de-escalate grants); it was a decision, not an oversight, and

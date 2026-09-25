@@ -911,6 +911,12 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 		// assumed, so a nil ControlChannel is answerable: on this driver it
 		// means the runtime rendered no label, not that nobody looked.
 		ObservesControlChannel: true,
+		// #194: this driver reads the runtime's permission-mode indicator off
+		// the same footer region (permissionmode.go). Declared for the same
+		// reason: an absent state.permissionMode on this driver means nothing
+		// was readable at that moment (a dialog owns the screen), not that
+		// nobody looked.
+		ObservesPermissionMode: true,
 		// #85: this driver latches Session.RuntimeSurface off the same
 		// footer label ObservesControlChannel already reads, once
 		// corroborated — see surface.go's runtimeSurfaceFor.

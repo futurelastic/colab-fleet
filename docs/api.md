@@ -532,11 +532,12 @@ What to expect from a `BTab`, since it is not a dialog key:
 
 - **It is not a mode setter.** One request is one press. `submitted` means the
   screen changed under the key — not that the mode changed, and not which mode
-  the session is in now; this service does not read the mode, and `state`
-  publishes no permission mode. `unknown` means the screen did not change (the
-  press was swallowed, or there was nothing to cycle). To reach a named mode a
-  client must read the mode from somewhere else and repeat, re-reading `state`
-  for a fresh digest between presses.
+  the session is in now. `unknown` (the receipt outcome) means the screen did not
+  change (the press was swallowed, or there was nothing to cycle). To reach a
+  named mode, read `state.permissionMode` after each press and repeat, re-reading
+  `state` for a fresh digest between presses; stop on a `permissionMode` of
+  `unknown`, and never count presses — the runtime's cycle skips modes a build
+  does not offer (#194).
 - **It is not refused on an idle, empty composer** — unlike the four arrow keys,
   which are, because there they drive the runtime's own interface. An idle
   composer is exactly where `BTab` is for.
@@ -614,7 +615,8 @@ not in the response.
     "composerDigest": "…", "screenDigest": "…",
     "quota": { "since": "…", "resetHint": "…" },
     "lastTurn": { "outcome": "failed", "reason": "…", "retryable": true },
-    "controlChannel": { "state": "active", "reason": "" }
+    "controlChannel": { "state": "active", "reason": "" },
+    "permissionMode": "acceptEdits"
   }
 }
 ```
@@ -626,6 +628,15 @@ a decode error, never a silent default.
 **`confidence`** — `observed` (read from a structured API) or `inferred`
 (deduced from a screen). It survives a relay rather than being flattened, so a
 proxied answer never looks more certain than the original.
+
+**`permissionMode`** (#194) — the permission mode the runtime shows the session
+to be in: `default`, `acceptEdits`, `plan`, `auto`, `bypass` (the same word
+`create` takes) or `unknown`. A closed set with a strict decoder. **Absent means
+nothing was read** — this driver does not look (`observesPermissionMode` in
+`/v1/runtimes`) or a dialog owns the screen — so read again; **`unknown` means the
+mode indicator was read and named no mode this build recognises** — stop, do not
+guess. It is what lets a client press `BTab` until it sees the mode it wants
+(see `POST …/keys` below). It carries no screen text.
 
 **`waitingOn`** — `prompt` (a dialog is attached) or `unsent-input` (the
 composer holds text nobody submitted; do not send to it).

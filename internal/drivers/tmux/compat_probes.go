@@ -131,6 +131,21 @@ func (h *compatHarness) awaitBracket(ctx context.Context, b *compatBoot) {
 	}
 }
 
+// awaitMode gives a session that has a composer a bounded time to paint the
+// permission-mode indicator, and records the look that read it (#194).
+//
+// It records into b.mode and leaves b.shot alone: every other check reads b.shot
+// as the moment the composer appeared, and this is a later look. A candidate that
+// never paints a readable indicator is not an error — the last look is recorded as
+// it is and F-MODE says what the driver read.
+func (h *compatHarness) awaitMode(ctx context.Context, b *compatBoot) {
+	if !b.ready {
+		return
+	}
+	s, _ := h.world.waitShot(ctx, b.ref, compatModeWait, func(s compatShot) bool { return s.state.PermissionMode != "" })
+	b.mode = s
+}
+
 // clearComposer discards whatever is drafted, through the driver's own Discard,
 // and confirms the composer is empty. A draft that cannot be cleared would
 // contaminate every later probe, so this is an environment error.
@@ -156,6 +171,8 @@ type compatBoot struct {
 	shot     compatShot
 	ready    bool
 	bootTime time.Duration // until ready, when it got there
+	// mode is a later look, taken once the indicator row had time to paint (#194).
+	mode compatShot
 
 	// The per-process record, read for the pid the multiplexer reports.
 	pid      int
@@ -286,6 +303,12 @@ var (
 	compatDialogWait  = 15 * time.Second
 	compatRecordWait  = 15 * time.Second
 	compatBracketWait = 5 * time.Second
+	// compatModeWait is how long a session with a composer is given to paint the
+	// row under it. Measured on a real build: the composer is up about a second
+	// before the indicator row is, so a snapshot taken at "ready" reads no mode at
+	// all — which is the honest answer for that instant and the wrong one to
+	// judge a candidate by.
+	compatModeWait = 10 * time.Second
 )
 
 // addBoot registers the probes that launch the four kinds of session.
@@ -301,6 +324,7 @@ func (h *compatHarness) addBoot(s *compat.Suite) {
 			}
 			h.awaitBracket(ctx, &h.ev.a)
 			h.recordFor(ctx, &h.ev.a, compatRecordWait)
+			h.awaitMode(ctx, &h.ev.a)
 			return nil
 		}},
 		// U: a directory outside the trust root, so the trust dialog appears. It
@@ -312,8 +336,12 @@ func (h *compatHarness) addBoot(s *compat.Suite) {
 		// depends on a user setting, which is read so its absence is reported.
 		compat.Probe{ID: "boot.b", Stage: 2, Needs: up, Budget: 60 * time.Second, Run: func(ctx context.Context) error {
 			h.readBypassSetting()
-			return h.boot(ctx, &h.ev.b, "b", "b", func(sp *fleet.SessionSpec) { sp.PermissionMode = fleet.PermissionModeBypass },
-				func(s compatShot) bool { p, _ := s.prompt(); return p != nil || compatReady(s) }, compatDialogWait)
+			if err := h.boot(ctx, &h.ev.b, "b", "b", func(sp *fleet.SessionSpec) { sp.PermissionMode = fleet.PermissionModeBypass },
+				func(s compatShot) bool { p, _ := s.prompt(); return p != nil || compatReady(s) }, compatDialogWait); err != nil {
+				return err
+			}
+			h.awaitMode(ctx, &h.ev.b)
+			return nil
 		}},
 		// C: the same, told on its command line that the acceptance screen is NOT
 		// suppressed. Whether the runtime honours that is exactly what this finds

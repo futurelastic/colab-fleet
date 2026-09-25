@@ -1932,7 +1932,16 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 	//
 	// The dead branch above returns before this is armed, deliberately: a pane
 	// whose process is gone has no runtime left to be describing itself.
-	defer func() { st.ControlChannel = controlChannelOf(s) }()
+	//
+	// The permission mode (#194) is stamped in the same place for the same
+	// reason: it is a fact about the runtime's indicator row, true of a working
+	// session, an idle one and one blocked on a prompt alike, and a branch added
+	// later that returned around it would make the field read as "not observed"
+	// exactly when a client cycling toward a mode most needs an answer.
+	defer func() {
+		st.ControlChannel = controlChannelOf(s)
+		st.PermissionMode = permissionModeOf(s)
+	}()
 
 	if len(s.lines) == 0 {
 		return fleet.UnknownState(fleet.ConfidenceInferred, "pane captured empty"), ambNone

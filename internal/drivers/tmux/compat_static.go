@@ -234,6 +234,11 @@ var compatStaticMarkers = map[string][]string{
 	"F-APIERR": {"api error", "try again ", "temporary"},
 	// controlStateIn: the label `/rc` followed by one of four state words.
 	"H-RC": {"/rc active", "/rc failed", "/rc reconnecting", "/rc connecting"},
+	// permissionModeLabels: the wording of the three indicator rows that exist
+	// as literal strings in the candidate. The other two — the default mode's
+	// `manual mode on` and `bypass permissions on` — are composed at runtime
+	// and are not searchable; F-MODE reads those two off live sessions.
+	"F-MODE": {"accept edits on", "plan mode on", "auto mode on"},
 	// acceptanceScreen: two options, one containing `accept`, one `exit` or `no,`.
 	// F-BYPASS reads these only when the screen itself cannot be produced.
 	"F-BYPASS": {"yes, i accept", "no, exit"},

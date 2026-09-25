@@ -1188,6 +1188,31 @@ not guess it. Absent whenever `state` is not `failed`, or is `failed` but no
 record, no readable one, or no matching entry can explain why — the same
 §5.7 discipline `controlChannel` itself already applies one field up.
 
+`state.permissionMode` — when present — is the permission mode the runtime shows
+the session to be in (colab-fleet #194): one of `default`, `acceptEdits`, `plan`,
+`auto`, `bypass`, or `unknown`. It is what makes `BTab` (§3.3, `keys`) usable for
+a control that must land on a NAMED mode: press, read this, stop when it matches.
+`bypass` is the word `permissionMode` takes at create time, so a session created
+with it reads back as it.
+
+**Absent is not `unknown`, and neither is a guess** (§5.7). *Absent* means nothing
+was read — the driver does not look (`observesPermissionMode` in `/v1/runtimes`;
+an unreached peer reports it `assumed`), a dialog owns the screen, or nothing is
+painted under the composer yet — and the client reads again. `unknown` means the
+indicator area was read and named no mode this build recognises (a reworded
+label, a mode not in the list, a hint painted in its place, two modes at once),
+and a client cycling toward a target **stops** on it: it cannot know which press
+lands where. The value is a closed set with a strict decoder, like `status`; it
+carries no conversation and no screen text. A change fires `session.state` on the
+event stream (§4). It never changes `status`.
+
+It is read from the runtime's own chrome — the row under the composer's closing
+fence — never from the transcript, so a session whose scrollback mentions `plan
+mode on` does not read as being in plan mode. The machine-local session index's
+permission-mode class (#148) is deliberately not a source: it has two values
+(`bypass` or `prompting`), is written once at launch, and so can neither tell the
+prompting modes apart nor follow a press of `BTab`.
+
 `state.prompt.kind` — when present — names what is being asked
 (`resume-chooser`, `folder-trust`, `settings-trust`, `tool-permission`).
 `bypass-permissions` is deliberately absent from what CLASSIFICATION can produce:
@@ -1318,10 +1343,11 @@ What `BTab` promises, and what it does not:
 
 - It is **not a mode setter.** One request is one press. `submitted` means the
   screen changed under the key — not that the mode changed, and not which mode
-  the session is now in. `state` publishes no permission mode, and this route
-  never claims to know it. A client that wants a named mode reads the mode from
-  somewhere else and repeats, re-reading `state` for a fresh `screenDigest`
-  between presses.
+  the session is now in, and this route never claims to know it. A client that
+  wants a named mode reads `state.permissionMode` (above; colab-fleet #194) after
+  each press and repeats, re-reading `state` for a fresh `screenDigest` between
+  presses — and stops on `unknown` or on a mode it did not expect, since the
+  runtime's cycle skips modes a build does not offer and a press cannot be counted.
 - It is **exempt from one refusal the arrows have**: the arrow keys are refused
   on an idle, empty composer because there they drive the runtime's own
   interface (measured: `Left` opens its agent view); an idle, empty composer is
