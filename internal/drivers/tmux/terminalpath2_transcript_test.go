@@ -275,6 +275,37 @@ func appendLine(t *testing.T, path, line string) {
 	}
 }
 
+// appendOnSubmit wraps a fake multiplexer's exec so that line is appended to
+// the transcript at path in the call that delivers the submit key (C-m or
+// Enter): the moment a real runtime records the turn it was just handed.
+//
+// What a transcript test needs is an ORDER, not a delay. The line has to land
+// after Send has fixed its offset (it resolves the source before the
+// keystroke, by contract) and inside the confirmation window. A goroutine that
+// sleeps a fixed time promises neither: a scheduler stall before Send reaches
+// its offset puts the line ahead of it, the transcript then reads as silent,
+// the screen fallback confirms after the whole 4s window, and the
+// by-transcript counter reads 0 — a red result that says nothing about the
+// code (#207). Tying the append to the keystroke leaves nothing to race.
+func appendOnSubmit(t *testing.T, run execFunc, path, line string) execFunc {
+	t.Helper()
+	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		submit := false
+		if len(args) > 0 && args[0] == "send-keys" {
+			for _, a := range args {
+				if a == "C-m" || a == "Enter" {
+					submit = true
+				}
+			}
+		}
+		out, err := run(ctx, name, args...)
+		if submit {
+			appendLine(t, path, line)
+		}
+		return out, err
+	}
+}
+
 // --- readProcessSessionRecord / resolveTranscriptSource -------------------
 
 func TestReadProcessSessionRecordRejectsIncompleteRecords(t *testing.T) {
@@ -459,28 +490,24 @@ func TestSendConfirmsSubmitViaTranscriptWhenOneIsResolvable(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	const text = "please confirm this via the transcript, not the screen"
+
+	// The confirming turn is appended when the submit key is delivered, so the
+	// offset resolveTranscriptSource captured (the file's size before that
+	// keystroke) sits BEFORE this line — proving the match is found going
+	// FORWARD, never by re-reading something already on disk when the call
+	// began. A timed goroutine could not promise that order (#207).
 	f := twoSessions()
 	d := New("testbox",
-		withExec(f.exec),
+		withExec(appendOnSubmit(t, f.exec, convPath, mustJSONLine(t, map[string]any{
+			"type": "user", "sessionId": "conv-1",
+			"message": map[string]any{"role": "user", "content": text},
+		}))),
 		withNonce(func() string { return testNonce }),
 		withClock(func() time.Time { return time.Now() }),
 		WithRecordRoot(recordRoot),
 	)
-
-	const text = "please confirm this via the transcript, not the screen"
 	ref := fleet.SessionRef{Machine: "testbox", ID: sessionName}
-
-	// Append the confirming turn shortly after Send starts, so the offset
-	// resolveTranscriptSource captures (the file's size at that moment)
-	// sits BEFORE this line — proving the match is found going FORWARD,
-	// never by re-reading something already on disk when the call began.
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		appendLine(t, convPath, mustJSONLine(t, map[string]any{
-			"type": "user", "sessionId": "conv-1",
-			"message": map[string]any{"role": "user", "content": text},
-		}))
-	}()
 
 	got, err := d.Send(context.Background(), testCaller, ref, text, driver.SendOptions{Submit: true})
 	if err != nil {
