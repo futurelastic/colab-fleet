@@ -1,3 +1,8 @@
+# Read docs/internals.md, "Secret scanning, and fixtures that look like secrets",
+# before adding a line here. An entry repairs a fingerprint already in published
+# history — one line per fingerprint, commit included. It is never the answer for
+# a new fixture: change the value so it is not key-shaped instead.
+#
 # Two test fixtures in an earlier commit of the delivery-modules branch were
 # 16-character hex strings named "laneKey", which the generic-api-key rule reads
 # as a credential. They are not: they are made-up opaque handles for a fake
