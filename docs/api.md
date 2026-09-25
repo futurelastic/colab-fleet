@@ -474,6 +474,14 @@ once it sits on the chosen row. If the highlight does not arrive, the receipt is
 `unknown`, nothing is confirmed, and the prompt stays up (the highlight may have
 moved).
 
+A question drawn beside a preview pane is answered in two keys, because a digit
+there only moves the highlight: the driver presses the digit, reads that the
+highlight sits on the chosen row, and only then presses Enter, each key in its own
+call (the runtime keeps one key of several sent together). `options` are the list's
+labels alone — the pane is cut off and a wrapped label is one string — and the
+receipt names which question of a tabbed dialog it answered. If the highlight does
+not arrive the receipt is `unknown` and nothing is confirmed.
+
 **Multi-select questions** report `prompt.multiSelect: true`; their leading
 options are checkboxes, painted `[ ] Label` / `[✔] Label`. Answer them with a set
 instead of `choice`:

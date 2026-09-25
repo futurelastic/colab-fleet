@@ -4588,7 +4588,8 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	}
 
 	screenNow := captures[target.paneID].screen()
-	before, unnumbered := parsePromptMenu(screenNow)
+	before, shape := parsePromptShape(screenNow)
+	unnumbered := shape.unnumbered
 	if before == nil {
 		// colab-fleet #64: this refusal fires whenever the screen has no
 		// structured prompt this driver recognises — which is right and
@@ -4674,6 +4675,14 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 				"and answer nothing. Send choices with every option that should end up " +
 				"ticked",
 		}, nil
+	}
+
+	// colab-fleet#204: a question drawn beside a preview pane takes its
+	// answer in two keys, not one — a digit only moves the highlight there —
+	// and the two must not be sent together. See answerPreview. Cancel is one
+	// key on every layout and stays on the path below.
+	if shape.preview && !resp.Cancel {
+		return d.answerPreview(ctx, target.paneID, before, shape, resp)
 	}
 
 	// C-m rather than Enter — see confirmLanded for the measurement behind
@@ -6588,9 +6597,13 @@ func (d *Driver) awaitPrompt(ctx context.Context, paneID string, judge func(*fle
 
 // sameMultiSelectQuestion reports whether b is still the multi-select question
 // a was: the same option labels with the checkboxes set aside, and the same
-// question text with the tab bar's per-question ☐/☒ set aside (ticking the
-// first box flips this question's own tab from ☐ to ☒). Tick state is what
-// the caller is changing, so it is exactly what this comparison ignores.
+// question text. Tick state is what the caller is changing, so it is exactly
+// what this comparison ignores.
+//
+// The dialog's tab bar used to ride inside the question text, so ticking the
+// first box flipped this question's own tab from ☐ to ☒ and the comparison had
+// to set that aside. Question no longer carries the header (colab-fleet#204),
+// so there is nothing to set aside: the header is part of the nonce instead.
 func sameMultiSelectQuestion(a, b *fleet.SessionPrompt) bool {
 	if a == nil || b == nil || !b.MultiSelect || len(a.Options) != len(b.Options) {
 		return false
@@ -6602,8 +6615,7 @@ func sameMultiSelectQuestion(a, b *fleet.SessionPrompt) bool {
 			return false
 		}
 	}
-	unbox := strings.NewReplacer("☒", "☐")
-	return unbox.Replace(a.Question) == unbox.Replace(b.Question)
+	return a.Question == b.Question
 }
 
 // answerMultiSelect answers a multi-select question with a set

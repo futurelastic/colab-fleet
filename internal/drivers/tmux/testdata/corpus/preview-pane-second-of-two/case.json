@@ -1,0 +1,39 @@
+{
+  "name": "preview-pane-second-of-two",
+  "for": "The SECOND question of the same dialog after the first was answered (its tab reads ☒), with two options. Pins that the current tab is read from where the highlight sits and not from the first ☐ in the row, and that the answered first tab does not leak into the question.",
+  "source": "#204",
+  "redactedFrom": "real capture, redacted by corpus-redact (one runtime build, 2026-09-25); the labels and preview text were synthetic to begin with",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "waiting_input",
+      "wantOptions": [
+        "[redacted]",
+        "[redacted]"
+      ],
+      "wantQuestion": "[redacted]",
+      "wantPreviewPane": true,
+      "wantTab": {
+        "at": 2,
+        "of": 2
+      }
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "waiting_input",
+      "wantOptions": [
+        "[redacted]",
+        "[redacted]"
+      ],
+      "wantQuestion": "[redacted]",
+      "wantPreviewPane": true,
+      "wantTab": {
+        "at": 2,
+        "of": 2
+      }
+    }
+  ]
+}

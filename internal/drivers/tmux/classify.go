@@ -669,7 +669,17 @@ func parsePrompt(s screen) *fleet.SessionPrompt {
 // not, so Respond has to know which kind of menu it is answering. The flag
 // stays out of fleet.SessionPrompt: it is how this substrate delivers an
 // answer, not something a caller answers differently.
-func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
+func parsePromptMenu(s screen) (*fleet.SessionPrompt, bool) {
+	p, shape := parsePromptShape(s)
+	return p, shape.unnumbered
+}
+
+// parsePromptShape is parsePromptMenu with every fact about the menu's shape
+// that answering it depends on (see menuShape), not only whether its options
+// carry numbers. A menu drawn beside a preview pane is the second such fact
+// (colab-fleet#204): its options are read from the list column alone, and a
+// caller has to know a pane is there because a digit does not commit on it.
+func parsePromptShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 	// Detection is STRUCTURAL, not footer-based.
 	//
 	// Four footers have been seen on one runtime — "Enter to select · Tab/Arrow
@@ -689,6 +699,27 @@ func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 	if len(s.lines) > promptScanDepth {
 		from = len(s.lines) - promptScanDepth
 	}
+
+	// A preview pane is read first, because it decides both where the window
+	// starts and what a row means (colab-fleet#204). It can be taller than the
+	// window — the runtime clamps one to 24 content lines, which with its
+	// borders and the dialog's chrome is more rows than promptScanDepth — and
+	// then option 1, on the pane's top row, falls out of it and a session
+	// blocked on the dialog reads as idle. So the window is widened to the
+	// pane's top, and a few rows above it for the question and header.
+	pane, hasPane := findPreviewPane(s.lines)
+	if hasPane {
+		shape.preview = true
+		if want := pane.top - previewHeaderRows; want < from {
+			from = max(want, 0)
+		}
+	}
+	// header is the dialog's tab bar or chip, and headerRow its row.
+	header, headerRow := "", -1
+	// afterRule: the previous row read was a rule. A single-question header is
+	// a lone chip, which is only believed directly under the dialog's opening
+	// rule — a checklist item in the agent's own prose looks the same.
+	afterRule := false
 
 	// Review fix (#180 review): mask OUT the active composer's own
 	// fenced rows before scanning for a menu. numberedOption/selected below
@@ -711,7 +742,12 @@ func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 	// masking only ever removes rows a real composer owns, never a real
 	// menu's.
 	promptRow, lastRow, composerScan := composerSpan(s)
-	maskComposer := composerScan == composerFound
+	// Not while a preview pane is on screen (colab-fleet#204). A pane's bottom
+	// border is a rule to composerSpan, so a highlighted option BELOW a short
+	// pane sits between two "rules" and reads as a fenced composer — and
+	// masking it made the last option, and the highlight, vanish. A composer
+	// is not drawn under a dialog and its pane, so there is nothing to mask.
+	maskComposer := composerScan == composerFound && !hasPane
 
 	for i, raw := range s.lines[from:] {
 		idx := from + i
@@ -719,9 +755,29 @@ func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 			continue
 		}
 		line := strings.TrimSpace(raw)
+		if hasPane && pane.contains(idx) {
+			// Inside the pane's span a row is the list column and the pane's
+			// cells side by side. Only the list column is read: the label is
+			// the text to the left of the pane, never the box art after it, and
+			// a pane row with nothing to its left carries no option at all.
+			prefix, _, _ := splitPaneRow(raw)
+			line = strings.TrimSpace(prefix)
+			if line == "" {
+				continue
+			}
+			if _, _, numbered := numberedOption(strings.TrimSpace(strings.TrimPrefix(line, composerRuneMarker))); !numbered && len(p.Options) > 0 {
+				// A long label wraps inside its column, and the continuation
+				// has no number of its own: it is the same label, not a row to
+				// drop (which would report the label cut short).
+				p.Options[len(p.Options)-1] += " " + line
+				continue
+			}
+		}
 		if line == "" {
 			continue
 		}
+		wasRule := afterRule
+		afterRule = isRule(line)
 		selected := strings.HasPrefix(line, composerRuneMarker)
 		body := strings.TrimSpace(strings.TrimPrefix(line, composerRuneMarker))
 		if n, text, ok := numberedOption(body); ok {
@@ -756,8 +812,17 @@ func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 			footer = true
 			continue
 		}
-		if len(p.Options) == 0 && isDialogTabBar(line) {
-			tabBar = true
+		if len(p.Options) == 0 && (isDialogTabBar(line) || (wasRule && isDialogChip(line))) {
+			// The dialog's header. Everything above it is the transcript the
+			// dialog was drawn under, and the header itself is not the
+			// question, so neither belongs in Question (colab-fleet#204: it
+			// read "…tail of the agent's prose ← ☐ Layout ☐ Theme ✔ Submit →
+			// Which layout do you prefer?"). The header is not lost: it is
+			// part of the nonce, below.
+			tabBar = tabBar || isDialogTabBar(line)
+			header, headerRow = line, idx
+			question = nil
+			continue
 		}
 		if len(p.Options) == 0 && !isRule(line) {
 			question = append(question, line)
@@ -789,13 +854,13 @@ func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 		// the footer is what licenses looking for one (colab-fleet#171).
 		if menu := unnumberedMenu(s.lines[from:]); menu != nil {
 			menu.Nonce = promptNonce(menu)
-			return menu, true
+			return menu, menuShape{unnumbered: true}
 		}
-		return nil, false
+		return nil, menuShape{}
 	}
 	structural := len(p.Options) >= 2 && p.Selected > 0 && optionsAreContiguous(p.Options)
 	if !structural && !(footer && len(p.Options) >= 1) {
-		return nil, false
+		return nil, menuShape{}
 	}
 	// Keep the question short: the last couple of lines before the options
 	// are the ask; everything above is transcript.
@@ -803,9 +868,18 @@ func parsePromptMenu(s screen) (p *fleet.SessionPrompt, unnumbered bool) {
 		question = question[n-3:]
 	}
 	p.Question = strings.Join(question, " ")
-	p.Nonce = promptNonce(p)
+	if headerRow >= 0 {
+		rawHeader := header // no escapes to read a highlight from: the position stays unread
+		if headerRow < len(s.raw) {
+			rawHeader = s.raw[headerRow]
+		}
+		shape.tab = dialogTabPosition(rawHeader)
+		p.Nonce = promptNonceWithHeader(p, header, shape.tab)
+	} else {
+		p.Nonce = promptNonce(p)
+	}
 	p.MultiSelect = tabBar && multiSelectBoxes(p) > 0
-	return p, false
+	return p, shape
 }
 
 // The checkbox glyphs a multi-select question paints in front of each option
@@ -1450,6 +1524,30 @@ func promptNonce(p *fleet.SessionPrompt) string {
 		h.Write([]byte{0})
 		h.Write([]byte(o))
 	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// promptNonceWithHeader is promptNonce for a prompt under a dialog header (a
+// tab bar or a chip), with the header and the current tab folded in.
+//
+// The header used to reach the nonce by accident: it sat inside Question, so
+// answering one tab flipped its ☐ to ☒ and the next tab's nonce differed even
+// when two tabs asked the same thing (colab-fleet#168's gotcha). Question no
+// longer carries it (#204), so it goes in on purpose — and with the current
+// tab, which the plain text cannot show: two tabs with the same question, the
+// same options and neither answered read alike, and an answer meant for one
+// must not land on the other.
+func promptNonceWithHeader(p *fleet.SessionPrompt, header string, tab tabPosition) string {
+	h := sha256.New()
+	h.Write([]byte(p.Question))
+	for _, o := range p.Options {
+		h.Write([]byte{0})
+		h.Write([]byte(o))
+	}
+	h.Write([]byte{0, 1})
+	h.Write([]byte(strings.TrimSpace(header)))
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.Itoa(tab.At)))
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 

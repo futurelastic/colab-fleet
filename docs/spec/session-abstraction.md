@@ -3845,6 +3845,40 @@ the highlighted row, are refused instead of reported as answers.
 > when a digit commits and wrong when it toggles. The receipt was built on the
 > first kind of menu and trusted on the second.
 
+**F62 · A question drawn beside a preview pane was read as its labels plus the
+box, and the usual keys recorded the wrong answer.** When a question's options
+carry a preview, the runtime draws the list and a box side by side. Read whole,
+every option row was its label, padding, and that row of the box — 64 to 73
+characters each, on a measured run — the question was the tail of the agent's
+own prose plus the tab bar plus the question, and the nonce changed each time the
+highlight moved, because the box repaints with it. `respond` sent a digit and
+got `unknown`: the answer did not land (#204).
+
+Measured live on one runtime build, in a disposable session: a digit only MOVES
+the highlight on this layout, and Enter commits the highlighted row. The old key
+shape — the digit and Enter in one call — recorded the second question's DEFAULT,
+not the digit, and reported `submitted`: the runtime kept one of the two keys.
+Three `Down` in one call moved one row. One key per call worked every time. A
+single-question dialog has a lone `☐ Header` chip where a multi-question one has
+the tab bar, a long label wraps inside the list column, the box can be shorter
+than the list (option 4 hangs below its bottom border), and a preview taller than
+24 lines is clamped with a divider row — 27 rows of pane, which pushed the option
+list out of the classifier's window and made a blocked session read as `idle`. A
+question has at most four options.
+
+So the classifier reads the list column alone (the pane is found by its closed
+box beside an option, and cut at the gap in front of it, never at a column: a wide
+character takes two screen columns and a capture emits it once), widens its window
+to the pane's top, keeps the header out of the question and puts it, with the
+current tab, into the nonce. `respond` moves the highlight, reads it back, and
+only then confirms, one key per call.
+
+> **A key's meaning belongs to the layout, and several keys in one call are not
+> several keys.** #168 measured that a digit commits; the same digit here only
+> moves. And "the prompt changed" read as "my answer landed" for the third time
+> (#176, #168 before it): the receipt was correct only while every layout
+> behaved like the one it had been built on.
+
 ### The pattern worth naming
 
 §5.7 — *absence and failure are different answers* — has now been discovered

@@ -360,8 +360,10 @@ POST /v1/machines/{machine}/sessions/{id}/respond
 { "choice": 1, "nonce": "b6f0…" }
 ```
 
-- `nonce` covers the question and its options. If the screen changed since you
-  read it, your answer is refused rather than applied to a different question.
+- `nonce` covers the question and its options — and, on a tabbed dialog, the
+  header row and which tab is current, so two tabs that ask the same thing still
+  differ. If the screen changed since you read it, your answer is refused rather
+  than applied to a different question.
   **Always send it** — it is optional only for a human answering something they
   are looking at this second.
 - `choice` is 1-based. Omit it to accept the highlighted default, and `cancel:

@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -58,6 +59,27 @@ type corpusObservation struct {
 	// prompt at all is a failure: the flag licenses a keystroke sequence, so
 	// the case exists to prove the screen that carries it is read whole.
 	WantMultiSelect *bool `json:"wantMultiSelect,omitempty"`
+	// WantOptions, WantQuestion, WantPreviewPane and WantTab pin what a parsed
+	// prompt reads as (#204). Absent means the case does not speak to them.
+	//
+	// A redacted screen has redacted text, so what these can tell apart is not
+	// WHAT a label says but WHERE it ends: an option read from a row shared
+	// with a preview pane is `[redacted]` plus the box art after it unless the
+	// pane was cut off, and a question is `[redacted]` alone only if neither the
+	// tab bar nor the prose above the dialog was folded into it.
+	WantOptions []string `json:"wantOptions,omitempty"`
+	// WantQuestion is compared as a string; a pointer so that "" can be asserted.
+	WantQuestion *string `json:"wantQuestion,omitempty"`
+	// WantPreviewPane is whether the prompt's options were drawn beside a
+	// preview pane — the fact that changes how it is answered.
+	WantPreviewPane *bool `json:"wantPreviewPane,omitempty"`
+	// WantTab is the position of the current question in a tabbed dialog: At
+	// is 1-based, Of counts the question tabs (Submit excluded). Read from the
+	// highlighted tab, which is painted rather than written.
+	WantTab *struct {
+		At int `json:"at"`
+		Of int `json:"of"`
+	} `json:"wantTab,omitempty"`
 }
 
 // corpusCase is one testdata/corpus/<name>/case.json.
@@ -186,6 +208,37 @@ func TestCorpusReplaysToItsStatedState(t *testing.T) {
 					if gotMS != *obs.WantMultiSelect {
 						t.Errorf("observation %d (t+%ds): prompt multiSelect = %v, want %v (prompt: %+v)",
 							i, obs.AfterSeconds, gotMS, *obs.WantMultiSelect, got.Prompt)
+					}
+				}
+				if obs.WantOptions != nil {
+					var gotOpts []string
+					if got.Prompt != nil {
+						gotOpts = got.Prompt.Options
+					}
+					if fmt.Sprintf("%q", gotOpts) != fmt.Sprintf("%q", obs.WantOptions) {
+						t.Errorf("observation %d (t+%ds): options = %q, want %q",
+							i, obs.AfterSeconds, gotOpts, obs.WantOptions)
+					}
+				}
+				if obs.WantQuestion != nil {
+					gotQ := "<no prompt>"
+					if got.Prompt != nil {
+						gotQ = got.Prompt.Question
+					}
+					if gotQ != *obs.WantQuestion {
+						t.Errorf("observation %d (t+%ds): question = %q, want %q",
+							i, obs.AfterSeconds, gotQ, *obs.WantQuestion)
+					}
+				}
+				if obs.WantPreviewPane != nil || obs.WantTab != nil {
+					_, shape := parsePromptShape(newScreen(raw))
+					if obs.WantPreviewPane != nil && shape.preview != *obs.WantPreviewPane {
+						t.Errorf("observation %d (t+%ds): preview pane = %v, want %v",
+							i, obs.AfterSeconds, shape.preview, *obs.WantPreviewPane)
+					}
+					if obs.WantTab != nil && (shape.tab.At != obs.WantTab.At || shape.tab.Of != obs.WantTab.Of) {
+						t.Errorf("observation %d (t+%ds): tab = %d of %d, want %d of %d",
+							i, obs.AfterSeconds, shape.tab.At, shape.tab.Of, obs.WantTab.At, obs.WantTab.Of)
 					}
 				}
 				want := fleet.Status(obs.Want)

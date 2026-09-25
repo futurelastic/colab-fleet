@@ -535,8 +535,14 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 	case "send-keys":
 		if g := f.dialog[sendKeysPane(args)]; g != nil {
 			pane := sendKeysPane(args)
-			for _, k := range sentKeys(args) {
-				g.press(k)
+			if b, ok := g.(interface{ pressBurst(keys []string) }); ok && len(sentKeys(args)) > 1 {
+				// A model that has measured what the runtime does with several
+				// keys in ONE send-keys says so itself (colab-fleet#204).
+				b.pressBurst(sentKeys(args))
+			} else {
+				for _, k := range sentKeys(args) {
+					g.press(k)
+				}
 			}
 			f.captures[pane] = g.screen()
 			return nil, nil

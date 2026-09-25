@@ -3,6 +3,7 @@ package tmux
 import (
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // RedactCapture is the mechanism this repository requires before any real
@@ -50,8 +51,31 @@ import (
 func RedactCapture(raw string) string {
 	lines := strings.Split(raw, "\n")
 	out := make([]string, len(lines))
+	// A preview pane (colab-fleet#204) is the one shape that is not line-local:
+	// its rows are recognised as a pane only by the box they close into, and
+	// the same `│ … │` cells in a table the agent printed are agent content.
+	// So the pane is found once, over the whole capture, by the same function
+	// the classifier uses, and only the rows inside it get the pane treatment.
+	stripped := make([]string, len(lines))
+	last := -1
 	for i, line := range lines {
-		out[i] = redactLine(line)
+		stripped[i] = strings.TrimRight(stripEscapes(line), " \t\r")
+		if stripped[i] != "" {
+			last = i
+		}
+	}
+	pane, hasPane := findPreviewPane(stripped[:last+1])
+	afterRule := false
+	for i, line := range lines {
+		if hasPane && pane.contains(i) {
+			out[i] = redactPaneRow(line)
+			afterRule = false
+			continue
+		}
+		out[i] = redactRow(line, afterRule)
+		if stripped[i] != "" {
+			afterRule = isRule(stripped[i])
+		}
 	}
 	return strings.Join(out, "\n")
 }
@@ -67,7 +91,12 @@ const placeholderToken = "[redacted]"
 // whether the fragment is rendered dim.
 const inputPlaceholder = "<input>"
 
-func redactLine(raw string) string {
+func redactLine(raw string) string { return redactRow(raw, false) }
+
+// redactRow redacts one row. afterRule says the previous non-blank row was a
+// rule, which is what licenses reading a lone `☐ Header` row as a dialog's
+// header chip rather than a checklist line the agent printed.
+func redactRow(raw string, afterRule bool) string {
 	stripped := stripEscapes(raw)
 	trimmed := strings.TrimRight(stripped, " \t\r")
 	content := strings.TrimSpace(trimmed)
@@ -147,8 +176,8 @@ func redactLine(raw string) string {
 	// multi-select question, so a corpus case must keep its shape to replay
 	// as one: the arrows, each question's ☐/☒, and "✔ Submit" are runtime
 	// chrome; each question's header is the agent's own words.
-	if isDialogTabBar(content) {
-		return leading + redactTabBar(content)
+	if isDialogTabBar(content) || (afterRule && isDialogChip(content)) {
+		return leading + redactHeader(raw)
 	}
 
 	// The review screen's confirmation line (#159) is a runtime literal and
@@ -298,28 +327,116 @@ func knownOptionExact(text string) bool {
 	return false
 }
 
-// redactTabBar keeps a dialog tab bar's chrome and discards each question's
-// header: `←  ☒ Fruit  ☐ Size  ✔ Submit  →` becomes
-// `←  ☒ [redacted]  ☐ [redacted]  ✔ Submit  →`. A fixed point by
-// construction — the placeholder is not itself chrome.
-func redactTabBar(content string) string {
-	var tabs []string
-	for _, tab := range strings.Split(content, "  ") {
-		tab = strings.TrimSpace(tab)
-		switch {
-		case tab == "" || tab == "←" || tab == "→" || tab == "✔ Submit":
-			if tab != "" {
-				tabs = append(tabs, tab)
-			}
-		case strings.HasPrefix(tab, "☐ "):
-			tabs = append(tabs, "☐ "+placeholderToken)
-		case strings.HasPrefix(tab, "☒ "):
-			tabs = append(tabs, "☒ "+placeholderToken)
-		default:
-			tabs = append(tabs, placeholderToken)
-		}
+// sgrReverseOn and sgrReverseOff paint the highlighted tab of a redacted
+// header. The runtime paints it with a background colour; a redacted screen
+// carries reverse video instead, because the classifier reads either and a
+// committed fixture should not depend on one theme's colour number.
+const (
+	sgrReverseOn  = "\x1b[7m"
+	sgrReverseOff = "\x1b[27m"
+)
+
+// redactHeader keeps a dialog header's chrome and discards each question's
+// header text: `←  ☒ Fruit  ☐ Size  ✔ Submit  →` becomes
+// `←  ☒ [redacted]  ☐ [redacted]  ✔ Submit  →`, and a lone chip `☐ Pick`
+// becomes `☐ [redacted]`. Which tab is CURRENT survives (colab-fleet#204): it
+// is painted, not written, so it is read from the escapes of the row as
+// captured and painted again on the redacted one — a case about "question 1
+// of 2" has nothing to assert without it. A fixed point by construction: the
+// placeholder is not itself chrome.
+func redactHeader(raw string) string {
+	visible, _ := paintedRuns(raw)
+	tabs := headerTabs(visible)
+	active := activeTab(raw)
+	out := make([]string, 0, len(tabs)+2)
+	arrows := isDialogTabBar(strings.TrimSpace(visible))
+	if arrows {
+		out = append(out, "←")
 	}
-	return strings.Join(tabs, "  ")
+	for i, tab := range tabs {
+		switch {
+		case tab == submitTab:
+		case strings.HasPrefix(tab, "☐ "):
+			tab = "☐ " + placeholderToken
+		case strings.HasPrefix(tab, "☒ "):
+			tab = "☒ " + placeholderToken
+		default:
+			tab = placeholderToken
+		}
+		if i == active {
+			tab = sgrReverseOn + tab + sgrReverseOff
+		}
+		out = append(out, tab)
+	}
+	if arrows {
+		out = append(out, "→")
+	}
+	return strings.Join(out, "  ")
+}
+
+// redactPaneRow redacts one row of a validated preview pane
+// (colab-fleet#204): the option list's cell is redacted as the row would be on
+// its own, the pane's own text is discarded, and what is kept is the SHAPE —
+// the box's borders and the column it starts in — because the classifier reads
+// a pane by its borders and by the gap in front of them.
+//
+// The pane's column is kept by padding the redacted list cell back to the
+// width the original had (never under two spaces, the gap the classifier
+// needs), so a redacted screen replays with the box where it was. Padding is
+// computed from the row's own prefix, which makes redaction a fixed point:
+// the second pass reads the padded prefix it wrote and writes it again.
+func redactPaneRow(raw string) string {
+	stripped := strings.TrimRight(stripEscapes(raw), " \t\r")
+	prefix, frag, ok := splitPaneRow(stripped)
+	if !ok {
+		// Not reachable for a row findPreviewPane vouched for; discarding is
+		// the safe reading of one that somehow is not.
+		return redactRow(raw, false)
+	}
+	left := strings.TrimRight(prefix, " ")
+	redLeft := ""
+	if strings.TrimSpace(left) != "" {
+		redLeft = redactRow(left, false)
+	}
+	pad := utf8.RuneCountInString(prefix)
+	if redLeft != "" {
+		pad = max(pad-utf8.RuneCountInString(redLeft), 2)
+	}
+	return redLeft + strings.Repeat(" ", pad) + redactPaneFragment(frag)
+}
+
+// redactPaneFragment keeps a pane's border rows whole — they hold nothing but
+// box-drawing — and empties its side rows and its divider: the text between a
+// row's edges is the agent's preview, which is the one part of this screen
+// that is transcript by construction.
+func redactPaneFragment(frag string) string {
+	runes := []rune(frag)
+	if len(runes) < 2 {
+		return frag
+	}
+	inner := runes[1 : len(runes)-1]
+	switch runes[0] {
+	case '│':
+		body := " " + placeholderToken
+		if n := utf8.RuneCountInString(body); n < len(inner) {
+			body += strings.Repeat(" ", len(inner)-n)
+		}
+		return "│" + body + "│"
+	case '├':
+		lead, trail := 0, 0
+		for lead < len(inner) && inner[lead] == ruleRune {
+			lead++
+		}
+		if lead == len(inner) {
+			return frag // a plain divider: nothing to discard
+		}
+		for trail < len(inner) && inner[len(inner)-1-trail] == ruleRune {
+			trail++
+		}
+		return "├" + strings.Repeat(string(ruleRune), lead) + " " + placeholderToken + " " +
+			strings.Repeat(string(ruleRune), trail) + "┤"
+	}
+	return frag
 }
 
 func redactOption(n int, text string) string {

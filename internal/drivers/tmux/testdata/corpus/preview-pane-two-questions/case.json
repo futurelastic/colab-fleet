@@ -1,0 +1,41 @@
+{
+  "name": "preview-pane-two-questions",
+  "for": "The FIRST question of a two-question dialog whose options carry a preview: the option list and a box drawn side by side, the box's top border on option 1's row. Captured live with three options. Before #204 every option read as label + padding + the box's row (73 characters), the question read as the tail of the agent's own prose + the tab bar + the question, and the nonce changed whenever the highlight moved because the box shows the highlighted option's preview. Pins: options are the list column alone, the question is the question alone, the pane is recognised, and the current tab is 1 of 2 (read from the highlight, which survives redaction as reverse video).",
+  "source": "#204",
+  "redactedFrom": "real capture, redacted by corpus-redact (one runtime build, 2026-09-25); the labels and preview text were synthetic to begin with",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "waiting_input",
+      "wantOptions": [
+        "[redacted]",
+        "[redacted]",
+        "[redacted]"
+      ],
+      "wantQuestion": "[redacted]",
+      "wantPreviewPane": true,
+      "wantTab": {
+        "at": 1,
+        "of": 2
+      }
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "waiting_input",
+      "wantOptions": [
+        "[redacted]",
+        "[redacted]",
+        "[redacted]"
+      ],
+      "wantQuestion": "[redacted]",
+      "wantPreviewPane": true,
+      "wantTab": {
+        "at": 1,
+        "of": 2
+      }
+    }
+  ]
+}
