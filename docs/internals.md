@@ -125,6 +125,68 @@ through a **login and interactive** shell (`-lic`, not `-lc`). This is the same
 distinction the driver itself has to make when it wraps a created session — see
 `internal/drivers/tmux/environment.go`, which documents the measurement.
 
+## Secret scanning, and fixtures that look like secrets
+
+This repository is public, so a value is exposed the moment a branch is pushed.
+Two things scan for secrets, and neither can take a push back:
+
+| Guard | When it runs | What it reads |
+|---|---|---|
+| `.githooks/pre-commit` (`gitleaks protect --staged`) | before the commit exists | what is staged. Per machine: run `.githooks/install.sh` once |
+| CI `Secret scan (gitleaks)` | a push to trunk, and pull requests | a trunk push reads trunk's own history; a pull request reads only the commits it adds over trunk |
+
+The hook is the only guard that runs before a value is published. CI detects.
+
+**A branch push is not scanned by CI** (#199, ruled). A scan after the push finds
+nothing sooner than the hook and trunk's own run do, and it cannot un-publish
+anything. Adding one also costs something either way. The ship step reads a
+branch's CI as a class at its head sha, and with no run at all the class is
+`none`, which is what is true here. A scan-only run would read `green` with no
+test behind it; running the whole workflow would make every ship wait on the
+`-race` suite, where a flake can block it. The scan step already copes with a
+branch push (`origin/<trunk>..HEAD`), so reopening this is a trigger edit plus a
+choice about the `go` job's `if`.
+
+### Test fixtures that look like credentials
+
+**Make the value not key-shaped.** Measured on the pinned gitleaks 8.30.1: a
+16-character hex string assigned to a key-looking name such as `laneKey` is a
+`generic-api-key` finding; readable placeholders under such names
+(`"laneKey": "lane-one"`, `"token": "not-a-real-token"`) are not. A fixture is
+made up, so make it look made up. The scanner reads prose as well as code, so
+describe a key-shaped value here rather than quoting one — the first draft of
+this very section failed the scan on its own example.
+
+**An ignore entry repairs history; it is never the answer for a new fixture.**
+`.gitleaksignore` takes one line per fingerprint, `<commit>:<file>:<rule>:<line>`,
+and `gitleaks detect -v` prints the fingerprint of each finding. Add an entry
+only for a fingerprint already in published history — a commit that is already
+pushed and that a scan's scope still reaches. As in #185 (`e935936`): change the
+value in the tree, list the earlier commit's fingerprints and nothing else, and
+say why in the comment above them. Three measured properties make an entry
+narrower than it looks:
+
+- It names a commit, so it can only be written after that commit exists. It
+  cannot prevent a finding. For a value that reaches trunk it is a follow-up
+  commit, and trunk's scan stays red until that follow-up lands.
+- Ship squashes, so a branch's intermediate commits never reach trunk: fixing the
+  value on the branch is enough for trunk's scan. An entry earns its place only
+  in a scope that still reaches the old commit — a pull request's range, or a
+  local scan of every ref.
+- Keep the commit in the line. An entry without it (`<file>:<rule>:<line>`) is
+  accepted, but it exempts that line in every commit: a later, different
+  key-shaped value on the same line stayed hidden, where the commit-bound entry
+  did not hide it.
+
+**Do not use an inline `gitleaks:allow` marker.** It works, and that is the
+problem: a line carrying it is not reported, the marker travels with the code and
+covers whatever the line later becomes, and it normalises bypassing the scanner
+in source. An ignore entry is one reviewed line per fingerprint.
+
+The hook's own block message offers `git commit --no-verify` for a certain false
+positive. A key-shaped fixture is not one: the commit would land, and trunk's
+scan reads it.
+
 ## Decided — pointers, not copies
 
 Settled questions, with the reasoning where it lives. Reopen them on new
@@ -145,6 +207,7 @@ evidence, not on taste.
 | Delivery goes through a module seam; the draft rule; terminal path v2 | [ADR 180](adr/180-delivery-module-and-terminal-path-v2.md) |
 | `BTab` (Shift+Tab) is a `keys` key under the `keys` grant, so `keys` can escalate a session | [ADR 188](adr/188-btab-rides-the-keys-grant.md) |
 | An optional external delivery module is a child process speaking JSON lines; off by default; a lane is chosen at create; a send is never delivered twice | [ADR 185](adr/185-optional-external-delivery-modules.md) |
+| CI does not scan a branch push; a key-shaped fixture is fixed by changing its value, and an ignore entry only repairs history already published | [Secret scanning](#secret-scanning-and-fixtures-that-look-like-secrets) (#199) |
 
 **Go, zero dependencies.** Chosen at zero lines of code, on the reasoning that
 language cost is lowest at the start and compounds afterwards. A static binary

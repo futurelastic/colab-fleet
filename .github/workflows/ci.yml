@@ -1,5 +1,19 @@
 name: CI
 
+# Triggers: a push to trunk, and pull requests. A push to any other branch is
+# deliberately NOT a trigger (#199, ruled). This repository is public, so a
+# value is exposed the moment a branch is pushed; a scan after the push finds
+# nothing sooner than the pre-commit hook and trunk's own run do, and cannot
+# un-publish anything. It would also make a branch's CI class say more than
+# was checked: a secret-scan-only run reads `green` with no test run behind it,
+# and running the whole workflow makes every ship wait on the -race suite,
+# where a flake can block it. With no run on a branch the class stays `none`,
+# which is what is true.
+#
+# The gitleaks step already copes with a branch push (scope origin/<trunk>..HEAD),
+# so revisiting this is a trigger edit plus a choice about the `go` job's `if`.
+# Reasoning, and the convention for key-shaped test fixtures:
+# docs/internals.md, "Secret scanning, and fixtures that look like secrets".
 on:
   push:
     branches: [main, master]
