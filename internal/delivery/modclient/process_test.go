@@ -58,6 +58,50 @@ func installFake(t *testing.T, b modtest.Behaviour) string {
 	return modtest.Install(t, t.TempDir(), "fake", b)
 }
 
+// A real child process gets budgets of its own, not the ones fastConfig gives
+// an in-memory fake (#214, #207 mechanism 4). Nothing lets a test control how
+// long the host takes to start a process, and a host running the whole suite in
+// parallel takes seconds where an idle one takes milliseconds.
+//
+// The budget that decides is realChildHello, not the bound a test waits with:
+// a missed hello is not retried — the client refuses the child and disables
+// the module until the daemon restarts — so a hello budget that is only a guess
+// turns one slow start into a dead wait, which then reports the wait's bound
+// ("timed out after 15s waiting for the child to say hello") rather than the
+// budget that was really spent. Both numbers are backstops: a test that passes
+// never waits for either, and waitChild ends a wait on a refusal at once.
+const (
+	// realChildHello is how long the client waits for a real child's hello.
+	realChildHello = 60 * time.Second
+	// realChildWait bounds a test's wait on something a real child must do,
+	// and is longer than realChildHello so that a refusal is reported by name.
+	realChildWait = 90 * time.Second
+)
+
+// realChildDeadlines are the per-request limits for a real child: the module is
+// a whole process that the scheduler may not run for a while, not a function.
+var realChildDeadlines = modclient.Deadlines{Default: realChildWait, Prepare: realChildWait, AttachExtra: realChildWait}
+
+// waitChild waits until cond holds — an event a real child causes — and fails
+// at once, with the client's own reason, if the client gives up on the module
+// for good (StateDisabled) since nothing can make cond true after that.
+func waitChild(t testing.TB, c *modclient.Client, cond func() bool, what string) {
+	t.Helper()
+	waitFor(t, func() bool {
+		t.Helper()
+		if st := c.Status(); st.State == modclient.StateDisabled {
+			t.Fatalf("waiting for %s: the client disabled the module for good: %s", what, st.Reason)
+		}
+		return cond()
+	}, realChildWait, what)
+}
+
+// waitUsable is waitChild for the module to come up.
+func waitUsable(t testing.TB, c *modclient.Client, what string) {
+	t.Helper()
+	waitChild(t, c, c.Usable, what)
+}
+
 // realClient starts a Client over the real ExecLauncher.
 func realClient(t *testing.T, path string, mut ...func(*modclient.Config)) (*modclient.Client, *rec, *pids) {
 	t.Helper()
@@ -67,7 +111,8 @@ func realClient(t *testing.T, path string, mut ...func(*modclient.Config)) (*mod
 		cfg.Launcher = ps.launch(modclient.ExecLauncher)
 		env, _ := modclient.ChildEnv(os.Getenv, t.TempDir(), nil)
 		cfg.Env = env
-		cfg.HelloTimeout = 5 * time.Second // a cold test binary under -race is slow to start
+		cfg.HelloTimeout = realChildHello
+		cfg.Deadlines = realChildDeadlines
 	}}, mut...)...)
 	return c, r, ps
 }
@@ -86,7 +131,7 @@ func TestProcess_SpawnsServeWithMinimalEnv(t *testing.T) {
 
 	c, _, ps := realClient(t, path, func(cfg *modclient.Config) { cfg.Env = env })
 	c.Start()
-	waitFor(t, c.Usable, 15*time.Second, "the real child to say hello")
+	waitUsable(t, c, "the real child to say hello")
 
 	d, err := modtest.ReadEnvDump(dump)
 	if err != nil {
@@ -201,8 +246,8 @@ func TestProcess_StderrLoggedQuoted(t *testing.T) {
 	path := installFake(t, modtest.Behaviour{Stderr: stderr})
 	c, r, _ := realClient(t, path)
 	c.Start()
-	waitFor(t, c.Usable, 15*time.Second, "the module")
-	waitFor(t, func() bool { return len(stderrLogs(r)) >= 3 }, 5*time.Second, "the stderr lines")
+	waitUsable(t, c, "the module")
+	waitFor(t, func() bool { return len(stderrLogs(r)) >= 3 }, realChildWait, "the stderr lines")
 	c.Stop() // stderr reaches EOF: the unterminated last line is flushed
 
 	logs := stderrLogs(r)
@@ -243,7 +288,7 @@ func TestProcess_KillMidRunRestartsAndReady(t *testing.T) {
 	path := installFake(t, modtest.Behaviour{RecordTo: record, Ops: map[string]modtest.OpScript{"attach": {HangForever: true}}})
 	c, r, ps := realClient(t, path, func(cfg *modclient.Config) { cfg.BackoffMin, cfg.BackoffMax = 20*time.Millisecond, 40*time.Millisecond })
 	c.Start()
-	waitFor(t, func() bool { return len(r.Ready()) == 1 }, 15*time.Second, "the first generation")
+	waitChild(t, c, func() bool { return len(r.Ready()) == 1 }, "the first generation")
 
 	// A request is in flight inside the real process when it is killed.
 	failed := make(chan error, 1)
@@ -272,7 +317,7 @@ func TestProcess_KillMidRunRestartsAndReady(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the in-flight request was never failed after the process was killed")
 	}
-	waitFor(t, func() bool { return c.Generation() == 2 && c.Usable() }, 15*time.Second, "the restarted module to be ready")
+	waitChild(t, c, func() bool { return c.Generation() == 2 && c.Usable() }, "the restarted module to be ready")
 	waitFor(t, func() bool { return len(r.Ready()) == 2 }, 5*time.Second, "OnReady for the second generation")
 
 	if got := r.Ready(); !reflect.DeepEqual(got, []uint64{1, 2}) {
@@ -302,7 +347,7 @@ func TestProcess_ExitByScriptRestartsOnce(t *testing.T) {
 	c.Start()
 	// The first process answers three health requests and exits by itself; the
 	// marker keeps the second one alive.
-	waitFor(t, func() bool { return len(r.Ready()) == 2 }, 20*time.Second, "the module to exit and come back")
+	waitChild(t, c, func() bool { return len(r.Ready()) == 2 }, "the module to exit and come back")
 	if !reflect.DeepEqual(r.Ready(), []uint64{1, 2}) || r.Count("exited") != 1 {
 		t.Errorf("ready=%v exited=%d", r.Ready(), r.Count("exited"))
 	}
@@ -330,7 +375,7 @@ func TestProcess_ShutdownGrace(t *testing.T) {
 		path := installFake(t, modtest.Behaviour{})
 		c, _, ps := realClient(t, path, func(cfg *modclient.Config) { cfg.ShutdownGrace = 10 * time.Second })
 		c.Start()
-		waitFor(t, c.Usable, 15*time.Second, "the module")
+		waitUsable(t, c, "the module")
 		start := time.Now()
 		c.Stop()
 		if took := time.Since(start); took > 8*time.Second {
@@ -345,7 +390,7 @@ func TestProcess_ShutdownGrace(t *testing.T) {
 		path := installFake(t, modtest.Behaviour{IgnoreStdinClose: true})
 		c, _, ps := realClient(t, path, func(cfg *modclient.Config) { cfg.ShutdownGrace = 300 * time.Millisecond })
 		c.Start()
-		waitFor(t, c.Usable, 15*time.Second, "the module")
+		waitUsable(t, c, "the module")
 		pid := ps.all()[0]
 		start := time.Now()
 		c.Stop()
