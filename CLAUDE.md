@@ -24,6 +24,11 @@ This repo follows the [colab-handbook](https://github.com/godx-jp/colab-handbook
 - **Writes:** `serial-direct` — one unit of work in flight, landing on trunk.
   Claim before you start (`colab claim <issue>`); the claim is what stops two
   sessions taking the same issue.
+- **Secret guard:** `.githooks/pre-commit` runs only in a clone that ran
+  `.githooks/install.sh` — the setting is per clone, and a commit says nothing
+  when it is off (#201). `go run ./cmd/colab-fleetd doctor --offline` from a
+  clone prints a `hooks.pre-commit` row; `warn` means commits there are not
+  scanned. Check it before your first commit in a clone you have not used.
 
 ## This repo is PUBLIC
 
