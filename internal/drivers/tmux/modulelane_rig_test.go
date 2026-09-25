@@ -115,6 +115,16 @@ func newModRig(t *testing.T, o rigOptions) *modRig {
 		if o.realPath != "" {
 			env, _ := modclient.ChildEnv(os.Getenv, r.dir, nil)
 			cc.Path, cc.Env, cc.Launcher = o.realPath, env, nil
+			// A real child is a re-exec of this race-instrumented test binary
+			// through a shell, so how long it takes to say hello is the host's
+			// business and shows a tail: about a second in one start in twelve at a
+			// load average near 20, on a host where the median is 30ms. The 2s
+			// above suits the in-memory fake, which has no process to start; here
+			// the test is about the whole path working, not about start-up
+			// being quick. And a missed hello is not retried: the client refuses
+			// the child and disables the module until the daemon restarts, so one
+			// slow start fails the whole test rather than costing a retry (#207).
+			cc.HelloTimeout = 15 * time.Second
 		}
 		cfg.Clients = []modclient.Config{cc}
 	}

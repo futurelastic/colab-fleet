@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,8 +16,16 @@ import (
 
 // transcriptSession sets up a record root holding one conversation named
 // after the session, so the driver resolves a transcript for it, and returns
-// a function that appends one entry to it shortly after it is called.
-func transcriptSession(t *testing.T) (d *Driver, f *fakeMux, ref fleet.SessionRef, appendSoon func(map[string]any)) {
+// a function that queues one entry for the runtime to record: it is appended
+// when the submit key is delivered, which is when a real runtime writes the
+// turn it was just handed.
+//
+// It is an order, not a delay, that these tests need: after Send has fixed
+// its transcript offset, inside its confirmation window. The helper used to
+// append from a goroutine after a fixed 30ms, which promises neither: a stall
+// before Send reached its offset put the entry ahead of it, the transcript read
+// as silent, and the screen fallback decided after the whole window (#207).
+func transcriptSession(t *testing.T) (d *Driver, f *fakeMux, ref fleet.SessionRef, recordOnSubmit func(map[string]any)) {
 	t.Helper()
 	root := t.TempDir()
 	const cwd, name = "/work/alpha", "alpha💬"
@@ -35,28 +44,37 @@ func transcriptSession(t *testing.T) (d *Driver, f *fakeMux, ref fleet.SessionRe
 		t.Fatal(err)
 	}
 	f = twoSessions()
-	d = New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
-		withClock(time.Now), WithRecordRoot(root))
-	appendSoon = func(v map[string]any) {
-		go func() {
-			time.Sleep(30 * time.Millisecond)
-			fh, err := os.OpenFile(conv, os.O_APPEND|os.O_WRONLY, 0o600)
-			if err != nil {
-				return
+	var mu sync.Mutex
+	var queued []map[string]any
+	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, err := f.exec(ctx, name, args...)
+		if isSubmitKeystroke(args) {
+			mu.Lock()
+			entries := queued
+			queued = nil
+			mu.Unlock()
+			for _, v := range entries {
+				appendLine(t, conv, strings.TrimSuffix(line(v), "\n"))
 			}
-			defer fh.Close()
-			_, _ = fh.WriteString(line(v))
-		}()
+		}
+		return out, err
 	}
-	return d, f, fleet.SessionRef{Machine: "testbox", ID: name}, appendSoon
+	d = New("testbox", withExec(run), withNonce(func() string { return testNonce }),
+		withClock(time.Now), WithRecordRoot(root))
+	recordOnSubmit = func(v map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		queued = append(queued, v)
+	}
+	return d, f, fleet.SessionRef{Machine: "testbox", ID: name}, recordOnSubmit
 }
 
 // #180 M3: a slash command the runtime accepted is recorded as a
 // <command-name> user entry. That confirms the send, and is never read as "a
 // different turn" that turns an accepted command into a false unknown.
 func TestSlashCommandSendConfirmsFromTranscript(t *testing.T) {
-	d, _, ref, appendSoon := transcriptSession(t)
-	appendSoon(map[string]any{"type": "user", "message": map[string]any{"role": "user",
+	d, _, ref, recordOnSubmit := transcriptSession(t)
+	recordOnSubmit(map[string]any{"type": "user", "message": map[string]any{"role": "user",
 		"content": "<command-name>/rename</command-name>\n            <command-message>rename</command-message>\n            <command-args>alpha-renamed</command-args>"}})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -90,8 +108,8 @@ func TestCommandOutputEntriesAreNotCandidates(t *testing.T) {
 // When the transcript records a different turn and the composer emptied, the
 // receipt must not claim the text is sitting in the composer.
 func TestDifferentTurnReasonIsAccurate(t *testing.T) {
-	d, _, ref, appendSoon := transcriptSession(t)
-	appendSoon(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "a different message entirely"}})
+	d, _, ref, recordOnSubmit := transcriptSession(t)
+	recordOnSubmit(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "a different message entirely"}})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	got, err := d.Send(ctx, testCaller, ref, "the message this driver sent", driver.SendOptions{Submit: true})
@@ -257,8 +275,8 @@ func TestSlashCommandSendConfirmsFromLocalCommandEntries(t *testing.T) {
 		"result": localCommandResult("rename", "alpha-renamed"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			d, _, ref, appendSoon := transcriptSession(t)
-			appendSoon(entry)
+			d, _, ref, recordOnSubmit := transcriptSession(t)
+			recordOnSubmit(entry)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			got, err := d.Send(ctx, testCaller, ref, "/rename alpha-renamed", driver.SendOptions{Submit: true})

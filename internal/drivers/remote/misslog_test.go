@@ -196,13 +196,26 @@ func TestACallerHangingUpIsNotLoggedAsAPeerMiss(t *testing.T) {
 }
 
 // A dead port is a transport miss, and it is logged too.
+//
+// The driver's clock is frozen at one instant, and that is what makes the
+// budget assertion exact rather than a race (#207). The call's deadline is
+// stamped when the call begins and the `started` the budget is measured from
+// a few statements later, so the budget printed is the floor minus whatever
+// the scheduler let pass in between: a couple of milliseconds on a loaded
+// runner, which rendered "3s" as "2.998s" and turned trunk red. With both
+// reads returning the same instant the budget is the floor by construction,
+// so the assertion stays "exactly the 3s floor" with no tolerance to tune. The
+// frozen instant is the real now, so the context deadline built from it is
+// still in the future and the dial genuinely fails with a transport error.
 func TestAClosedPortIsLoggedAsATransportMiss(t *testing.T) {
 	buf := captureLog(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	url := srv.URL
 	srv.Close()
 
-	if _, err := New("closedbox", url).List(context.Background(), caller, driver.ListFilter{}); err != nil {
+	frozen := time.Now()
+	d := New("closedbox", url, withClock(func() time.Time { return frozen }))
+	if _, err := d.List(context.Background(), caller, driver.ListFilter{}); err != nil {
 		t.Fatal(err)
 	}
 	lines := missLines(buf, "closedbox")
