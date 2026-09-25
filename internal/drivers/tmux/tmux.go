@@ -4660,8 +4660,11 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 			Reason: "choices answers a multi-select question, and this prompt is not " +
 				"recognised as one (prompt.multiSelect is not set); answer it with choice",
 		}, nil
-	case len(resp.Choices) > 0:
-		return d.answerMultiSelect(ctx, target.paneID, before, boxes, resp)
+	case len(resp.Choices) > 0 || (resp.Text != nil && boxes > 0):
+		// colab-fleet#206: on a multi-select question the free-text row is one
+		// of the rows the boxes' own walk passes, so text rides the same path
+		// — with or without boxes to tick alongside it.
+		return d.answerMultiSelect(ctx, target, before, boxes, resp)
 	case boxes > 0 && !resp.Cancel && resp.Choice <= boxes:
 		// Measured: on a checkbox row a digit flips that one box and C-m
 		// flips the highlighted one, and neither moves the dialog on. So a
@@ -4675,6 +4678,13 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 				"and answer nothing. Send choices with every option that should end up " +
 				"ticked",
 		}, nil
+	}
+
+	// colab-fleet#206: an answer in the caller's own words, through the
+	// free-text row. A multi-select question took it above; what reaches here
+	// is a single-select one.
+	if resp.Text != nil {
+		return d.answerFreeText(ctx, target, before, resp)
 	}
 
 	// colab-fleet#204: a question drawn beside a preview pane takes its
@@ -6605,10 +6615,21 @@ func (d *Driver) awaitPrompt(ctx context.Context, paneID string, judge func(*fle
 // to set that aside. Question no longer carries the header (colab-fleet#204),
 // so there is nothing to set aside: the header is part of the nonce instead.
 func sameMultiSelectQuestion(a, b *fleet.SessionPrompt) bool {
+	return sameMultiSelectQuestionAround(a, b, 0)
+}
+
+// sameMultiSelectQuestionAround is sameMultiSelectQuestion with option skip
+// (1-based; 0 sets none aside) left out of the comparison. It exists for the
+// one row whose label the caller changes on purpose: the free-text row, whose
+// label becomes the text typed into it (colab-fleet#206).
+func sameMultiSelectQuestionAround(a, b *fleet.SessionPrompt, skip int) bool {
 	if a == nil || b == nil || !b.MultiSelect || len(a.Options) != len(b.Options) {
 		return false
 	}
 	for i := range a.Options {
+		if i == skip-1 {
+			continue
+		}
 		la, _, _ := checkboxLabel(a.Options[i])
 		lb, _, _ := checkboxLabel(b.Options[i])
 		if la != lb {
@@ -6648,7 +6669,8 @@ func sameMultiSelectQuestion(a, b *fleet.SessionPrompt) bool {
 // stops the sequence there: nothing further is sent, and the receipt says
 // which boxes were already flipped. Resending the same set with the fresh
 // nonce is then safe, because the set names the end state, not the moves.
-func (d *Driver) answerMultiSelect(ctx context.Context, paneID string, before *fleet.SessionPrompt, boxes int, resp fleet.Response) (fleet.DeliveryReceipt, error) {
+func (d *Driver) answerMultiSelect(ctx context.Context, target *paneRow, before *fleet.SessionPrompt, boxes int, resp fleet.Response) (fleet.DeliveryReceipt, error) {
+	paneID := target.paneID
 	for _, c := range resp.Choices {
 		if c > boxes {
 			return fleet.DeliveryReceipt{
@@ -6665,6 +6687,21 @@ func (d *Driver) answerMultiSelect(ctx context.Context, paneID string, before *f
 			Outcome: fleet.OutcomeRefused,
 			Reason:  "this question has more checkboxes than one digit can reach",
 		}, nil
+	}
+	// colab-fleet#206: the caller's own words, typed into the free-text row
+	// that sits directly under the boxes. Decided from the screen already
+	// read, before any key is sent, like every other refusal here.
+	var text string
+	freeIdx := 0
+	if resp.Text != nil {
+		var refusal string
+		if text, refusal = freeTextPayload(resp); refusal != "" {
+			return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: refusal}, nil
+		}
+		if !before.FreeText {
+			return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: notFreeTextReason(before)}, nil
+		}
+		freeIdx = freeTextRow(before)
 	}
 	want := make([]bool, boxes)
 	for _, c := range resp.Choices {
@@ -6686,6 +6723,12 @@ func (d *Driver) answerMultiSelect(ctx context.Context, paneID string, before *f
 	resend := "; nothing further was sent. Read the state again and resend the same " +
 		"choices with the new nonce: the set names the end state, so the boxes " +
 		"already flipped are not flipped twice"
+	if resp.Text != nil {
+		resend = "; nothing further was sent. Read the state again before answering: the " +
+			"boxes already flipped are not flipped twice, but text that reached the free-text " +
+			"row stays there, and a row that holds text is no longer recognised as free-text " +
+			"(prompt.freeText), so answer that one with choices alone or cancel it"
+	}
 	unknown := func(what string) (fleet.DeliveryReceipt, error) {
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
@@ -6694,34 +6737,48 @@ func (d *Driver) answerMultiSelect(ctx context.Context, paneID string, before *f
 	}
 
 	cur := before
-	// The highlight goes onto a checkbox FIRST, before any digit. Off the
-	// checkboxes the free-text field has focus (measured): a digit is typed
-	// into it instead of flipping a box, and Right moves its cursor instead
-	// of the dialog. Each Up is read back; the bound is the rows below the
-	// boxes, plus the unnumbered Submit row.
-	for press := 0; cur.Selected < 1 || cur.Selected > boxes; press++ {
-		if press > len(cur.Options)-boxes+1 {
-			return unknown("the highlight could not be moved onto a checkbox row, " +
-				"where the key that moves the dialog on is not swallowed")
-		}
-		if _, err := d.run(ctx, d.bin, "send-keys", "-t", paneID, "Up"); err != nil {
-			return fleet.DeliveryReceipt{}, fmt.Errorf("respond: %w", err)
-		}
-		prev := cur
-		verdict, now := d.awaitPrompt(ctx, paneID, func(now *fleet.SessionPrompt) promptVerdict {
-			switch {
-			case !sameMultiSelectQuestion(prev, now):
-				return promptDiverged
-			case now.Selected != prev.Selected:
-				return promptArrived
+	// same is this question with its ticks — and, once text is going in, its
+	// free-text row — set aside; skip is that row, 0 while nothing is typed.
+	skip := 0
+	same := func(a, b *fleet.SessionPrompt) bool { return sameMultiSelectQuestionAround(a, b, skip) }
+
+	// moveOntoBox puts the highlight on a checkbox row. Off the checkboxes the
+	// free-text field has focus (measured): a digit is typed into it instead of
+	// flipping a box, and Right moves its cursor instead of the dialog. Each Up
+	// is read back; the bound is the rows below the boxes, plus the unnumbered
+	// Submit row. ok is false when the receipt is final.
+	moveOntoBox := func() (rcpt fleet.DeliveryReceipt, ok bool, err error) {
+		for press := 0; cur.Selected < 1 || cur.Selected > boxes; press++ {
+			if press > len(cur.Options)-boxes+1 {
+				r, e := unknown("the highlight could not be moved onto a checkbox row, " +
+					"where the key that moves the dialog on is not swallowed")
+				return r, false, e
 			}
-			return promptPending
-		})
-		if verdict != promptArrived {
-			return unknown("the highlight did not move off a row where the key " +
-				"that moves the dialog on is swallowed")
+			if _, err := d.run(ctx, d.bin, "send-keys", "-t", paneID, "Up"); err != nil {
+				return fleet.DeliveryReceipt{}, false, fmt.Errorf("respond: %w", err)
+			}
+			prev := cur
+			verdict, now := d.awaitPrompt(ctx, paneID, func(now *fleet.SessionPrompt) promptVerdict {
+				switch {
+				case !same(prev, now):
+					return promptDiverged
+				case now.Selected != prev.Selected:
+					return promptArrived
+				}
+				return promptPending
+			})
+			if verdict != promptArrived {
+				r, e := unknown("the highlight did not move off a row where the key " +
+					"that moves the dialog on is swallowed")
+				return r, false, e
+			}
+			cur = now
 		}
-		cur = now
+		return fleet.DeliveryReceipt{}, true, nil
+	}
+	// The highlight goes onto a checkbox FIRST, before any digit.
+	if rcpt, ok, err := moveOntoBox(); !ok {
+		return rcpt, err
 	}
 
 	for i := 1; i <= boxes; i++ {
@@ -6733,7 +6790,7 @@ func (d *Driver) answerMultiSelect(ctx context.Context, paneID string, before *f
 		}
 		prev := cur
 		verdict, now := d.awaitPrompt(ctx, paneID, func(now *fleet.SessionPrompt) promptVerdict {
-			if !sameMultiSelectQuestion(prev, now) {
+			if !same(prev, now) {
 				return promptDiverged
 			}
 			got := promptTicks(now, boxes)
@@ -6756,6 +6813,54 @@ func (d *Driver) answerMultiSelect(ctx context.Context, paneID string, before *f
 		done = append(done, label(i))
 	}
 
+	if resp.Text != nil {
+		// Down onto the free-text row, one key per call and each read back: a
+		// digit there would only TOGGLE its tick (measured), and the field
+		// takes focus only when the highlight is on it. The row's own tick
+		// follows the text — typing ticks it (measured) — so the boxes are
+		// already at their end state before any of this.
+		for press := 0; cur.Selected != freeIdx; press++ {
+			if press > freeIdx {
+				return unknown("the highlight could not be moved onto the free-text row")
+			}
+			if _, err := d.run(ctx, d.bin, "send-keys", "-t", paneID, "Down"); err != nil {
+				return fleet.DeliveryReceipt{}, fmt.Errorf("respond: %w", err)
+			}
+			prev := cur
+			verdict, now := d.awaitPrompt(ctx, paneID, func(now *fleet.SessionPrompt) promptVerdict {
+				switch {
+				case !same(prev, now):
+					return promptDiverged
+				case now.Selected != prev.Selected:
+					return promptArrived
+				}
+				return promptPending
+			})
+			if verdict != promptArrived {
+				return unknown("the highlight did not move down toward the free-text row")
+			}
+			cur = now
+		}
+		skip = freeIdx
+		rcpt, typed, refused, err := d.typeIntoFreeTextRow(ctx, target, cur, freeIdx, text, func(now *fleet.SessionPrompt) bool {
+			return same(cur, now)
+		})
+		if err != nil || refused {
+			return rcpt, err
+		}
+		// Typing ticks the row (measured), and an answer whose box is clear is
+		// not one the runtime hands over — so the tick is read, not assumed.
+		if _, ticked, _ := checkboxLabel(typed.Options[freeIdx-1]); !ticked {
+			return unknown("the text reached the free-text row but its box did not read back as ticked, " +
+				"so it would not be handed over")
+		}
+		cur = typed
+		// Back onto a checkbox: Right is swallowed by the field.
+		if rcpt, ok, err := moveOntoBox(); !ok {
+			return rcpt, err
+		}
+	}
+
 	if _, err := d.run(ctx, d.bin, "send-keys", "-t", paneID, "Right"); err != nil {
 		return fleet.DeliveryReceipt{}, fmt.Errorf("respond: %w", err)
 	}
@@ -6764,7 +6869,7 @@ func (d *Driver) answerMultiSelect(ctx context.Context, paneID string, before *f
 		switch {
 		case now == nil:
 			return promptPending // a repaint mid-frame, or the dialog closed: read on
-		case sameMultiSelectQuestion(prev, now):
+		case same(prev, now):
 			return promptPending
 		}
 		return promptArrived
@@ -6776,11 +6881,17 @@ func (d *Driver) answerMultiSelect(ctx context.Context, paneID string, before *f
 			ticked = append(ticked, label(i))
 		}
 	}
-	answered := "ticked " + strings.Join(ticked, ", ")
+	answered := "ticked no box"
+	if len(ticked) > 0 {
+		answered = "ticked " + strings.Join(ticked, ", ")
+	}
 	if len(done) > 0 {
 		answered += " (" + progress() + ")"
-	} else {
+	} else if len(ticked) > 0 {
 		answered += " (already ticked exactly so; no box was flipped)"
+	}
+	if resp.Text != nil {
+		answered += ", and " + freeTextTyped(text, freeIdx)
 	}
 	if resp.Nonce == "" {
 		answered += "; answered without a nonce, so nothing verified the prompt " +

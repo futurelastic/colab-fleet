@@ -182,6 +182,26 @@ type SessionPrompt struct {
 	// the rule cannot send Choices to a driver that would ignore it.
 	MultiSelect bool `json:"multiSelect,omitempty"`
 
+	// FreeText reports that this question offers the runtime's free-text row
+	// ("Type something") and that a driver can answer through it: send
+	// Response.Text rather than picking a listed option. The row is still one
+	// of Options — at its own index, so the numbering a caller already relies
+	// on does not move — but it is not one of the agent's choices, and a
+	// caller drawing the options as a list should draw it as an input.
+	//
+	// False means "not recognised as answerable this way", not "known to
+	// have none": a driver sets it only on a shape it has measured, and a
+	// caller must never send Text to a prompt without it. An older peer that
+	// has never heard of Text never reports the field either, so — as with
+	// MultiSelect — the field is also the capability signal: a caller that
+	// follows the rule cannot send Text to a driver that would ignore it and
+	// read the rest of the body as "accept the highlighted option".
+	//
+	// It is false again once the row holds text: the row can only be found by
+	// its placeholder, and after an answer has been typed there is nothing
+	// left to find it by.
+	FreeText bool `json:"freeText,omitempty"`
+
 	// Kind is what the driver thinks is being asked, or empty when it does
 	// not recognise the question. Advisory — see PromptKind. Empty must never
 	// be read as "safe to answer".

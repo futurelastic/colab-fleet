@@ -1130,9 +1130,13 @@ POST /v1/machines/{machine}/sessions/{id}/respond?runtime=
                          // or {"cancel": true, "nonce": "..."} to dismiss
                          // or {"choices": [1, 3], "nonce": "..."} on a prompt
                          //    reporting multiSelect: tick exactly these, move on one step
+                         // or {"text": "...", "nonce": "..."} on a prompt reporting
+                         //    freeText: type the text into the free-text row and confirm it
+                         //    (with "choices" too, on a multiSelect prompt)
 
 → 200 { "outcome": "queued" | "refused", "reason": "..." }
-→ 400 invalid   // choices empty, repeated, < 1, or combined with choice/cancel
+→ 400 invalid   // choices empty, repeated, < 1, or combined with choice/cancel;
+                // text empty or blank, over the input byte limit, or combined with choice/cancel
 ```
 
 `state.waitingOn` discriminates `waiting_input`, which carries two situations
@@ -1256,6 +1260,43 @@ the question has moved on. After an `unknown` receipt — a flip that did not
 read back — the tick state has changed, so the old nonce is refused too; read
 the state again and send the same set with the new nonce. The set names the
 end state, so boxes already flipped are not flipped twice.
+
+`state.prompt.freeText` — when true — says the question offers the runtime's
+free-text row (`Type something`) and that a driver can answer through it
+(colab-fleet issue #206). The row is still one of `options`, at its own index, so
+the numbering a caller already relies on does not move; it is not one of the
+agent's choices, and a client drawing the options as a list should draw it as an
+input. Answer it with `{"text": "...", "nonce": "..."}`: the driver puts the
+highlight on that row, types the text, **reads the row back**, and only then
+confirms; the receipt is `submitted` only once the answered question has left the
+screen (the next tab, the review screen, or nothing) and never carries the text
+back. On a multi-select question `text` rides with `choices` — the boxes to leave
+ticked and the free-text row's own content together name the end state — and the
+dialog moves ONE step on and stops, exactly as `choices` alone does; `text`
+without `choices` there leaves no box ticked. `text` cannot be combined with
+`choice` or `cancel`.
+
+Send `text` **only** to a prompt reporting `freeText: true`. That is the same
+rule as `choices`, and for the same reason: a peer built before `text` existed
+never reports the field, would ignore it, and would read the remaining
+`{"nonce": ...}` as "accept the highlighted option". `Response.text` is a
+pointer on the wire type so that `{"text": ""}` stays a field when a
+peer-relaying driver marshals the body onward — a plain string with `omitempty`
+would arrive as `{}` — and an empty or blank text is a `400`: confirming the
+runtime's free-text field while it is EMPTY declines the whole dialog, every
+question in it, so an empty answer must never reach a driver. `text` is held to
+the byte limit `input` is (`maxInputBytes`, colab-fleet issue #114) at the same
+boundary, for a local and a relayed request alike, and is put through the same
+control-byte sanitiser; a leading `!` or `/` is not refused, because the answer
+field — unlike the composer — was measured to take both as plain text.
+
+`freeText` fails to absent (§5.7): it is set only on the shapes whose key
+sequence was measured — a numbered menu without a preview pane, and on a
+multi-select question the row directly after the boxes — and never on a review
+screen. It is absent again once the row holds text, because the row is found by
+its placeholder: a person's text, or an earlier attempt's, is not typed over. A
+`text` sent to such a prompt is refused, and `choice` (`0` accepts what is in the
+row) or `cancel` answers it.
 
 A question whose options carry a preview is drawn with the option list and a
 box side by side, and `state.prompt` reads the LIST only (colab-fleet issue

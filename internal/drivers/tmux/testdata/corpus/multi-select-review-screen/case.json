@@ -9,13 +9,15 @@
       "afterSeconds": 0,
       "young": false,
       "want": "waiting_input",
-      "wantMultiSelect": false
+      "wantMultiSelect": false,
+      "wantFreeText": false
     },
     {
       "afterSeconds": 30,
       "young": false,
       "want": "waiting_input",
-      "wantMultiSelect": false
+      "wantMultiSelect": false,
+      "wantFreeText": false
     }
   ]
 }

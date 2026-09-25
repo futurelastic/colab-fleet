@@ -5,9 +5,9 @@
   "redactedFrom": "reconstructed, not captured: the review screen's layout and its literals (the confirmation line, the two option labels, the section title) were read from the runtime's own binary, and the answers and question text are placeholders that the redactor discards anyway. Scoped to the SHAPE #159 recorded, not claimed as a byte-for-byte capture",
   "alive": true,
   "observations": [
-    { "afterSeconds": 0, "young": false, "want": "waiting_input" },
-    { "afterSeconds": 1, "young": false, "want": "waiting_input" },
-    { "afterSeconds": 2, "young": false, "want": "waiting_input" },
-    { "afterSeconds": 30, "young": false, "want": "waiting_input" }
+    { "afterSeconds": 0, "young": false, "want": "waiting_input", "wantFreeText": false },
+    { "afterSeconds": 1, "young": false, "want": "waiting_input", "wantFreeText": false },
+    { "afterSeconds": 2, "young": false, "want": "waiting_input", "wantFreeText": false },
+    { "afterSeconds": 30, "young": false, "want": "waiting_input", "wantFreeText": false }
   ]
 }

@@ -427,6 +427,14 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		if pane != "" {
 			f.pasteLog = append(f.pasteLog, content)
 		}
+		// A dialog that takes a paste says so itself (colab-fleet#206): the
+		// runtime's free-text field receives a bracketed paste as typed text,
+		// which is not what a composer does with one.
+		if g, ok := f.dialog[pane].(interface{ paste(text string) }); ok && pane != "" {
+			g.paste(content)
+			f.captures[pane] = f.dialog[pane].screen()
+			return nil, nil
+		}
 		if pane != "" && !f.noEcho {
 			if f.collapsePastes && (strings.Count(content, "\n") >= 4 || len(content) > 800) {
 				if f.pasteSeq == nil {

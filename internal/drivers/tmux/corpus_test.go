@@ -59,6 +59,13 @@ type corpusObservation struct {
 	// prompt at all is a failure: the flag licenses a keystroke sequence, so
 	// the case exists to prove the screen that carries it is read whole.
 	WantMultiSelect *bool `json:"wantMultiSelect,omitempty"`
+	// WantFreeText, when present, is what the observation's prompt must report
+	// as freeText (#206). Like multiSelect the flag licenses a keystroke
+	// sequence, so it is pinned on real captures, in both directions: true on
+	// the shapes it was measured on, false on the review screen, the
+	// unnumbered menu and the preview layouts it must not appear on. A true
+	// expectation with no prompt at all is a failure.
+	WantFreeText *bool `json:"wantFreeText,omitempty"`
 	// WantOptions, WantQuestion, WantPreviewPane and WantTab pin what a parsed
 	// prompt reads as (#204). Absent means the case does not speak to them.
 	//
@@ -208,6 +215,13 @@ func TestCorpusReplaysToItsStatedState(t *testing.T) {
 					if gotMS != *obs.WantMultiSelect {
 						t.Errorf("observation %d (t+%ds): prompt multiSelect = %v, want %v (prompt: %+v)",
 							i, obs.AfterSeconds, gotMS, *obs.WantMultiSelect, got.Prompt)
+					}
+				}
+				if obs.WantFreeText != nil {
+					gotFT := got.Prompt != nil && got.Prompt.FreeText
+					if gotFT != *obs.WantFreeText {
+						t.Errorf("observation %d (t+%ds): prompt freeText = %v, want %v (prompt: %+v)",
+							i, obs.AfterSeconds, gotFT, *obs.WantFreeText, got.Prompt)
 					}
 				}
 				if obs.WantOptions != nil {

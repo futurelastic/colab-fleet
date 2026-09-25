@@ -47,3 +47,58 @@ func TestRespondRejectsContradictoryChoicesBeforeAnyDriver(t *testing.T) {
 		}
 	}
 }
+
+// colab-fleet#206: the same boundary for a free-text answer. A body whose text
+// is empty, or combined with a choice or a cancel, is the caller's fault and a
+// 400 before any driver sees it — an empty free-text field confirmed declines
+// the whole dialog, so it must never reach one — and text is held to the byte
+// limit input is held to (#114), with the limit named in the refusal.
+func TestRespondBoundsFreeTextAtTheHTTPBoundary(t *testing.T) {
+	srv := principalSrv(t, []Principal{
+		{Name: "operator", Token: "tok", Grants: []Grant{GrantRead, GrantSend}},
+	})
+	post := func(body string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost,
+			srv.URL+"/v1/machines/testbox/sessions/s1/respond", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer tok")
+		req.Header.Set("Idempotency-Key", "k-text-"+body[:min(len(body), 24)])
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var sb strings.Builder
+		buf := make([]byte, 512)
+		n, _ := resp.Body.Read(buf)
+		sb.Write(buf[:n])
+		return resp.StatusCode, sb.String()
+	}
+	for _, body := range []string{
+		`{"text":""}`,
+		`{"text":"   "}`,
+		`{"text":"x","choice":2}`,
+		`{"text":"x","cancel":true}`,
+	} {
+		if got, _ := post(body); got != http.StatusBadRequest {
+			t.Errorf("%s → %d, want 400", body, got)
+		}
+	}
+	long := `{"text":"` + strings.Repeat("a", defaultMaxInputBytes+1) + `","nonce":"n"}`
+	code, msg := post(long)
+	if code != http.StatusBadRequest {
+		t.Errorf("an over-length text → %d, want 400", code)
+	}
+	if !strings.Contains(msg, "1024") {
+		t.Errorf("the refusal does not name the limit: %s", msg)
+	}
+	if code, _ := post(`{"text":"a fine answer","nonce":"n"}`); code == http.StatusBadRequest {
+		t.Errorf("a well-formed text body was rejected as invalid")
+	}
+	if code, _ := post(`{"text":"with a tick","choices":[1],"nonce":"n"}`); code == http.StatusBadRequest {
+		t.Errorf("text with choices (multi-select) was rejected as invalid")
+	}
+}

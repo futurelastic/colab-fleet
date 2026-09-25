@@ -1502,6 +1502,16 @@ func handleRespond(svc *Service) http.HandlerFunc {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error()})
 			return
 		}
+		// colab-fleet#206: a free-text answer is typed into a field of the same
+		// runtime input reads, so it is bounded by the same limit and for the
+		// same reason (#114) — at this boundary, for a local and a relayed
+		// request alike, before a driver is asked to type it.
+		if body.Text != nil {
+			if ferr := rejectOverLength("text", *body.Text, machine, svc.MaxInputBytes()); ferr != nil {
+				writeError(w, ferr)
+				return
+			}
+		}
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()

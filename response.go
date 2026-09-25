@@ -3,6 +3,7 @@ package fleet
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Response answers a prompt a session is blocked on (§3).
@@ -69,6 +70,42 @@ type Response struct {
 	// on the strength of an earlier read.
 	Choices []int `json:"choices,omitempty"`
 
+	// Text answers a question in the caller's own words, through the row the
+	// runtime appends to every question an agent asks — "Type something" —
+	// instead of through one of the agent's options (SessionPrompt.FreeText).
+	// The driver puts the highlight on that row, types Text into it, reads the
+	// row back to prove the text arrived, and only then confirms; the receipt
+	// is `submitted` only once the answered question has left the screen.
+	//
+	// # Why a pointer
+	//
+	// So that an empty string and an absent field stay different things on
+	// their way through a relay. Every field here is `omitempty`, and a plain
+	// string would drop `"text": ""` when a peer-relaying driver marshalled it
+	// onward: the peer would receive a body with no answer in it, and a body
+	// with no answer means "accept whatever is highlighted". That is the same
+	// trap an empty Choices set is refused for (see Validate), and it is closed
+	// the same way — a pointer marshals `""` as `""`, so the emptiness reaches
+	// the one place that refuses it.
+	//
+	// # Why an empty or blank Text is refused rather than sent
+	//
+	// Measured live: confirming the free-text field while it is empty does not
+	// answer the question with nothing — the runtime treats it as declining the
+	// WHOLE dialog, every question in it. So an empty answer would be reported
+	// as a submission and would cost the caller answers it never meant to
+	// withdraw.
+	//
+	// # Combining it with the other fields
+	//
+	// Text cannot be combined with Choice (which selects a listed option) or
+	// Cancel. On a multi-select question it is combined with Choices on
+	// purpose: Choices names the boxes to leave ticked and Text is the
+	// free-text row's own content, so together they name the whole end state,
+	// exactly as Choices alone names a set. Text without Choices there means
+	// no box is ticked and the text is the whole answer.
+	Text *string `json:"text,omitempty"`
+
 	// Cancel dismisses the prompt instead of answering it. A caller that
 	// does not like any of the options needs a way to say so that is not
 	// "pick one anyway".
@@ -102,6 +139,19 @@ type Response struct {
 // apart is the one that decoded the caller's own bytes, so the check lives
 // here, where every receiving handler calls it.
 func (r Response) Validate() error {
+	if r.Text != nil {
+		if strings.TrimSpace(*r.Text) == "" {
+			return errors.New("text is empty or blank; an empty free-text answer is not an " +
+				"answer — the runtime reads it as declining the whole dialog, so it is never sent")
+		}
+		if r.Choice != 0 {
+			return errors.New("text and choice cannot be combined: text answers through the " +
+				"free-text row, choice selects a listed option")
+		}
+		if r.Cancel {
+			return errors.New("text and cancel cannot be combined")
+		}
+	}
 	if r.Choices == nil {
 		return nil
 	}

@@ -501,6 +501,68 @@ empty, repeated, below 1, or combined with `choice` or `cancel`. Send it only to
 a prompt reporting `multiSelect` — an older peer never reports the field, and
 would read the rest of the body as "accept the highlighted option".
 
+**Answering in your own words.** Every question an agent asks also offers a
+free-text row, the runtime's `Type something`. A question that offers it
+reports `prompt.freeText: true`, and `respond` takes the text to type into it:
+
+```json
+{ "text": "a flat white, oat milk", "nonce": "…" }
+```
+
+The driver puts the highlight on that row, types `text` into it, reads the row
+back to prove the text arrived, and only then confirms. `submitted` means the
+answered question has left the screen — the next question of a tabbed dialog, its
+review screen, or nothing. The receipt reports how many bytes were typed and
+never the text itself. It works on all three shapes:
+
+- **A single-select question** (alone, or one tab of a multi-question dialog):
+  the text is the whole answer, and confirming it moves the dialog on exactly as
+  a `choice` does — after the last question that is the review screen, which is
+  answered with `{"choice": 1, "nonce": "…"}` like any other.
+- **A multi-select question**: send `text` together with `choices` to tick those
+  boxes *and* fill the free-text row (`{"choices": [1, 3], "text": "durian",
+  "nonce": "…"}`), or `text` alone for an answer with no box ticked — the set
+  names the end state, so a box that was ticked is cleared. The dialog moves one
+  step on and stops there, as `choices` does. Typing ticks the free-text row's
+  own box; that is what hands the text over.
+- **`text` cannot be combined with `choice` or `cancel`**; that, an empty or
+  blank `text`, and a `text` over the same byte limit `input` is held to
+  (`maxInputBytes`, 1024 by default) are each a `400`, before any driver sees
+  the body.
+
+Rules that follow from how the row behaves on the one runtime measured:
+
+- **Send `text` only to a prompt reporting `freeText: true`.** A peer built
+  before `text` existed never reports the field, would ignore `text`, and would
+  read the rest of the body as "accept the highlighted option". Following the
+  rule makes the field its own capability check. It is reported only for the
+  shapes measured: not on an unnumbered menu, beside a preview pane, on a review
+  screen, or on a list of checkboxes the driver does not recognise as
+  multi-select.
+- **An empty answer is never sent.** Confirming the free-text field while it is
+  empty does not answer with nothing: the runtime treats it as declining the
+  *whole* dialog, every question in it. That is why an empty or blank `text` is a
+  `400`, why text that is empty once control characters and surrounding
+  whitespace are removed is refused, and why Enter is only ever pressed after the
+  row has been read back showing the text. A paste that did not land — or landed
+  altered — is `unknown`, with nothing confirmed.
+- **Once a row holds text it is no longer offered.** The row can only be found by
+  its placeholder, so after text is typed — by a person, or by an earlier attempt
+  that ended `unknown` — `freeText` is absent and `text` is refused rather than
+  typed over. Answer that prompt with `choice` (`0` accepts the highlighted row,
+  which submits the text that is there) or `cancel`.
+- **Escaping.** The text goes through the same sanitiser `input` uses — control
+  bytes and paste-bracket escapes are dropped — and surrounding whitespace is
+  trimmed; newlines inside the text are kept, and continue on rows of the field.
+  Unlike `input`, a leading `!` or `/` is *not* refused: the composer reads those
+  as its own syntax, and the answer field was measured not to (both arrive as
+  plain text — `/var/log/app` is an ordinary answer).
+- **Long text.** The field grows with the text and the dialog is read from the
+  bottom of the screen, so an answer that wraps over many rows can push the
+  question out of what the driver reads. The read-back then fails, nothing is
+  confirmed, and the field may still hold the text; `keys` can reach a dialog
+  `respond` cannot classify. Keep answers short.
+
 `respond` refuses when it sees no prompt it recognises. That refusal is its
 safety property, and it is why raw keys are a separate endpoint rather than a
 flag here.
