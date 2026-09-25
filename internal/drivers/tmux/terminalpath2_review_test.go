@@ -335,25 +335,26 @@ func TestSendConfirmsSubmitViaARealQueueOperationEnqueue(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	const text = "PROBE busy session: queued while the runtime is generating"
+
+	// The runtime's enqueue lands when the submit key is delivered — after
+	// Send has fixed its offset, inside its window — rather than on a timer.
+	// A goroutine sleeping 30ms could not promise either: a stall before Send
+	// reached its offset put the line ahead of it, the transcript read as
+	// silent, and the screen fallback confirmed after the whole 4s window
+	// with the by-transcript counter at 0 (#207).
 	f := twoSessions()
 	d := New("testbox",
-		withExec(f.exec),
+		withExec(appendOnSubmit(t, f.exec, convPath, mustJSONLine(t, map[string]any{
+			"type": "queue-operation", "operation": "enqueue", "sessionId": "conv-1",
+			"timestamp": time.Now().Format(time.RFC3339Nano),
+			"content":   text,
+		}))),
 		withNonce(func() string { return testNonce }),
 		withClock(func() time.Time { return time.Now() }),
 		WithRecordRoot(recordRoot),
 	)
-
-	const text = "PROBE busy session: queued while the runtime is generating"
 	ref := fleet.SessionRef{Machine: "testbox", ID: sessionName}
-
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		appendLine(t, convPath, mustJSONLine(t, map[string]any{
-			"type": "queue-operation", "operation": "enqueue", "sessionId": "conv-1",
-			"timestamp": time.Now().Format(time.RFC3339Nano),
-			"content":   text,
-		}))
-	}()
 
 	got, err := d.Send(context.Background(), testCaller, ref, text, driver.SendOptions{Submit: true})
 	if err != nil {
