@@ -72,7 +72,9 @@ func rowByID(t *testing.T, rows []doctorRow, id string) doctorRow {
 
 func runDoctorTest(vars map[string]string, args ...string) (code int, stdout, stderr string) {
 	var out, errb bytes.Buffer
-	_, code = runDoctor(append([]string{"doctor"}, args...), func(k string) string { return vars[k] }, &out, &errb)
+	// No working directory: the clone row (#201) is about whichever clone the
+	// tests happen to run in, and is tested on its own in doctor_hooks_test.go.
+	_, code = runDoctorAt("", append([]string{"doctor"}, args...), func(k string) string { return vars[k] }, &out, &errb)
 	return code, out.String(), errb.String()
 }
 

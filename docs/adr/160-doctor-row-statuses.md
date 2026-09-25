@@ -35,6 +35,9 @@ wrong is named in the row.** Examples:
 - The multiplexer found only on the invoking shell's `PATH`. This is the
   bare-`PATH` trap under a service manager.
 - A peer whose build differs from, or cannot be proven equal to, ours.
+- A source clone whose pre-commit secret guard is off (`hooks.pre-commit`, #201,
+  [ADR 201](201-precommit-guard-visibility.md)). The one row about a clone rather
+  than the installation; a clone kept only to read or to build from is legitimate.
 
 A principal one grant short of the full supervisor set warns even when a full
 supervisor exists. One missing grant is the shape of drift (a machine added

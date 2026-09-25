@@ -132,10 +132,25 @@ Two things scan for secrets, and neither can take a push back:
 
 | Guard | When it runs | What it reads |
 |---|---|---|
-| `.githooks/pre-commit` (`gitleaks protect --staged`) | before the commit exists | what is staged. Per machine: run `.githooks/install.sh` once |
+| `.githooks/pre-commit` (`gitleaks protect --staged`) | before the commit exists | what is staged. Per **clone**: it is off until `.githooks/install.sh` has run in that clone |
 | CI `Secret scan (gitleaks)` | a push to trunk, and pull requests | a trunk push reads trunk's own history; a pull request reads only the commits it adds over trunk |
 
-The hook is the only guard that runs before a value is published. CI detects.
+The hook is the only guard that runs before a value is published, **where it is
+on**. CI detects.
+
+Nothing turns it on for you, and it cannot report that it is off. What switches
+it on is `core.hooksPath`, which lives in one clone's own `.git/config`; a clone
+that never ran the installer commits with no scan and no output (#201, measured:
+a commit quoting a key-shaped value went through in silence in such a clone,
+where the scanner run by hand refused it). So this is the guard a clone is most
+likely to be missing without knowing. `colab-fleetd doctor`, run from inside a
+clone, has a row for it, `hooks.pre-commit`: `warn` when git would run no
+pre-commit hook here, or a different one, or one it cannot run (no executable
+bit, or no `gitleaks` on `PATH`, where the hook prints a notice and lets the
+commit through); `skip` anywhere that is not a clone of this repository. It
+answers when asked. It cannot warn at the moment of a commit, because the only
+thing git runs at that moment is the hook that is missing. Why a row and not an
+installer run on the operator's behalf: [ADR 201](adr/201-precommit-guard-visibility.md).
 
 **A branch push is not scanned by CI** (#199, ruled). A scan after the push finds
 nothing sooner than the hook and trunk's own run do, and it cannot un-publish
@@ -207,6 +222,7 @@ evidence, not on taste.
 | Delivery goes through a module seam; the draft rule; terminal path v2 | [ADR 180](adr/180-delivery-module-and-terminal-path-v2.md) |
 | `BTab` (Shift+Tab) is a `keys` key under the `keys` grant, so `keys` can escalate a session | [ADR 188](adr/188-btab-rides-the-keys-grant.md) |
 | A session's permission mode is published in `state`, read off the runtime's own indicator row; absent means nothing read, `unknown` means read and unnamed, never a guess | [ADR 194](adr/194-permission-mode-in-state.md) |
+| The pre-commit guard being off is reported by a `doctor` row, from the clone; nothing installs it on the operator's behalf | [ADR 201](adr/201-precommit-guard-visibility.md) |
 | An optional external delivery module is a child process speaking JSON lines; off by default; a lane is chosen at create; a send is never delivered twice | [ADR 185](adr/185-optional-external-delivery-modules.md) |
 | CI does not scan a branch push; a key-shaped fixture is fixed by changing its value, and an ignore entry only repairs history already published | [Secret scanning](#secret-scanning-and-fixtures-that-look-like-secrets) (#199) |
 

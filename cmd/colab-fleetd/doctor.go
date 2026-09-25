@@ -48,6 +48,11 @@ import (
 // same authenticated GET /v1/health a deploy already makes, and --offline
 // removes even that.
 //
+// The one thing it runs besides reading files is `git rev-parse --git-path`,
+// for the hooks.pre-commit row (#201) — a question about the CLONE a person
+// commits in rather than about the installation, answered only when doctor is
+// run from inside one, and read-only like everything else here.
+//
 // Paste-safe. It never prints a token value, a filesystem path, or a peer's
 // address — rows name the VARIABLE instead (FLEET_STATE_DIR, not its value),
 // the same discipline main.go's own startup logging follows. Machine ids and
@@ -93,8 +98,15 @@ type doctorEnv struct {
 	Principal string
 	Skip      map[string]bool
 	Timeout   time.Duration
-	// LookPath resolves the multiplexer when FLEET_TMUX_BIN is unset.
+	// LookPath resolves the multiplexer when FLEET_TMUX_BIN is unset, and git
+	// and gitleaks for the hooks.pre-commit row.
 	LookPath func(string) (string, error)
+	// Dir is where the command was run from. Only hooks.pre-commit (#201)
+	// reads it: that row is about the clone a person commits in, not about the
+	// installation, so it needs somewhere to look. Empty means "not
+	// applicable" — which is what keeps a test independent of whichever clone
+	// it happens to run in.
+	Dir string
 }
 
 // W_OK for access(2). Spelled out because the syscall package does not export
@@ -114,12 +126,23 @@ func usageDoctor() string {
 		"  --offline         do not probe peers",
 		"  --skip=ID         report a row as skipped (e.g. inbox.index on a machine that",
 		"                    deliberately has no inbox)",
+		"",
+		"hooks.pre-commit is the one row about a source clone rather than the installation:",
+		"it is answered only when run from inside a clone of this repository, and is",
+		"skipped anywhere else.",
 	}, "\n")
 }
 
 // runDoctor handles `colab-fleetd doctor ...` and reports whether it consumed
 // the invocation, and the exit code to use when it did.
 func runDoctor(args []string, getenv func(string) string, stdout, stderr io.Writer) (handled bool, code int) {
+	dir, _ := os.Getwd() // an unreadable working directory leaves it empty: not applicable
+	return runDoctorAt(dir, args, getenv, stdout, stderr)
+}
+
+// runDoctorAt is runDoctor with the working directory named, so a test can
+// point the clone row at a repository it built, or at nothing.
+func runDoctorAt(dir string, args []string, getenv func(string) string, stdout, stderr io.Writer) (handled bool, code int) {
 	if len(args) == 0 || args[0] != "doctor" {
 		return false, 0
 	}
@@ -128,6 +151,7 @@ func runDoctor(args []string, getenv func(string) string, stdout, stderr io.Writ
 		Skip:     map[string]bool{},
 		Timeout:  3 * time.Second,
 		LookPath: exec.LookPath,
+		Dir:      dir,
 	}
 	asJSON := false
 	for _, a := range args[1:] {
@@ -444,6 +468,14 @@ func runChecks(ctx context.Context, env doctorEnv) []doctorRow {
 		default:
 			c.add(probePeerGrants(ctx, env, prefix+".grants", strings.TrimRight(p.base, "/"), credential, self, p.machine))
 		}
+	}
+
+	// --- the clone (#201) ---------------------------------------------------------
+	// Last, because it is the one row that is not about the installation.
+	if c.skipped("hooks.pre-commit") {
+		c.add(doctorRow{ID: "hooks.pre-commit"})
+	} else {
+		c.add(checkPreCommitHook(ctx, env))
 	}
 
 	return c.rows
