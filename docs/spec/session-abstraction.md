@@ -832,6 +832,21 @@ same conversation reports it exactly when its own record says so. The limit: a r
 the driver did not observe — the service restarted after the relaunch — cannot be retired,
 and the session is answered as one that was never replaced would be.
 
+**...nor to one conversation inside that process** (colab-fleet #203). The runtime can
+start a new conversation in the *same* process — the pid and its start time do not move —
+and the only thing that changes is the conversation the runtime's own record of the process
+names. A driver that remembers an answer must therefore check the remembered conversation
+against that record on every read it answers from memory, and answer afresh when the
+process's own record names another one, treating the earlier identifier exactly as a
+replaced process's is treated: retired, and no longer evidence for the session. The check
+is a file read — it must not spawn a subprocess, so a listing stays a constant number of
+spawns however many sessions it names — and it acts only on a record it can tie to the
+process the answer was established against, by the start time the answer was corroborated
+with. A record that cannot be read, that names a different working directory, or that
+carries a different start time is absence of evidence and never a change. The limit: an
+answer established with no start time (from the name alone, while the record was unusable)
+was never tied to a process instant, and is left as it is.
+
 ### 2.10 ResumeOutcome
 
 ```

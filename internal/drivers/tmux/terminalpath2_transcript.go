@@ -688,8 +688,23 @@ func (d *Driver) readProcessSessionRecord(pid int) (processSessionRecord, bool) 
 // well-formed. The sentence carries no filesystem path — it ends up in a
 // session's conversation evidence, which a client reads.
 func (d *Driver) readProcessSessionRecordWhy(pid int) (processSessionRecord, string) {
+	rec, why, rejected := d.readProcessSessionRecordQuiet(pid)
+	if rejected {
+		d.counters.incr(counterProcessSessionRecordRejected)
+	}
+	return rec, why
+}
+
+// readProcessSessionRecordQuiet is readProcessSessionRecordWhy that counts
+// nothing and says whether it refused a session id for its shape (#203). The
+// check that runs on every memo hit in a listing reads a record it has no
+// decision to make about, and a counter of refusals that ticked once per listing
+// per session for one bad file would measure the listing rate, not the files.
+// Everything else — what it reads, what it refuses, the sentence it gives — is
+// the same code, so the two cannot disagree about a record.
+func (d *Driver) readProcessSessionRecordQuiet(pid int) (rec processSessionRecord, why string, rejected bool) {
 	if d.processSessionsRoot == "" {
-		return processSessionRecord{}, "no per-process record root is configured"
+		return processSessionRecord{}, "no per-process record root is configured", false
 	}
 	b, err := os.ReadFile(filepath.Join(d.processSessionsRoot, fmt.Sprintf("%d.json", pid)))
 	if err != nil {
@@ -698,25 +713,23 @@ func (d *Driver) readProcessSessionRecordWhy(pid int) (processSessionRecord, str
 			err = pe.Err
 		}
 		if errors.Is(err, fs.ErrNotExist) {
-			return processSessionRecord{}, fmt.Sprintf("the runtime has written no per-process record for pid %d", pid)
+			return processSessionRecord{}, fmt.Sprintf("the runtime has written no per-process record for pid %d", pid), false
 		}
-		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d could not be read: %v", pid, err)
+		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d could not be read: %v", pid, err), false
 	}
-	var rec processSessionRecord
 	if err := json.Unmarshal(b, &rec); err != nil {
-		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d is not readable JSON", pid)
+		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d is not readable JSON", pid), false
 	}
 	if rec.PID != pid || rec.SessionID == "" || rec.CWD == "" || rec.ProcStart == "" {
-		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d is incomplete or names another process", pid)
+		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d is incomplete or names another process", pid), false
 	}
 	// #180 L5: the session id becomes part of a path. Anything but the
 	// runtime's own UUID shape is refused, so "../../elsewhere" never
 	// resolves outside the record root.
 	if !uuidShaped(rec.SessionID) {
-		d.counters.incr(counterProcessSessionRecordRejected)
-		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d carries a conversation id that is not UUID-shaped", pid)
+		return processSessionRecord{}, fmt.Sprintf("the per-process record for pid %d carries a conversation id that is not UUID-shaped", pid), true
 	}
-	return rec, ""
+	return rec, "", false
 }
 
 // processRecordFor is the half of the per-process check that needs no
@@ -864,8 +877,10 @@ func (d *Driver) resolveLiveProcessSessionID(ctx context.Context, ref fleet.Sess
 // processGeneration) — for the listing as much as for this path. What it cannot
 // see is `/clear`: the runtime regenerates its id under the SAME process, the
 // pid and its start time do not move, and only the per-process record says so.
-// So this cross-check is still what covers `/clear` here; the listing has no such
-// check yet (#203).
+// So this cross-check is still what covers `/clear` here. The listing has its
+// own since #203 — a memo hit peeks at the same record, without the `ps` — so
+// the two answer alike whether or not a listing ran between the `/clear` and this
+// send.
 //
 // # Since #182 the lookup consults the per-process record too
 //

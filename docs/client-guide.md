@@ -234,7 +234,8 @@ started it. A session whose runtime is relaunched in place (a recovery that mint
 conversation, say) keeps its name and its pane and changes conversation; the next read
 reports the new one. In between, `"known": false` means the new process has not written
 its record yet — wait and read again; never keep acting on the id you read before the
-relaunch.
+relaunch. The same holds when the runtime starts a new conversation inside the running
+process (a `/clear`): the next read names the new conversation, never the previous one.
 
 **This costs one round trip and, on the multiplexer driver, a constant number
 of subprocess spawns regardless of session count.** You are not being charged

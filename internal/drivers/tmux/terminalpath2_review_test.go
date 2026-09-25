@@ -560,7 +560,7 @@ func TestResolveTranscriptSourceDetectsCacheDisagreementWithLiveIdentity(t *test
 	// that finds these two sources disagreeing reports the conflict itself and
 	// never reaches the cache — TestResolveTranscriptSourceUsesLiveIdentityWhenSourcesConflict.)
 	seeded := d.conversations.lookup(conversationKey{pane: target.paneID, created: target.created},
-		target.cwd, ref.ID, target.created, processGeneration{pid: target.pid}, nil)
+		target.cwd, ref.ID, target.created, processGeneration{pid: target.pid}, liveConversationSource{})
 	if seeded == nil || !seeded.Known || seeded.ID != "conv-1" {
 		t.Fatalf("setup: the cache should hold conv-1, got %+v", seeded)
 	}
