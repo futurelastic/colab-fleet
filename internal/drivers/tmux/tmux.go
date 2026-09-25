@@ -1703,7 +1703,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	// that can answer "I looked and could not tell" — which is a different
 	// answer from the absent field a driver with no store leaves behind.
 	for _, p := range pending {
-		conv := d.conversations.lookup(p.key, p.cwd, p.name, p.started,
+		conv := d.conversations.lookup(p.key, p.cwd, p.name, p.started, processGeneration{pid: p.pid},
 			d.liveConversationSource(ctx, p.pid, p.cwd))
 		sessions[p.index].Conversation = conv
 		// #72: a session whose CREATE asked to resume a conversation gets

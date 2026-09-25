@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"fmt"
+	"time"
 
 	fleet "github.com/godx-jp/colab-fleet"
 )
@@ -60,6 +61,11 @@ import (
 type liveConversation struct {
 	id       string
 	evidence string
+	// startedAt is the start time of the process the record was corroborated
+	// against, set exactly when id is (#202). The store keeps it beside the
+	// answer so a later read can tell a recycled pid from the same process
+	// without asking the OS again.
+	startedAt time.Time
 }
 
 // liveConversationSource asks the per-process record. It is handed to the
@@ -117,7 +123,7 @@ func (d *Driver) liveConversationFrom(live liveProcessIdentity, ok bool) liveCon
 		if !ok {
 			return liveConversation{evidence: "the per-process record could not be used to identify this session's process"}
 		}
-		return liveConversation{id: live.sessionID, evidence: live.evidence}
+		return liveConversation{id: live.sessionID, evidence: live.evidence, startedAt: live.process.startedAt}
 	}
 }
 

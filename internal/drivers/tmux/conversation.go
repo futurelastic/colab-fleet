@@ -75,6 +75,27 @@ import (
 // here. Changing it changes what a create does, which belongs with capturing
 // the identifier at creation rather than with reading it afterwards.
 //
+// # An answer is remembered for one run of the pane's process (#202)
+//
+// A pane outlives the process in it. A relaunch inside the same multiplexer
+// session leaves the pane, its creation time and the session's name as they
+// were, so a memo keyed on those alone served the previous process's
+// conversation for as long as the service ran — with evidence still claiming a
+// "verified same process generation" for a pid that no longer existed. The memo
+// now carries the process it was established against (processGeneration) and is
+// dropped when a read presents a different one.
+//
+// Dropping it is not enough by itself: the name still points at the record the
+// session's FIRST process titled, so the fallback derivation would read the same
+// id straight back one listing later. The ids that replaced runs held are kept
+// (conversationMemo.retired) and a name-derived answer that names one of them is
+// set aside; the new process's own record then answers, or, until it exists, no
+// one does and the answer is unknown.
+//
+// The limit, stated because it is real: what is kept is in memory. A replacement
+// that happened before the service started was never observed, has nothing to
+// retire, and is answered as a session that was never replaced would be.
+//
 // # Two cases the name cannot answer, and what answers them (#182)
 //
 // A RESUMED session continues a record that began before the session did, so
@@ -133,6 +154,48 @@ type conversationKey struct {
 	created time.Time
 }
 
+// processGeneration is which run of which process a conversation answer was
+// established against (#202). The key above names the PANE, and a pane outlives
+// the process in it: a recovery tool that relaunches the runtime inside the same
+// multiplexer session leaves the pane, its creation time and the session name
+// exactly as they were while the conversation changes underneath them. The pid
+// is what the multiplexer reports about the pane's process on every read, at no
+// cost; startedAt is what tells a recycled pid from the same process, and costs
+// a `ps` — so it is carried only when some caller already paid for it.
+type processGeneration struct {
+	pid       int
+	startedAt time.Time // zero when nobody measured it
+}
+
+// replacedBy reports whether now is provably a different process than g. Where
+// either side is unknown it is not: a pid the multiplexer could not report, or a
+// start time nobody measured, is an absence of evidence and never a change —
+// treating it as one would blank a sound answer every time a read came back thin.
+func (g processGeneration) replacedBy(now processGeneration) bool {
+	if g.pid <= 0 || now.pid <= 0 {
+		return false
+	}
+	if g.pid != now.pid {
+		return true
+	}
+	return !g.startedAt.IsZero() && !now.startedAt.IsZero() && !g.startedAt.Equal(now.startedAt)
+}
+
+// conversationMemo is everything the store remembers about one pane's session.
+type conversationMemo struct {
+	// process is the run ref was established against.
+	process processGeneration
+	// ref is the last SUCCESS, nil when there is none for the current run.
+	ref *fleet.ConversationRef
+	// retired lists the conversations that runs since replaced held. The
+	// name-and-date derivation reads the record the session's FIRST process
+	// titled, and after a replacement that record still exists, still carries
+	// the session's name and still looks like the only candidate — it is the
+	// previous run's answer, not this one's, and reading it back would re-serve
+	// the very id the memo was just dropped for, one listing later.
+	retired []string
+}
+
 // recordDirFor encodes a working directory the way the runtime's store does:
 // every character that is not a letter or a digit becomes a separator.
 //
@@ -166,41 +229,71 @@ type conversationStore struct {
 	// top of a record, and never rewritten — so a cached entry cannot go
 	// stale, only be deleted with its file.
 	entries map[string]recordEntry
-	// resolved caches per SESSION, and only successes. A failure must be
+	// memo remembers per SESSION, and only successes. A failure must be
 	// retried: the record for a session created moments ago has not been
-	// written yet, and caching "no" would make that permanent.
-	resolved map[conversationKey]*fleet.ConversationRef
+	// written yet, and caching "no" would make that permanent. A success is
+	// remembered for one run of the pane's process, not for the life of the
+	// pane (#202) — see processGeneration.
+	memo map[conversationKey]conversationMemo
 }
 
 func newConversationStore(root string) *conversationStore {
 	return &conversationStore{
-		root:     root,
-		entries:  map[string]recordEntry{},
-		resolved: map[conversationKey]*fleet.ConversationRef{},
+		root:    root,
+		entries: map[string]recordEntry{},
+		memo:    map[conversationKey]conversationMemo{},
 	}
 }
 
 // lookup answers for one session, and returns nil only when there is nothing to
 // look in — which is "nobody looked", not "nothing was found".
 //
+// process is the run of the pane's process the caller is asking about, and a
+// remembered answer is served only while it is still the run the answer was
+// established against (#202). A different run drops the memo and answers afresh:
+// the old id is never served for a process that did not exist when it was
+// established, and never re-derived from the session's name either, because the
+// name still points at the record the previous run titled.
+//
 // live is the runtime's per-process record as a second source (#182), or nil
 // when there is none to ask — in which case this is the name-and-date
 // derivation alone, exactly as it was before that source existed. It is asked
 // only on a cache miss, and never while the store's lock is held.
-func (s *conversationStore) lookup(key conversationKey, cwd, name string, started time.Time, live liveConversationSource) *fleet.ConversationRef {
+func (s *conversationStore) lookup(key conversationKey, cwd, name string, started time.Time, process processGeneration, live liveConversationSource) *fleet.ConversationRef {
 	if s == nil || s.root == "" {
 		return nil
 	}
 	s.mu.Lock()
-	if hit, ok := s.resolved[key]; ok {
-		s.mu.Unlock()
-		return hit
+	memo := s.memo[key]
+	if memo.ref != nil {
+		if !memo.process.replacedBy(process) {
+			if memo.process.pid <= 0 && process.pid > 0 {
+				// Established when the pane's pid was unknown; adopt the one
+				// that is known now, so a later replacement is noticed.
+				memo.process = process
+				s.memo[key] = memo
+			}
+			hit := memo.ref
+			s.mu.Unlock()
+			return hit
+		}
+		// Established against a process that is no longer the pane's.
+		memo.retired = appendUnique(memo.retired, memo.ref.ID)
+		memo.ref = nil
+		s.memo[key] = memo
 	}
+	retired := memo.retired
 	s.mu.Unlock()
 
 	ref := s.derive(cwd, name, started)
+	if ref.Known && containsString(retired, ref.ID) {
+		ref = fleet.UnresolvedConversation(fmt.Sprintf(
+			"the record carrying this session's name is conversation %s, which a process since replaced in this session held; "+
+				"it is no evidence about the process running now", ref.ID))
+	}
+	var lv liveConversation
 	if live != nil {
-		lv := live()
+		lv = live()
 		if lv.id != "" {
 			// #180 L5, applied at the point the per-process id is first
 			// used: it is about to name a file, so it must name one inside
@@ -214,11 +307,32 @@ func (s *conversationStore) lookup(key conversationKey, cwd, name string, starte
 		ref = reconcileConversation(ref, lv)
 	}
 	if ref != nil && ref.Known {
+		if process.startedAt.IsZero() {
+			process.startedAt = lv.startedAt
+		}
 		s.mu.Lock()
-		s.resolved[key] = ref
+		cur := s.memo[key]
+		cur.process, cur.ref = process, ref
+		s.memo[key] = cur
 		s.mu.Unlock()
 	}
 	return ref
+}
+
+func appendUnique(list []string, v string) []string {
+	if containsString(list, v) {
+		return list
+	}
+	return append(list, v)
+}
+
+func containsString(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *conversationStore) derive(cwd, name string, started time.Time) *fleet.ConversationRef {

@@ -301,7 +301,7 @@ func TestConversationStoreRefusesAPerProcessIdThatEscapesTheRecordRoot(t *testin
 	escaping := func() liveConversation {
 		return liveConversation{id: "../../../outside", evidence: "test"}
 	}
-	got := s.lookup(conversationKey{pane: "%1", created: sessionStart}, "/work/alpha", "alpha💬", sessionStart, escaping)
+	got := s.lookup(conversationKey{pane: "%1", created: sessionStart}, "/work/alpha", "alpha💬", sessionStart, processGeneration{pid: 100}, escaping)
 	if got == nil || got.Known {
 		t.Fatalf("an id that climbs out of the record root must never resolve, got %+v", got)
 	}
