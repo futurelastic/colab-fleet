@@ -290,20 +290,25 @@ func appendLine(t *testing.T, path, line string) {
 func appendOnSubmit(t *testing.T, run execFunc, path, line string) execFunc {
 	t.Helper()
 	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		submit := false
-		if len(args) > 0 && args[0] == "send-keys" {
-			for _, a := range args {
-				if a == "C-m" || a == "Enter" {
-					submit = true
-				}
-			}
-		}
 		out, err := run(ctx, name, args...)
-		if submit {
+		if isSubmitKeystroke(args) {
 			appendLine(t, path, line)
 		}
 		return out, err
 	}
+}
+
+// isSubmitKeystroke reports whether a multiplexer argv delivers the submit key.
+func isSubmitKeystroke(args []string) bool {
+	if len(args) == 0 || args[0] != "send-keys" {
+		return false
+	}
+	for _, a := range args {
+		if a == "C-m" || a == "Enter" {
+			return true
+		}
+	}
+	return false
 }
 
 // --- readProcessSessionRecord / resolveTranscriptSource -------------------
