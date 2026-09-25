@@ -770,6 +770,7 @@ func corroborateProcessRecord(rec processSessionRecord, identity ProcessIdentity
 		sessionID: rec.SessionID,
 		evidence: fmt.Sprintf("process-sessions file for pid %d (verified same process generation), "+
 			"sessionId %s", identity.PID, rec.SessionID),
+		process: processGeneration{pid: identity.PID, startedAt: identity.StartedAt},
 	}, ""
 }
 
@@ -789,6 +790,9 @@ type transcriptSource struct {
 type liveProcessIdentity struct {
 	sessionID string
 	evidence  string
+	// process is the run the record was corroborated against (#202) — already
+	// measured here, so the conversation store can be handed it for free.
+	process processGeneration
 }
 
 // resolveLiveProcessSessionID is D6's per-process identity fallback,
@@ -853,6 +857,16 @@ func (d *Driver) resolveLiveProcessSessionID(ctx context.Context, ref fleet.Sess
 // common case and costs one extra, already-cheap file read; disagreement
 // means the cache is stale, and the live identity wins.
 //
+// # Since #202 the cache remembers which process it was established against
+//
+// An in-pane runtime restart, one of the two cases named above, changes the
+// pane's pid, and the store now drops an answer on seeing that (conversation.go,
+// processGeneration) — for the listing as much as for this path. What it cannot
+// see is `/clear`: the runtime regenerates its id under the SAME process, the
+// pid and its start time do not move, and only the per-process record says so.
+// So this cross-check is still what covers `/clear` here; the listing has no such
+// check yet (#203).
+//
 // # Since #182 the lookup consults the per-process record too
 //
 // The lookup in the first step is no longer name-only: handed the per-process
@@ -871,7 +885,13 @@ func (d *Driver) resolveTranscriptSource(ctx context.Context, ref fleet.SessionR
 
 	if d.conversations != nil {
 		key := conversationKey{pane: target.paneID, created: target.created}
-		if conv := d.conversations.lookup(key, target.cwd, ref.ID, target.created,
+		// The run this send is about: the one just measured when the live path
+		// resolved, else what the multiplexer said about the pane (#202).
+		process := processGeneration{pid: target.pid}
+		if liveOK {
+			process = live.process
+		}
+		if conv := d.conversations.lookup(key, target.cwd, ref.ID, target.created, process,
 			d.liveConversationFrom(live, liveOK)); conv != nil && conv.Known {
 			if !liveOK || live.sessionID == "" || live.sessionID == conv.ID {
 				p := d.conversations.recordPath(target.cwd, conv.ID)

@@ -178,7 +178,7 @@ func (d *Driver) upgradeControlChannelFromRecord(ctx context.Context, st fleet.S
 		return st
 	}
 	ref := d.conversations.lookup(conversationKey{pane: paneID, created: created}, cwd, name, created,
-		d.liveConversationSource(ctx, pid, cwd))
+		processGeneration{pid: pid}, d.liveConversationSource(ctx, pid, cwd))
 	if ref == nil || !ref.Known {
 		return st
 	}

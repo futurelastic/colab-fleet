@@ -814,6 +814,24 @@ refuses, exactly as above: `known` is false and the evidence names both. `source
 unchanged — the identifier was matched to the session by this service, not dictated —
 and the evidence says which rule answered (colab-fleet #182).
 
+**An answer belongs to one run of a process, not to the life of a session** (colab-fleet
+#202). The process in a session's pane can be replaced while the session — its name, its
+pane, its creation time — stays as it was: a recovery tool that relaunches the runtime in
+place starts a new process, and that process may be in a different conversation.
+`conversation` describes the process running now. A driver that remembers an answer must
+remember which process it was established against, and must not serve it for another: it
+answers afresh whenever the process has provably changed (a different pid, or the same pid
+with a different start time where one was measured), and an absent or unreadable pid is
+never taken as a change. The name-based match is no evidence about the new process — it
+names the record the session's *first* process titled, which is still there, still carries
+the name and still looks like the only candidate — so once a process has been replaced, a
+name-derived answer that names a conversation an earlier process held is set aside. What is
+left is the new process's own record; until the runtime has written it, `known` is false
+with evidence saying so, never the predecessor's identifier. A relaunch that continues the
+same conversation reports it exactly when its own record says so. The limit: a replacement
+the driver did not observe — the service restarted after the relaunch — cannot be retired,
+and the session is answered as one that was never replaced would be.
+
 ### 2.10 ResumeOutcome
 
 ```

@@ -466,7 +466,7 @@ func (d *Driver) upgradeTurnsFromRecord(ctx context.Context, st fleet.SessionSta
 		return st
 	}
 	ref := d.conversations.lookup(conversationKey{pane: paneID, created: created}, cwd, name, created,
-		d.liveConversationSource(ctx, pid, cwd))
+		processGeneration{pid: pid}, d.liveConversationSource(ctx, pid, cwd))
 	st.Turns = d.turnsFor(name, cwd, ref)
 	return st
 }
@@ -501,7 +501,7 @@ func (d *Driver) upgradeLastTurnFromRecord(ctx context.Context, st fleet.Session
 		return st
 	}
 	ref := d.conversations.lookup(conversationKey{pane: paneID, created: created}, cwd, name, created,
-		d.liveConversationSource(ctx, pid, cwd))
+		processGeneration{pid: pid}, d.liveConversationSource(ctx, pid, cwd))
 	if ref == nil || !ref.Known {
 		return st
 	}

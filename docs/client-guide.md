@@ -229,6 +229,13 @@ match cannot answer for either. `source` reads `derived` for both rules. When th
 name different conversations the answer is `"known": false` and the evidence names
 both; neither is chosen, so do not treat that as "no conversation".
 
+`conversation` describes the process running in the session **now**, not the one that
+started it. A session whose runtime is relaunched in place (a recovery that mints a new
+conversation, say) keeps its name and its pane and changes conversation; the next read
+reports the new one. In between, `"known": false` means the new process has not written
+its record yet — wait and read again; never keep acting on the id you read before the
+relaunch.
+
 **This costs one round trip and, on the multiplexer driver, a constant number
 of subprocess spawns regardless of session count.** You are not being charged
 per session, so do not build a per-session read loop to "avoid a big response".
