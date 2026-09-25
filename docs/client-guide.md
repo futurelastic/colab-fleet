@@ -402,6 +402,22 @@ POST /v1/machines/{machine}/sessions/{id}/respond
   two — the review screen is a new prompt with a new nonce. On `unknown`, read
   again and resend the SAME set with the new nonce: it names the end state, so
   nothing gets flipped twice. Send `choices` only when `multiSelect` is true.
+- A question an agent asked also offers a **free-text row**, and reports
+  `freeText: true` when the driver can answer through it. That is how a person
+  says something the agent did not list:
+  ```
+  { "text": "a flat white, oat milk", "nonce": "…" }   → submitted, "…typed 22 byte(s) into the free-text row…"
+  { "choices": [1, 3], "text": "durian", "nonce": "…" }   → on a multi-select question: those boxes AND the text
+  ```
+  Draw `freeText` as an input rather than as another option — the row is still
+  in `options`, at its own index, so nothing you already number by moves — and
+  send `text` only when it is true (an older peer would ignore it and accept the
+  highlighted option). Never send an empty answer: the runtime reads an empty
+  free-text field as declining the whole dialog, so the service refuses it with a
+  `400`. If a receipt is `unknown`, read the state again: a row that already holds
+  text is no longer offered, and is answered with `choice` (`0` accepts what is
+  there) or `cancel`. Keep answers short — a long one can push the dialog out of
+  what the driver reads.
 - **Never blindly accept the default.** A real prompt in the wild highlights
   `No, exit` — a client that reflexively confirms would kill the session it was
   trying to start. That is why `options` and `selected` are both on the wire.

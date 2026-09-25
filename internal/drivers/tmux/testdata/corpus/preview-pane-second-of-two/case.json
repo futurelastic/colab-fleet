@@ -15,6 +15,7 @@
       ],
       "wantQuestion": "[redacted]",
       "wantPreviewPane": true,
+      "wantFreeText": false,
       "wantTab": {
         "at": 2,
         "of": 2
@@ -30,6 +31,7 @@
       ],
       "wantQuestion": "[redacted]",
       "wantPreviewPane": true,
+      "wantFreeText": false,
       "wantTab": {
         "at": 2,
         "of": 2

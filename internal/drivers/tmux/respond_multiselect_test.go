@@ -195,10 +195,22 @@ type fakeMultiSelect struct {
 	swallow  map[string]int
 	answered []string
 	typed    string // what reached the free-text field
+	// noPaste models a paste the runtime drops (colab-fleet#206).
+	noPaste bool
 }
 
 func newFakeMultiSelect(labels ...string) *fakeMultiSelect {
 	return &fakeMultiSelect{labels: labels, ticks: make([]bool, len(labels)), sel: 1, swallow: map[string]int{}}
+}
+
+// paste is a bracketed paste. Measured live (colab-fleet#206): with the
+// highlight on the free-text row the row's label BECOMES the text and the row
+// ticks itself; anywhere else a paste has no field to land in.
+func (g *fakeMultiSelect) paste(text string) {
+	if g.noPaste || g.stage != 0 || g.sel != len(g.labels)+1 {
+		return
+	}
+	g.typed = text
 }
 
 func (g *fakeMultiSelect) press(key string) {
@@ -241,6 +253,9 @@ func (g *fakeMultiSelect) press(key string) {
 				if t {
 					g.answered = append(g.answered, g.labels[i])
 				}
+			}
+			if g.typed != "" {
+				g.answered = append(g.answered, g.typed)
 			}
 		case "2":
 			g.stage = 4

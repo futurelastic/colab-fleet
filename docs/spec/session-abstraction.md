@@ -557,6 +557,7 @@ SessionPrompt {
   nonce    : string        // changes when the prompt changes
   kind?    : PromptKind    // what the driver thinks is being asked; advisory, fails to absent
   multiSelect? : boolean   // the leading options are checkboxes; answer with Response.choices
+  freeText?    : boolean   // one option is the free-text row; answer in your own words with Response.text
 }
 
 PromptKind =
@@ -628,6 +629,21 @@ the rest of the body as "accept the highlighted option". Because the tick state
 is part of the option text, it is part of what `nonce` digests: an answer to a
 tick state that has since changed is refused like any other stale answer.
 
+**`freeText` says a question can be answered in the caller's own words**
+(colab-fleet issue #206). The runtime appends a free-text row (`Type something`)
+to every question an agent asks; the row stays in `options` at its own index, so
+no numbering moves, but it is not one of the agent's choices, and a caller
+drawing the options as a list should draw it as an input. Like `multiSelect` it
+fails to absent: `false` means "not recognised as answerable this way", and a
+caller must never send `Response.text` to a prompt that does not carry it. That
+rule also makes the field the capability signal — a driver that predates `text`
+never reports `freeText` either, so a caller following it cannot send text to a
+driver that would ignore it and read the rest of the body as "accept the
+highlighted option". It is set only on a shape whose key sequence has been
+measured, and it is absent again once the row holds text: the row is found by its
+placeholder, and after an answer has been typed there is nothing left to find it
+by. The nonce digests the options, so typing into the row changes it.
+
 **A directory-trust question can also be pre-answered, standing outside a
 create request entirely.** `Consents`/`TrustCwd` scope a caller's answer to
 the one session it is creating — the caller named that directory in the same
@@ -656,6 +672,7 @@ sessions hold it open.
 Response {
   choice?  : number     // 1-based option; absent means the highlighted default
   choices? : number[]   // multi-select only: exactly the options to leave ticked
+  text?    : string     // an answer in the caller's own words, typed into the free-text row
   cancel?  : boolean    // dismiss rather than answer
   nonce?   : string     // the SessionPrompt.nonce being answered
 }
@@ -696,6 +713,33 @@ earlier read. `choices` cannot be combined with `choice` or `cancel`, and
 cannot be empty — an empty set, marshalled onward with `omitempty`, would
 reach the next hop as an empty body, which means "accept the highlighted
 option". Those are faults in the request, rejected before any driver sees it.
+
+**`text` answers through the free-text row** (colab-fleet issue #206), and only
+a prompt carrying `freeText` (§2.7). The driver puts the highlight on that row,
+types the text, reads the row back, and only then confirms; the receipt is
+`submitted` only once the answered question has left the screen, and it reports
+the size of what was typed, never the text. On a single-select question — alone,
+or one tab of a multi-question dialog — the text is the whole answer and
+confirming it moves the dialog on as `choice` does. On a multi-select question it
+is sent with `choices`: the boxes to leave ticked and the free-text row's own
+content together name the end state, so `text` alone means no box is ticked, and
+the dialog moves ONE step on and stops, never confirming its review screen.
+`text` cannot be combined with `choice` or `cancel`.
+
+It is the one field of `Response` a wire type carries as a pointer, on purpose.
+Every field is `omitempty`, and a plain string would drop `"text": ""` when a
+driver that relays to a peer marshals the body onward: the peer would receive a
+body with no answer in it, and no answer means "accept the highlighted option" —
+the trap an empty `choices` is refused for, closed the same way. Measured on the
+one runtime a driver exists for: confirming the free-text field while it is EMPTY
+declines the WHOLE dialog, every question in it, not one. So an empty or blank
+`text` is a fault in the request, rejected before any driver sees it; a driver
+also refuses text that is empty once control characters and surrounding
+whitespace are removed, never confirms the field before reading the text back on
+its row, and reports `unknown` — confirming nothing — when the text did not land
+or landed altered. `text` is held to the same byte limit and the same control-byte
+sanitising as `input`; the composer's own syntax refusals (a leading `!` or `/`)
+do not apply, because the answer field was measured not to read them.
 
 ### 2.8 AttachHint
 

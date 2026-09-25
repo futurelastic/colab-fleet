@@ -879,6 +879,7 @@ func parsePromptShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 		p.Nonce = promptNonce(p)
 	}
 	p.MultiSelect = tabBar && multiSelectBoxes(p) > 0
+	p.FreeText = freeTextOffered(p, shape)
 	return p, shape
 }
 
@@ -909,8 +910,81 @@ func checkboxLabel(o string) (label string, ticked, box bool) {
 // row and the chat row. Whole-label, not prefix: an agent's own option that
 // merely begins with the words is still the agent's option.
 func isEscapeAffordance(label string) bool {
-	l := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(label)), ".")
-	return l == "type something" || l == "chat about this"
+	return isFreeTextLabel(label) || isChatLabel(label)
+}
+
+// isFreeTextLabel reports whether an option label, whole, is the runtime's
+// free-text row as it reads BEFORE anyone types into it.
+//
+// Once text is typed the row's label becomes that text (measured, colab-
+// fleet#206), so this recognises the placeholder and nothing else — which is
+// why a row that already holds text is not found again, and why a driver that
+// needs the row's position after typing has to carry the index it found first.
+func isFreeTextLabel(label string) bool {
+	return normalisedAffordance(label) == "type something"
+}
+
+func isChatLabel(label string) bool {
+	return normalisedAffordance(label) == "chat about this"
+}
+
+func normalisedAffordance(label string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(label)), ".")
+}
+
+// freeTextRow returns the 1-based index of a prompt's free-text row, or 0 when
+// no option reads as the placeholder. The checkbox a multi-select question
+// paints in front of it is set aside first.
+func freeTextRow(p *fleet.SessionPrompt) int {
+	if p == nil {
+		return 0
+	}
+	for i, o := range p.Options {
+		label, _, _ := checkboxLabel(o)
+		if isFreeTextLabel(label) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// freeTextOffered decides SessionPrompt.FreeText: whether a driver has the
+// measured key sequence for answering this prompt through its free-text row
+// (colab-fleet#206).
+//
+// Every condition is required, and each one names a layout the sequence was
+// NOT measured on — the answer to those is "not offered", never a guess:
+//
+//   - the row is there, and reads as the placeholder;
+//   - the menu is numbered (an unnumbered menu is a trust dialog, which has no
+//     such row) and has no preview pane (measured to have none, so a row that
+//     did appear there would be an unmeasured layout);
+//   - on a plain question no option carries a checkbox. A boxed list the
+//     driver does not recognise as multi-select (no tab bar) is a checklist an
+//     agent painted into its own prose, and on a real checkbox a digit
+//     TOGGLES rather than moving to the row;
+//   - on a multi-select question the row is the one directly after the
+//     boxes, which is where multiSelectBoxes already requires the escape rows
+//     to start.
+func freeTextOffered(p *fleet.SessionPrompt, shape menuShape) bool {
+	if p == nil || shape.unnumbered || shape.preview {
+		return false
+	}
+	idx := freeTextRow(p)
+	if idx == 0 || !optionsAreContiguous(p.Options) {
+		return false
+	}
+	boxed := false
+	for _, o := range p.Options {
+		if _, _, box := checkboxLabel(o); box {
+			boxed = true
+			break
+		}
+	}
+	if !boxed {
+		return true
+	}
+	return p.MultiSelect && idx == multiSelectBoxes(p)+1
 }
 
 // isDialogTabBar recognises the tab row above a question in the runtime's

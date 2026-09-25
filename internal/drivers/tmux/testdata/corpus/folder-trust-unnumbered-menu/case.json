@@ -5,7 +5,7 @@
   "redactedFrom": "real capture through the service on the runtime's current release, redacted by corpus-redact; the two option rows are kept because each is, whole, one of the runtime's own option phrases",
   "alive": true,
   "observations": [
-    { "afterSeconds": 0, "young": false, "want": "waiting_input" },
-    { "afterSeconds": 30, "young": false, "want": "waiting_input" }
+    { "afterSeconds": 0, "young": false, "want": "waiting_input", "wantFreeText": false },
+    { "afterSeconds": 30, "young": false, "want": "waiting_input", "wantFreeText": false }
   ]
 }
