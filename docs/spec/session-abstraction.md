@@ -563,6 +563,8 @@ SessionPrompt {
 PromptKind =
   | "resume-chooser"      // how to resume a prior session
   | "folder-trust"        // "do you trust the files in this folder"
+  | "external-imports"    // "allow external CLAUDE.md file imports" — a directory's instruction
+                          // files import a file from outside it; the highlight defaults to the decline
   | "settings-trust"      // an administrator's managed-policy payload asking to be approved
   | "tool-permission"     // a tool asking to run something
   | "bypass-permissions"  // the permission-mode acceptance screen; never produced by option
@@ -645,16 +647,24 @@ placeholder, and after an answer has been typed there is nothing left to find it
 by. The nonce digests the options, so typing into the row changes it.
 
 **A directory-trust question can also be pre-answered, standing outside a
-create request entirely.** `Consents`/`TrustCwd` scope a caller's answer to
+create request entirely.** (There are two such questions about a directory:
+"do you trust this folder" and, when its instruction files import a file
+from outside it, "allow external imports". Both are answered the same ways
+below, and the one list of roots covers both.) `Consents`/`TrustCwd` scope a caller's answer to
 the one session it is creating — the caller named that directory in the same
 request, so agreeing to the runtime's question about it is still the
 caller's decision, this layer only carries it out. Most sessions on a real
 fleet are not created through this service at all, so no request exists for
 that consent to travel on. The tmux driver's trust-seed maintainer
 (`internal/trustseed`, colab-fleet issue #47) closes that gap by writing the
-runtime's own record of the answer — a per-directory key in its own state
+runtime's own record of the answer — per-directory keys in its own state
 file — ahead of time, under a fixed, operator-configured set of roots, so
 the question is never raised for any session under one, whoever started it.
+It seeds the two questions' keys independently and counts them apart
+(`trust_seed.granted`, `trust_seed.imports_granted`), so a reader can tell
+which is being written. It covers exactly the directories the runtime keys
+its answer under — a repository or worktree root, and a directory in no
+repository — and never widens that.
 
 This is still the SAME decision the consent table already commits to on
 create, only standing rather than per-request: an operator, not this

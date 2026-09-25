@@ -43,7 +43,9 @@ type fileConfig struct {
 
 	// TrustRoots are the directories under which #47's trust seeding runs:
 	// a session under one of these never meets the runtime's folder-trust
-	// question, whoever started it. A list alongside Principals for the
+	// question — nor, since #211, its "allow external imports" question —
+	// whoever started it. One list covers both: it is the operator's one
+	// statement of which directories are theirs. A list alongside Principals for the
 	// same reason Peers is one — an operator edits and diffs a file, not a
 	// delimiter-separated string — and, like the rest of this file, it
 	// names real paths and so lives only in a config an operator points

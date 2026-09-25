@@ -4365,7 +4365,13 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if recordPath != "" {
 		go d.captureEnvironment(name, recordPath)
 	}
-	if spec.Prompt != "" || spec.TrustCwd {
+	// The step that answers a boot question runs whenever there is something for
+	// it to do: work to deliver once the session is ready, or a consent to spend
+	// on a question standing in front of it. A create carrying ONLY a consent —
+	// no prompt, no trustCwd — used to skip it, so its 201 came back and the
+	// question stayed on screen (colab-fleet #211). It returns as soon as the
+	// composer is ready, so a consent with no question to meet costs one poll.
+	if spec.Prompt != "" || spec.TrustCwd || len(spec.Consents) > 0 {
 		go d.settleNewSession(req, ref, built)
 	}
 	rec, found := d.createRecordFor(name, string(spec.Cwd))
@@ -5118,6 +5124,13 @@ func (d *Driver) deliverInitialPrompt(ctx context.Context, req fleet.Request, re
 var consentableKinds = map[fleet.PromptKind][]string{
 	// "Yes, I trust this folder"
 	fleet.PromptFolderTrust: {"trust", "folder"},
+	// "Yes, allow external imports". The decline reads "No, disable external
+	// imports" and shares two of the three words, so it is "allow" that
+	// isolates the affirmative — and a rewording that puts "allow" in both rows
+	// is the ambiguity affirmativeOption already refuses to guess through.
+	// Answered by index: this question's highlight defaults to the decline
+	// (colab-fleet #211).
+	fleet.PromptExternalImports: {"allow", "external", "imports"},
 	// PromptBypassAcceptance is consentable but has NO entry here, because its
 	// affirmative option is the generic "Yes, I accept" and this table is
 	// applied to whatever screen happens to be on the pane. A needle that loose

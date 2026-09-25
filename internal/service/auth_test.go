@@ -208,6 +208,7 @@ func TestTrustCwdNeedsSendOnTopOfCreate(t *testing.T) {
 	srv := principalSrv(t, []Principal{
 		{Name: "spawner", Token: "tok-new", Grants: []Grant{GrantRead, GrantCreate}},
 		{Name: "spawner", Token: "tok-new-consents", Grants: []Grant{GrantRead, GrantCreate}},
+		{Name: "spawner", Token: "tok-new-consents-external-imports", Grants: []Grant{GrantRead, GrantCreate}},
 		{Name: "spawner", Token: "tok-new-permissionMode", Grants: []Grant{GrantRead, GrantCreate}},
 		{Name: "spawner", Token: "tok-new-mcpConfig", Grants: []Grant{GrantRead, GrantCreate}},
 		{Name: "driver", Token: "tok-drive", Grants: []Grant{GrantRead, GrantCreate, GrantSend}},
@@ -251,6 +252,9 @@ func TestTrustCwdNeedsSendOnTopOfCreate(t *testing.T) {
 	// starts these" are different authorities and only the second needs saying.
 	for _, tc := range []struct{ name, body string }{
 		{"consents", `{"runtime":"stub","cwd":"/w","consents":["folder-trust"]}`},
+		// The second boot question (#211) takes the same grant: a consent to it
+		// is a keypress on that question, whatever the question is.
+		{"consents-external-imports", `{"runtime":"stub","cwd":"/w","consents":["external-imports"]}`},
 		{"permissionMode", `{"runtime":"stub","cwd":"/w","permissionMode":"bypass"}`},
 		{"mcpConfig", `{"runtime":"stub","cwd":"/w","mcpConfig":["/abs/servers.json"]}`},
 	} {

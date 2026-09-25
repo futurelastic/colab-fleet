@@ -412,7 +412,7 @@ fleetctl_answer() {
     print -u2 "usage: fleetctl answer <kind> <choice> [--machine <name>] [--dry-run]"
     print -u2 "  e.g. fleetctl answer resume-chooser 1"
     print -u2 "  e.g. fleetctl answer resume-chooser 2 --machine machine-b"
-    print -u2 "  kinds: resume-chooser · folder-trust · settings-trust · tool-permission"
+    print -u2 "  kinds: resume-chooser · folder-trust · external-imports · settings-trust · tool-permission"
     print -u2 "  (bypass-permissions is never classified from a screen — see the client guide)"
     print -u2 "  Both arguments are required on purpose: no default kind, no default choice."
     return 2

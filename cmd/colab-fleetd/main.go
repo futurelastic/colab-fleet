@@ -101,6 +101,11 @@
 //	                       one of these has the runtime's own folder-trust
 //	                       question pre-answered, so no session under it —
 //	                       whoever started it — ever meets that screen.
+//	                       #211: the same roots pre-answer its second boot
+//	                       question, "allow external imports", which a
+//	                       directory raises when its instruction files
+//	                       import a file from outside it. One list, one
+//	                       statement: there is no separate setting.
 //	                       Absent means the feature does nothing; FLEET_
 //	                       CONFIG's own trustRoots is read when this is
 //	                       unset, same precedence as FLEET_PEERS below.
@@ -384,7 +389,8 @@ func main() {
 		} else if home, err := os.UserHomeDir(); err == nil {
 			opts = append(opts, tmux.WithCredentialPath(filepath.Join(home, ".claude.json")))
 		}
-		// #47: pre-answer the runtime's folder-trust question for every
+		// #47: pre-answer the runtime's folder-trust question — and, since
+		// #211, its external-imports question — for every
 		// session under a configured root, whoever started it — see
 		// internal/trustseed and tmux.WithTrustSeed. Off by default, the
 		// same way every feature above it is: no roots configured means no
@@ -960,7 +966,7 @@ func runTrustSeedLoop(d *tmux.Driver, interval time.Duration) {
 			log.Printf("colab-fleetd: trust-seed: %v", err)
 			continue
 		}
-		if got.Granted > 0 || len(got.RootsMissing) > 0 || got.LostRace {
+		if got.Granted > 0 || got.ImportsGranted > 0 || len(got.RootsMissing) > 0 || got.LostRace {
 			log.Printf("colab-fleetd: trust-seed: %s", got)
 		}
 	}
