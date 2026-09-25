@@ -96,6 +96,26 @@ import (
 // that happened before the service started was never observed, has nothing to
 // retire, and is answered as a session that was never replaced would be.
 //
+// # ...and for one conversation inside that run (#203)
+//
+// The process is not the only thing that changes under a pane. The runtime can
+// start a new conversation inside the SAME process (`/clear`): the pid and its
+// start time stay exactly as they were, so nothing above can notice, and only the
+// `sessionId` in the runtime's per-process record moves. A memo hit therefore
+// reads that record (regeneratedUnderSameProcess) — a file read, no `ps` — and
+// treats a record that carries the start time the memo was established against
+// and names another conversation as the answer having ended, the same as a
+// replaced process: the id is retired and the lookup answers afresh.
+//
+// The choice this makes, since it was a choice: one small file open per session
+// per listing, against accepting a bounded staleness. A listing is still a
+// constant number of subprocess spawns; what it gains is one file read per
+// session, and an answer that is wrong for no longer than one listing.
+//
+// The limit: an answer established without a start time (from the name alone,
+// while the record was unusable) was never tied to a process instant, so the
+// check has nothing to corroborate a changed record against and leaves it be.
+//
 // # Two cases the name cannot answer, and what answers them (#182)
 //
 // A RESUMED session continues a record that began before the session did, so
@@ -255,16 +275,20 @@ func newConversationStore(root string) *conversationStore {
 // established, and never re-derived from the session's name either, because the
 // name still points at the record the previous run titled.
 //
-// live is the runtime's per-process record as a second source (#182), or nil
-// when there is none to ask — in which case this is the name-and-date
-// derivation alone, exactly as it was before that source existed. It is asked
-// only on a cache miss, and never while the store's lock is held.
+// live is the runtime's per-process record as a second source (#182), or the
+// zero value when there is none to ask — in which case this is the
+// name-and-date derivation alone, exactly as it was before that source existed.
+// Its full read (ask) is used only on a cache miss; its cheap one (peek) is used
+// on a hit, to notice the runtime starting a new conversation inside the same
+// process (#203). Neither is ever called while the store's lock is held.
 func (s *conversationStore) lookup(key conversationKey, cwd, name string, started time.Time, process processGeneration, live liveConversationSource) *fleet.ConversationRef {
 	if s == nil || s.root == "" {
 		return nil
 	}
 	s.mu.Lock()
 	memo := s.memo[key]
+	var served *fleet.ConversationRef
+	var servedProcess processGeneration
 	if memo.ref != nil {
 		if !memo.process.replacedBy(process) {
 			if memo.process.pid <= 0 && process.pid > 0 {
@@ -273,17 +297,40 @@ func (s *conversationStore) lookup(key conversationKey, cwd, name string, starte
 				memo.process = process
 				s.memo[key] = memo
 			}
-			hit := memo.ref
-			s.mu.Unlock()
-			return hit
+			served, servedProcess = memo.ref, memo.process
+		} else {
+			// Established against a process that is no longer the pane's.
+			memo.retired = appendUnique(memo.retired, memo.ref.ID)
+			memo.ref = nil
+			s.memo[key] = memo
 		}
-		// Established against a process that is no longer the pane's.
-		memo.retired = appendUnique(memo.retired, memo.ref.ID)
-		memo.ref = nil
-		s.memo[key] = memo
 	}
 	retired := memo.retired
 	s.mu.Unlock()
+
+	if served != nil {
+		if !s.regeneratedUnderSameProcess(served, servedProcess, live) {
+			return served
+		}
+		// The process is the one the answer was established against and it has
+		// moved to another conversation (#203). Drop the answer exactly as a
+		// replaced process would, unless a concurrent lookup already has: what is
+		// dropped is the answer this call saw, never a newer one.
+		s.mu.Lock()
+		cur := s.memo[key]
+		if cur.ref != nil && cur.ref != served {
+			newer := cur.ref
+			s.mu.Unlock()
+			return newer
+		}
+		if cur.ref == served {
+			cur.retired = appendUnique(cur.retired, served.ID)
+			cur.ref = nil
+			s.memo[key] = cur
+		}
+		retired = cur.retired
+		s.mu.Unlock()
+	}
 
 	ref := s.derive(cwd, name, started)
 	if ref.Known && containsString(retired, ref.ID) {
@@ -292,8 +339,8 @@ func (s *conversationStore) lookup(key conversationKey, cwd, name string, starte
 				"it is no evidence about the process running now", ref.ID))
 	}
 	var lv liveConversation
-	if live != nil {
-		lv = live()
+	if live.ask != nil {
+		lv = live.ask()
 		if lv.id != "" {
 			// #180 L5, applied at the point the per-process id is first
 			// used: it is about to name a file, so it must name one inside
@@ -317,6 +364,37 @@ func (s *conversationStore) lookup(key conversationKey, cwd, name string, starte
 		s.mu.Unlock()
 	}
 	return ref
+}
+
+// regeneratedUnderSameProcess reports whether the runtime has started a new
+// conversation inside the process a remembered answer was established against
+// (#203) — `/clear` is the ordinary way. The process does not move when that
+// happens, so the process comparison in lookup cannot see it: the pid and its
+// start time are exactly what they were, and only the `sessionId` in the
+// runtime's per-process record changes.
+//
+// It is a file read and nothing else: no `ps`, no subprocess, so a listing over a
+// whole fleet is still a constant number of spawns. What lets it do without the
+// OS is that the memo already holds the start time the answer was corroborated
+// against and the record carries its own. A record whose start time is that one
+// is this process's own record; a record with any other start time was written by
+// another process generation, and says nothing about this answer either way.
+//
+// Everything short of that is absence of evidence and answers "no": no source, no
+// start time held (an answer established from the name alone was never tied to a
+// process instant, and asking for one costs the `ps` this refuses to spend), a
+// record that cannot be read or does not name this session's process. The same
+// stance as replacedBy — treating a thin read as a change would trade a stale
+// answer for an intermittent unknown one.
+func (s *conversationStore) regeneratedUnderSameProcess(held *fleet.ConversationRef, process processGeneration, live liveConversationSource) bool {
+	if live.peek == nil || held == nil || process.startedAt.IsZero() {
+		return false
+	}
+	rec, ok := live.peek()
+	if !ok || rec.id == "" || rec.id == held.ID {
+		return false
+	}
+	return rec.startedAt.Equal(process.startedAt)
 }
 
 func appendUnique(list []string, v string) []string {

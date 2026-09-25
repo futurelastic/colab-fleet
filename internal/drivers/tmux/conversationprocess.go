@@ -68,41 +68,80 @@ type liveConversation struct {
 	startedAt time.Time
 }
 
-// liveConversationSource asks the per-process record. It is handed to the
-// store as a function rather than a value because the answer costs a file read
-// and an OS query, and the store answers most lookups from its cache without
-// wanting either.
-type liveConversationSource func() liveConversation
+// recordedConversation is what the per-process record says right now, read
+// WITHOUT asking the OS about the process (#203). It is a statement, not a
+// verified fact: startedAt is the record's own start time, and nothing has yet
+// said the process running under the pid started then. The store compares it with
+// a start time it already holds; it never serves it as an answer.
+type recordedConversation struct {
+	id        string
+	startedAt time.Time
+}
 
-// liveConversationSource builds the per-process source for one session, or nil
-// when this driver was never pointed at the runtime's per-process records — in
-// which case a lookup is exactly the name-and-date derivation it always was.
+// liveConversationSource is the per-process record as a second source for one
+// session. The zero value is "no such source".
+//
+// It is two functions rather than one because the store wants two different
+// prices. ask is the full, corroborated read — a file read AND an OS query — and
+// runs only on a cache miss. peek is the file read alone and runs on a hit, to
+// notice the runtime starting a new conversation inside the same process (#203);
+// a listing pays it once per session, and never a subprocess for it. A source
+// with no peek is one whose caller has its own way of cross-checking a hit (the
+// send path compares the memo with the record it has just resolved).
+type liveConversationSource struct {
+	ask  func() liveConversation
+	peek func() (recordedConversation, bool)
+}
+
+// liveConversationSource builds the per-process source for one session, or the
+// zero value when this driver was never pointed at the runtime's per-process
+// records — in which case a lookup is exactly the name-and-date derivation it
+// always was.
 //
 // The record is read first and the OS is asked only if there is a record worth
 // corroborating. A fleet's listing is dominated by such questions; a session
 // whose runtime wrote no record costs one failed file open and no `ps`.
 func (d *Driver) liveConversationSource(ctx context.Context, pid int, cwd string) liveConversationSource {
 	if d.processSessionsRoot == "" {
-		return nil
+		return liveConversationSource{}
 	}
-	return func() liveConversation {
-		if pid <= 0 {
-			return liveConversation{evidence: "the multiplexer reported no usable pid for this session"}
-		}
-		rec, why := d.processRecordFor(pid, cwd)
-		if why != "" {
-			return liveConversation{evidence: why}
-		}
-		started, err := d.processStartedAt(ctx, pid)
-		if err != nil {
-			return liveConversation{evidence: fmt.Sprintf("the start time of the process now running under pid %d could not be read, "+
-				"so the per-process record could not be corroborated", pid)}
-		}
-		live, why := corroborateProcessRecord(rec, ProcessIdentity{PID: pid, StartedAt: started})
-		if why != "" {
-			return liveConversation{evidence: why}
-		}
-		return liveConversation{id: live.sessionID, evidence: live.evidence}
+	return liveConversationSource{
+		ask: func() liveConversation {
+			if pid <= 0 {
+				return liveConversation{evidence: "the multiplexer reported no usable pid for this session"}
+			}
+			rec, why := d.processRecordFor(pid, cwd)
+			if why != "" {
+				return liveConversation{evidence: why}
+			}
+			started, err := d.processStartedAt(ctx, pid)
+			if err != nil {
+				return liveConversation{evidence: fmt.Sprintf("the start time of the process now running under pid %d could not be read, "+
+					"so the per-process record could not be corroborated", pid)}
+			}
+			live, why := corroborateProcessRecord(rec, ProcessIdentity{PID: pid, StartedAt: started})
+			if why != "" {
+				return liveConversation{evidence: why}
+			}
+			// The start time was measured to corroborate the record; keeping it
+			// is what lets a later hit tell this process's own record from
+			// another's without measuring again (#203).
+			return liveConversation{id: live.sessionID, evidence: live.evidence, startedAt: live.process.startedAt}
+		},
+		peek: func() (recordedConversation, bool) {
+			if pid <= 0 {
+				return recordedConversation{}, false
+			}
+			rec, why, _ := d.readProcessSessionRecordQuiet(pid)
+			if why != "" || rec.CWD != cwd {
+				return recordedConversation{}, false
+			}
+			started, err := parseProcessSessionRecordStartTime(rec.ProcStart)
+			if err != nil {
+				return recordedConversation{}, false
+			}
+			return recordedConversation{id: rec.SessionID, startedAt: started}, true
+		},
 	}
 }
 
@@ -113,18 +152,20 @@ func (d *Driver) liveConversationSource(ctx context.Context, pid int, cwd string
 // `ps` fewer on a cache miss and, more to the point, one answer instead of two:
 // the send and the listing must never disagree about what the record said.
 //
-// nil when no per-process root is configured, so an unconfigured driver's
-// lookup stays exactly the name-and-date derivation.
+// The zero value when no per-process root is configured, so an unconfigured
+// driver's lookup stays exactly the name-and-date derivation. It has no peek:
+// its caller compares a hit with the record it has just resolved, which is the
+// same check with the answer already in hand.
 func (d *Driver) liveConversationFrom(live liveProcessIdentity, ok bool) liveConversationSource {
 	if d.processSessionsRoot == "" {
-		return nil
+		return liveConversationSource{}
 	}
-	return func() liveConversation {
+	return liveConversationSource{ask: func() liveConversation {
 		if !ok {
 			return liveConversation{evidence: "the per-process record could not be used to identify this session's process"}
 		}
 		return liveConversation{id: live.sessionID, evidence: live.evidence, startedAt: live.process.startedAt}
-	}
+	}}
 }
 
 // reconcileConversation combines what the name-and-date derivation found with

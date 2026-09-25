@@ -9,13 +9,13 @@ import (
 // #202, at the store: what counts as "a different process", and what does not.
 
 func liveAnswering(id string, started time.Time) liveConversationSource {
-	return func() liveConversation {
+	return liveConversationSource{ask: func() liveConversation {
 		return liveConversation{id: id, evidence: "test record for " + id, startedAt: started}
-	}
+	}}
 }
 
 func liveUnable(why string) liveConversationSource {
-	return func() liveConversation { return liveConversation{evidence: why} }
+	return liveConversationSource{ask: func() liveConversation { return liveConversation{evidence: why} }}
 }
 
 func TestProcessGenerationReplacedBy(t *testing.T) {
