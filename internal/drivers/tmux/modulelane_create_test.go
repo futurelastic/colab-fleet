@@ -391,6 +391,23 @@ func TestModuleAttach_RecordMissingRetried(t *testing.T) {
 }
 
 // ...but only up to the window: a record that never appears stops the poll.
+//
+// The window is real time (attachPoll does not use the driver's clock), so how
+// many attaches fit in it is the scheduler's business, not the code's. The
+// window opens inside Create, and the rig adds the pane only after Create
+// returns, so a stall of a couple of hundred milliseconds between the two — the
+// ordinary case on a loaded -race runner — spends the whole window before the
+// first attach. This test used to wait for a second attach before it would
+// look at the stop; that never came, the poll having already run out its
+// window on one attach or none, and the wait timed out (#207). Reproduced by
+// delaying the pane past the window: the same "timed out waiting for the poll
+// to stop", at the same line, every time.
+//
+// So the retry is not counted here. TestModuleAttach_RecordMissingRetried owns
+// it and has no window to race (a poll that gives up on the first miss fails
+// it). What this test asserts is what the window is for and a slow scheduler
+// cannot break: with a module that answers "missing" forever, the poll ends by
+// itself, and stays ended.
 func TestModuleAttach_RecordMissingStopsAtTheWindow(t *testing.T) {
 	missing := modtest.JSON(map[string]any{"live": false, "state": "connecting", "reason": "socket-missing", "sinceMs": 1})
 	r := newModRig(t, rigOptions{
@@ -399,8 +416,8 @@ func TestModuleAttach_RecordMissingStopsAtTheWindow(t *testing.T) {
 	})
 	sess := r.create("attach4", nil)
 	waitFor(t, "the poll to stop", func() bool {
-		rec, _ := r.record(sess.ID)
-		return !rec.attaching && r.fake.CountOp("attach") > 1
+		rec, ok := r.record(sess.ID)
+		return ok && !rec.attaching
 	})
 	n := r.fake.CountOp("attach")
 	time.Sleep(120 * time.Millisecond)
