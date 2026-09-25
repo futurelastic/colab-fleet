@@ -47,12 +47,29 @@ const fixtureTrustMenuUnnumbered = `
 
 // fakeMenu models the unnumbered menu as measured for #171: a digit and
 // Space change nothing, Up/Down move the highlight, C-m confirms whatever is
-// highlighted. swallowArrows models a menu that drops the arrow presses.
+// highlighted. swallowArrows models a menu that drops the arrow presses;
+// burstKeepsLast one that keeps only the last key of several sent in one call.
 type fakeMenu struct {
-	options       []string
-	sel           int // 0-based highlighted row
-	chosen        int // 1-based confirmed row; 0 while the menu is up
-	swallowArrows bool
+	options        []string
+	sel            int // 0-based highlighted row
+	chosen         int // 1-based confirmed row; 0 while the menu is up
+	swallowArrows  bool
+	burstKeepsLast bool
+}
+
+// pressBurst is how the fake mux hands over several keys sent in one
+// send-keys call. The real unnumbered menu applied every one (colab-fleet#205),
+// so by default so does this; burstKeepsLast is the layout that does not (beside
+// a preview pane, #204) — a shape no unnumbered menu has been measured to have,
+// kept so the read-back that guards the walk is tested against it.
+func (m *fakeMenu) pressBurst(keys []string) {
+	if m.burstKeepsLast {
+		m.press(keys[len(keys)-1])
+		return
+	}
+	for _, k := range keys {
+		m.press(k)
+	}
 }
 
 func newTrustMenu() *fakeMenu {
@@ -250,6 +267,36 @@ func TestRespondConfirmsNothingWhenTheHighlightDoesNotArrive(t *testing.T) {
 	}
 	if m.chosen != 0 {
 		t.Fatalf("row %d was confirmed although the highlight never reached row 2", m.chosen)
+	}
+	if sends := newlineSends(f); len(sends) != 0 {
+		t.Errorf("a confirm key was sent: %v", sends)
+	}
+	if !strings.Contains(got.Reason, "did not arrive") {
+		t.Errorf("receipt = %q; must say the highlight did not arrive", got.Reason)
+	}
+}
+
+// colab-fleet#205: the walk sends its arrows in one call. If a menu kept only
+// one key of them, the highlight would stop short of the row chosen — and the
+// confirm that follows would accept THAT row. The read-back is what stops it:
+// a partial walk is `unknown`, the menu is still up, and no confirm was sent.
+func TestRespondConfirmsNothingWhenABurstOfArrowsLosesPresses(t *testing.T) {
+	f := twoSessions()
+	m := newTrustMenu()
+	m.options = append(m.options, "Third row")
+	m.burstKeepsLast = true
+	armDialog(f, "%1", m)
+	d := newTestDriver(f)
+
+	got := respondWithNonce(t, d, f, 3)
+	if got.Outcome != fleet.OutcomeUnknown {
+		t.Fatalf("respond = %q (%s), want unknown", got.Outcome, got.Reason)
+	}
+	if m.sel != 1 {
+		t.Fatalf("highlight on row %d, want row 2: the model must move one of the two rows, not none", m.sel+1)
+	}
+	if m.chosen != 0 {
+		t.Fatalf("row %d was confirmed although the highlight stopped short of row 3", m.chosen)
 	}
 	if sends := newlineSends(f); len(sends) != 0 {
 		t.Errorf("a confirm key was sent: %v", sends)

@@ -6521,6 +6521,15 @@ func (d *Driver) persistedRecord(id string) (sessionRecord, bool) {
 // read too — it covers the question and options but not the highlight, so
 // it holds still while the highlight moves and changes only if the question
 // itself was replaced mid-walk.
+//
+// The arrows go in ONE send-keys call, and that was measured, not assumed
+// (colab-fleet#205): the runtime's unnumbered trust menu and a numbered
+// picker of eight rows applied every press of a burst of up to seven. A burst
+// does lose presses elsewhere — beside a preview pane (#204), and on a list
+// whose first press moves focus to another control — so this is not a rule
+// for other layouts: measure the layout, or send one key per call as
+// answerPreview does. Should a menu ever keep only some of the arrows, the
+// read-back below turns it into `unknown` with nothing confirmed.
 func (d *Driver) walkHighlight(ctx context.Context, paneID string, before *fleet.SessionPrompt, choice int) (bool, string, error) {
 	key, n := "Down", choice-before.Selected
 	if n < 0 {
