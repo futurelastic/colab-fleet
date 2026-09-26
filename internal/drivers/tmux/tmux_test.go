@@ -849,7 +849,16 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 					body = stripEscapes(body)
 				}
 				b.WriteString(body)
-				b.WriteString("\n")
+				// One row terminator after the last row, no more: real capture-pane
+				// ends its output on the last row's newline and the next marker
+				// follows it directly. An unconditional extra newline here was a
+				// blank row no pane has, which the screen counts since #216 (a
+				// prompt row on the pane's last row is only cut off by the pane's
+				// edge when nothing is drawn below it). Measured against real
+				// tmux: the batched capture and a direct one end the same way.
+				if !strings.HasSuffix(body, "\n") {
+					b.WriteString("\n")
+				}
 				pendingMark = ""
 			}
 		}

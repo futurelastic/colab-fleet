@@ -259,7 +259,8 @@ margin still buys is transcript context above the pane for the rest of the
 classification. The `composer_clipped.refused_{discard,keys,send}` counters say
 how often the state is actually reached, and
 `composer_clipped.fence_above_visible_pane` says how many of those refusals the
-visible-pane rule alone caused.
+visible-pane rule alone caused, and `composer_clipped.bottom_cut` how many came
+from a composer whose closing rule the pane's bottom edge cuts off (#216).
 
 This deploy also changes the capture's argv: each batched capture's marker now
 targets its pane and expands `#{pane_height}`, and the single-pane capture

@@ -36,7 +36,7 @@ finished-spinner branch, which never asks whether a composer exists, and said
   agent's own draft, and it sits where the usage-limit and failed-turn scans read
   the runtime's notices from. Those scans end above a recognised card.
 
-## Not fixed here (filed on the issue)
+## Not fixed here (filed on the issue; done in #216, `docs/adr/216-a-composer-cut-off-by-the-pane-bottom-reads-clipped.md`)
 
 A `❯` row below the last rule at the bottom of the visible pane is an unclosed
 composer and should read *clipped*, not *absent*; the finished-spinner branch
