@@ -1,0 +1,11 @@
+{
+  "name": "feedback-card-over-clipped-composer",
+  "for": "The runtime's feedback-draft card on a 24-row pane, the size the multiplexer gives a detached session. The card is a bordered notice of about seven rows directly above the composer; on a pane this short it pushes the composer's closing rule and mode row off the bottom, so the screen ends on the composer's opening rule and its empty prompt row. composerSpan needs both fences, read that as no composer, and the state read still answered idle ('composer empty') from the finished-spinner branch while every send was refused with 'no composer has been painted', a wording that blamed startup. Nothing on the API named the card or could answer it, and the session sat there for hours. This case pins that the screen is a waiting_input prompt of kind feedback-review from the first observation on, with the runtime's three verbs as its options and no highlight, and that the kind stands without the #58 corroboration hold. The card is a notice, not a dialog (its keys act only while the composer is empty), so it is a prompt only while it hides the composer; the same card above a composer that reads whole is pinned separately, in TestFeedbackCardAboveAReadableComposerIsNotAPrompt. See TestRespondToAFeedbackCardSendsTheCardsOwnKey for how it is answered: choice 3 is the key 0.",
+  "source": "#215",
+  "redactedFrom": "real capture of a 24-row, 80-column pane, redacted by corpus-redact; the card's key row is kept because it is, whole, the runtime's own vocabulary, and every row of the draft above it is the agent's and is discarded",
+  "alive": true,
+  "observations": [
+    { "afterSeconds": 0, "young": false, "want": "waiting_input", "wantKind": "feedback-review", "wantOptions": ["review", "send", "dismiss"], "wantFreeText": false, "wantMultiSelect": false },
+    { "afterSeconds": 30, "young": false, "want": "waiting_input", "wantKind": "feedback-review", "wantOptions": ["review", "send", "dismiss"], "wantFreeText": false, "wantMultiSelect": false }
+  ]
+}

@@ -370,7 +370,8 @@ POST /v1/machines/{machine}/sessions/{id}/respond
 - `choice` is 1-based. Omit it to accept the highlighted default, and `cancel:
   true` dismisses instead of answering.
 - `kind` names the question when the service recognises it — `resume-chooser`,
-  `folder-trust`, `external-imports`, `settings-trust`, `tool-permission`.
+  `folder-trust`, `external-imports`, `settings-trust`, `tool-permission`,
+  `feedback-review` (never auto-answer that one: see below).
   Filter on it if you
   automate answers, so you only ever answer questions you know. **An absent
   kind is not permission**: it means the service did not recognise the prompt,
@@ -833,6 +834,22 @@ repository and worktree under a root has both questions answered ahead of time,
 whoever started the session and whether or not it went through this service. A
 directory outside every root still shows the question, and
 `state.prompt.kind` reads `external-imports`.
+
+**`feedback-review` is a person's decision, and a client only carries it.** When
+an agent drafts product feedback the runtime paints a card above the composer:
+`1 to review · 2 to send · 0 to dismiss`. On a short pane — the 24 rows a created
+session gets — the card pushes the composer off the bottom, and until someone
+answers it nothing can be delivered: `send` is refused, naming the card, and the
+state is `waiting_input` with a prompt of this kind. Show it to a person; do not
+answer it for them, because *send* puts a draft of the session's own words in front
+of a third party. `respond` takes `choice` 1, 2 or 3 (review, send, dismiss — 3 is
+delivered as the key `0`) and **requires the nonce**, since the options never
+change from one draft to the next. It refuses `cancel`. Choosing `send` does not
+send: the runtime asks to confirm, and that confirmation is not a screen the
+service recognises yet — the receipt says so. On a taller pane the card blocks
+nothing: the session reads `idle`, and you can send to it. (A message that is only
+`1`, `2` or `0` would be read by the card as its shortcut, so `send` refuses one
+while the card is up.)
 
 The other consentable question is `bypass-permissions`, the
 acceptance screen a non-default `permissionMode` raises — and it comes with a

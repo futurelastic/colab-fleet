@@ -75,6 +75,10 @@ type corpusObservation struct {
 	// pane was cut off, and a question is `[redacted]` alone only if neither the
 	// tab bar nor the prose above the dialog was folded into it.
 	WantOptions []string `json:"wantOptions,omitempty"`
+	// WantKind is the kind the observation's prompt must carry (#215), or
+	// "none" to assert that it carries no prompt, or a prompt with no kind. Absent
+	// means the case does not speak to it.
+	WantKind string `json:"wantKind,omitempty"`
 	// WantQuestion is compared as a string; a pointer so that "" can be asserted.
 	WantQuestion *string `json:"wantQuestion,omitempty"`
 	// WantPreviewPane is whether the prompt's options were drawn beside a
@@ -222,6 +226,16 @@ func TestCorpusReplaysToItsStatedState(t *testing.T) {
 					if gotFT != *obs.WantFreeText {
 						t.Errorf("observation %d (t+%ds): prompt freeText = %v, want %v (prompt: %+v)",
 							i, obs.AfterSeconds, gotFT, *obs.WantFreeText, got.Prompt)
+					}
+				}
+				if obs.WantKind != "" {
+					gotKind := "none"
+					if got.Prompt != nil && got.Prompt.Kind != "" {
+						gotKind = string(got.Prompt.Kind)
+					}
+					if gotKind != obs.WantKind {
+						t.Errorf("observation %d (t+%ds): prompt kind = %q, want %q (prompt: %+v)",
+							i, obs.AfterSeconds, gotKind, obs.WantKind, got.Prompt)
 					}
 				}
 				if obs.WantOptions != nil {

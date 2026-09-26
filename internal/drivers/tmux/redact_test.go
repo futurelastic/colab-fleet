@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -182,5 +183,47 @@ func TestRedactKeepsTheExternalImportsOptionsSoARedactedDialogStillClassifies(t 
 	}
 	if again := RedactCapture(redacted); again != redacted {
 		t.Errorf("redaction is not a fixed point on this dialog:\n%s\n--- then ---\n%s", redacted, again)
+	}
+}
+
+// colab-fleet#215: the card's key row is the runtime's own vocabulary and is
+// what a replay recognises the card by; every other row between its borders is
+// the agent's draft. The redacted screen must classify exactly as the raw one.
+func TestRedactCaptureKeepsTheFeedbackCardShapeAndNothingOfTheDraft(t *testing.T) {
+	raw := cardScreen(cardOpts{
+		title:  "✻ Bug report drafted: the deploy key for the acme service leaked",
+		body:   []string{"- What happened: acme-prod rejected the token", "- more details about acme"},
+		queued: "+2 more queued", sep: " · ",
+	})
+	got := RedactCapture(raw)
+	for _, leaked := range []string{"acme", "deploy key", "rejected", "some-session", "Bug report"} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("the draft's or the session's words survived redaction (%q):\n%s", leaked, got)
+		}
+	}
+	if !strings.Contains(got, feedbackFooter+" · +2 more queued") {
+		t.Errorf("the key row must survive verbatim, suffix included:\n%s", got)
+	}
+	if !strings.Contains(got, "╭") || !strings.Contains(got, "╰") {
+		t.Errorf("the card's borders must survive:\n%s", got)
+	}
+	if again := RedactCapture(got); again != got {
+		t.Errorf("not a fixed point:\nfirst:\n%s\nsecond:\n%s", got, again)
+	}
+	before, after := classifyAt(raw, 0), classifyAt(got, 0)
+	if before.Status != after.Status || before.Prompt == nil || after.Prompt == nil ||
+		before.Prompt.Kind != after.Prompt.Kind || fmt.Sprint(before.Prompt.Options) != fmt.Sprint(after.Prompt.Options) {
+		t.Errorf("the redacted screen reads differently from the raw one:\nraw: %q %+v\nredacted: %q %+v",
+			before.Status, before.Prompt, after.Status, after.Prompt)
+	}
+}
+
+// A key row printed outside a validated box is somebody's prose, not the
+// runtime's vocabulary, and is discarded like any other line.
+func TestRedactCaptureDoesNotKeepAFooterOutsideACard(t *testing.T) {
+	raw := "  " + feedbackFooter + "\n│ " + feedbackFooter + " │\n" + rule + "\n❯\n" + rule
+	got := RedactCapture(raw)
+	if strings.Contains(got, "to review") {
+		t.Errorf("a footer with no card around it survived:\n%s", got)
 	}
 }

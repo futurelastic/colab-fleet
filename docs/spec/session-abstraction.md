@@ -569,6 +569,8 @@ PromptKind =
   | "tool-permission"     // a tool asking to run something
   | "bypass-permissions"  // the permission-mode acceptance screen; never produced by option
                           // matching alone — see prompt.go's PromptBypassAcceptance
+  | "feedback-review"     // the runtime's feedback-draft card ("1 to review · 2 to send · 0 to
+                          // dismiss"); reported only while it hides the composer, never consentable
 ```
 
 The question a session is blocked on, carried **on `SessionState`** so every
@@ -645,6 +647,37 @@ highlighted option". It is set only on a shape whose key sequence has been
 measured, and it is absent again once the row holds text: the row is found by its
 placeholder, and after an answer has been typed there is nothing left to find it
 by. The nonce digests the options, so typing into the row changes it.
+
+**`feedback-review` is a notice, and it is reported only while it is in the way**
+(colab-fleet issue #215). When an agent drafts product feedback the runtime
+paints a bordered card directly above the composer offering three keys — `1` to
+review the draft, `2` to send it, `0` to dismiss it. It is not a dialog: it owns
+no focus, its keys act only while the composer is empty, and a message pasted
+into the composer is delivered as ever. What it does is take rows. A session this
+service creates is a 24-row pane (the multiplexer's detached default) and the card
+is about seven of them, so the composer's closing rule and mode row fall off the
+bottom, the composer can no longer be read, and nothing can be delivered or
+confirmed until a person acts on the card. That is the one case in which the
+driver reports it — `waiting_input`, a `prompt` of kind `feedback-review`, a nonce
+— because only there is "waiting on a person" true from a caller's side. On a
+pane tall enough to show the composer whole the session is idle and no prompt is
+reported. Text on the composer's row under the card is neither: the state is
+`unknown`, the evidence names the card, and `send`, `keys`, `discard` and
+`respond` refuse by name, because a digit would be appended to that text.
+
+The options are the runtime's own verbs, `["review", "send", "dismiss"]`, and no
+option is highlighted, so there is no default to accept. The keys that answer
+them are the card's, not the options' positions: `choice` 3 is delivered as the
+key `0`. `respond` refuses `cancel` (Escape on an empty composer dismisses the
+draft and may be followed by a question about turning drafts off), a missing
+`choice`, `choices` and `text`, and — for this kind alone — a missing `nonce`,
+because the options are identical on every draft and only the nonce ties an
+answer to this one. The key goes once, alone, and the receipt reads what came of
+it. Choosing `send` does not send: the runtime asks to confirm first, in a state
+the driver does not yet recognise. The kind is deliberately not one a create can
+consent to; whether to review, send or dismiss feedback is a person's decision
+about what leaves their machine, and a client puts the prompt in front of a
+person and does nothing else with it.
 
 **A directory-trust question can also be pre-answered, standing outside a
 create request entirely.** (There are two such questions about a directory:
@@ -3947,6 +3980,39 @@ only then confirms, one key per call.
 > moves. And "the prompt changed" read as "my answer landed" for the third time
 > (#176, #168 before it): the receipt was correct only while every layout
 > behaved like the one it had been built on.
+
+**F63 · A card that pushes the composer off a short pane read as "idle" and
+refused every send as a startup problem.** The runtime's feedback-draft card is a
+notice of about seven rows above the composer. On the 24-row pane a created session
+gets, the composer's closing rule and mode row fell below the pane, so the screen
+ended on the composer's opening rule and its prompt row. `composerSpan` takes the
+last rule on screen as the closing fence, walked up from the labelled opening rule,
+met the card's bottom border before any prompt row, and ruled the composer
+*absent*. Two readings then disagreed about the same screen. The state read went
+through the finished-spinner branch, which never looks at the composer, and said
+`idle` with the composer empty. The send path asked whether a composer was painted,
+said no, and refused with a message about a runtime still starting or showing a
+full-screen interface — which also pointed the caller at `keys`, where Escape on
+an empty composer dismisses the draft. A supervisor's pings were refused eight
+times, identically, and it backed off; the session sat with the card up for hours
+and nothing on the API said why or who could clear it (#215).
+
+Read out of the runtime's own binary: the card is non-modal. Its keys are read
+through the composer's input value and act only while that value is empty, so on a
+taller pane a message is delivered normally and the session really is idle. That
+is why the card is a prompt only while it hides the composer, and why the refusals
+under it now name it. Two hazards the same reading turned up are guarded: a message
+that is only `1`, `2` or `0` would be read by the card as its shortcut (send
+refuses it), and the card's body — the agent's own draft — sits exactly where the
+usage-limit and failed-turn scans read the runtime's notices from, so those scans
+now end above the card.
+
+> **When one screen has two readers, they must not be able to disagree about
+> whether a composer is there.** The state read and the send gate each had a
+> private answer; a screen the classifier had not seen was the first place they
+> differed. What is left of the disagreement — a composer whose closing rule is
+> merely cut off the bottom of the pane still reads as absent for `keys` and
+> `discard` — is recorded on #215 as a follow-up, not fixed here.
 
 ### The pattern worth naming
 
