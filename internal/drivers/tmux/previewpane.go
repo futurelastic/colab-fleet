@@ -376,4 +376,10 @@ type menuShape struct {
 	preview bool
 	// tab is where the current question sits in a tabbed dialog.
 	tab tabPosition
+	// shortcuts is the key that answers each option, aligned with the options,
+	// for a prompt whose keys are not its options' positions: the feedback-draft
+	// card offers ["review","send","dismiss"] and answers them with 1, 2 and 0
+	// (colab-fleet#215). Nil for every menu, where a digit is the option's
+	// number.
+	shortcuts []string
 }

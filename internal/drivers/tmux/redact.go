@@ -65,8 +65,22 @@ func RedactCapture(raw string) string {
 		}
 	}
 	pane, hasPane := findPreviewPane(stripped[:last+1])
+	// The feedback-draft card (colab-fleet#215) is the other shape that is not
+	// line-local, for the same reason: its rows are `│ … │` cells whose only
+	// runtime vocabulary is the key row, and the rows above it are the agent's
+	// own draft. Found once, over the whole capture, by the classifier's own
+	// box recogniser.
+	card, hasCard := feedbackCardBox{}, false
+	if last >= 0 {
+		card, hasCard = findFeedbackCardBox(stripped[:last+1])
+	}
 	afterRule := false
 	for i, line := range lines {
+		if hasCard && i > card.top && i <= card.key {
+			out[i] = redactCardRow(stripped[i], card, i == card.key)
+			afterRule = false
+			continue
+		}
 		if hasPane && pane.contains(i) {
 			out[i] = redactPaneRow(line)
 			afterRule = false
@@ -78,6 +92,24 @@ func RedactCapture(raw string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// redactCardRow redacts one row between a feedback-draft card's borders. The
+// key row is the runtime's own vocabulary end to end — three fixed items and an
+// optional count — and is kept, because it is what a replay recognises the card
+// by. Every other row is the agent's draft: replaced by one placeholder inside
+// the same borders, padded to the row's own width so the box keeps its shape.
+func redactCardRow(stripped string, card feedbackCardBox, isKey bool) string {
+	if isKey {
+		return stripped
+	}
+	width := utf8.RuneCountInString(stripped)
+	head := strings.Repeat(" ", card.col) + "│ " + placeholderToken
+	pad := width - utf8.RuneCountInString(head) - 1
+	if pad < 0 {
+		pad = 0
+	}
+	return head + strings.Repeat(" ", pad) + "│"
 }
 
 // placeholderToken replaces any line — or any part of a line — this

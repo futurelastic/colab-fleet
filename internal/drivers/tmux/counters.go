@@ -232,6 +232,14 @@ const (
 	counterComposerClippedRefusedDiscard = "composer_clipped.refused_discard"
 	counterComposerClippedRefusedKeys    = "composer_clipped.refused_keys"
 	counterComposerClippedRefusedSend    = "composer_clipped.refused_send"
+	// colab-fleet#215: refusals that named the runtime's feedback-draft card
+	// instead of the generic reasons they used to fall into (no composer
+	// painted, selection menu), one name per verb, and the lone-digit message
+	// the card would have read as its own shortcut. Counted at the refusal.
+	counterFeedbackCardRefusedSend    = "feedback_card.refused_send"
+	counterFeedbackCardRefusedKeys    = "feedback_card.refused_keys"
+	counterFeedbackCardRefusedDiscard = "feedback_card.refused_discard"
+	counterFeedbackCardRefusedDigit   = "feedback_card.refused_lone_digit"
 	// colab-fleet#169: the subset of those refusals that happened ONLY
 	// because the composer's opening fence sat above the visible pane, in the
 	// history margin — the same rows without the pane boundary would have

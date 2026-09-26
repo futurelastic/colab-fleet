@@ -679,7 +679,24 @@ func parsePromptMenu(s screen) (*fleet.SessionPrompt, bool) {
 // carry numbers. A menu drawn beside a preview pane is the second such fact
 // (colab-fleet#204): its options are read from the list column alone, and a
 // caller has to know a pane is there because a digit does not commit on it.
+//
+// A menu is read first. When there is none, the runtime's feedback-draft card
+// is the other thing this reads (colab-fleet#215): a notice, not a menu, so it
+// has no numbered options and no highlight, and it is a prompt only while it is
+// what stands between a caller and the composer — see feedbackCard.answerable.
 func parsePromptShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
+	if p, shape = parseMenuShape(s); p != nil {
+		return p, shape
+	}
+	if c, ok := liveFeedbackCard(s); ok && c.answerable() {
+		return c.sessionPrompt(), menuShape{shortcuts: feedbackCardShortcuts()}
+	}
+	return nil, menuShape{}
+}
+
+// parseMenuShape is the numbered, unnumbered and preview-pane menus'
+// recogniser: everything parsePromptShape read before the feedback-draft card.
+func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 	// Detection is STRUCTURAL, not footer-based.
 	//
 	// Four footers have been seen on one runtime — "Enter to select · Tab/Arrow
@@ -1315,6 +1332,13 @@ func usageLimit(s screen) (resetHint string, blocked bool) {
 			break
 		}
 	}
+	// colab-fleet#215: a feedback-draft card sits between the agent's output and
+	// the composer, and its rows are the agent's own draft — prose about whatever
+	// went wrong, which can carry the very words this reads as a runtime notice.
+	// The live region ends above the card.
+	if c, ok := liveFeedbackCard(s); ok && c.top < end {
+		end = c.top
+	}
 	// The notice must be the last thing the AGENT printed — not literally the
 	// last line, which was too strict and missed the real shape.
 	//
@@ -1446,6 +1470,13 @@ func lastTurnFailed(s screen) (*fleet.TurnEnd, bool) {
 			break
 		}
 	}
+	// colab-fleet#215: a feedback-draft card sits between the agent's output and
+	// the composer, and its rows are the agent's own draft — prose about whatever
+	// went wrong, which can carry the very words this reads as a runtime notice.
+	// The live region ends above the card.
+	if c, ok := liveFeedbackCard(s); ok && c.top < end {
+		end = c.top
+	}
 	const window = 6
 	var seen []string
 	for i := end - 1; i >= 0 && len(seen) < window; i-- {
@@ -1508,6 +1539,13 @@ func lastTurnFailed(s screen) (*fleet.TurnEnd, bool) {
 func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
 	if p == nil || len(p.Options) == 0 {
 		return ""
+	}
+	// A kind the parser established from STRUCTURE stands (colab-fleet#215): the
+	// feedback-draft card is recognised by its box and its key row, not by its
+	// options, whose words ("review", "send", "dismiss") are ordinary and would
+	// match anything. Nothing below runs on option text alone for this kind.
+	if p.Kind != "" {
+		return p.Kind
 	}
 	lower := make([]string, 0, len(p.Options))
 	for _, o := range p.Options {
@@ -2145,6 +2183,15 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 		if st.Prompt != nil {
 			st.Prompt.Kind = classifyPromptKind(st.Prompt)
 		}
+		if st.Prompt != nil && st.Prompt.Kind == fleet.PromptFeedbackReview {
+			// colab-fleet#215: the card is not a menu awaiting a keypress in the
+			// sense every other prompt is, and saying so would be the wrong
+			// thing to hand a person. Name what it is and why it is reported.
+			st.Evidence = "the runtime is showing its feedback-draft card over the composer, which " +
+				"pushes the composer's closing rule off the bottom of this pane: nothing can be " +
+				"delivered until a person answers the card (review, send or dismiss) or the pane " +
+				"is made taller"
+		}
 
 		// Companion clause, #58: a structural-only match (no footer) whose
 		// kind classifyPromptKind also would not name is exactly the shape
@@ -2187,6 +2234,18 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 		st := fleet.InferredState(fleet.StatusQuotaBlocked, evidence, nil)
 		st.Quota = &fleet.QuotaBlock{ResetHint: hint}
 		return st, ambNone
+	}
+
+	// colab-fleet#215: the feedback-draft card over a composer this driver cannot
+	// read as a whole, with text on its ❯ row that a key would be appended to.
+	// Not a prompt (a digit would not answer it), and not idle: the finished-
+	// spinner branch below would say "composer empty" for a composer this driver
+	// did not find, which is the false idle the card produced.
+	if c, ok := liveFeedbackCard(s); ok && !c.composerFound && !c.answerable() {
+		return fleet.UnknownState(fleet.ConfidenceInferred,
+			"the runtime is showing its feedback-draft card and the composer beneath it cannot be "+
+				"read as a whole: its closing rule is below the bottom of this pane, and its row "+
+				"holds text this driver cannot read in full"), ambNone
 	}
 
 	running, foundSpinner := spinner(s)

@@ -252,6 +252,15 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		}, nil
 	}
 
+	// colab-fleet#215: the feedback-draft card over a composer row that holds
+	// text. Not a prompt, so the refusal above did not fire, and the composer is
+	// not readable as a whole, so the checks below would see an absent one. A key
+	// sent now is appended to that text or read by the card.
+	if reason, isCard := feedbackCardRefusal(screen); isCard {
+		d.counters.incr(counterFeedbackCardRefusedKeys)
+		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
+	}
+
 	// colab-fleet#134: a composer taller than this driver's capture window,
 	// with no recognised prompt to route to instead (that case already
 	// returned, above). Refuse rather than guess — a key sent now could

@@ -154,6 +154,39 @@ const (
 	// in a way that does not apply to the other kinds: an unclassified boot
 	// screen may well be this one.
 	PromptBypassAcceptance PromptKind = "bypass-permissions"
+	// PromptFeedbackReview: the runtime's own card offering a feedback draft
+	// the agent wrote ("1 to review · 2 to send · 0 to dismiss"), colab-fleet
+	// #215.
+	//
+	// # A notice, reported only while it is in the way
+	//
+	// The card is not a dialog. It sits above a live composer, owns no focus, and
+	// its three keys act only while the composer is empty, so a session showing
+	// it can still take a message. What it does is take rows: on the short pane a
+	// fleet-created session has, it pushes the composer's closing rule off the
+	// bottom, the composer can no longer be read, and nothing can be delivered or
+	// confirmed. That is the one case this kind is reported in — the card over a
+	// composer this driver cannot read whole — because only there is "waiting on
+	// a person" true from a caller's side. On a taller pane the session is idle
+	// and no prompt is reported.
+	//
+	// # The options are the runtime's verbs; the keys are not their positions
+	//
+	// Options are ["review", "send", "dismiss"], and a Choice is delivered as the
+	// card's own key: 1, 2, and 0 for the third. There is no highlight, so there
+	// is no default to accept, and Cancel is refused (Escape on an empty composer
+	// dismisses the draft, and may be followed by a question about turning drafts
+	// off). Choosing "send" does not send: the runtime first asks to confirm, in a
+	// state this driver does not yet recognise.
+	//
+	// # Never answered on a client's behalf
+	//
+	// Like every kind it is advisory, and unlike the boot questions it is
+	// deliberately absent from consentableKinds. Whether to review, send or
+	// dismiss feedback is a person's decision about what leaves their machine.
+	// A client puts this prompt in front of a person and does nothing else with
+	// it.
+	PromptFeedbackReview PromptKind = "feedback-review"
 )
 
 // # A known gap: the tool-server ("MCP") trust dialog has no kind yet

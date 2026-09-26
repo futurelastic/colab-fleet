@@ -1231,10 +1231,23 @@ prompting modes apart nor follow a press of `BTab`.
 
 `state.prompt.kind` — when present — names what is being asked
 (`resume-chooser`, `folder-trust`, `external-imports`, `settings-trust`,
-`tool-permission`). `bypass-permissions` is deliberately absent from what CLASSIFICATION can produce:
+`tool-permission`, `feedback-review`). `bypass-permissions` is deliberately absent from what CLASSIFICATION can produce:
 its options are generic and its identifying words sit in the question, which this
 service does not read. See the client guide.
 It is **advisory and fails to absent**: an unrecognised prompt carries no kind.
+
+`feedback-review` is the runtime's feedback-draft card, and it is the one kind
+that is **never auto-answered by anything**: it is not consentable, and a
+client puts it in front of a person. Its options are `["review", "send",
+"dismiss"]` with nothing highlighted, and `POST .../respond` answers it with the
+card's own keys — `choice` 3 is delivered as the key `0`. It refuses `cancel`, an
+absent `choice`, `choices`, `text` and an absent `nonce` (required for this kind:
+its options are the same on every draft), delivers one key exactly once, and
+reports `unknown` when the card is still up afterwards or the key was typed into
+the composer instead. Choosing `send` does not send: the runtime asks to confirm
+first, on a screen the driver does not yet recognise. The kind is reported only
+while the card hides the composer — on a short pane; on a taller one the session
+is `idle` and takes messages — see session-abstraction.md §2.7.
 
 A client may auto-answer a kind it knows. It must **never** treat an absent
 kind as safe: a real prompt in this fleet highlights `No, exit`, so answering
