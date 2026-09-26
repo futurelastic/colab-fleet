@@ -1,7 +1,7 @@
 {
   "name": "multi-select-wrapped-question",
-  "for": "A multi-select question whose text is long enough to wrap, so the runtime draws it as a block with a rule down its left edge, over four boxed options with two description rows each. The dialog is 31 rows from its tab bar to the bottom row, and the classifier reads a fixed window of 24, so the tab bar — the one row that tells a checkbox question from an agent's own [ ] list — sat above the window and the question read as an ordinary numbered menu: multiSelect and freeText absent, respond's choices refused, and the person sent to the terminal. This case pins that the window reaches the dialog's opening rule when it starts inside the dialog, so the tab bar is found and the question is reported as multiSelect with its free-text row. It also pins that the question is the wrapped block's last three rows and not the whole screen: the redactor turns each rail row into placeholder text, so the rail itself is pinned by wrapped_question_test.go, which draws it.",
-  "source": "#219",
+  "for": "A multi-select question whose text is long enough to wrap, so the runtime draws it as a block with a rule down its left edge, over four boxed options with two description rows each. The dialog is 31 rows from its tab bar to the bottom row, and the classifier reads a fixed window of 24, so the tab bar — the one row that tells a checkbox question from an agent's own [ ] list — sat above the window and the question read as an ordinary numbered menu: multiSelect and freeText absent, respond's choices refused, and the person sent to the terminal. This case pins that the window reaches the dialog's opening rule when it starts inside the dialog, so the tab bar is found and the question is reported as multiSelect with its free-text row. It also pins that the question is the whole wrapped block, all ten rows between the tab bar and the options and nothing above the tab bar (#220: it was cut to the block's last three rows, so a long question was reported starting mid-sentence): the redactor turns each rail row into placeholder text, so the rail itself is pinned by wrapped_question_test.go, which draws it.",
+  "source": "#219, #220",
   "redactedFrom": "reconstructed from the layout measured on a peer at v0.1.0-53 (the issue's synthetic screen, made tall enough to outgrow the window), redacted by corpus-redact — not a raw capture of the runtime",
   "alive": true,
   "observations": [
@@ -11,7 +11,7 @@
       "want": "waiting_input",
       "wantMultiSelect": true,
       "wantFreeText": true,
-      "wantQuestion": "[redacted] [redacted] [redacted]",
+      "wantQuestion": "[redacted] [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] [redacted]",
       "wantOptions": [
         "[ ] [redacted]",
         "[ ] [redacted]",

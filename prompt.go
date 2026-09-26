@@ -218,7 +218,9 @@ const (
 
 type SessionPrompt struct {
 	// Question is the text above the options, best effort. It may be empty
-	// when the prompt is terse; the options are the load-bearing part.
+	// when the prompt is terse; the options are the load-bearing part. It is
+	// for showing to a person, not for parsing, and a driver bounds it: a long
+	// one may be reported from part-way through.
 	Question string `json:"question,omitempty"`
 
 	// Options in the order shown, 1-based when referenced by Response.Choice.

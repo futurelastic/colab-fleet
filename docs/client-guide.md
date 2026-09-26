@@ -367,6 +367,12 @@ POST /v1/machines/{machine}/sessions/{id}/respond
   than applied to a different question.
   **Always send it** — it is optional only for a human answering something they
   are looking at this second.
+- `question` is what the screen asks, joined onto one line. Show it to a person;
+  do not parse it. On a tabbed dialog the tmux driver reports the whole question,
+  however many rows it wraps over, up to 32 — and the rows nearest the options
+  when it is longer. On a menu with no tab bar it reports only the last three
+  rows above the options, because rows further up may be the transcript the menu
+  was drawn under.
 - `choice` is 1-based. Omit it to accept the highlighted default, and `cancel:
   true` dismisses instead of answering.
 - `kind` names the question when the service recognises it — `resume-chooser`,
