@@ -921,7 +921,10 @@ A composer taller than the driver's capture window (colab-fleet #134) is
 refused before any key is pressed — and so is one whose opening fence sits
 above the visible pane, because the rows above it are scrollback, not the live
 screen (colab-fleet #169; ADR `169-a-composer-is-read-from-the-visible-pane`).
-Neither refusal resolves by
+So is one whose closing rule is cut off by the pane's bottom edge — its opening
+rule and prompt row are the last rows shown, as when a tall notice above the
+composer leaves a short pane no room below it (colab-fleet #216; ADR
+`216-a-composer-cut-off-by-the-pane-bottom-reads-clipped`). None of these refusals resolves by
 retrying: no `expect`, no `force` and no wider read changes it, because nothing
 the driver can read proves the rows it cannot see hold nothing worth keeping
 (ADR `149-a-clipped-composer-has-no-in-driver-proof`). `input` and `keys` refuse

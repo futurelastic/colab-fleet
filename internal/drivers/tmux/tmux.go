@@ -2470,19 +2470,24 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 
 	pending, composerScanResult := composerText(screenNow)
 	if composerScanResult == composerClipped {
+		// colab-fleet#216: a composer cut off by the bottom of the pane reads
+		// clipped, where it read absent before and was refused by the readiness
+		// gate above with the card named. The card is still the better answer
+		// when it is what cut the composer off.
+		if reason, isCard := feedbackCardRefusal(screenNow); isCard {
+			d.counters.incr(counterFeedbackCardRefusedSend)
+			return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
+		}
 		// colab-fleet#134: this driver's own capture ended above the
 		// composer's opening fence, so it cannot confirm the composer is
 		// empty before delivering. Fail closed, the same direction §2.4
 		// already takes for a composer it CAN read and finds busy — the
 		// alternative is concatenating onto text this driver never saw.
 		d.counters.incr(counterComposerClippedRefusedSend)
-		if clippedOnlyAboveVisiblePane(screenNow) {
-			d.counters.incr(counterComposerClippedAboveVisiblePane)
-		}
+		d.countClippedCause(screenNow)
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeRefused,
-			Reason: "session's composer is taller than this driver's capture window " +
-				"or reaches above the visible pane, " +
+			Reason: "session's composer " + composerClippedCause(screenNow) + ", " +
 				"so it cannot confirm the composer is empty before delivering; " +
 				"sending now risks concatenating onto text it cannot see (§2.4). " +
 				clippedComposerRemedy,
@@ -3327,6 +3332,20 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 
 	sc := captures[live.paneID].screen()
 	pending, scan := composerText(sc)
+	// colab-fleet#215, moved ahead of the clipped refusal by #216: the feedback-
+	// draft card over a composer this driver could not read as a whole. A
+	// composer cut off by the bottom of the pane now reads clipped where it read
+	// absent, so the card would otherwise be met by the generic refusal, whose
+	// words (a taller-than-the-window composer) are wrong for it. It is refused
+	// whatever the row holds: "already clear" is the answer this verb gives for
+	// any composer it did not find, and for a row it could not read it is false.
+	if scan != composerFound {
+		if c, ok := liveFeedbackCard(sc); ok && !c.composerFound {
+			d.counters.incr(counterFeedbackCardRefusedDiscard)
+			reason, _ := feedbackCardRefusal(sc)
+			return fleet.Ack{}, fmt.Errorf("%w: discard: %s", ErrAmbiguousTarget, reason)
+		}
+	}
 	if scan == composerClipped {
 		// colab-fleet#134: this driver's capture ended above the composer's
 		// opening fence. Claiming "already clear" here is #134's own false
@@ -3340,21 +3359,8 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		// refusal is counted so its rate is readable, which is the evidence
 		// that ADR's reopen condition asks for.
 		d.counters.incr(counterComposerClippedRefusedDiscard)
-		if clippedOnlyAboveVisiblePane(sc) {
-			d.counters.incr(counterComposerClippedAboveVisiblePane)
-		}
-		return fleet.Ack{}, discardComposerClipped()
-	}
-	// colab-fleet#215: the feedback-draft card over a composer this driver could
-	// not read as a whole, with text on its row. "Already clear" would be false,
-	// and it is the answer the branch below gives for any composer it did not
-	// find.
-	if scan == composerAbsent {
-		if c, ok := liveFeedbackCard(sc); ok && !c.composerFound && !c.rowEmpty {
-			d.counters.incr(counterFeedbackCardRefusedDiscard)
-			reason, _ := feedbackCardRefusal(sc)
-			return fleet.Ack{}, fmt.Errorf("%w: discard: %s", ErrAmbiguousTarget, reason)
-		}
+		d.countClippedCause(sc)
+		return fleet.Ack{}, discardComposerClipped(sc)
 	}
 	if pending == "" {
 		// Already clear — including the case where what looked like text was
@@ -3844,10 +3850,9 @@ func (d *Driver) clearComposerSweep(ctx context.Context, paneID, id, pending str
 // never arrives, so the advice sent callers into a loop that could not end
 // (colab-fleet#149). The message now says what is actually true: retrying
 // changes nothing, and the exit is outside this driver.
-func discardComposerClipped() error {
+func discardComposerClipped(s screen) error {
 	return fmt.Errorf(
-		"%w: discard: this composer is taller than this driver's capture window "+
-			"or reaches above the visible pane, so "+
+		"%w: discard: this composer "+composerClippedCause(s)+", so "+
 			"its content could not be read in full — neither \"already clear\" nor a "+
 			"digest-corroborated clear is honest here. %s",
 		ErrAmbiguousTarget, clippedComposerRemedy)
@@ -3864,10 +3869,12 @@ func discardComposerClipped() error {
 // retired for a stuck composer.
 const clippedComposerRemedy = "Retrying does not change this: the same call, " +
 	"with any expect or force, gets this same refusal while the composer stays " +
-	"taller than the capture window or reaches above the visible pane (rows above " +
-	"it are scrollback, colab-fleet#169), and nothing this driver can read proves " +
+	"taller than the capture window, reaches above the visible pane (rows above " +
+	"it are scrollback, colab-fleet#169) or is cut off by the pane's bottom edge " +
+	"(colab-fleet#216), and nothing this driver can read proves " +
 	"the unseen rows hold nothing worth keeping (colab-fleet#149). The way out " +
-	"is a person reading or clearing the composer at the pane itself"
+	"is a person reading or clearing the composer at the pane itself, or, for a " +
+	"composer cut off at the bottom, a pane tall enough to draw it"
 
 // discardIncomplete reports a clear that ran out of time without ever
 // emptying the composer, and says which of two situations that is — because
@@ -5374,8 +5381,7 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) readinessCheck 
 			// direction WaitingUnsentInput already means: something may be
 			// sitting there this call cannot see.
 			return readinessCheck{checked: true, present: true,
-				reason: "the composer is taller than this driver's capture window " +
-					"or reaches above the visible pane; " +
+				reason: "the composer " + composerClippedCause(sc) + "; " +
 					"cannot confirm it is empty before placing this prompt",
 				waitingOn: fleet.WaitingUnsentInput}
 		}

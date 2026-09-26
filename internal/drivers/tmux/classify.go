@@ -131,6 +131,14 @@ type screen struct {
 	// (colab-fleet#169). Zero means the pane height was not known when the
 	// capture was taken, and every row is treated as it always was.
 	visibleTop int
+	// blankBelow is how many blank rows the capture ended with, dropped from
+	// lines above. capture-pane pads to the pane's height, so a capture whose
+	// last non-blank row is ALSO its last row (blankBelow 0) has that row on the
+	// pane's bottom edge: nothing more can be drawn below it because there is
+	// no row below it (colab-fleet#216). A screen with blank rows under its
+	// last content is a different fact — the runtime had room and painted
+	// nothing there — and is never read as a row cut off by the pane.
+	blankBelow int
 }
 
 func newScreen(raw string) screen {
@@ -169,7 +177,12 @@ func splitScreen(raw string) screen {
 		out = out[:len(out)-1]
 		raws = raws[:len(raws)-1]
 	}
-	return screen{lines: out, raw: raws}
+	// The trailing newline of a capture ends its last row; it is not a row.
+	dropped := len(all) - len(out)
+	if strings.HasSuffix(raw, "\n") {
+		dropped--
+	}
+	return screen{lines: out, raw: raws, blankBelow: max(dropped, 0)}
 }
 
 // stripEscapes removes the ANSI sequences a pane carries so text matching works
@@ -373,6 +386,14 @@ const (
 // commands the human already ran (see the /remote-control fixture). Those
 // are history. Only the fenced one is live input.
 func composerSpan(s screen) (prompt, last int, scan composerScan) {
+	// The pane's bottom edge cutting the composer's closing rule off. Asked
+	// first, because the walk below cannot answer it: it takes the LAST rule on
+	// screen for the closing fence, and here that rule is the OPENING one, so it
+	// walks up out of the composer into whatever sits above it (colab-fleet#216).
+	if bottomCutComposer(s) {
+		return 0, 0, composerClipped
+	}
+
 	// Walk back to the closing rule.
 	last = -1
 	for i := len(s.lines) - 1; i >= 0; i-- {
@@ -470,6 +491,68 @@ func composerSpan(s screen) (prompt, last int, scan composerScan) {
 		return 0, 0, composerClipped
 	}
 	return prompt, last, composerFound
+}
+
+// bottomCutComposer reports whether the screen ends on a composer's opening
+// rule and its prompt row, with the pane's bottom edge where the closing rule
+// and the mode row would be (colab-fleet#216): a ❯ row that is the LAST row of
+// the pane, opened by a rule, with no rule below it because there is no row
+// below it.
+//
+// Anything tall enough above the composer does this on the 24-row pane a
+// created session gets. The feedback-draft card is the measured case (#215),
+// about seven rows, and any other notice of that height reproduces it.
+//
+// It is clipped, not absent: the composer is there, and its bottom is not
+// visible. "Absent" is a positive finding that nothing is there to protect
+// (composerText's contract), and reading it here let a discard answer "already
+// clear" for a row it could not read.
+//
+// Three things keep the shape narrow, because it changes what send, keys and
+// discard decide for every session:
+//
+//   - The row must be the last row of the CAPTURE, not merely the last
+//     non-blank line. capture-pane pads to the pane's height, so this is the
+//     pane's bottom edge; blank rows under the prompt row are the runtime
+//     having had room and painted nothing there, which a bottom edge did not
+//     cause and this does not claim.
+//   - The row above must be a plain rule. A box's bottom border (`╰───╯`, the
+//     card's own) has rule runes in it and is what the old walk mistook for the
+//     opening fence.
+//   - The row must not be a numbered option. A menu's highlighted option is
+//     drawn with the same ❯; menus are read as prompts first by every verb, and
+//     nothing here changes how a menu reads.
+func bottomCutComposer(s screen) bool {
+	n := len(s.lines)
+	if n < 2 || s.blankBelow != 0 {
+		return false
+	}
+	row := strings.TrimSpace(s.lines[n-1])
+	if !strings.HasPrefix(row, composerRuneMarker) {
+		return false
+	}
+	if _, _, numbered := numberedOption(strings.TrimSpace(strings.TrimPrefix(row, composerRuneMarker))); numbered {
+		return false
+	}
+	fence := firstNonBlankAbove(s.lines, n-1)
+	if fence < 0 || !isRule(s.lines[fence]) {
+		return false
+	}
+	return !strings.ContainsAny(s.lines[fence], "╭╮╰╯│")
+}
+
+// composerClippedCause names, for a refusal or a state read's evidence, why a
+// composer read clipped: a clause that follows "the composer". The two causes
+// need opposite words. A composer taller than the capture window is one whose
+// top is out of reach; one cut off by the pane's bottom edge has its top in
+// plain view and is missing its bottom, and a caller told the first about the
+// second would look for a paste that is not there (colab-fleet#216).
+func composerClippedCause(s screen) string {
+	if bottomCutComposer(s) {
+		return "is cut off by the bottom edge of the pane (its opening rule and prompt row are " +
+			"the last rows shown, its closing rule is not drawn)"
+	}
+	return "is taller than this driver's capture window or reaches above the visible pane"
 }
 
 // clippedOnlyAboveVisiblePane reports whether s reads composerClipped solely
@@ -2285,8 +2368,18 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 		// asserting "empty" here is the exact false negative that lets
 		// Discard report an untouched composer already clear.
 		return fleet.UnknownState(fleet.ConfidenceInferred,
-			"turn finished; composer is taller than this driver's capture window "+
-				"or reaches above the visible pane, cannot confirm it is empty"), ambNone
+			"turn finished; composer "+composerClippedCause(s)+", cannot confirm it is empty"), ambNone
+
+	case foundSpinner && !running && !hasComposer:
+		// colab-fleet#216: the turn finished and no composer was found. The
+		// branch below says "composer empty", which is a claim about a composer
+		// and this screen has none this driver read — it used to fall through to
+		// it, so a screen the send gate refuses ("no composer has been painted")
+		// read `idle`, the one status that means "send it work". Nothing on
+		// screen says the session will take input, so nothing says idle.
+		return fleet.UnknownState(fleet.ConfidenceInferred,
+			"turn finished; no composer found in the pane, cannot confirm the session will "+
+				"take input (a full-screen interface has none of its own to paint)"), ambNone
 
 	case foundSpinner && !running:
 		// Idle is the honest status: the session is up and will take input.
@@ -2305,8 +2398,7 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 		// no-spinner branches below: none of them may assert composer-empty
 		// or composer-absent for a screen this driver could not fully read.
 		return fleet.UnknownState(fleet.ConfidenceInferred,
-			"no spinner line; composer is taller than this driver's capture window "+
-				"or reaches above the visible pane, cannot confirm it is empty"), ambNone
+			"no spinner line; composer "+composerClippedCause(s)+", cannot confirm it is empty"), ambNone
 
 	case !foundSpinner && hasComposer && pending == "" && young:
 		// A young session with a painted composer, no spinner and nothing

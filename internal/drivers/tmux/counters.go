@@ -249,6 +249,13 @@ const (
 	// kept running, since a snapshot of one fleet cannot speak for every
 	// runtime. See docs/adr/169-a-composer-is-read-from-the-visible-pane.md.
 	counterComposerClippedAboveVisiblePane = "composer_clipped.fence_above_visible_pane"
+	// colab-fleet#216: the subset of those refusals that happened because the
+	// composer's closing rule was cut off by the bottom of the pane — a prompt
+	// row on the pane's last row, opened by a rule. This shape read as absent
+	// before, so it was refused elsewhere or not at all; the rate at which real
+	// traffic now reaches the clipped refusals through this rule is this counter.
+	// Incremented alongside the per-verb counter, never instead of it.
+	counterComposerClippedBottomCut = "composer_clipped.bottom_cut"
 
 	// Terminal path v2 (colab-fleet round-1 research, item f). Two families:
 	//
@@ -448,5 +455,18 @@ func confirmLatencyBucket(elapsed time.Duration) string {
 		return counterSubmitConfirmLatencyUnder2s
 	default:
 		return counterSubmitConfirmLatencyUnder4s
+	}
+}
+
+// countClippedCause records which rule read a refused screen as clipped, beside
+// the per-verb counter its caller has already incremented: the visible-pane rule
+// (#169) and the pane's bottom edge (#216) each get their own, so the rate of
+// each is readable without inferring it from the total.
+func (d *Driver) countClippedCause(s screen) {
+	if clippedOnlyAboveVisiblePane(s) {
+		d.counters.incr(counterComposerClippedAboveVisiblePane)
+	}
+	if bottomCutComposer(s) {
+		d.counters.incr(counterComposerClippedBottomCut)
 	}
 }

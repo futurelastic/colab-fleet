@@ -473,11 +473,21 @@ func TestDiscardRefusesWhenAFeedbackCardHidesTypedText(t *testing.T) {
 	if n := d.Counters()[counterFeedbackCardRefusedDiscard]; n != 1 {
 		t.Errorf("%s = %d, want 1", counterFeedbackCardRefusedDiscard, n)
 	}
-	// With nothing on the row there is nothing to discard.
+	// An empty row is refused too (colab-fleet#216). This used to answer "already
+	// clear" — #215 read "nothing on the row" as "nothing to discard" — but the
+	// composer's closing rule is below the pane and what is under the row cannot
+	// be read, which is what a clipped composer is: the same answer the verb
+	// gives for any other clipped composer. It is also the only answer that
+	// agrees with what send says of this screen (the card is a prompt, and a
+	// message is refused until a person answers it).
 	f.captures["%1"] = cardShort()
-	if ack, err := d.Discard(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "", driver.DiscardOptions{}); err != nil || !ack.Accepted {
-		t.Errorf("discard on an empty row: %+v %v", ack, err)
+	_, err = d.Discard(context.Background(), testCaller,
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "", driver.DiscardOptions{})
+	if err == nil || !strings.Contains(err.Error(), "feedback-draft card") {
+		t.Fatalf("discard on an empty row: %v, want a refusal naming the card", err)
+	}
+	if n := d.Counters()[counterFeedbackCardRefusedDiscard]; n != 2 {
+		t.Errorf("%s = %d, want 2", counterFeedbackCardRefusedDiscard, n)
 	}
 }
 
