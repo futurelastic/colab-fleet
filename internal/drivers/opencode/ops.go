@@ -364,8 +364,8 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // display text without changing the id callers actually address by,
 // which is not what §3's rename means. ErrUnsupported (§5.6) rather than
 // a rename that silently does something else.
-func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.Ack, error) {
-	return fleet.Ack{}, driver.ErrUnsupported
+func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.RenameAck, error) {
+	return fleet.RenameAck{}, driver.ErrUnsupported
 }
 
 // List returns every session this driver knows about (see the package

@@ -645,6 +645,14 @@ somebody else's work. Afterwards, **the id you hold is stale**: use the new one,
 and if you are subscribed, re-key on `session.renamed` rather than concluding
 the old id died.
 
+Read the `202` body's `title` field (colab-fleet#222) if you ever reconcile a
+session's name against anything the runtime itself reports — its own title is
+brought along automatically, but honestly: `"pending"`/`"failed"` mean it has
+not (yet), and re-`POST`ing the identical `name` retries just that half. Do
+not build your own reconciler that trusts the runtime's title over this API's
+`to` without reading this field first — that is exactly the loop colab-fleet#222
+closed.
+
 **`DELETE` should carry `?startedAt=`** from the session you read. Ids are
 recyclable; without corroboration you may destroy a *different* session that
 inherited the id. A mismatch answers `409 conflict`, which means your belief is

@@ -149,6 +149,26 @@ var sessionSlashCommands = map[string]bool{
 	"/remote-control": true,
 }
 
+// isSessionCommand reports whether trimmed (the same, already-sanitised
+// text Send is about to paste — see this file's own trim discipline above)
+// is one of sessionSlashCommands, without regard for who is allowed to send
+// it (refuseSlashCommand already decided that before this ever runs).
+//
+// Used at the #111 delivery-mark write site (tmux.go): a session-management
+// command like `/rename` produces no agent turn, so marking `turns` for it
+// would read as "a delivery was made and nothing has completed since" —
+// exactly the false work-lost signal #111 exists to prevent — the moment
+// colab-fleet #222 made a `/rename` delivery a guaranteed side effect of
+// every API rename rather than a rare, deliberate `/input` call.
+func isSessionCommand(text string) bool {
+	trimmed := strings.TrimLeftFunc(text, runtimeTrimCutset)
+	name, _, _ := strings.Cut(trimmed, " ")
+	if i := strings.IndexAny(name, "\n\t"); i >= 0 {
+		name = name[:i]
+	}
+	return sessionSlashCommands[name]
+}
+
 // refuseSlashCommand is #180 L6: a message beginning with "/" is read by
 // this runtime as a command — /clear, /exit, or a custom command whose
 // template runs whatever it says — not delivered as a message. trimmed has

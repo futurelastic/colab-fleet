@@ -79,8 +79,8 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	return fleet.Ack{}, driver.ErrUnsupported
 }
 
-func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.Ack, error) {
-	return fleet.Ack{}, driver.ErrUnsupported
+func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.RenameAck, error) {
+	return fleet.RenameAck{}, driver.ErrUnsupported
 }
 
 func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.ListFilter) (fleet.Collection[fleet.Session], error) {

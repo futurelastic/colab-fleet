@@ -500,6 +500,69 @@ completion it may not be able to deliver, which §5.6 forbids.
 
 > Origin: Appendix A, F2.
 
+### 2.5a RenameAck
+
+```
+RenameAck {
+  accepted : boolean
+  title?   : TitleSync
+}
+
+TitleSync {
+  status   : "synced" | "pending" | "failed" | "not_applicable"
+  evidence : string           // prose, never parsed (§2.3)
+  receipt? : DeliveryReceipt  // the title-sync delivery's own receipt, when one was attempted
+}
+```
+
+`rename` (§3) does not return the bare `Ack` above, for a reason that is not
+symmetry-breaking for its own sake: `rename`'s id half is not intent-only.
+By the time a driver's `rename` returns, the multiplexer-level id change has
+already happened or it has not — unlike `interrupt`/`close`, whose real
+completion is confirmed later, only, on the event stream (§4). Squeezing a
+second, genuinely-synchronous fact into `Ack` would violate §2.5's own
+doctrine; giving `rename` its own response type, with a field that can
+honestly say "pending", does not.
+
+`title` is that second fact (colab-fleet #222): on a substrate whose runtime
+keeps its own idea of a title apart from the id — the transcript a
+title-reconciling client would otherwise trust more than this API — this is
+whether that title was brought to the new name too. Four states, and they
+are not interchangeable:
+
+- `synced` — the runtime's own record, never the screen, now carries the
+  new name as its title.
+- `pending` — a title-sync delivery was attempted and neither confirmed nor
+  refused within the time this call had. A caller may retry by renaming to
+  the SAME name again, which re-attempts only the title half.
+- `failed` — the title half did not happen and will not without the caller
+  acting again: a busy or stranded composer refused the delivery under the
+  same rules `send` already applies (nothing a person typed is ever
+  overwritten), the runtime recorded a DIFFERENT title than the one asked
+  for, or the name itself was unusable and never sent. This is never the
+  multiplexer rename itself failing — that is reported through `accepted`
+  being false, or the call erroring outright, before a title sync is ever
+  attempted.
+- `not_applicable` — this session's runtime keeps no title of its own apart
+  from its id, so there is nothing for this half to do. Produced only by
+  the service, for a driver that does not implement the optional
+  title-syncing capability — never by a driver claiming it for its own
+  runtime, which always resolves to one of the three states above.
+
+`title` absent (not merely one of the four states) means nothing is stated
+about the runtime's own title at all — a peer built before this field
+existed. A consumer reads absent as "not stated" (§5.7), never as a claim
+that the title half does not apply.
+
+`receipt` is the title-sync delivery's own `DeliveryReceipt` (§2.4), carried
+verbatim rather than re-encoded into `status` — a caller reading "the same
+rules as `/input` govern this" needs the same `outcome`/`reason` an ordinary
+send already returns, not a paraphrase of them. Absent exactly when nothing
+was ever sent: `not_applicable` always, and `failed` when the name itself
+was refused before any delivery was attempted.
+
+> Origin: colab-fleet issue #222.
+
 ### 2.6 Request
 
 ```
@@ -1324,7 +1387,7 @@ respond(req, ref, response)    -> DeliveryReceipt
 state(req, ref)                -> SessionState
 interrupt(req, ref)            -> Ack
 close(req, ref)                -> Ack
-rename(req, ref, to)           -> Ack
+rename(req, ref, to)           -> RenameAck
 discard(req, ref, digest, force?) -> Ack
 keys(req, ref, key, expect)    -> DeliveryReceipt
 list(req, filter?)             -> Collection<Session>
@@ -1475,7 +1538,7 @@ you notice §5.4 already forbids acting on an id alone. `startedAt` is the
 stable identity and it survives a rename; a mutable id is the same rule with a
 sharper edge, not a new hazard.
 
-Two consequences are normative:
+Three consequences are normative:
 
 - **`rename` is corroborated exactly as `close` is.** Its failure is quieter
   than a wrong close and no less bad: it succeeds silently on a session the
@@ -1485,6 +1548,17 @@ Two consequences are normative:
   subscriber filtering by id sees the old id go quiet and a stranger appear —
   indistinguishable from a death and a birth, which is the one reading a
   rename must never produce.
+- **A driver whose runtime keeps its own title follows the id with it**
+  (colab-fleet #222; RenameAck.Title above). The three names a session
+  carries from birth — its multiplexer id, its remote-control binding, and
+  the runtime's own idea of its title — are one string by construction
+  (`internal/drivers/tmux/naming.go`'s own invariant). A rename that moves
+  only the multiplexer's half of that leaves the other two drifted apart,
+  and a client that trusts the runtime's own record over the multiplexer's —
+  a title-reconciling client is exactly this — "corrects" the disagreement
+  by reverting the rename it never saw confirmed. `rename` bringing the
+  title along too is what keeps that invariant true across a rename and not
+  merely at birth.
 
 A driver on a substrate with no renaming returns `unsupported` (§5.6).
 

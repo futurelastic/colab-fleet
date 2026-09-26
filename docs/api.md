@@ -84,7 +84,7 @@ every configured peer, exactly one hop — peers never recurse.
 | `POST` | `…/{id}/keys` | Deliver one raw key to the screen (incl. `BTab`: cycles the permission mode) | `keys` ⚠️ | yes |
 | `POST` | `…/{id}/interrupt` | The equivalent of Ctrl-C | `interrupt` | yes |
 | `POST` | `…/{id}/discard` | Clear unsent composer text without sending it | `discard` | yes |
-| `POST` | `…/{id}/rename` | Change the session's id | `rename` | yes |
+| `POST` | `…/{id}/rename` | Change the session's id, and the runtime's own title if it keeps one | `rename` | yes |
 | `POST` | `…/{id}/labels` | Set or delete caller-supplied labels | `label` | yes |
 | `DELETE` | `/v1/machines/{machine}/sessions/{id}` | Destroy the session | `close` | yes |
 
@@ -644,7 +644,43 @@ and have a person read or clear the composer at the pane (colab-fleet#149,
 ```
 
 Changes the session's **id**, not a display label. Announced as
-`session.renamed` so subscribers can re-key. `202`.
+`session.renamed` so subscribers can re-key. `202`, with the id half and the
+title half reported separately:
+
+```json
+{
+  "accepted": true,
+  "title": { "status": "synced", "evidence": "…", "receipt": { "outcome": "queued" } }
+}
+```
+
+The id half (`accepted`) is unconditional and synchronous. `title` is a
+SEPARATE fact (colab-fleet#222): on a runtime that keeps its own idea of a
+title apart from the id — the transcript a title-reconciling client would
+otherwise trust more than this API — whether that title was brought to the
+new name too, confirmed from the runtime's own record, never the screen.
+Four states, and a caller must treat them differently:
+
+- `"synced"` — done; nothing further to do.
+- `"pending"` — sent, not yet confirmed either way within this call's own
+  time budget. Retry by **renaming to the same name again** — that
+  re-attempts only the title half, since the id has nothing left to change.
+- `"failed"` — did not happen and will not without acting again: most often
+  a busy or stranded composer refused the delivery under the same rules
+  `/input` already applies (nothing a person typed is ever overwritten —
+  see `receipt.reason`). Retry the same way as `pending`.
+- `"not_applicable"` — this session's runtime keeps no title of its own
+  apart from its id; there is nothing for this half to do.
+
+`title` **absent** (the key missing entirely) means nothing is stated about
+the runtime's title at all — a peer built before this field existed. Never
+read absence as `"not_applicable"`; a consumer must tell the two apart
+(§5.7).
+
+`receipt` is the title-sync delivery's own `outcome`/`reason`, in the exact
+vocabulary an ordinary `/input` call already returns — present whenever a
+delivery was actually attempted, absent when nothing was ever sent (an
+unusable name, or no session found to address).
 
 ### `POST …/{id}/labels`
 
