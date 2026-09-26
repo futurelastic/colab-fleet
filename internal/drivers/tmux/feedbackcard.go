@@ -75,6 +75,14 @@ import (
 // belong to the same feature and are recognised here: the /feedback panel that
 // "1" opens, which replaces the composer, and the plain row asking whether to
 // turn drafts off. See docs/adr/217-*.md for what each reports and why.
+//
+// The fifth text — what the box shows after a send actually succeeds — is read
+// out of the runtime's own binary as the single word "Sent", but is deliberately
+// not matched here: nothing has confirmed its geometry on a real pane, and #218
+// found the exchange leading up to it is not the single held-or-refused
+// connection that was enough to reach the confirmation and the error, so no
+// stand-in proxy has safely reached it either. See
+// docs/gotchas.d/218-a-stand-in-for-one-connection-is-not-a-stand-in-for-an-upload.md.
 
 // feedbackCardItem is one of the key row's three items: the key the runtime
 // listens for, and the verb it prints beside it. The verbs are the prompt's
