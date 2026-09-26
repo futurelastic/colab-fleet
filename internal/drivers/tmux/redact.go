@@ -75,9 +75,13 @@ func RedactCapture(raw string) string {
 		card, hasCard = findFeedbackCardBox(stripped[:last+1])
 	}
 	afterRule := false
+	var cardRows []string
+	if hasCard {
+		cardRows = redactCardRows(stripped, card)
+	}
 	for i, line := range lines {
-		if hasCard && i > card.top && i <= card.key {
-			out[i] = redactCardRow(stripped[i], card, i == card.key)
+		if hasCard && i > card.top && i < card.bottom {
+			out[i] = cardRows[i-card.top-1]
 			afterRule = false
 			continue
 		}
@@ -94,17 +98,38 @@ func RedactCapture(raw string) string {
 	return strings.Join(out, "\n")
 }
 
-// redactCardRow redacts one row between a feedback-draft card's borders. The
-// key row is the runtime's own vocabulary end to end — three fixed items and an
-// optional count — and is kept, because it is what a replay recognises the card
-// by. Every other row is the agent's draft: replaced by one placeholder inside
-// the same borders, padded to the row's own width so the box keeps its shape.
-func redactCardRow(stripped string, card feedbackCardBox, isKey bool) string {
-	if isKey {
-		return stripped
+// redactCardRows redacts the rows between a feedback-draft card's borders. The
+// status rows are the runtime's own vocabulary end to end — the key row's three
+// items and optional count, the send confirmation, the in-flight line, or the
+// send error — and are kept, because they are what a replay recognises the card
+// by. A send error carries one thing that is not fixed, the parenthesised reason
+// a runtime or a service supplied: kept when it is one that was measured, masked
+// character for character when it is not, so the rows keep their shape and the
+// screen still reads as the error. Every other row is the agent's draft:
+// replaced by one placeholder inside the same borders, padded to the row's own
+// width so the box keeps its shape.
+func redactCardRows(stripped []string, card feedbackCardBox) []string {
+	rows := make([]string, 0, card.bottom-card.top-1)
+	for i := card.top + 1; i < card.first; i++ {
+		rows = append(rows, placeholderCardRow(stripped[i], card.col))
 	}
+	status := append([]string(nil), stripped[card.first:card.bottom]...)
+	if card.state == feedbackError && !feedbackErrorReasonSafe(feedbackErrorReason(card.status)) {
+		if masked, ok := maskFeedbackErrorReason(status, card.col); ok {
+			status = masked
+		} else {
+			for i := range status {
+				status[i] = placeholderCardRow(status[i], card.col)
+			}
+		}
+	}
+	return append(rows, status...)
+}
+
+// placeholderCardRow is one card row with its words replaced by the placeholder.
+func placeholderCardRow(stripped string, col int) string {
 	width := utf8.RuneCountInString(stripped)
-	head := strings.Repeat(" ", card.col) + "│ " + placeholderToken
+	head := strings.Repeat(" ", col) + "│ " + placeholderToken
 	pad := width - utf8.RuneCountInString(head) - 1
 	if pad < 0 {
 		pad = 0
@@ -150,6 +175,17 @@ func redactRow(raw string, afterRule bool) string {
 	// as one on replay — and discards anything else riding along with them.
 	if isRule(stripped) {
 		return redactRuleLine(stripped)
+	}
+
+	// The response bullet comes BEFORE the status line, and is never one. A tool
+	// call is drawn behind the same bullet, as `⏺ Name(arguments)`, and
+	// statusLine is a shape — a symbol, a capital, and " for " or an ellipsis
+	// anywhere after — so a call whose arguments said "… for …" was kept whole,
+	// arguments and all, in a corpus this repository publishes (found while
+	// redacting the feedback card's states, colab-fleet#217). The spinner's
+	// glyph is an animation frame, and the bullet is not one of them.
+	if strings.HasPrefix(content, responseBullet) {
+		return leading + responseBullet + " " + placeholderToken
 	}
 
 	// The spinner/status line. Its verb is drawn from the runtime's own
@@ -216,6 +252,17 @@ func redactRow(raw string, afterRule bool) string {
 	// is what reviewScreenPrompt corroborates on, so a corpus case must keep
 	// it to replay — exact match only, never a line merely containing it.
 	if content == reviewQuestion {
+		return stripped
+	}
+
+	// The feedback panel (colab-fleet#217) is a screen of the person's own
+	// drafts, and only its frame is runtime vocabulary: the heavy rule across
+	// its top, its title, and the list view's footer hint. Everything else on it
+	// (draft titles, an editor's fields) falls through to the placeholder. The
+	// question about turning drafts off is a runtime literal end to end. All are
+	// exact matches, never a line merely containing them.
+	if heavyRule(content) || content == feedbackPanelTitle || content == feedbackPanelHint ||
+		content == feedbackQuestionRow {
 		return stripped
 	}
 

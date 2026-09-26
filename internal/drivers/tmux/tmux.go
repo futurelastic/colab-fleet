@@ -2457,7 +2457,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// selection prompt does not deliver a message — it drives the menu, which
 	// is a different and worse kind of corruption than concatenation.
 	if awaitingSelection(screenNow) {
-		if reason, isCard := feedbackCardRefusal(screenNow); isCard {
+		if reason, isCard := feedbackNoticeRefusal(screenNow); isCard {
 			d.counters.incr(counterFeedbackCardRefusedSend)
 			return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
 		}
@@ -2474,7 +2474,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 		// clipped, where it read absent before and was refused by the readiness
 		// gate above with the card named. The card is still the better answer
 		// when it is what cut the composer off.
-		if reason, isCard := feedbackCardRefusal(screenNow); isCard {
+		if reason, isCard := feedbackNoticeRefusal(screenNow); isCard {
 			d.counters.incr(counterFeedbackCardRefusedSend)
 			return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
 		}
@@ -2493,23 +2493,24 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 				clippedComposerRemedy,
 		}, nil
 	}
-	// colab-fleet#215: with the runtime's feedback-draft card on screen, a
-	// composer holding a single digit is read by the card as its own shortcut —
-	// the text would open the review, or dismiss the draft, instead of being
-	// delivered. The paste is not the hazard for any other text; only a message
-	// that is nothing but that digit is.
-	if composerScanResult == composerFound && pending == "" && loneDigit(text) {
-		if _, hasCard := liveFeedbackCard(screenNow); hasCard {
-			d.counters.incr(counterFeedbackCardRefusedDigit)
-			return fleet.DeliveryReceipt{
-				Outcome: fleet.OutcomeRefused,
-				Reason: "the session is showing the runtime's feedback-draft card, which reads a " +
-					"composer holding a single digit as its own shortcut (1 opens the review, 2 " +
-					"asks to send the draft, 0 dismisses it): this text would drive the card " +
-					"rather than be received as a message. Say it in more than one character. " +
-					"Nothing was written",
-			}, nil
-		}
+	// colab-fleet#215, #217: with the runtime's feedback-draft card on screen — in
+	// any of its states — or its question about turning drafts off, a composer
+	// holding a single digit is read as the notice's own shortcut: the text would
+	// open the review, ask to send (or, on the confirmation, send) the draft, or
+	// dismiss it or turn drafts off, instead of being delivered. The paste is not
+	// the hazard for any other text; only a message that is nothing but that digit
+	// is.
+	if composerScanResult == composerFound && pending == "" && loneDigit(text) && feedbackNoticeOnScreen(screenNow) {
+		d.counters.incr(counterFeedbackCardRefusedDigit)
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeRefused,
+			Reason: "the session is showing one of the runtime's feedback notices (the draft card, " +
+				"or its question about turning drafts off), which read a composer holding a single " +
+				"digit as their own shortcut (1 opens the review, 2 asks to send the draft and, on " +
+				"the confirmation, sends it, 0 dismisses it or turns drafts off): this text would " +
+				"drive the notice rather than be received as a message. Say it in more than one " +
+				"character. Nothing was written",
+		}, nil
 	}
 	// Review fix (#180 review): resumeIfStranded against a composer
 	// that reads EMPTY must not silently fall through to the ordinary
@@ -3343,6 +3344,16 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		if c, ok := liveFeedbackCard(sc); ok && !c.composerFound {
 			d.counters.incr(counterFeedbackCardRefusedDiscard)
 			reason, _ := feedbackCardRefusal(sc)
+			return fleet.Ack{}, fmt.Errorf("%w: discard: %s", ErrAmbiguousTarget, reason)
+		}
+		// colab-fleet#217: the feedback panel replaces the composer outright, so
+		// "already clear" would be a claim about a composer that is not on screen.
+		// Asked here, ahead of the clipped refusal, whatever scan says: a panel
+		// reads absent today, and a screen that read it clipped would otherwise be
+		// met by a refusal whose words (a composer taller than the window) are
+		// wrong for it.
+		if reason, ok := feedbackPanelRefusal(sc); ok {
+			d.counters.incr(counterFeedbackCardRefusedDiscard)
 			return fleet.Ack{}, fmt.Errorf("%w: discard: %s", ErrAmbiguousTarget, reason)
 		}
 	}
@@ -4649,7 +4660,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		// text is not a prompt (a digit would be appended to that text), and the
 		// two refusals below would call it "not waiting on a prompt" or claim
 		// there is no composer. Name it.
-		if reason, isCard := feedbackCardRefusal(screenNow); isCard {
+		if reason, isCard := feedbackNoticeRefusal(screenNow); isCard {
 			return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
 		}
 		// colab-fleet #64: this refusal fires whenever the screen has no
@@ -7038,7 +7049,7 @@ func (d *Driver) feedbackCardRefusalFor(ctx context.Context, paneID string) (str
 	if !ok {
 		return "", false
 	}
-	return feedbackCardRefusal(sc)
+	return feedbackNoticeRefusal(sc)
 }
 
 // receptive reports whether a pane's runtime is in a state where a keystroke

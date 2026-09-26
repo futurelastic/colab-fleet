@@ -256,9 +256,40 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// text. Not a prompt, so the refusal above did not fire, and the composer is
 	// not readable as a whole, so the checks below would see an absent one. A key
 	// sent now is appended to that text or read by the card.
-	if reason, isCard := feedbackCardRefusal(screen); isCard {
+	//
+	// colab-fleet#217 decided what Escape does here. Over a card this driver
+	// cannot read past, it is the one key accepted, in the three states it
+	// measurably leaves: the key row (dismisses the card; the draft stays queued),
+	// the send confirmation (returns to the key row) and the send error
+	// (dismisses). Enter there could submit text nobody read, and the arrows drive
+	// the runtime. Not while sending: what Escape does to a request in flight was
+	// not measured. Where the card is the key row over an empty composer that can
+	// be read, it is a prompt, respond answers it (dismiss is its own verb), and
+	// the refusal above already sent the caller there; with a composer that reads
+	// whole the card blocks nothing, and Escape falls through to the delivery
+	// below with a note saying what it did.
+	if c, isCard := liveFeedbackCard(screen); isCard && !c.composerFound {
+		steps := key == fleet.KeyEscape && c.rowText == "" && c.state != feedbackSending
+		if !steps {
+			d.counters.incr(counterFeedbackCardRefusedKeys)
+			reason := c.refusal()
+			if c.rowText == "" && c.state != feedbackSending {
+				reason += "; only Escape is accepted through keys here, and it dismisses the card " +
+					"or steps back from the confirmation"
+			}
+			return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
+		}
+	}
+	// The feedback panel replaces the composer. Escape is how a person leaves it,
+	// and it decides nothing; every other key acts on a draft (Enter opens one or
+	// sends it, transcript included).
+	if reason, onPanel := feedbackPanelRefusal(screen); onPanel && key != fleet.KeyEscape {
 		d.counters.incr(counterFeedbackCardRefusedKeys)
 		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
+	}
+	note := ""
+	if key == fleet.KeyEscape {
+		note = feedbackEscapeNote(screen)
 	}
 
 	// colab-fleet#134: a composer taller than this driver's capture window,
@@ -330,7 +361,7 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			if after, reread := afterCaptures[live.paneID]; reread && screenDigest(after.text) != before {
 				return fleet.DeliveryReceipt{
 					Outcome: fleet.OutcomeSubmitted,
-					Reason:  "sent " + string(key) + "; the screen changed in response",
+					Reason:  "sent " + string(key) + "; the screen changed in response" + note,
 				}, nil
 			}
 		}
@@ -352,6 +383,6 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	return fleet.DeliveryReceipt{
 		Outcome: fleet.OutcomeUnknown,
 		Reason: "sent " + string(key) + "; the screen did not change, so the key was " +
-			"either swallowed or had nothing to do",
+			"either swallowed or had nothing to do" + note,
 	}, nil
 }

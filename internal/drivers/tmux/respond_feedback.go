@@ -24,9 +24,9 @@ import (
 //
 // # What is refused, and why each is a refusal and not a guess
 //
-//   - Cancel. Escape on an empty composer dismisses the draft, and may be
-//     followed by the runtime asking whether to turn drafts off. A caller that
-//     wants the draft dismissed says "dismiss".
+//   - Cancel. Escape on an empty composer dismisses the card (the draft stays
+//     queued) and is sometimes followed by the runtime asking whether to turn
+//     drafts off. A caller that wants the card dismissed says "dismiss".
 //   - No choice. The card highlights nothing, so there is no default to accept,
 //     and the keys that accept a default would submit the composer.
 //   - Choices and Text. They answer multi-select and free-text questions; this
@@ -46,7 +46,7 @@ func (d *Driver) answerFeedbackCard(ctx context.Context, paneID string, before *
 	switch {
 	case resp.Cancel:
 		return refuse("cancel is not accepted on the feedback-draft card: Escape on an empty " +
-			"composer dismisses the draft and may be followed by a question about turning " +
+			"composer dismisses the card and is sometimes followed by a question about turning " +
 			"drafts off. Answer with choice 3 (dismiss) if that is what is meant")
 	case len(resp.Choices) > 0 || resp.Text != nil:
 		return refuse("the feedback-draft card is a single-choice notice: answer it with choice " +
@@ -69,20 +69,13 @@ func (d *Driver) answerFeedbackCard(ctx context.Context, paneID string, before *
 	}
 
 	answered := "chose option " + strconv.Itoa(resp.Choice) + " (" + verb + ")"
-	switch d.feedbackCardAnswered(ctx, paneID, before.Nonce, key) {
+	verdict, after, haveAfter := d.feedbackCardAnswered(ctx, paneID, before.Nonce, key)
+	switch verdict {
 	case feedbackCardLeft:
-		var next string
-		switch key {
-		case "1":
-			next = "the runtime opens the draft for review, a screen this driver does not recognise yet"
-		case "2":
-			next = "the runtime now asks to confirm before sending — nothing has been sent, and " +
-				"that confirmation is not a screen this driver recognises yet"
-		default:
-			next = "the draft is dismissed, and the runtime may next ask whether to turn drafts " +
-				"off, which is left for a person"
-		}
-		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeSubmitted, Reason: answered + "; " + next}, nil
+		return fleet.DeliveryReceipt{
+			Outcome: fleet.OutcomeSubmitted,
+			Reason:  answered + "; " + feedbackNext(key, after, haveAfter),
+		}, nil
 	case feedbackCardKeyTyped:
 		return fleet.DeliveryReceipt{
 			Outcome: fleet.OutcomeUnknown,
@@ -119,14 +112,17 @@ const (
 // the composer row is judged only at the END of the window: the runtime clears
 // it as it acts on it, so seeing it mid-window says the key was received, not
 // that it was lost.
-func (d *Driver) feedbackCardAnswered(ctx context.Context, paneID, nonce, key string) feedbackCardVerdict {
+//
+// It also returns the screen it saw the card leave on, so the receipt can say
+// what the session is showing now instead of what the key is expected to do.
+func (d *Driver) feedbackCardAnswered(ctx context.Context, paneID, nonce, key string) (feedbackCardVerdict, screen, bool) {
 	deadline := d.now().Add(promptClearWindow)
 	last := feedbackCardStayed
 	for {
 		if sc, ok := d.captureForClassify(ctx, paneID); ok {
 			card, found := liveFeedbackCard(sc)
 			if !found || card.nonce() != nonce {
-				return feedbackCardLeft
+				return feedbackCardLeft, sc, true
 			}
 			last = feedbackCardStayed
 			if card.rowText == key {
@@ -134,12 +130,50 @@ func (d *Driver) feedbackCardAnswered(ctx context.Context, paneID, nonce, key st
 			}
 		}
 		if d.now().After(deadline) || ctx.Err() != nil {
-			return last
+			return last, screen{}, false
 		}
 		select {
 		case <-ctx.Done():
-			return last
+			return last, screen{}, false
 		case <-time.After(promptClearInterval):
 		}
 	}
+}
+
+// feedbackNext says what the session shows after the card was answered: read
+// from the screen when one was read, and otherwise what the key is expected to
+// have done, worded as an expectation. Every state named here is one a person
+// answers at the terminal; none is answerable through respond (ADR 217).
+func feedbackNext(key string, sc screen, have bool) string {
+	if have {
+		if _, ok := liveFeedbackPanel(sc); ok {
+			return "the runtime opened its feedback panel over the composer, where a person reviews the " +
+				"draft; nothing has been sent. Escape, through keys, closes the panel"
+		}
+		if c, ok := liveFeedbackCard(sc); ok {
+			switch c.state {
+			case feedbackConfirm:
+				return "the runtime now asks to confirm before sending — nothing has been sent, and " +
+					"the confirmation (2 to send · Esc to back) is a person's to give"
+			case feedbackSending:
+				return "the runtime is sending the draft"
+			case feedbackError:
+				return "the runtime could not send the draft; it stays queued, and the card offers to " +
+					"review and retry or to dismiss"
+			}
+		}
+		if liveFeedbackQuestion(sc) {
+			return "the card is dismissed (the draft stays queued, and /feedback still lists it) and " +
+				"the runtime now asks whether to turn drafts off — a person's to answer"
+		}
+	}
+	switch key {
+	case "1":
+		return "the runtime opens the draft for review, which this driver did not read back"
+	case "2":
+		return "the runtime should now ask to confirm before sending — nothing has been sent unless " +
+			"the runtime skipped its own confirmation, which this driver did not read back"
+	}
+	return "the card is dismissed and the draft stays queued (/feedback still lists it); the runtime " +
+		"sometimes follows a dismissal with a question about turning drafts off, which is left for a person"
 }

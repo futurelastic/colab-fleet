@@ -1,0 +1,21 @@
+{
+  "name": "feedback-confirm-hides-composer",
+  "for": "The runtime's feedback-draft card after `2` was pressed: the key row is replaced by the send confirmation ('Send without reviewing (full draft + env, no transcript)? 2 to send · Esc to back'), which wraps at the box width and so takes one row more than the key row did. On a 24-row pane that pushes the composer's opening rule to the last row and its ❯ row off the bottom. The state read used to answer with an idle composer that is not on screen, or with an unknown that called it a full-screen interface, and every send was refused with a wording that blamed startup. This case pins that the screen reads as unknown, never idle, and never as a prompt: the confirmation is the runtime's own second guard on sending the user's data and is a person's to give, so nothing here offers it to a client. The refusal that names it is pinned in TestSendAndKeysAndRespondNameTheStateOfACardTheyCannotWriteUnder.",
+  "source": "#217",
+  "redactedFrom": "real capture of an 80-column, 24-row pane running the runtime with drafts on, redacted by corpus-redact; the status text is kept because it is, whole, the runtime's own vocabulary, and every row of the draft above it is the agent's and is discarded",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "unknown",
+      "wantKind": "none"
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "unknown",
+      "wantKind": "none"
+    }
+  ]
+}

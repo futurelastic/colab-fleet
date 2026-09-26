@@ -1248,9 +1248,22 @@ absent `choice`, `choices`, `text` and an absent `nonce` (required for this kind
 its options are the same on every draft), delivers one key exactly once, and
 reports `unknown` when the card is still up afterwards or the key was typed into
 the composer instead. Choosing `send` does not send: the runtime asks to confirm
-first, on a screen the driver does not yet recognise. The kind is reported only
-while the card hides the composer — on a short pane; on a taller one the session
-is `idle` and takes messages — see session-abstraction.md §2.7.
+first, on a screen the driver names and leaves to a person. The kind is reported
+only while the card's key row hides the composer and the composer's `❯` row is
+visible and empty — on a short pane; on a taller one the session is `idle` and
+takes messages — see session-abstraction.md §2.7.
+
+The card's other states are not prompts and have no answer through `respond`. Over
+a composer the driver cannot read as a whole, the send confirmation, the sending
+line, the send error and the runtime's `/feedback` panel (which `review` opens and
+which replaces the composer) read `unknown` with the evidence naming the state,
+and `send`, `keys`, `discard` and `respond` refuse by name. `keys` still accepts
+`Escape` — the way out of the panel, the confirmation, the error and the question
+about turning drafts off — and its receipt says what it did; every other key is
+refused on the panel, and Enter and the arrows over an unreadable card. Escape on the
+card dismisses only the card: the draft stays queued. A `send` of a lone `0`, `1` or
+`2` is refused while any of these, or that question, is on screen. `interrupt` is
+unchanged.
 
 A client may auto-answer a kind it knows. It must **never** treat an absent
 kind as safe: a real prompt in this fleet highlights `No, exit`, so answering

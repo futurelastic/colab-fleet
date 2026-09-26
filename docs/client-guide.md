@@ -845,11 +845,21 @@ answer it for them, because *send* puts a draft of the session's own words in fr
 of a third party. `respond` takes `choice` 1, 2 or 3 (review, send, dismiss — 3 is
 delivered as the key `0`) and **requires the nonce**, since the options never
 change from one draft to the next. It refuses `cancel`. Choosing `send` does not
-send: the runtime asks to confirm, and that confirmation is not a screen the
-service recognises yet — the receipt says so. On a taller pane the card blocks
+send: the runtime asks to confirm — a second guard that a person gives, not you —
+and the receipt says what the session shows now. On a taller pane the card blocks
 nothing: the session reads `idle`, and you can send to it. (A message that is only
 `1`, `2` or `0` would be read by the card as its shortcut, so `send` refuses one
-while the card is up.)
+while the card, or the runtime's question about turning drafts off, is up.)
+
+What comes after the card is a person's too, and none of it is a prompt you can
+answer. The confirmation, the `Sending…` line and the send error read `unknown`
+when they hide the composer, with the state named in `evidence`, and `send`,
+`keys`, `discard` and `respond` refuse by name; the draft stays queued after an
+error. `review` opens the runtime's own feedback panel, which replaces the
+composer: `unknown`, every delivery refused, because Enter there opens or sends a
+draft. **`keys` with `Escape` is the one key accepted** — it closes the panel, steps
+back from the confirmation, and dismisses the card or the error, and the receipt
+says which. Escape on the card removes only the card; the draft is not discarded.
 
 The other consentable question is `bypass-permissions`, the
 acceptance screen a non-default `permissionMode` raises — and it comes with a

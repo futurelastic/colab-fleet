@@ -1,0 +1,21 @@
+{
+  "name": "feedback-panel-editor",
+  "for": "The runtime's /feedback panel, editor view (Enter on a draft in the list): the type, title, area, details and the transcript toggle, and a highlighted 'Send feedback' row that SENDS the draft with the conversation attached. Same frame as the list, same title, no composer. This case pins unknown, no prompt, for the screen on which an Enter through keys would have sent it: keys refuses everything but Escape here, which is pinned in TestFeedbackPanelRefusesEveryDeliveryButEscape.",
+  "source": "#217",
+  "redactedFrom": "real capture of an 80-column, 24-row pane running the runtime with drafts on, on the panel `1` opens, redacted by corpus-redact; the status text is kept because it is, whole, the runtime's own vocabulary, and every row of the draft above it is the agent's and is discarded",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "unknown",
+      "wantKind": "none"
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "unknown",
+      "wantKind": "none"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+
+⏺ [redacted]
+
+✻ Brewed for 5s · done 12:56 PM
+
+❯ <input>
+
+❯ <input>
+  [redacted]
+  [redacted]
+
+⏺ [redacted]
+
+⏺ [redacted]
+
+✻ Crunched for 4s · done 12:56 PM
+
+Turn off Claude-drafted feedback? 0 to turn off · Esc to keep
+
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents · 2 feedback drafts
