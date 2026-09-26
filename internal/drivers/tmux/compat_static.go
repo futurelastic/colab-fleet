@@ -239,6 +239,17 @@ var compatStaticMarkers = map[string][]string{
 	// `manual mode on` and `bypass permissions on` — are composed at runtime
 	// and are not searchable; F-MODE reads those two off live sessions.
 	"F-MODE": {"accept edits on", "plan mode on", "auto mode on"},
+	// parseFeedbackStatus, feedbackQuestionRow and the panel's title:
+	// the runtime's feedback-draft card in the states a person answers at the
+	// terminal (colab-fleet#217). The key row's own words are composed at
+	// runtime ("1", " to ", "review") and are not searchable; the rest are
+	// whole literals, each measured present in a known-good build. No probe can
+	// make an agent draft feedback, so this is wording only.
+	"F-FEEDBACK": {
+		"send without reviewing", "(full draft + env, no transcript)", "review & retry",
+		"couldn't send feedback", "turn off claude-drafted feedback?", " more queued",
+		"feedback drafts",
+	},
 	// acceptanceScreen: two options, one containing `accept`, one `exit` or `no,`.
 	// F-BYPASS reads these only when the screen itself cannot be produced.
 	"F-BYPASS": {"yes, i accept", "no, exit"},
@@ -340,7 +351,7 @@ func (h *compatHarness) addStatic(s *compat.Suite) {
 			return nil
 		},
 	})
-	for _, id := range []string{"F-LIMIT", "F-APIERR", "H-RC"} {
+	for _, id := range []string{"F-LIMIT", "F-APIERR", "H-RC", "F-FEEDBACK"} {
 		id := id
 		s.Checks = append(s.Checks, compat.Check{
 			ID: id, Probes: []string{probe},

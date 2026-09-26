@@ -1,0 +1,21 @@
+{
+  "name": "feedback-turnoff-question",
+  "for": "The question the runtime can ask after the card is dismissed with Escape: 'Turn off Claude-drafted feedback? 0 to turn off · Esc to keep', a plain row (not boxed) above a composer that reads whole. It hides nothing, so the session is idle and takes messages; this case pins that it is neither unknown nor a prompt. It is recognised for one reason: a message that is only 0 would answer it, and turn the feature off. See TestSendOfALoneDigitUnderTheTurnOffQuestionIsRefused.",
+  "source": "#217",
+  "redactedFrom": "real capture of an 80-column, 24-row pane running the runtime with drafts on, redacted by corpus-redact; the status text is kept because it is, whole, the runtime's own vocabulary, and every row of the draft above it is the agent's and is discarded",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "idle",
+      "wantKind": "none"
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "idle",
+      "wantKind": "none"
+    }
+  ]
+}

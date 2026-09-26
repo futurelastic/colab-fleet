@@ -1,0 +1,21 @@
+{
+  "name": "feedback-send-error-hides-composer",
+  "for": "The runtime's feedback-draft card after a send failed: '✘ Couldn't send feedback (couldn't reach the service). The draft is still queued. Try again later.' followed, as the tail of the same wrapped text, by the key hint '1 to review & retry · Esc to dismiss'. Captured with the network cut at a local proxy, so nothing was sent. Wrapped over two rows it hides the composer's ❯ row on a 24-row pane, and the state read did not name it. This case pins unknown, not a prompt: which way to go (review and retry, or dismiss) is a person's, answered at the terminal.",
+  "source": "#217",
+  "redactedFrom": "real capture of an 80-column, 24-row pane running the runtime with drafts on, redacted by corpus-redact; the status text is kept because it is, whole, the runtime's own vocabulary, and every row of the draft above it is the agent's and is discarded",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "unknown",
+      "wantKind": "none"
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "unknown",
+      "wantKind": "none"
+    }
+  ]
+}

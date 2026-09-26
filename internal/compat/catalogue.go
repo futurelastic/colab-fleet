@@ -40,6 +40,12 @@ var catalogue = []Spec{
 		ReliedOn: []string{"internal/drivers/tmux/controlchannel.go#controlStates"},
 	},
 	{
+		ID:       "F-FEEDBACK",
+		Gate:     GateWarn,
+		Asserts:  "The candidate still contains the wording of the feedback-draft card's states the driver recognises: the send confirmation, the send error, the question about turning drafts off, the queued count and the /feedback panel's title. Static text only: no probe can make an agent draft feedback.",
+		ReliedOn: []string{"internal/drivers/tmux/feedbackcard.go#parseFeedbackStatus"},
+	},
+	{
 		ID:       "F-MODE",
 		Gate:     GateWarn,
 		Asserts:  "The driver reads the permission mode a live session shows: a session started in the default mode reads as default and one started in bypass-permissions mode reads as bypass, and the candidate still contains the wording of the accept-edits, plan and auto indicator rows. The other three modes cannot be entered without pressing keys in a session other checks share, so their wording is checked statically.",

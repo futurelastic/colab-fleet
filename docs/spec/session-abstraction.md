@@ -668,16 +668,58 @@ reported. Text on the composer's row under the card is neither: the state is
 The options are the runtime's own verbs, `["review", "send", "dismiss"]`, and no
 option is highlighted, so there is no default to accept. The keys that answer
 them are the card's, not the options' positions: `choice` 3 is delivered as the
-key `0`. `respond` refuses `cancel` (Escape on an empty composer dismisses the
-draft and may be followed by a question about turning drafts off), a missing
+key `0`. `respond` refuses `cancel` (Escape on an empty composer dismisses the card
+and is sometimes followed by a question about turning drafts off), a missing
 `choice`, `choices` and `text`, and — for this kind alone — a missing `nonce`,
 because the options are identical on every draft and only the nonce ties an
 answer to this one. The key goes once, alone, and the receipt reads what came of
 it. Choosing `send` does not send: the runtime asks to confirm first, in a state
-the driver does not yet recognise. The kind is deliberately not one a create can
-consent to; whether to review, send or dismiss feedback is a person's decision
-about what leaves their machine, and a client puts the prompt in front of a
-person and does nothing else with it.
+the driver names and does not offer to answer (below). The kind is deliberately not
+one a create can consent to; whether to review, send or dismiss feedback is a
+person's decision about what leaves their machine, and a client puts the prompt in
+front of a person and does nothing else with it.
+
+**The card's other states are recognised and are a person's to answer**
+(colab-fleet issue #217; ADR 217). The card is one box whose *status text* changes
+as it is answered, and each state was measured on a real 80-by-24 pane. Read from the
+bottom of the box as a whole text (a status that wraps is one text), the four are the
+key row above; the send confirmation, `Send without reviewing (full draft + env, no
+transcript)? 2 to send · Esc to back`; `Sending…`; and the send error, `✘ Couldn't
+send feedback (<reason>). The draft is still queued. Try again later.` with `1 to
+review & retry · Esc to dismiss` as the tail of the same text. The confirmation and
+the error are a row taller than the key row, so on a short pane even the composer's
+`❯` row is off the bottom. Over a composer that cannot be read as a whole, all
+three read `unknown` — never `idle` — with the evidence naming the state, and
+`send`, `keys`, `discard` and `respond` refuse by name. Over a composer that reads
+whole they are idle, like the key row. None is a prompt: the confirmation is the
+runtime's own second guard on sending, `Sending…` settles by itself, and the error
+asks whether to retry or dismiss; each is answered at the terminal. The key row
+itself is a prompt only when its `❯` row is visible, empty and last; with that row
+off the bottom the hidden composer's contents cannot be read, and it reads
+`unknown` too.
+
+`1` opens the runtime's `/feedback` panel, which replaces the composer (a heavy
+rule, the title `Feedback drafts`, the queued drafts, or one draft's editor whose
+highlighted `Send feedback` row sends it, conversation attached). It reads
+`unknown`, naming the panel, and every delivery is refused: Enter opens a draft or
+sends it, `d` discards one. **Escape alone is accepted through `keys`**, since it
+decides nothing and is the way out. The question `Turn off Claude-drafted
+feedback? 0 to turn off · Esc to keep` is a plain row that hides nothing, so the
+session stays idle; it is recognised so that `send` can refuse a message that is
+only `0`, which would answer it. A lone `1`, `2` or `0` is refused while the card in
+any state, or the question, is on screen.
+
+**`keys(Escape)` is not refused by the card, and `interrupt` is not guarded.**
+Measured: with the composer empty Escape dismisses the card and only the card — the
+draft stays queued, its file and the footer's count unchanged, and `/feedback` still
+lists it — and is sometimes followed by the question about turning drafts off; with
+text in the composer it does nothing to the card. It is reversible, the caller has
+quoted the screen it read, and Escape is the way out of the confirmation, the error
+and the question. Over a card the driver cannot read past, `keys` accepts Escape in the
+key row, confirmation and error, refuses it while sending (not measured), and refuses
+Enter and the arrows; the receipt of an accepted Escape says what it did. `respond`
+receipts name the screen an answer led to. The sent line was not captured and is not
+recognised.
 
 **A directory-trust question can also be pre-answered, standing outside a
 create request entirely.** (There are two such questions about a directory:
@@ -4013,6 +4055,32 @@ now end above the card.
 > differed. What is left of the disagreement — a composer whose closing rule is
 > merely cut off the bottom of the pane still reads as absent for `keys` and
 > `discard` — is recorded on #215 as a follow-up, not fixed here.
+
+**F64 · The feedback card's other states were the same false idle, and one of them
+sent a key that could send.** #215 recognised the card by its key row alone, and the
+card is one box whose status text changes as it is answered. Captured on real 80-by-24
+panes — with the send held or refused at a local proxy so nothing was submitted —
+the send confirmation, the sending line and the send error, and the `/feedback`
+panel `1` opens, were each answered wrongly — `idle` with the composer empty until
+#216, `unknown` with evidence calling them a full-screen interface since — and
+every send was refused as if the runtime were starting. The confirmation and the error wrap and are a
+row taller than the key row, which pushes even the composer's `❯` row off the bottom;
+the panel replaces the composer outright. The panel was the sharper case: with no
+composer to find, `keys(Enter)` passed every guard, and on the panel's editor
+Enter sends the draft with the conversation attached (#217).
+
+Two premises did not survive contact with a screen. Escape on the card does not
+dismiss the *draft* — only the card; the draft stays queued — so guarding it was
+weaker than it looked. And the redactor that prepares captures for a public corpus
+kept a tool call whole when its arguments said "for", because `statusLine` is a
+shape and the tool call is drawn behind the same bullet (ADR 217; the redactor now
+takes the bullet first).
+
+> **A state you have only read the words of is a state you have not seen.** The
+> binary holds a notice's wording, not its wrapping, the row a key hint lands on, or
+> how many rows it takes. Get every state onto a screen before recognising any of
+> them, and when reaching one has an external effect, find the seam that stops the
+> effect and leaves the screen — and test the seam before pressing the key.
 
 ### The pattern worth naming
 

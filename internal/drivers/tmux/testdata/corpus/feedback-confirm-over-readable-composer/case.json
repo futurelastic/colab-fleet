@@ -1,0 +1,21 @@
+{
+  "name": "feedback-confirm-over-readable-composer",
+  "for": "The send confirmation on a pane tall enough to show the composer whole. The card is not modal (its keys act only while the composer is empty), so nothing is in the way and the session is idle: no prompt, no unknown. Pinned because the same confirmation over a composer that is off the bottom is not idle (feedback-confirm-hides-composer), and the difference is the composer, not the card.",
+  "source": "#217",
+  "redactedFrom": "real capture of an 80-column, 24-row pane running the runtime with drafts on, redacted by corpus-redact; the status text is kept because it is, whole, the runtime's own vocabulary, and every row of the draft above it is the agent's and is discarded",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "idle",
+      "wantKind": "none"
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "idle",
+      "wantKind": "none"
+    }
+  ]
+}

@@ -96,6 +96,31 @@ func TestStaticMarkersAreTiedToTheClassifier(t *testing.T) {
 		"auto mode on": func() bool {
 			return permissionModeOf(newScreen(paneWithIndicator("  ⏵⏵ auto mode on"))) == fleet.PermissionModeAuto
 		},
+		// feedback card (colab-fleet#217): each marker is a substring of the
+		// wording the recogniser matches whole, and that wording still reads.
+		"send without reviewing": func() bool {
+			return feedbackWordingReads(feedbackConfirmText, "send without reviewing", feedbackConfirm)
+		},
+		"(full draft + env, no transcript)": func() bool {
+			return feedbackWordingReads(feedbackConfirmText, "(full draft + env, no transcript)", feedbackConfirm)
+		},
+		"review & retry": func() bool {
+			return feedbackWordingReads(feedbackErrorHead+" (x). "+feedbackErrorTail, "review & retry", feedbackError)
+		},
+		"couldn't send feedback": func() bool {
+			return feedbackWordingReads(feedbackErrorHead+" (x). "+feedbackErrorTail, "couldn't send feedback", feedbackError)
+		},
+		" more queued": func() bool {
+			return feedbackWordingReads(feedbackFooter+" · +3 more queued", " more queued", feedbackKeys)
+		},
+		"turn off claude-drafted feedback?": func() bool {
+			return strings.Contains(strings.ToLower(feedbackQuestionRow), "turn off claude-drafted feedback?") &&
+				liveFeedbackQuestion(newScreen(feedbackQuestionScreen()))
+		},
+		"feedback drafts": func() bool {
+			_, ok := liveFeedbackPanel(newScreen(feedbackPanelScreen(false)))
+			return ok && strings.Contains(strings.ToLower(feedbackPanelTitle), "feedback drafts")
+		},
 		// controlStateIn
 		"/rc active": func() bool {
 			st, ok := controlStateIn("/rc active")
@@ -944,4 +969,11 @@ func TestC1NamesTheImportsKeysWhenTheSeededDirectoryStillAsks(t *testing.T) {
 	if !v.Pass || !strings.Contains(v.Detail, "imports a file from outside it") {
 		t.Errorf("a composer with no dialog: %+v", v)
 	}
+}
+
+// feedbackWordingReads reports whether marker is inside text and text is read
+// by parseFeedbackStatus as the given state.
+func feedbackWordingReads(text, marker string, want feedbackState) bool {
+	state, _, ok := parseFeedbackStatus(text)
+	return ok && state == want && strings.Contains(strings.ToLower(text), marker)
 }

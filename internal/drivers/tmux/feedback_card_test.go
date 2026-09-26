@@ -26,6 +26,10 @@ type cardOpts struct {
 	dimRow bool
 	// keyRow overrides the card's key row (default: the measured one).
 	keyRow string
+	// status, when set, replaces the key row with these rows, one card row each:
+	// the shape of a status text that wraps (the send confirmation and the send
+	// error do, at 80 columns).
+	status []string
 	// queued appends the queued suffix to the default key row, joined by sep.
 	queued, sep string
 	// title is the draft's title row (default: a plain one).
@@ -34,6 +38,9 @@ type cardOpts struct {
 	body []string
 	// indent shifts the whole card right by this many columns.
 	indent int
+	// noPromptRow drops the composer's ❯ row: the screen ends on the opening
+	// rule, the geometry a wrapped status text leaves a 24-row pane in.
+	noPromptRow bool
 	// gap is the rows between the card's bottom border and the fence
 	// (default: the blank margin and the hint row).
 	gap []string
@@ -76,13 +83,23 @@ func cardScreen(o cardOpts) string {
 	for _, b := range o.body {
 		lines = append(lines, cardRow(o.indent, "│ "+b))
 	}
-	lines = append(lines, cardRow(o.indent, key), bottom)
+	if len(o.status) > 0 {
+		for _, row := range o.status {
+			lines = append(lines, cardRow(o.indent, row))
+		}
+		lines = append(lines, bottom)
+	} else {
+		lines = append(lines, cardRow(o.indent, key), bottom)
+	}
 	gap := o.gap
 	if gap == nil {
 		gap = []string{"", "                                        new task? /clear to save 203.9k tokens"}
 	}
 	lines = append(lines, gap...)
 	lines = append(lines, strings.Repeat("─", 53)+" some-session ─")
+	if o.noPromptRow {
+		return strings.Join(lines, "\n")
+	}
 	row := "❯"
 	if o.row != "" {
 		if o.dimRow {
@@ -195,9 +212,15 @@ func TestFeedbackCardFooterMustBeExact(t *testing.T) {
 		{"a missing item", cardOpts{keyRow: "1 to review · 0 to dismiss"}},
 		{"a queued suffix with no count", cardOpts{keyRow: feedbackFooter + " · more queued"}},
 		{"a queued suffix that is not a number", cardOpts{keyRow: feedbackFooter + " · +x more queued"}},
-		{"the confirm-send row", cardOpts{keyRow: "Send without reviewing (full draft + env, no transcript)? 2 to send · Esc to back"}},
-		{"the error row", cardOpts{keyRow: "1 to review & retry · Esc to dismiss"}},
-		{"the turn-off row", cardOpts{keyRow: "Turn off Claude-drafted feedback? 0 to turn off · Esc to keep"}},
+		// The card's other states are recognised now (colab-fleet#217) — but only
+		// as whole texts. Their tails alone, or the question boxed as if it were
+		// a status, are not any of the four.
+		{"the error's tail alone", cardOpts{keyRow: "1 to review & retry · Esc to dismiss"}},
+		{"the turn-off question boxed", cardOpts{keyRow: "Turn off Claude-drafted feedback? 0 to turn off · Esc to keep"}},
+		{"the confirmation with the wrong key", cardOpts{keyRow: "Send without reviewing (full draft + env, no transcript)? 1 to send · Esc to back"}},
+		{"the confirmation with a different scope", cardOpts{keyRow: "Send without reviewing (full draft + env + transcript)? 2 to send · Esc to back"}},
+		{"an error that is not the runtime's", cardOpts{keyRow: "✘ Couldn't send feedback 1 to review & retry · Esc to dismiss"}},
+		{"an in-flight line with more words", cardOpts{keyRow: "Sending… please wait"}},
 		{"more body rows than a draft has", cardOpts{body: long}},
 		{"a gap taller than the runtime leaves", cardOpts{gap: []string{"", "", "", "", "", "hint"}}},
 		{"a rule in the gap", cardOpts{gap: []string{"", rule}}},

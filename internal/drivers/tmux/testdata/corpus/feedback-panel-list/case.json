@@ -1,0 +1,21 @@
+{
+  "name": "feedback-panel-list",
+  "for": "The runtime's /feedback panel, list view, which `1` on the card opens: a heavy rule across the pane, the title 'Feedback drafts', the drafts of this session and of others, and 'Enter to review · d to discard · Esc to close'. It REPLACES the composer, so there is none on screen, and the finished-turn line above it used to make the state read say idle with an empty composer. A stray key is not harmless here (Enter opens a draft, d discards one). This case pins unknown, no prompt: a person is deciding what to do with their drafts. Only the panel's frame is kept by redaction; the draft titles are other sessions' and are discarded.",
+  "source": "#217",
+  "redactedFrom": "real capture of an 80-column, 24-row pane running the runtime with drafts on, on the panel `1` opens, redacted by corpus-redact; the status text is kept because it is, whole, the runtime's own vocabulary, and every row of the draft above it is the agent's and is discarded",
+  "alive": true,
+  "observations": [
+    {
+      "afterSeconds": 0,
+      "young": false,
+      "want": "unknown",
+      "wantKind": "none"
+    },
+    {
+      "afterSeconds": 30,
+      "young": false,
+      "want": "unknown",
+      "wantKind": "none"
+    }
+  ]
+}

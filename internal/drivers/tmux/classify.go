@@ -2320,15 +2320,23 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 	}
 
 	// colab-fleet#215: the feedback-draft card over a composer this driver cannot
-	// read as a whole, with text on its ❯ row that a key would be appended to.
-	// Not a prompt (a digit would not answer it), and not idle: the finished-
-	// spinner branch below would say "composer empty" for a composer this driver
-	// did not find, which is the false idle the card produced.
+	// read as a whole, and not the answerable key row: text on its ❯ row that a
+	// key would be appended to, or (colab-fleet#217) one of the card's other
+	// states — the send confirmation, the in-flight line, the send error — whose
+	// wrapped text takes rows the key row does not, so that even the ❯ row is
+	// off the bottom. None is a prompt (a person answers them at the terminal),
+	// and none is idle: the finished-spinner branch below would say "composer
+	// empty" for a composer this driver did not find, which is the false idle the
+	// card produced.
 	if c, ok := liveFeedbackCard(s); ok && !c.composerFound && !c.answerable() {
-		return fleet.UnknownState(fleet.ConfidenceInferred,
-			"the runtime is showing its feedback-draft card and the composer beneath it cannot be "+
-				"read as a whole: its closing rule is below the bottom of this pane, and its row "+
-				"holds text this driver cannot read in full"), ambNone
+		return fleet.UnknownState(fleet.ConfidenceInferred, c.evidence()), ambNone
+	}
+
+	// colab-fleet#217: the runtime's feedback panel replaces the composer. The
+	// spinner line above it still reads as a finished turn, and the branch below
+	// would call the screen idle with an empty composer that is not there.
+	if _, ok := liveFeedbackPanel(s); ok {
+		return fleet.UnknownState(fleet.ConfidenceInferred, feedbackPanelEvidence), ambNone
 	}
 
 	running, foundSpinner := spinner(s)
