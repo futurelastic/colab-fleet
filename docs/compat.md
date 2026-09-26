@@ -75,8 +75,10 @@ for that run alone:
   the caller's variables, and no `CLAUDE_*` names.
 - **Throwaway working directories** under a scratch directory (`/tmp/cfc-<nonce>`):
   a trusted root, with folder trust seeded through the driver's own path so that
-  path is exercised too, and one directory outside it that is *not* trusted. Every
-  one carries a project-local setting that turns remote control off — a
+  path is exercised too, and two directories outside it — one that is *not* trusted,
+  and one the harness trusts itself while leaving the external-imports question
+  standing (see [The external-imports question](#the-external-imports-question)).
+  Every one carries a project-local setting that turns remote control off — a
   project-local `false` wins over the user's own setting — so no check registers
   anything outside the machine.
 - **The candidate by its resolved path**, as the first word of the command line —
@@ -126,17 +128,20 @@ healthy launch clears.
 
 ### What a run does leave
 
-- **One folder-trust entry per run** in the runtime's own state file. There is no API
-  to remove one, and editing that file while live sessions rewrite it is the race the
-  trust seeder exists to survive.
+- **One folder-trust entry for each trusted throwaway directory a run launched a session
+  in** in the runtime's own state file — three in a full run (measured: the file went from
+  876 project entries to 879). There is no API to remove one, and editing that file while
+  live sessions rewrite it is the race the trust seeder exists to survive. The third entry
+  is the imports directory's, and it carries the trust answer only, on purpose.
 - **The model turns it spent**, against whatever account the runtime is signed in to.
 - While it runs, the throwaway sessions are visible to anything that lists the
   runtime's per-process records, as any session is. They are removed afterwards.
 
-One line on stderr is expected in every full run and is not a problem:
-`tmux: trust-seed: trustseed: refusing …/u: outside every configured root`. That is the
-driver's trust seeder declining to trust the deliberately untrusted directory, which is
-what lets the folder-trust dialog appear there.
+Two lines on stderr are expected in every full run and are not a problem:
+`tmux: trust-seed: trustseed: refusing …/u: outside every configured root`, and the same for
+`…/i`. That is the driver's trust seeder declining the two directories that sit outside its
+root on purpose: `u`, which lets the folder-trust dialog appear, and `i`, which the harness
+trusts itself so that only the external-imports dialog can appear.
 
 A run restricted with `--only` to checks that need no session (the static ones) never
 starts a server and creates no scratch directory.
@@ -265,8 +270,9 @@ build.
 | `F-APIERR` | warn | The candidate still contains the API-error wording the classifier reads to tell a failed turn from a finished one. Static text only: the screen cannot be produced on demand. | `internal/drivers/tmux/classify.go#lastTurnFailed` |
 | `H-RC` | warn | The candidate still contains the four remote-control footer labels the control-channel reader maps. Static text only: a check never attaches a bridge. | `internal/drivers/tmux/controlchannel.go#controlStates` |
 | `F-MODE` | warn | The driver reads the permission mode a live session shows: a session started in the default mode reads as default and one started in bypass-permissions mode reads as bypass, and the candidate still contains the wording of the accept-edits, plan and auto indicator rows. The other three modes cannot be entered without pressing keys in a session other checks share, so their wording is checked statically. | `internal/drivers/tmux/permissionmode.go#permissionModeOf` |
-| `C1` | must | A working directory the driver seeds as trusted starts without the folder-trust dialog, so a session created there reaches its composer on its own. | `internal/trustseed/trustseed.go#Seeder` |
+| `C1` | must | A working directory the driver seeds as trusted starts without the folder-trust dialog, and without the external-imports dialog although its instruction file imports a file from outside it, so a session created there reaches its composer on its own. | `internal/trustseed/trustseed.go#Seeder`, `internal/trustseed/trustseed.go#seededKeys` |
 | `F-TRUST` | must | A directory outside the trust root shows the folder-trust dialog, which the driver classifies as such, reads as an unnumbered menu, and can find exactly one affirmative option in. Observed only: the dialog is never answered. | `internal/drivers/tmux/classify.go#classifyPromptKind`, `internal/drivers/tmux/tmux.go#affirmativeOption` |
+| `F-IMPORTS` | must | A directory that is trusted but was never approved to import from outside itself, and whose instruction file does, shows the external-imports dialog, which the driver classifies as such, reads as an unnumbered menu with the decline highlighted, and can find exactly one affirmative option in. Observed only: the dialog is never answered. | `internal/drivers/tmux/classify.go#classifyPromptKind`, `internal/drivers/tmux/tmux.go#consentableKinds`, `internal/drivers/tmux/tmux.go#affirmativeOption` |
 | `B5` | must | A session started in bypass-permissions mode reaches its composer with no acceptance screen in the way, given the user setting that suppresses it. | `internal/drivers/tmux/tmux.go#claudeCodeCommand` |
 | `F-BYPASS` | warn | The bypass-acceptance screen, when it can be produced, is classified as such; otherwise the wording of its two options is still present in the candidate. Observed only: it is never answered. | `internal/drivers/tmux/tmux.go#acceptanceScreen` |
 | `D1` | must | The runtime's per-process session record appears within fifteen seconds of launch carrying the fields this service reads, with the expected types and values. | `internal/drivers/tmux/terminalpath2_transcript.go#processSessionRecord` |
@@ -288,6 +294,34 @@ build.
 | `D2` | warn | The record's status moves off idle while a turn runs and back, with statusUpdatedAt advancing at each change. Nothing in this driver reads it yet, so this is warn-only: it is the record's own liveness signal. | `internal/drivers/tmux/terminalpath2_transcript.go#processSessionRecord` |
 <!-- compat:catalogue:end -->
 
+## The external-imports question
+
+A directory whose instruction file imports a file from outside it raises a second boot
+question after the trust one: whether the runtime may follow the import. The service
+classifies it (`external-imports`), seeds its answer ahead of time under the configured
+trust roots, and answers it on consent. All of that rests on three facts about one build —
+the two option labels and the shape of the menu, and the two per-project state keys the
+seeder writes — and two checks pin them from opposite sides:
+
+- **`C1`** — the seeded directory's instruction file imports a file from outside it, so the
+  question would appear if the seeder's answer did not hold. It reaches its composer with no
+  dialog only while the runtime still honours the keys the seeder writes. When it does not, the
+  report says the directory *still asks about that import* and names the two keys.
+- **`F-IMPORTS`** — the other half: a directory that is trusted but was never approved to
+  import, and does, shows the dialog, classified as such, as an unnumbered menu with the
+  decline highlighted and exactly one affirmative option. Observed only; never answered.
+
+A directory the harness seeds through the driver can never show this dialog, because the seeder
+writes both answers. So the imports directory sits outside the trust root, where the driver's
+seeder refuses it, and the harness writes its trust answer itself through the same writer the
+seeder uses, with the keys narrowed to that one. That is the extra entry described under
+[What a run does leave](#what-a-run-does-leave).
+
+`F-IMPORTS` is a `must` for the same reason `F-TRUST` is: classifying a dialog is something the
+driver needs in order to answer it. A build that simply stops asking also fails it, with the
+words "no dialog appeared" — the seeder and the consent are then harmless dead weight, and a
+maintainer who decides that is fine can lower the gate, which is data and not shape.
+
 ## Probes, stages and cost
 
 A check never drives anything itself. A **probe** drives one shared session into a
@@ -304,12 +338,12 @@ reason; they do not report them as unable to run.
 |---|---|---|
 | 0 | One scan of the candidate for the wording the screen classifiers read (F-LIMIT, F-APIERR, H-RC, F-MODE, and F-BYPASS as a fallback). | 0 |
 | 1 | The isolated multiplexer server. | 0 |
-| 2 | Four sessions: a trusted directory (C1, D1, D3, D4, B2, E-*…), an untrusted one (F-TRUST), and two in bypass mode (B5, F-BYPASS; and F-MODE reads the default-mode and bypass sessions' indicator rows, after giving each up to ten seconds to paint it — measured: the composer is up about a second before the row under it). | 0 |
+| 2 | Five sessions: a trusted directory whose instruction file imports a file from outside it (C1, D1, D3, D4, B2, E-*…), an untrusted one (F-TRUST), a trusted one never approved to import (F-IMPORTS), and two in bypass mode (B5, F-BYPASS; and F-MODE reads the default-mode and bypass sessions' indicator rows, after giving each up to ten seconds to paint it — measured: the composer is up about a second before the row under it). | 0 |
 | 3 | Drafts pasted into the composer and cleared again (F-COMPOSER, F-MLDRAFT, F-PASTEMARK, F-WRAP), and a session used once to enter shell mode (G6). | 0 |
 | 4 | Five sends on the trusted session: a first one that creates the transcript, then a short one, a single line over 800 bytes, a 40-line paste, and text with control bytes and a tab (G1, G2, E-USER, E-PASTE, E-NAME, E-SLUG, B2, B7a, D2). | 5 |
 
-Measured on one full run against a current supported build: **25 checks, 5 model turns,
-about 44 seconds.** Every turn is a synthetic, nonce-tagged prompt at the smallest model
+Measured on one full run against a current supported build: **26 checks, 5 model turns,
+about 46 seconds.** Every turn is a synthetic, nonce-tagged prompt at the smallest model
 and lowest effort. The first send is made only to create the transcript, because the
 runtime writes it at the first turn and the driver confirms a send by the screen until it
 exists; the confirmation checks are asserted on the sends after it.
@@ -330,7 +364,7 @@ sessions/a/record.json            the per-process record, home directory rewritt
 sessions/a/transcript.jsonl       the transcript entries the checks read
 ```
 
-States are `boot`, `trust-dialog`, `boot-bypass`, `bypass-attempt`, `shell-mode`, and one
+States are `boot`, `trust-dialog`, `imports-dialog`, `boot-bypass`, `bypass-attempt`, `shell-mode`, and one
 `draft-<name>` per draft. Pane captures pass through `RedactCapture`, which keeps only fixed
 runtime vocabulary and layout and discards everything else, so a pane's prose — a path, a
 name, a reply — never reaches the pack. The record and transcript have the home directory
@@ -343,13 +377,15 @@ records the `--claude` path exactly as it was given.
 
 A check is only worth having if it can fail, and fail with the right ID. The test suite
 does this against a synthetic runtime (`internal/drivers/tmux/testdata/faketui.py`) that
-takes three opt-in knobs, all defaulting to ordinary behaviour:
+takes opt-in knobs, all defaulting to ordinary behaviour:
 
 | Knob | What it breaks |
 |---|---|
 | `FAKE_GLYPH=<char>` | The prompt glyph the driver looks for. |
 | `FAKE_NO_BRACKET=1` | Bracketed paste is never switched on. |
 | `FAKE_PLACEHOLDER=1` / `plain` | A placeholder painted dim (read as empty), or not dim (read as a draft). |
+| `FAKE_IMPORTS=1` / `reworded` / `allow-highlighted` | Asks the external-imports question in a directory that imports from outside it (unless the state file's answer says otherwise): as measured, with options nobody has seen, or with the allow row highlighted. Unset, the candidate never asks — a build that stopped. |
+| `FAKE_IMPORTS_KEY=<name>` | The key the synthetic runtime reads the answer from, so a candidate that records it under another name can be shown to fail C1. |
 
 With them, a healthy synthetic candidate passes the composer checks and each broken one fails
 exactly the checks that depend on the broken behaviour, with exit `1` and a reason. To try it

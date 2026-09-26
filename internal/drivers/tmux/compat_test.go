@@ -19,6 +19,7 @@ import (
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/compat"
+	"github.com/godx-jp/colab-fleet/internal/trustseed"
 )
 
 // fakeCandidate writes an executable stand-in for the runtime: a script that
@@ -556,6 +557,12 @@ func TestCompatDirsAndStore(t *testing.T) {
 	if strings.HasPrefix(d["u"], "/tmp/cfc-abc/t/") {
 		t.Errorf("the untrusted directory must sit OUTSIDE the trust root: %v", d)
 	}
+	// #212: the imports directory is trusted by the harness's own hand, never by
+	// the driver's seeder — which would write the imports answer too and so could
+	// never leave the question standing. So it must sit where that seeder refuses.
+	if strings.HasPrefix(d["i"], "/tmp/cfc-abc/t/") || d["i"] == d["u"] {
+		t.Errorf("the imports directory must sit OUTSIDE the trust root, and apart from u: %v", d)
+	}
 	// The awkward directory exists to break a naive encoder.
 	for _, ch := range []string{".", "_", " ", "ñ"} {
 		if !strings.Contains(d["a"], ch) {
@@ -812,5 +819,129 @@ func TestPackWritesRedactedEvidenceAndAManifest(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err := json.Unmarshal(b, &m); err != nil || len(m.Files) != 3 {
 		t.Errorf("manifest = %s (%v), want the three files written", b, err)
+	}
+}
+
+// #212: what makes the runtime ask is a file imported from OUTSIDE the working
+// directory, so the fixture is only worth having if the imported file really is
+// outside every directory that imports it. Directory "a" and directory "i" carry
+// the same instruction file, and that file is inert text.
+func TestCompatImportsFixtureImportsFromOutsideTheDirectory(t *testing.T) {
+	scratch := "/tmp/cfc-abc"
+	shared := filepath.Join(scratch, "shared.md")
+	text := compatImportsInstructions(shared)
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	last := lines[len(lines)-1]
+	if last != "@"+shared {
+		t.Fatalf("the last line is %q, want a bare import of %q", last, shared)
+	}
+	for role, dir := range compatDirs(scratch) {
+		if role != "a" && role != "i" {
+			continue
+		}
+		if strings.HasPrefix(shared, dir+string(filepath.Separator)) {
+			t.Errorf("directory %s (%s) contains the file it imports, so it is not an external import", role, dir)
+		}
+	}
+	// Exactly one import: the runtime asks about the set, and the check reads one.
+	if n := strings.Count(text, "@"); n != 1 {
+		t.Errorf("the instruction file carries %d '@' characters, want exactly the one import", n)
+	}
+	if strings.Contains(compatSharedImportText, "@") {
+		t.Errorf("the imported file must not import anything itself: %q", compatSharedImportText)
+	}
+}
+
+// evalCheck runs one catalogued check's evaluator over evidence a test built by
+// hand. The multiplexer-gated tests prove the same failures end to end against a
+// synthetic runtime, but CI does not run those; these run everywhere.
+func evalCheck(t *testing.T, h *compatHarness, id string) compat.Verdict {
+	t.Helper()
+	suite := newCompatSuite(h)
+	for _, c := range suite.Checks {
+		if c.ID == id {
+			return c.Eval()
+		}
+	}
+	t.Fatalf("no check %q in the suite", id)
+	return compat.Verdict{}
+}
+
+func shotOf(screen string) compatShot { return compatShot{ok: true, sc: newScreen(screen)} }
+
+const compatIdleScreen = "\n────────────\n❯ \n────────────\n  ? for shortcuts\n"
+
+// #212: F-IMPORTS reads one screen — the one a trusted, never-approved directory
+// that imports from outside itself comes up on — and says what is different when
+// it is not the measured one.
+func TestFImportsJudgesTheDialogItIsShown(t *testing.T) {
+	swapped := strings.NewReplacer(
+		"  ❯ No, disable external imports\n    Yes, allow external imports",
+		"    No, disable external imports\n  ❯ Yes, allow external imports").Replace(fixtureExternalImportsMenu)
+	numbered := strings.NewReplacer(
+		"  ❯ No, disable external imports\n    Yes, allow external imports",
+		"  ❯ 1. No, disable external imports\n    2. Yes, allow external imports").Replace(fixtureExternalImportsMenu)
+	reworded := strings.NewReplacer("No, disable external imports", "Refuse to follow them", "Yes, allow external imports", "Follow them").Replace(fixtureExternalImportsMenu)
+
+	for _, tc := range []struct {
+		name   string
+		screen string
+		pass   bool
+		want   []string
+	}{
+		{"the measured dialog", fixtureExternalImportsMenu, true, []string{"unnumbered menu", "decline highlighted (#1 of 2)", "affirmative option (#2)", "never answered"}},
+		{"no dialog at all — a build that stopped asking", compatIdleScreen, false, []string{"no dialog appeared", "no longer asks"}},
+		{"the options reworded", reworded, false, []string{`classified as ""`}},
+		{"the allow row highlighted", swapped, false, []string{"not the decline", "bare Enter would allow the import"}},
+		{"a numbered menu, where a digit would choose", numbered, false, []string{"numbered"}},
+		{"the trust question standing in front of it", compatTrustDialog, false, []string{"trust answer the harness wrote", "never reached"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &compatHarness{}
+			h.ev.i = compatBoot{ran: true, shot: shotOf(tc.screen)}
+			v := evalCheck(t, h, "F-IMPORTS")
+			if v.Pass != tc.pass || v.Err {
+				t.Fatalf("verdict = %+v, want pass=%v and not an error", v, tc.pass)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(v.Detail, w) {
+					t.Errorf("detail %q does not say %q", v.Detail, w)
+				}
+			}
+		})
+	}
+}
+
+// #212: C1's half. The directory it boots imports a file from outside itself, so
+// a dialog naming that import means the seeder's answer was not honoured, and the
+// report has to say which keys the seeder writes — a rename is otherwise a
+// session parked on a question with nothing to point at.
+func TestC1NamesTheImportsKeysWhenTheSeededDirectoryStillAsks(t *testing.T) {
+	ready := func(screen string) *compatHarness {
+		h := &compatHarness{}
+		h.ev.a = compatBoot{ran: true, ready: compatReady(shotOf(screen)), shot: shotOf(screen)}
+		return h
+	}
+
+	v := evalCheck(t, ready(fixtureExternalImportsMenu), "C1")
+	if v.Pass || v.Err {
+		t.Fatalf("verdict = %+v, want a failure", v)
+	}
+	for _, w := range []string{"still asks about that import", trustseed.ImportsApprovedKey, trustseed.ImportsShownKey} {
+		if !strings.Contains(v.Detail, w) {
+			t.Errorf("detail %q does not say %q", v.Detail, w)
+		}
+	}
+
+	// A trust question in that seat is the old failure, worded as before — the
+	// imports hint belongs to the imports dialog only.
+	v = evalCheck(t, ready(compatTrustDialog), "C1")
+	if v.Pass || strings.Contains(v.Detail, "still asks about that import") || !strings.Contains(v.Detail, "still shows a prompt") {
+		t.Errorf("a trust dialog in C1's seat: %+v", v)
+	}
+
+	v = evalCheck(t, ready(compatIdleScreen), "C1")
+	if !v.Pass || !strings.Contains(v.Detail, "imports a file from outside it") {
+		t.Errorf("a composer with no dialog: %+v", v)
 	}
 }

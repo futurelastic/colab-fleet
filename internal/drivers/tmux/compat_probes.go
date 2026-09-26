@@ -205,7 +205,9 @@ type compatDraft struct {
 
 // compatEvidence is everything the boot and draft probes recorded.
 type compatEvidence struct {
-	a, b, c, u compatBoot
+	// a, b, c, u and i are the five boot sessions; i is the one that meets the
+	// external-imports dialog (#212).
+	a, b, c, u, i compatBoot
 	// bypassSetting: the user's own setting that suppresses the acceptance
 	// screen, read (never written) so a missing premise is reported as such.
 	bypassSetting    string // "true", "false", "absent" or an error text
@@ -311,7 +313,7 @@ var (
 	compatModeWait = 10 * time.Second
 )
 
-// addBoot registers the probes that launch the four kinds of session.
+// addBoot registers the probes that launch the five kinds of session.
 func (h *compatHarness) addBoot(s *compat.Suite) {
 	up := []string{"world.up"}
 	s.Probes = append(s.Probes,
@@ -331,6 +333,18 @@ func (h *compatHarness) addBoot(s *compat.Suite) {
 		// is observed and never answered: an answer persists a setting.
 		compat.Probe{ID: "boot.u", Stage: 2, Needs: up, Budget: 60 * time.Second, Run: func(ctx context.Context) error {
 			return h.boot(ctx, &h.ev.u, "u", "u", nil, func(s compatShot) bool { p, _ := s.prompt(); return p != nil || compatReady(s) }, compatDialogWait)
+		}},
+		// I: a directory the runtime has been told to trust, and NOT told it may
+		// import from outside itself, whose instruction file does (#212). The
+		// harness writes the trust answer itself — through the same writer the
+		// service's seeder uses, keys narrowed to that one — because the driver's own
+		// seeder writes both answers and so can never leave the question standing.
+		// Observed and never answered: an answer persists a setting.
+		compat.Probe{ID: "boot.i", Stage: 2, Needs: up, Budget: 60 * time.Second, Run: func(ctx context.Context) error {
+			if err := h.world.trustOnly.SeedPath(h.world.dirs["i"]); err != nil {
+				return fmt.Errorf("writing the trust answer for the imports directory: %w", err)
+			}
+			return h.boot(ctx, &h.ev.i, "i", "i", nil, func(s compatShot) bool { p, _ := s.prompt(); return p != nil || compatReady(s) }, compatDialogWait)
 		}},
 		// B: bypass-permissions mode. Whether it meets the acceptance screen
 		// depends on a user setting, which is read so its absence is reported.

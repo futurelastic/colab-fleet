@@ -27,7 +27,7 @@ way the real runtime rewrites its indicator: manual -> accept edits -> plan -> a
 -> manual for a default launch; bypass -> auto -> manual -> accept edits -> plan ->
 bypass for a bypass launch (the ring measured on a real build). Off by default, so a
 test that does not press the key never sees the mode move."""
-import os, sys, tty, termios, codecs, shutil
+import os, sys, tty, termios, codecs, shutil, json
 SWALLOW = int(os.environ.get("FAKE_SWALLOW", "0"))
 LOG = os.environ.get("FAKE_LOG", "")
 GLYPH = os.environ.get("FAKE_GLYPH", "❯")
@@ -50,6 +50,52 @@ MODE_ROWS = {
 # an indicator area naming no known mode.
 if os.environ.get("FAKE_MODE_WORDING", "") == "reworded":
     MODE_ROWS = {k: v.replace(" on", " active") for k, v in MODE_ROWS.items()}
+IMPORTS = os.environ.get("FAKE_IMPORTS", "")
+IMPORTS_KEY = os.environ.get("FAKE_IMPORTS_KEY", "hasClaudeMdExternalIncludesApproved")
+
+def external_imports():
+    """The files this directory's CLAUDE.md imports from outside it."""
+    cwd = os.getcwd()
+    try:
+        with open(os.path.join(cwd, "CLAUDE.md")) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    paths = [l[1:].strip() for l in lines if l.startswith("@")]
+    return [p for p in paths if os.path.isabs(p) and not p.startswith(cwd + os.sep)]
+
+def imports_question_open():
+    """True when the runtime would ask whether it may follow those imports."""
+    if not IMPORTS or not external_imports():
+        return False
+    try:
+        with open(os.environ.get("FAKE_STATE", "")) as f:
+            projects = json.load(f).get("projects", {})
+    except (OSError, ValueError):
+        projects = {}
+    cwd = os.getcwd()
+    for key in {cwd, os.path.realpath(cwd)}:
+        if (projects.get(key) or {}).get(IMPORTS_KEY) is True:
+            return False
+    return True
+
+def render_imports_dialog():
+    cols, lines = shutil.get_terminal_size((80, 24))
+    if IMPORTS == "reworded":
+        options = ["Refuse to follow them", "Follow them"]
+    else:
+        options = ["No, disable external imports", "Yes, allow external imports"]
+    sel = 1 if IMPORTS == "allow-highlighted" else 0
+    body = ["", "─" * cols, "  Allow external CLAUDE.md file imports?", "",
+            "  This project's CLAUDE.md imports files outside the current working directory.", "",
+            "  External imports:"] + ["    " + p for p in external_imports()] + [""]
+    for i, o in enumerate(options):
+        body.append(("  \u276f " if i == sel else "    ") + o)
+    body += ["", "  Enter to confirm \u00b7 Esc to cancel"]
+    room = lines - len(body)
+    frame = [""] * max(0, room) + body
+    os.write(1, ("\x1b[H\x1b[2J" + "\r\n".join(frame[-lines:])).encode())
+
 BYPASS = "--dangerously-skip-permissions" in sys.argv[1:]
 # The measured ring. A launch without bypass never lands on it.
 RING = ["bypass", "auto", "manual", "accept", "plan"]
@@ -107,6 +153,14 @@ def main():
     in_paste = False
     pbuf = ""
     try:
+        if imports_question_open():
+            # The dialog is never answered: it stays until the process is killed.
+            render_imports_dialog()
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk or b"\x03" in chunk:
+                    return
+                render_imports_dialog()
         render()
         while True:
             chunk = os.read(fd, 65536)
