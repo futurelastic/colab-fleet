@@ -8,6 +8,7 @@ import (
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/compat"
+	"github.com/godx-jp/colab-fleet/internal/trustseed"
 )
 
 // The evaluators. Each reads what a probe recorded and says what it means; none
@@ -91,18 +92,24 @@ func composerRow(sc screen) (string, bool) {
 	return "", false
 }
 
-// addBootChecks registers the checks that read the four boot probes.
+// addBootChecks registers the checks that read the five boot probes.
 func (h *compatHarness) addBootChecks(s *compat.Suite) {
 	s.Checks = append(s.Checks,
 		compat.Check{ID: "C1", Probes: []string{"boot.a"}, Eval: func() compat.Verdict {
 			b := h.ev.a
 			switch p, _ := b.shot.prompt(); {
+			case p != nil && p.Kind == fleet.PromptExternalImports:
+				// The directory's instruction file imports a file from outside it (#212),
+				// so this is the seeder's imports answer not being honoured — the runtime
+				// renamed a key, or stopped reading one — and not a trust failure.
+				return compat.Failed("a directory the driver seeded as trusted, whose instruction file imports a file from outside it, still asks about that import: " + describePrompt(p) +
+					fmt.Sprintf(" — the runtime no longer honours the answer the seeder writes (%s and %s), or records it under another name", trustseed.ImportsApprovedKey, trustseed.ImportsShownKey))
 			case p != nil:
 				return compat.Failed("a directory the driver seeded as trusted still shows a prompt: " + describePrompt(p))
 			case !b.ready:
 				return compat.Failed(fmt.Sprintf("the session never showed a composer within %s (status %q)", compatBootWait, b.shot.state.Status))
 			}
-			return compat.Passed(fmt.Sprintf("the seeded directory reached its composer in %s with no dialog", b.bootTime.Round(100*time.Millisecond)))
+			return compat.Passed(fmt.Sprintf("the seeded directory reached its composer in %s with no dialog, although its instruction file imports a file from outside it", b.bootTime.Round(100*time.Millisecond)))
 		}},
 
 		compat.Check{ID: "F-TRUST", Probes: []string{"boot.u"}, Eval: func() compat.Verdict {
@@ -129,6 +136,52 @@ func (h *compatHarness) addBootChecks(s *compat.Suite) {
 				return compat.Failed(strings.Join(bad, "; "))
 			}
 			return compat.Passed(fmt.Sprintf("folder-trust dialog, unnumbered menu, one affirmative option (#%d of %d); observed only, never answered", idx, len(p.Options)))
+		}},
+
+		// F-IMPORTS (#212). The pair to C1: C1 shows that the answer the seeder writes
+		// stops the imports question; this shows the question is still there to be
+		// stopped, and is still read the way the classifier and the consent read it.
+		// Observed only. The directory is trusted, not import-approved, and imports a
+		// file from outside itself, so the only thing standing between it and its
+		// composer is this one dialog.
+		compat.Check{ID: "F-IMPORTS", Probes: []string{"boot.i"}, Eval: func() compat.Verdict {
+			i := h.ev.i
+			p, unnumbered := i.shot.prompt()
+			if p == nil {
+				return compat.Failed(fmt.Sprintf("no dialog appeared for a trusted directory whose instruction file imports a file from outside it and which was never approved to (status %q; the pane shows: %s) — the runtime no longer asks, or asks in a shape the driver does not read as a menu", i.shot.state.Status, screenTail(i.shot.sc, 4)))
+			}
+			var bad []string
+			switch p.Kind {
+			case fleet.PromptExternalImports:
+			case fleet.PromptFolderTrust:
+				// The question before this one is still standing, so the imports one was
+				// never reached: the trust answer the harness wrote for this directory was
+				// not honoured, which is the runtime's doing (see C1), not this dialog's.
+				bad = append(bad, "the trust question was asked instead, so the trust answer the harness wrote for this directory was not honoured and the imports question was never reached")
+			default:
+				bad = append(bad, fmt.Sprintf("classified as %q, not %q", string(p.Kind), string(fleet.PromptExternalImports)))
+			}
+			if !unnumbered {
+				bad = append(bad, "the menu is numbered, so a digit would choose an option; the driver assumes it is not")
+			}
+			idx, ok := affirmativeOption(p)
+			switch {
+			case !ok:
+				bad = append(bad, "the driver cannot find exactly one affirmative option in "+describePrompt(p))
+			case idx < 1 || idx > len(p.Options) || !strings.Contains(strings.ToLower(p.Options[idx-1]), "allow"):
+				bad = append(bad, fmt.Sprintf("the affirmative option (#%d) is not the allow option", idx))
+			}
+			// The highlight is the SAFE default: a bare Enter, or anything that answers by
+			// the highlighted row, declines. The driver answers by index and never relies
+			// on it, but a build that moves it onto the allow row turns every stray Enter
+			// into a consent, which is worth stopping a fleet for.
+			if p.Selected < 1 || p.Selected > len(p.Options) || !strings.Contains(strings.ToLower(p.Options[p.Selected-1]), "disable") {
+				bad = append(bad, fmt.Sprintf("the highlighted row (#%d) is not the decline, so a bare Enter would allow the import", p.Selected))
+			}
+			if len(bad) > 0 {
+				return compat.Failed(strings.Join(bad, "; "))
+			}
+			return compat.Passed(fmt.Sprintf("external-imports dialog, unnumbered menu, the decline highlighted (#%d of %d) and one affirmative option (#%d); observed only, never answered", p.Selected, len(p.Options), idx))
 		}},
 
 		compat.Check{ID: "B5", Probes: []string{"boot.b"}, Eval: func() compat.Verdict {

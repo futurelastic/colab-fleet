@@ -309,6 +309,11 @@ var knownOptionPhrases = []string{
 	"yes, and don't ask again",
 	"no, tell claude what to do",
 	"don't ask me again",
+	// The external-imports question's two options (colab-fleet #211, #212): the
+	// classifier dispatches on them, so a pack state that hides them is a state a
+	// replay cannot classify.
+	"no, disable external imports",
+	"yes, allow external imports",
 	"resume from summary",
 	"resume full session as-is",
 	"chat about this",

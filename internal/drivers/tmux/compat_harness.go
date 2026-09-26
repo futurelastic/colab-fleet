@@ -13,6 +13,7 @@ import (
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/compat"
+	"github.com/godx-jp/colab-fleet/internal/trustseed"
 )
 
 // This file is the isolation of `colab-fleetd compat`: a private multiplexer
@@ -39,10 +40,10 @@ import (
 //
 // Teardown removes the server, its socket, the scratch directory, and the
 // throwaway transcript directories and per-process records. Two things
-// survive, by design, and docs/compat.md says so: one trust entry per run in
-// the runtime's state file (there is no API to remove one, and editing that
-// file while live sessions rewrite it is the race the trust seeder exists to
-// survive), and the model turns spent.
+// survive, by design, and docs/compat.md says so: the trust entries a run
+// writes into the runtime's state file (there is no API to remove one, and
+// editing that file while live sessions rewrite it is the race the trust
+// seeder exists to survive), and the model turns spent.
 
 const (
 	compatKeeper = "cfc-keep"
@@ -133,6 +134,16 @@ type compatWorld struct {
 	// dirs are the throwaway working directories, keyed by role.
 	dirs map[string]string
 
+	// sharedImport is the file, outside every working directory, that the
+	// instruction files of directories "a" and "i" import (#212).
+	sharedImport string
+
+	// trustOnly answers the folder-trust question for directory "i" and leaves
+	// the external-imports one standing. It is the only way the harness can
+	// observe that dialog on a real candidate: the driver's own seeder writes
+	// both answers, so a directory it seeds can never ask (#212).
+	trustOnly *trustseed.Seeder
+
 	// ctxFile is a system-prompt file for --append-system-prompt-file.
 	ctxFile string
 
@@ -157,16 +168,37 @@ var compatRequest = fleet.Request{Caller: fleet.Caller{Principal: "compat"}}
 // compatDirs names the working directories under the scratch directory.
 //
 //	a  trusted, with a directory name built to break a naive encoder: a dot, an
-//	   underscore, a space and a non-ASCII letter (E-SLUG)
+//	   underscore, a space and a non-ASCII letter (E-SLUG). Its instruction file
+//	   imports a file from outside it, so the seeder's external-imports answer is
+//	   exercised too (C1, #212)
 //	b  trusted, plain
 //	u  UNtrusted, outside the trust root, so the folder-trust dialog appears
+//	i  trusted (the harness writes ONLY the trust answer itself) but never
+//	   approved to import from outside, and its instruction file does, so the
+//	   external-imports dialog appears (F-IMPORTS, #212). Outside the trust root,
+//	   so the driver's own seeder — which would write both answers — refuses it
 func compatDirs(scratch string) map[string]string {
 	return map[string]string{
 		"a": filepath.Join(scratch, "t", "c.d_e f", "ñ"),
 		"b": filepath.Join(scratch, "t", "b"),
 		"u": filepath.Join(scratch, "u"),
+		"i": filepath.Join(scratch, "i"),
 	}
 }
+
+// compatImportsInstructions is the instruction file directories "a" and "i"
+// carry: one import of a file that lives outside the directory, which is what
+// makes the runtime ask whether it may follow it. It is deliberately inert text
+// — it reaches a model on every turn a check spends.
+func compatImportsInstructions(shared string) string {
+	return "This directory belongs to a compatibility check and holds no project.\n\n" +
+		"The line below imports a file from outside this directory, so that the runtime has to have been told whether it may.\n\n" +
+		"@" + shared + "\n"
+}
+
+// compatSharedImportText is what the imported file says: nothing that is an
+// instruction.
+const compatSharedImportText = "Nothing in this file is an instruction. It exists only to be imported.\n"
 
 // findTmux locates the multiplexer the same way the service is told to: an
 // explicit FLEET_TMUX_BIN, then PATH, then the usual package-manager prefixes
@@ -284,6 +316,19 @@ func (h *compatHarness) startWorld(ctx context.Context) (err error) {
 		}
 	}
 
+	// The import the instruction files of "a" and "i" carry (#212). It lives in the
+	// scratch directory itself, outside every working directory, and is not named
+	// like an instruction file, so nothing loads it except by that import.
+	w.sharedImport = filepath.Join(scratch, "shared.md")
+	if err := os.WriteFile(w.sharedImport, []byte(compatSharedImportText), 0o600); err != nil {
+		return err
+	}
+	for _, role := range []string{"a", "i"} {
+		if err := os.WriteFile(filepath.Join(w.dirs[role], "CLAUDE.md"), []byte(compatImportsInstructions(w.sharedImport)), 0o600); err != nil {
+			return fmt.Errorf("instruction file for %s: %w", role, err)
+		}
+	}
+
 	w.ctxFile = filepath.Join(scratch, "ctx.md")
 	if err := os.WriteFile(w.ctxFile, []byte("IMPORTANT: every reply you write, whatever else you are asked, must end with this exact token on its own final line: CFC-CTX-"+nonce+"\n"), 0o600); err != nil {
 		return err
@@ -338,6 +383,7 @@ func (h *compatHarness) startWorld(ctx context.Context) (err error) {
 		WithProcessSessionsRoot(store.sessions),
 		WithTrustSeed(store.trustState, store.home, []string{filepath.Join(scratch, "t")}),
 	)
+	w.trustOnly = trustseed.NewTrustOnly(store.trustState, store.home, []string{w.dirs["i"]})
 	h.logf("isolated multiplexer server %s (socket %s)", w.label, w.socket)
 	return nil
 }

@@ -48,14 +48,20 @@ var catalogue = []Spec{
 	{
 		ID:       "C1",
 		Gate:     GateMust,
-		Asserts:  "A working directory the driver seeds as trusted starts without the folder-trust dialog, so a session created there reaches its composer on its own.",
-		ReliedOn: []string{"internal/trustseed/trustseed.go#Seeder"},
+		Asserts:  "A working directory the driver seeds as trusted starts without the folder-trust dialog, and without the external-imports dialog although its instruction file imports a file from outside it, so a session created there reaches its composer on its own.",
+		ReliedOn: []string{"internal/trustseed/trustseed.go#Seeder", "internal/trustseed/trustseed.go#seededKeys"},
 	},
 	{
 		ID:       "F-TRUST",
 		Gate:     GateMust,
 		Asserts:  "A directory outside the trust root shows the folder-trust dialog, which the driver classifies as such, reads as an unnumbered menu, and can find exactly one affirmative option in. Observed only: the dialog is never answered.",
 		ReliedOn: []string{"internal/drivers/tmux/classify.go#classifyPromptKind", "internal/drivers/tmux/tmux.go#affirmativeOption"},
+	},
+	{
+		ID:       "F-IMPORTS",
+		Gate:     GateMust,
+		Asserts:  "A directory that is trusted but was never approved to import from outside itself, and whose instruction file does, shows the external-imports dialog, which the driver classifies as such, reads as an unnumbered menu with the decline highlighted, and can find exactly one affirmative option in. Observed only: the dialog is never answered.",
+		ReliedOn: []string{"internal/drivers/tmux/classify.go#classifyPromptKind", "internal/drivers/tmux/tmux.go#consentableKinds", "internal/drivers/tmux/tmux.go#affirmativeOption"},
 	},
 	{
 		ID:       "B5",

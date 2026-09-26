@@ -362,10 +362,22 @@ func runFake(t *testing.T, python string, knobs map[string]string, only ...strin
 			t.Fatal(err)
 		}
 	}
+	// The runtime's own state file, where folder trust and the imports answer live.
+	// It has to exist for the seeder to write into it, as it always does for a real
+	// runtime; the synthetic one reads the same file (FAKE_STATE) to decide whether
+	// to ask about a directory's imports (#212).
+	state := filepath.Join(home, "state.json")
+	if err := os.WriteFile(state, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withState := map[string]string{"FAKE_STATE": state}
+	for k, v := range knobs {
+		withState[k] = v
+	}
 	report, err := RunCompat(context.Background(), CompatOptions{
-		Claude: fakeRuntime(t, python, knobs), Only: only,
+		Claude: fakeRuntime(t, python, withState), Only: only,
 		Getenv: env("HOME", home, "FLEET_RECORD_ROOT", filepath.Join(home, "projects"),
-			"FLEET_PROCESS_SESSIONS_ROOT", filepath.Join(home, "sessions"), "FLEET_TRUST_STATE_PATH", filepath.Join(home, "state.json")),
+			"FLEET_PROCESS_SESSIONS_ROOT", filepath.Join(home, "sessions"), "FLEET_TRUST_STATE_PATH", state),
 	})
 	if err != nil {
 		t.Fatalf("RunCompat: %v", err)
@@ -482,6 +494,74 @@ func TestCompatBrokenSyntheticCandidates(t *testing.T) {
 		rep, _ := runFake(t, python, nil, "F-COMPOSER")
 		if !strings.HasPrefix(rep["F-COMPOSER"], "pass") {
 			t.Errorf("F-COMPOSER = %s, want a pass", rep["F-COMPOSER"])
+		}
+	})
+}
+
+// #212: the external-imports dialog and the two state keys the seeder writes for
+// it. F-IMPORTS observes the question on a directory the harness trusted and did
+// not approve; C1 shows the seeder's answer stops it on a directory that imports
+// a file from outside itself. Each has to be able to FAIL, with its own ID, and
+// say why.
+func TestCompatImportsChecksCanFail(t *testing.T) {
+	_, python := compatIntegration(t)
+
+	t.Run("a candidate that asks passes F-IMPORTS, and the seeder's answer stops it asking in C1", func(t *testing.T) {
+		rep, exit := runFake(t, python, map[string]string{"FAKE_IMPORTS": "1"}, "C1", "F-IMPORTS")
+		if !strings.HasPrefix(rep["F-IMPORTS"], "pass") || !strings.Contains(rep["F-IMPORTS"], "decline highlighted") {
+			t.Errorf("F-IMPORTS = %s", rep["F-IMPORTS"])
+		}
+		if !strings.HasPrefix(rep["C1"], "pass") || !strings.Contains(rep["C1"], "imports a file from outside it") {
+			t.Errorf("C1 = %s", rep["C1"])
+		}
+		if exit != 0 {
+			t.Errorf("exit %d, want 0", exit)
+		}
+	})
+
+	t.Run("a candidate that no longer asks fails F-IMPORTS and says so", func(t *testing.T) {
+		rep, exit := runFake(t, python, nil, "F-IMPORTS")
+		if !strings.HasPrefix(rep["F-IMPORTS"], "fail") || !strings.Contains(rep["F-IMPORTS"], "no dialog appeared") {
+			t.Errorf("F-IMPORTS = %s, want a failure saying no dialog appeared", rep["F-IMPORTS"])
+		}
+		if exit != 1 {
+			t.Errorf("exit %d, want 1 (F-IMPORTS is a must check)", exit)
+		}
+	})
+
+	t.Run("a candidate that rewords the options fails F-IMPORTS on classification", func(t *testing.T) {
+		rep, exit := runFake(t, python, map[string]string{"FAKE_IMPORTS": "reworded"}, "F-IMPORTS")
+		if !strings.HasPrefix(rep["F-IMPORTS"], "fail") || !strings.Contains(rep["F-IMPORTS"], `classified as ""`) {
+			t.Errorf("F-IMPORTS = %s, want a failure saying the dialog was not classified", rep["F-IMPORTS"])
+		}
+		if exit != 1 {
+			t.Errorf("exit %d, want 1", exit)
+		}
+	})
+
+	t.Run("a candidate that highlights the allow row fails F-IMPORTS", func(t *testing.T) {
+		rep, exit := runFake(t, python, map[string]string{"FAKE_IMPORTS": "allow-highlighted"}, "F-IMPORTS")
+		if !strings.HasPrefix(rep["F-IMPORTS"], "fail") || !strings.Contains(rep["F-IMPORTS"], "bare Enter would allow the import") {
+			t.Errorf("F-IMPORTS = %s, want a failure saying a bare Enter would allow the import", rep["F-IMPORTS"])
+		}
+		if exit != 1 {
+			t.Errorf("exit %d, want 1", exit)
+		}
+	})
+
+	// The failure C1 gained this half for: the runtime keeps the answer under a name
+	// the seeder does not write, so seeding silently stops working and the only
+	// symptom is a session parked on the question.
+	t.Run("a candidate that records the answer under another key fails C1 and names the keys", func(t *testing.T) {
+		rep, exit := runFake(t, python, map[string]string{"FAKE_IMPORTS": "1", "FAKE_IMPORTS_KEY": "someOtherKey"}, "C1")
+		if !strings.HasPrefix(rep["C1"], "fail") ||
+			!strings.Contains(rep["C1"], "still asks about that import") ||
+			!strings.Contains(rep["C1"], "hasClaudeMdExternalIncludesApproved") ||
+			!strings.Contains(rep["C1"], "hasClaudeMdExternalIncludesWarningShown") {
+			t.Errorf("C1 = %s, want a failure naming the imports question and both keys", rep["C1"])
+		}
+		if exit != 1 {
+			t.Errorf("exit %d, want 1", exit)
 		}
 	})
 }

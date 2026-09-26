@@ -1,6 +1,11 @@
 package tmux
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	fleet "github.com/godx-jp/colab-fleet"
+)
 
 // #73: a real capture (#70) showed the control-channel label sharing the
 // model/plan row with the project name, glued on by alignment padding
@@ -147,5 +152,35 @@ func TestRedactKeepsMultiSelectChromeAndNothingElse(t *testing.T) {
 		if again := redactLine(got); again != got {
 			t.Errorf("redactLine is not a fixed point on %q: second pass gave %q", got, again)
 		}
+	}
+}
+
+// #212: a compat pack exists so a tool outside this repository can replay its
+// own classifiers over the states a run saw. The external-imports dialog's two
+// options are what the classifier reads, so they must survive redaction — with
+// the highlight and the indentation the unnumbered-menu reader keys on — while
+// the question and the imported path, which are prose, do not.
+func TestRedactKeepsTheExternalImportsOptionsSoARedactedDialogStillClassifies(t *testing.T) {
+	redacted := RedactCapture(fixtureExternalImportsMenu)
+	for _, want := range []string{"❯ No, disable external imports", "    Yes, allow external imports"} {
+		if !strings.Contains(redacted, want) {
+			t.Errorf("the redacted dialog lost %q:\n%s", want, redacted)
+		}
+	}
+	if strings.Contains(redacted, "/shared/rules.md") {
+		t.Errorf("the imported path reached the redacted dialog:\n%s", redacted)
+	}
+	p, unnumbered := parsePromptMenu(newScreen(redacted))
+	if p == nil || !unnumbered {
+		t.Fatalf("the redacted dialog no longer reads as an unnumbered menu: %+v, unnumbered=%v", p, unnumbered)
+	}
+	if got := classifyPromptKind(p); got != fleet.PromptExternalImports {
+		t.Errorf("the redacted dialog classifies as %q, want %q", got, fleet.PromptExternalImports)
+	}
+	if p.Selected != 1 {
+		t.Errorf("selected = %d, want the decline (1)", p.Selected)
+	}
+	if again := RedactCapture(redacted); again != redacted {
+		t.Errorf("redaction is not a fixed point on this dialog:\n%s\n--- then ---\n%s", redacted, again)
 	}
 }

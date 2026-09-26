@@ -382,3 +382,70 @@ func TestBothPathVariantsOfASymlinkedRootGetTheImportsKeys(t *testing.T) {
 	wantAllThreeTrue(t, projectEntry(t, statePath, filepath.Join(link, "one")), "the path as configured")
 	wantAllThreeTrue(t, projectEntry(t, statePath, repo), "the resolved path")
 }
+
+// NewTrustOnly is the compat harness's way to make a directory the runtime
+// trusts but has not been told it may import from (colab-fleet #212). It has to
+// write exactly the trust key — not the imports pair, and not the counter that
+// says the imports question was answered — while keeping every guard the
+// standing seeder has, because the file it writes is the runtime's own.
+func TestNewTrustOnlyAnswersTheTrustQuestionAndLeavesTheImportsOneStanding(t *testing.T) {
+	home := tempHome(t)
+	statePath := filepath.Join(home, ".claude.json")
+	writeState(t, statePath, nil)
+	root := filepath.Join(home, "scratch", "i")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewTrustOnly(statePath, home, []string{root})
+	if err := s.SeedPath(root); err != nil {
+		t.Fatal(err)
+	}
+	entry := projectEntry(t, statePath, root)
+	if entry[trustKey] != true {
+		t.Errorf("%s = %v, want true", trustKey, entry[trustKey])
+	}
+	for _, k := range []string{importsApprovedKey, importsShownKey} {
+		if v, ok := entry[k]; ok {
+			t.Errorf("%s = %v: a trust-only seed must leave the imports question standing", k, v)
+		}
+	}
+	c := s.Counters()
+	if c[CounterGranted] != 1 || c[CounterImportsGranted] != 0 {
+		t.Errorf("counters = %v, want granted 1 and imports_granted 0", c)
+	}
+
+	// A second, standing seeder over the same directory then completes the
+	// answer: the two are one mechanism, not two, and a trust-only entry is an
+	// entry the standing seeder still upgrades rather than skips.
+	full := New(statePath, home, []string{root})
+	if err := full.SeedPath(root); err != nil {
+		t.Fatal(err)
+	}
+	wantAllThreeTrue(t, projectEntry(t, statePath, root), root)
+}
+
+// The guards are the standing seeder's, whichever keys it writes: outside every
+// configured root it refuses and writes nothing.
+func TestNewTrustOnlyKeepsTheScopeGuards(t *testing.T) {
+	home := tempHome(t)
+	statePath := filepath.Join(home, ".claude.json")
+	writeState(t, statePath, nil)
+	root := filepath.Join(home, "scratch", "i")
+	outside := filepath.Join(home, "scratch", "u")
+	for _, d := range []string{root, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := NewTrustOnly(statePath, home, []string{root})
+	if err := s.SeedPath(outside); err == nil {
+		t.Error("SeedPath outside every configured root succeeded")
+	}
+	if hasProject(t, statePath, outside) {
+		t.Errorf("a refused directory was written: %s", outside)
+	}
+	if s.Counters()[CounterRefused] != 1 {
+		t.Errorf("counters = %v, want one refusal", s.Counters())
+	}
+}

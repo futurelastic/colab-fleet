@@ -117,7 +117,7 @@ func (p *compatPack) writeEvidence(h *compatHarness) error {
 	}
 
 	for name, b := range map[string]compatBoot{
-		"boot": h.ev.a, "trust-dialog": h.ev.u, "boot-bypass": h.ev.b, "bypass-attempt": h.ev.c, "shell-mode": h.ev.bang,
+		"boot": h.ev.a, "trust-dialog": h.ev.u, "imports-dialog": h.ev.i, "boot-bypass": h.ev.b, "bypass-attempt": h.ev.c, "shell-mode": h.ev.bang,
 	} {
 		rel, err := p.packState(name, b.shot)
 		if e := add(rel, err); e != nil {

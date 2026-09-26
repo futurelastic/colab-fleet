@@ -81,6 +81,15 @@ const (
 	importsShownKey = "hasClaudeMdExternalIncludesWarningShown"
 )
 
+// The same names, exported for the one reader that has to print them: a compat
+// report that says which key the runtime stopped honouring (colab-fleet #212).
+// Aliases, not a second copy, so a rename still shows every place it matters.
+const (
+	TrustKey           = trustKey
+	ImportsApprovedKey = importsApprovedKey
+	ImportsShownKey    = importsShownKey
+)
+
 // Counter names. Kept beside the registry rather than scattered at call
 // sites, the same discipline the tmux driver's counters.go applies to its
 // own names.
@@ -139,6 +148,9 @@ type Seeder struct {
 	roots     []string // absolute, cleaned
 	home      string   // absolute, cleaned; "" if unknown
 	sysRoot   string   // the filesystem root, e.g. "/"
+	// keys are the fields this Seeder sets on a project entry: seededKeys for
+	// every Seeder New builds, the trust key alone for NewTrustOnly.
+	keys []string
 
 	// mu serializes this Seeder's own read-modify-write passes. It closes
 	// the race between this daemon's OWN callers (a startup pass, an
@@ -177,6 +189,7 @@ func New(statePath, home string, roots []string) *Seeder {
 		home:       cleanAbs(home),
 		sysRoot:    string(filepath.Separator),
 		counterMap: map[string]int64{},
+		keys:       seededKeys,
 	}
 	seen := map[string]bool{}
 	for _, r := range roots {
@@ -190,6 +203,28 @@ func New(statePath, home string, roots []string) *Seeder {
 		seen[c] = true
 		s.roots = append(s.roots, c)
 	}
+	return s
+}
+
+// NewTrustOnly builds a Seeder that answers the folder-trust question and
+// leaves the external-imports one standing, for a directory the runtime should
+// still ask about.
+//
+// It exists for one caller: the compat harness (`colab-fleetd compat`), which
+// has to observe the imports question on a real candidate build and so needs a
+// directory that is trusted but not import-approved. The standing seeder can
+// never produce one, by design — it writes both answers, so that no directory
+// under a configured root ever asks either. The write itself is the same one
+// New's Seeder makes (add-only, abandoned on a lost race, atomic), because the
+// state file is the runtime's own and rewritten under live sessions; only the
+// set of keys differs.
+//
+// Nothing in the service's own wiring builds one, and nothing should: a
+// Seeder that leaves a question standing is the opposite of the standing
+// policy this package exists to express.
+func NewTrustOnly(statePath, home string, roots []string) *Seeder {
+	s := New(statePath, home, roots)
+	s.keys = []string{trustKey}
 	return s
 }
 
@@ -462,14 +497,14 @@ type grants struct {
 	imports int // project entries whose external-imports approval was set to true
 }
 
-// seededKeys are the fields ensureKeys sets on every target's project entry,
-// each independently: a project the runtime already knows to be trusted still
+// seededKeys are the fields ensureKeys sets on every target's project entry
+// (for a Seeder New built; NewTrustOnly narrows it), each independently: a project the runtime already knows to be trusted still
 // gets the imports keys, and one whose imports were already approved still gets
 // the trust key. A key that is already true is left exactly as it is.
 var seededKeys = []string{trustKey, importsApprovedKey, importsShownKey}
 
 // ensureKeys is the add-only, race-tolerant writer every exported method
-// funnels through. It sets every key in seededKeys true for every path variant
+// funnels through. It sets every key in s.keys true for every path variant
 // of every target that does not already carry it, and commits the whole batch
 // in one write — or abandons the whole batch (errLostRace) the moment the state
 // file is found to have changed since it was read. There is no partial
@@ -529,7 +564,7 @@ func (s *Seeder) ensureKeys(targets []string) (granted grants, err error) {
 			}
 			var set grants
 			changed := false
-			for _, k := range seededKeys {
+			for _, k := range s.keys {
 				if isTrue(entry[k]) {
 					continue
 				}
