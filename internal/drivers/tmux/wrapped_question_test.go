@@ -81,13 +81,13 @@ func TestAMultiSelectQuestionTallerThanTheWindowIsStillRecognised(t *testing.T) 
 		{name: "the issue's shape: a rail, fits the window", rail: true, questionRows: 3, descRows: 1,
 			wantQuestion: "question row 1 question row 2 question row 3"},
 		{name: "a wrapped question pushes the tab bar above the window", rail: true, questionRows: 10, descRows: 1,
-			headerOut: true, wantQuestion: "question row 8 question row 9 question row 10"},
+			headerOut: true, wantQuestion: wrappedQuestion(1, 10)},
 		{name: "the same height without a rail reads the same", rail: false, questionRows: 10, descRows: 1,
-			headerOut: true, wantQuestion: "question row 8 question row 9 question row 10"},
+			headerOut: true, wantQuestion: wrappedQuestion(1, 10)},
 		{name: "descriptions push the first option above the window", rail: true, questionRows: 3, descRows: 4,
 			headerOut: true, firstOptionOut: true, wantQuestion: "question row 1 question row 2 question row 3"},
 		{name: "a question the size of the pane", rail: true, questionRows: 30, descRows: 4,
-			headerOut: true, firstOptionOut: true, wantQuestion: "question row 28 question row 29 question row 30"},
+			headerOut: true, firstOptionOut: true, wantQuestion: wrappedQuestion(1, 30)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -284,6 +284,15 @@ func TestLiveWrappedMultiSelectIsReadAndAnswered(t *testing.T) {
 	}
 	if strings.Contains(prompt.Question, "│") {
 		t.Errorf("question keeps the rail: %q", prompt.Question)
+	}
+	// colab-fleet#220: the whole wrapped question reaches the reader — all ten
+	// rows the dialog draws, not the last three of them.
+	var wantRows []string
+	for i := 1; i <= 10; i++ {
+		wantRows = append(wantRows, fmt.Sprintf("row %d of a question long enough that the runtime wraps it", i))
+	}
+	if want := strings.Join(wantRows, " "); prompt.Question != want {
+		t.Errorf("question = %q\nwant       %q", prompt.Question, want)
 	}
 
 	got, err := d.Respond(ctx, testCaller, ref, fleet.Response{Choices: []int{1, 3}, Nonce: prompt.Nonce})

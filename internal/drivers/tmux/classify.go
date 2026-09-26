@@ -87,6 +87,20 @@ const (
 	// attacker-influenced in the general case.
 	maxPromptOptions = 32
 
+	// unanchoredQuestionRows is how many rows above its options a question keeps
+	// when nothing says where it starts. Without the dialog's header the rows
+	// above the options can be the transcript the dialog was drawn under, and
+	// only the last few are its ask.
+	unanchoredQuestionRows = 3
+	// maxQuestionRows bounds a question whose start IS known — the dialog's
+	// header was found, so every row between it and the options is the
+	// question (colab-fleet#220). The screen bounds it already, but a pane an
+	// agent writes to can be as tall as the agent likes, and this text is
+	// reported to every reader of the session's state, digested into its nonce
+	// and quoted in refusals. A longer question keeps the rows nearest the
+	// options, where its ask sits.
+	maxQuestionRows = 32
+
 	// Menu footers. There is more than one, which cost a real incident: the
 	// detector knew only "Enter to select", so a folder-trust prompt and a
 	// session-resume prompt — both saying "Enter to confirm" — classified as
@@ -966,10 +980,28 @@ func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 	if !structural && !(footer && len(p.Options) >= 1) {
 		return nil, menuShape{}
 	}
-	// Keep the question short: the last couple of lines before the options
-	// are the ask; everything above is transcript.
-	if n := len(question); n > 3 {
-		question = question[n-3:]
+	// Where the question starts decides how much of it is one.
+	//
+	// With no header found, the rows above the options can be the transcript the
+	// dialog was drawn under: the last couple are the ask, everything above is
+	// not. With the header found, the loop above dropped everything before it, so
+	// every row between the header and the options IS the question, and a bound
+	// of three only cut a wrapped one off at the front (colab-fleet#220). It is
+	// kept whole, up to maxQuestionRows — and then from the options' side.
+	//
+	// Either way the question is a function of the screen, not of the history the
+	// capture carries above it: whatever the window reads above the header is
+	// dropped at the header, and a window that starts inside a tall dialog is
+	// widened to its opening rule and no further (dialogTop). So two reads of one
+	// screen report one question and one nonce. A capture that itself cuts the
+	// dialog off above its header finds none, and reads the last few rows as it
+	// always did.
+	keep := unanchoredQuestionRows
+	if headerRow >= 0 {
+		keep = maxQuestionRows
+	}
+	if n := len(question); n > keep {
+		question = question[n-keep:]
 	}
 	p.Question = strings.Join(question, " ")
 	if headerRow >= 0 {
