@@ -197,6 +197,10 @@ type fakeMultiSelect struct {
 	typed    string // what reached the free-text field
 	// noPaste models a paste the runtime drops (colab-fleet#206).
 	noPaste bool
+	// question, when set, is the question drawn the way the runtime draws one
+	// too long for a row (colab-fleet#219): a block, one `│ ` rail row per entry.
+	// Unset, it is the one-row question the earlier tests were measured on.
+	question []string
 }
 
 func newFakeMultiSelect(labels ...string) *fakeMultiSelect {
@@ -297,7 +301,14 @@ func (g *fakeMultiSelect) screen() string {
 		fmt.Fprintf(&b, "❯ 1. %s\n  2. %s\n", reviewOptions[0], reviewOptions[1])
 		return b.String()
 	}
-	b.WriteString("Which fruits do you like?\n\n")
+	if len(g.question) > 0 {
+		for _, row := range g.question {
+			b.WriteString("│ " + row + "\n")
+		}
+		b.WriteString("\n")
+	} else {
+		b.WriteString("Which fruits do you like?\n\n")
+	}
 	for i, l := range g.labels {
 		c := "[ ]"
 		if g.ticks[i] {

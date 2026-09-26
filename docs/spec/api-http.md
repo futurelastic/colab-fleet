@@ -1281,6 +1281,13 @@ highlighted row, rather than report a flipped box as an answer. The rows after
 the checkboxes (free text, chat) still take `choice` as before. Absent means
 not recognised as multi-select (§5.7), never "known single-select".
 
+A multi-select question is recognised whatever its height (colab-fleet issue
+#219): a question that wraps over many rows, or options with long descriptions,
+can make the dialog taller than the window a driver reads, and it is then read from
+the dialog's opening rule. `question` is the question's own words — the rule the
+runtime draws down the left edge of a question too long for one row is not part of
+it.
+
 Answer it with `{"choices": [...], "nonce": "..."}`: exactly the options that
 must end up ticked, every other checkbox clear. The driver flips only the boxes
 that differ from the screen, reading each flip back, and then moves the dialog

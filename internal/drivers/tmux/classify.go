@@ -813,6 +813,8 @@ func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 		if want := pane.top - previewHeaderRows; want < from {
 			from = max(want, 0)
 		}
+	} else {
+		from = dialogTop(s.lines, from)
 	}
 	// header is the dialog's tab bar or chip, and headerRow its row.
 	header, headerRow := "", -1
@@ -925,7 +927,9 @@ func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 			continue
 		}
 		if len(p.Options) == 0 && !isRule(line) {
-			question = append(question, line)
+			if row := questionRow(line); row != "" {
+				question = append(question, row)
+			}
 		}
 	}
 	// Structure OR footer — neither alone is sufficient.
@@ -981,6 +985,68 @@ func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 	p.MultiSelect = tabBar && multiSelectBoxes(p) > 0
 	p.FreeText = freeTextOffered(p, shape)
 	return p, shape
+}
+
+// questionRail is the rule the runtime draws down the left edge of a question
+// too long for one row (colab-fleet#219): every row of the wrapped question is
+// painted `│ <text>`, and a row between paragraphs is the rail alone.
+const questionRail = "│"
+
+// questionRow reads one row of a question, without the rail a wrapped question
+// is drawn with. "" says the row held nothing but the rail, and is no row of the
+// question at all. Only a rail at the row's start is set aside: the row's own
+// words are the caller's, and a `│` inside them is theirs.
+func questionRow(line string) string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), questionRail))
+}
+
+// dialogTop returns the row a menu is read from: from, the top of the fixed
+// window, unless that window starts inside the dialog, and then the row under
+// the dialog's opening rule (colab-fleet#219).
+//
+// A dialog is as tall as its question and its option descriptions make it — a
+// question that wraps over several rows, a description under every option —
+// and the window is a fixed number of rows. When it starts below the dialog's
+// header the multi-select question loses the tab bar that corroborates it and
+// reads as an ordinary menu whose boxes nobody may tick; when it starts below
+// the first option the run has a gap and is not read as a menu at all.
+//
+// A dialog opens with a rule, so a window with one above its first option
+// reaches the top already, and is left as it is. A window with none starts
+// inside the dialog: the opening rule is the nearest one above it, because the
+// rule that divides the escape rows off is below the options. Nothing widens
+// unless an option or a runtime footer is there to be read, and never past the
+// nearest rule — the capture is the pane plus a margin of history, so that is
+// bounded by what is on screen — which is what keeps the prose above a dialog,
+// numbered lists included, out of the options.
+func dialogTop(lines []string, from int) int {
+	if from <= 0 {
+		return from
+	}
+	opens := false
+	for _, raw := range lines[from:] {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if isRule(line) {
+			return from
+		}
+		if _, _, numbered := numberedOption(strings.TrimSpace(strings.TrimPrefix(line, composerRuneMarker))); numbered ||
+			strings.Contains(line, selectFooter) || strings.Contains(line, confirmFooter) || strings.Contains(line, amendFooter) {
+			opens = true
+			break
+		}
+	}
+	if !opens {
+		return from
+	}
+	for i := from - 1; i >= 0; i-- {
+		if isRule(strings.TrimSpace(lines[i])) {
+			return i + 1
+		}
+	}
+	return from
 }
 
 // The checkbox glyphs a multi-select question paints in front of each option

@@ -633,6 +633,15 @@ the rest of the body as "accept the highlighted option". Because the tick state
 is part of the option text, it is part of what `nonce` digests: an answer to a
 tick state that has since changed is refused like any other stale answer.
 
+The shape is recognised whatever the dialog's height (colab-fleet issue #219). A
+question that wraps over many rows, or options with long descriptions, make a
+dialog taller than the fixed window a driver reads, and the tab bar that
+corroborates the shape sits above it; the window is then widened to the dialog's
+opening rule, and no further, so that a tall question reports `multiSelect` and
+`freeText` exactly as a short one does. `question` is the question's own words: the
+rule the runtime draws down the left edge of a question too long for one row is not
+part of it.
+
 **`freeText` says a question can be answered in the caller's own words**
 (colab-fleet issue #206). The runtime appends a free-text row (`Type something`)
 to every question an agent asks; the row stays in `options` at its own index, so
