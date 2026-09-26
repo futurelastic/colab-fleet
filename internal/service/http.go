@@ -1628,7 +1628,14 @@ func handleRename(svc *Service) http.HandlerFunc {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "malformed JSON body", Machine: machine})
 			return
 		}
-		if strings.TrimSpace(body.Name) == "" {
+		// Trimmed ONCE, here, and used everywhere below (colab-fleet #222 review
+		// fix): before this, publishRename/labels.rekey/history.renamed read the
+		// UNTRIMMED body.Name while tmux's own Rename renamed to the trimmed one
+		// (tmux.go strips it independently), so a name with incidental leading or
+		// trailing whitespace announced and labelled a DIFFERENT string than the
+		// one the multiplexer actually carried.
+		name := strings.TrimSpace(body.Name)
+		if name == "" {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "rename needs a non-empty name", Machine: machine})
 			return
 		}
@@ -1645,7 +1652,7 @@ func handleRename(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		ack, err := d.Rename(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Name)
+		ack, err := d.Rename(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, name)
 		if err != nil {
 			writeDriverError(w, machine, deadline, err)
 			return
@@ -1659,12 +1666,24 @@ func handleRename(svc *Service) http.HandlerFunc {
 		// a rename that reverts still needs a later, honest word on the stream
 		// about it, which publishRename's own corroboration watch supplies —
 		// see rename_corroboration.go.
-		svc.publishRename(machine, id, body.Name, req.Expect.StartedAt)
-		// Labels follow the session to its new id (colab-fleet #153). A
-		// rename that later reverts is caught by the label store's retain.
+		//
+		// Deliberately BEFORE the title-sync step below (colab-fleet #222): the
+		// id-change announcement must stay exactly as timely as it was before
+		// that step existed — nothing about bringing the runtime's title along
+		// is allowed to delay a subscriber learning the id itself already moved.
+		svc.publishRename(machine, id, name, req.Expect.StartedAt)
+		// Labels follow the session to its new id (colab-fleet #153), and the
+		// title half is synced on the runtime, on a LOCAL driver only — via ==
+		// resolvedPeer means d is a remote driver, and the peer machine's own
+		// service already ran both of these against its own state; running them
+		// again here would rekey by a runtime id this machine never resolved,
+		// and ack.Title is already exactly what the peer answered (see
+		// remote.Driver.Rename). A rename that later reverts is caught by the
+		// label store's retain either way.
 		if via != resolvedPeer {
-			svc.labels.rekey(resolvedRuntime, id, body.Name)
-			svc.history.renamed(resolvedRuntime, id, body.Name)
+			svc.labels.rekey(resolvedRuntime, id, name)
+			svc.history.renamed(resolvedRuntime, id, name)
+			ack.Title = syncTitle(ctx, d, req, fleet.SessionRef{Machine: machine, ID: name})
 		}
 		writeJSON(w, http.StatusAccepted, ack)
 	}

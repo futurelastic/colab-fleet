@@ -1430,7 +1430,7 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 // The caller's expectation is forwarded for the same reason Close forwards it:
 // corroboration has to happen where the session actually is, against what the
 // CALLER saw rather than the far driver's own sighting.
-func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.Ack, error) {
+func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.RenameAck, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
@@ -1440,9 +1440,14 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 		path += "?startedAt=" + url.QueryEscape(want.UTC().Format(time.RFC3339Nano))
 	}
 	body := map[string]string{"name": to}
-	var ack fleet.Ack
+	// colab-fleet #222: the peer already ran its own title-sync step against
+	// its own driver before answering, so whatever fleet.RenameAck it sends —
+	// title included, or absent for a peer predating this field — is
+	// forwarded to OUR caller verbatim. This driver never implements
+	// driver.TitleSyncer itself; there is nothing left here to attempt.
+	var ack fleet.RenameAck
 	if err := d.do(ctx, req, http.MethodPost, path, body, &ack); err != nil {
-		return fleet.Ack{}, err
+		return fleet.RenameAck{}, err
 	}
 	return ack, nil
 }

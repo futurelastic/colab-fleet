@@ -76,14 +76,14 @@ func (d *labelDriver) State(ctx context.Context, req fleet.Request, ref fleet.Se
 	return fleet.SessionState{}, fmt.Errorf("%w: %q", fleet.ErrNoSuchSession, ref.ID)
 }
 
-func (d *labelDriver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.Ack, error) {
+func (d *labelDriver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.RenameAck, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	s := d.sessions[ref.ID]
 	delete(d.sessions, ref.ID)
 	s.ID = to
 	d.sessions[to] = s
-	return fleet.Ack{Accepted: true}, nil
+	return fleet.RenameAck{Accepted: true}, nil
 }
 
 func (d *labelDriver) Close(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.Ack, error) {

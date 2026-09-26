@@ -473,7 +473,15 @@ type Driver interface {
 	//
 	// On success the service emits EventSessionRenamed so subscribers
 	// filtering by id can re-key.
-	Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.Ack, error)
+	//
+	// Returns fleet.RenameAck, not the bare fleet.Ack every other
+	// intent-only operation returns (colab-fleet #222) — Rename's id half is
+	// not intent-only: it has already happened, or it has not, by the time
+	// this returns. This method reports ONLY that id half; a driver leaves
+	// RenameAck.Title nil (the service fills it in — see TitleSyncer below,
+	// and internal/service/rename_title.go). A relaying driver forwards
+	// whatever RenameAck the peer answered with, title included.
+	Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.RenameAck, error)
 
 	// List returns every session this driver knows about in one call —
 	// see the type-level doc comment above for why the signature is
@@ -550,6 +558,29 @@ type ReservedEnvReporter interface {
 // is exactly what the digest was added to prevent.
 type KeySender interface {
 	Keys(ctx context.Context, req fleet.Request, ref fleet.SessionRef, key fleet.KeyName, expectDigest string) (fleet.DeliveryReceipt, error)
+}
+
+// TitleSyncer is an OPTIONAL capability (colab-fleet #222): a driver whose
+// runtime keeps its own idea of a session's title, apart from the id
+// Rename changes, and that can bring that title to a new name.
+//
+// Optional for the same reason every other capability on this list is: most
+// substrates have no such concept, and the service reports that honestly as
+// fleet.TitleNotApplicable (internal/service's rename_title.go) rather than
+// forcing every driver to write a stub that says so.
+//
+// Called by the service AFTER Rename has already changed the multiplexer-
+// level id — ref names the session's CURRENT (new) id; there is no old id
+// left to address by the time this runs. Never fails the caller's rename:
+// every outcome, including an outright refusal to attempt delivery, is a
+// fleet.TitleSync value with its own status and evidence, never an error
+// that would make a successful id-rename look like it failed.
+//
+// A remote/relaying driver does NOT implement this: the peer machine's own
+// service already ran this exact step against its own driver, and whatever
+// title its RenameAck carries is forwarded by Rename verbatim.
+type TitleSyncer interface {
+	SyncTitle(ctx context.Context, req fleet.Request, ref fleet.SessionRef) fleet.TitleSync
 }
 
 // CounterReporter is another OPTIONAL capability, same shape as

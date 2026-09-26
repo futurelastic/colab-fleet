@@ -2939,7 +2939,17 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// Every outcome below (queued unsubmitted, stranded-unknown, confirmed)
 	// shares this one mark, and a resume completing an EARLIER delivery
 	// never reaches this line at all, so `turns` never resets under it.
-	d.noteDelivery(ref.ID, target.cwd)
+	//
+	// colab-fleet #222: EXCEPT a session-management command (/rename, /rc,
+	// /remote-control). Those produce no agent turn at all, so marking
+	// `turns` for one would read as "a delivery was made and nothing has
+	// completed since" — the false work-lost signal #111 exists to
+	// prevent — which stopped being a rare /input edge case the moment
+	// #222 made a `/rename` delivery a guaranteed side effect of every API
+	// rename.
+	if !isSessionCommand(text) {
+		d.noteDelivery(ref.ID, target.cwd)
+	}
 
 	if !opts.Submit {
 		return fleet.DeliveryReceipt{
@@ -4033,22 +4043,32 @@ func discardProvenFutile(attempts int) error {
 // the caller never meant — and leaves BOTH sessions misnamed, the target
 // wearing a name that belongs to another piece of work. §5.4's rule is the
 // same and the failure is quieter, so the check is the same.
-func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.Ack, error) {
+//
+// # Returns RenameAck, not Ack — and never sets its own Title
+//
+// This method reports only the id half (colab-fleet #222): whether the
+// multiplexer-level rename happened. RenameAck.Title is always left nil
+// here; the service calls SyncTitle (titlesync.go) separately, AFTER this
+// returns and after it has announced session.renamed, and fills Title in
+// itself (internal/service/rename_title.go). Splitting it this way keeps
+// the id-change announcement exactly as timely as it was before this
+// existed — nothing here waits on a composer delivery or a transcript poll.
+func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.SessionRef, to string) (fleet.RenameAck, error) {
 	ctx, cancel := d.bounded(ctx)
 	defer cancel()
 
 	to = strings.TrimSpace(to)
 	if to == "" {
-		return fleet.Ack{}, errors.New("rename: new name is empty")
+		return fleet.RenameAck{}, errors.New("rename: new name is empty")
 	}
 	if to == ref.ID {
 		// Not an error: the caller asked for a state that already holds.
-		return fleet.Ack{Accepted: true}, nil
+		return fleet.RenameAck{Accepted: true}, nil
 	}
 
 	rows, _, err := d.enumerate(ctx)
 	if err != nil {
-		return fleet.Ack{}, err
+		return fleet.RenameAck{}, err
 	}
 	var live *paneRow
 	for i := range rows {
@@ -4059,16 +4079,16 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 		// sessions cannot share a name, and the failure mode of finding out
 		// afterwards is an operator who believes a rename happened.
 		if rows[i].session == to {
-			return fleet.Ack{}, fmt.Errorf("rename: %q is already in use on this machine", to)
+			return fleet.RenameAck{}, fmt.Errorf("rename: %q is already in use on this machine", to)
 		}
 	}
 	if live == nil {
-		return fleet.Ack{}, fmt.Errorf("%w: %q", fleet.ErrNoSuchSession, ref.ID)
+		return fleet.RenameAck{}, fmt.Errorf("%w: %q", fleet.ErrNoSuchSession, ref.ID)
 	}
 
 	if want := req.Expect.StartedAt; want != nil {
 		if !live.created.Equal(*want) {
-			return fleet.Ack{}, fmt.Errorf(
+			return fleet.RenameAck{}, fmt.Errorf(
 				"%w: id %q now holds a session started at %s; the caller meant the one started at %s",
 				ErrAmbiguousTarget, ref.ID, live.created.Format(time.RFC3339), want.Format(time.RFC3339))
 		}
@@ -4078,16 +4098,40 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 		prior, seen := d.observed[ref.ID]
 		d.mu.Unlock()
 		if !seen {
-			return fleet.Ack{}, fmt.Errorf(
+			return fleet.RenameAck{}, fmt.Errorf(
 				"%w: caller supplied no expected start time, and this driver has no prior "+
 					"observation of id %q either; nothing corroborates the target",
 				ErrAmbiguousTarget, ref.ID)
 		}
 		if !live.created.Equal(prior.created) || live.cwd != prior.cwd {
-			return fleet.Ack{}, fmt.Errorf(
+			return fleet.RenameAck{}, fmt.Errorf(
 				"%w: id %q was recycled since this driver last observed it (weak check)",
 				ErrAmbiguousTarget, ref.ID)
 		}
+	}
+
+	// colab-fleet #222: alias the composer-serialisation lock BEFORE the
+	// multiplexer rename runs, so a title-sync delivery this service is
+	// about to make against the NEW id (SyncTitle, moments from now) shares
+	// the identical mutex with anything already in flight against the OLD
+	// id — both address the same underlying pane, and a rename in between
+	// must not let them hold two different locks over it (terminalpath2_lock.go's
+	// own D5 hazard, reopened by rename). Rename itself never waits on this
+	// lock: a busy composer must not turn a rename into a failure.
+	d.aliasComposerLock(ref.ID, to)
+
+	// colab-fleet #222: prime the conversation memo under the OLD name,
+	// before it stops matching anything. Name-and-date derivation
+	// (conversation.go) matches the transcript whose FIRST custom-title is
+	// still ref.ID at this exact moment; the memo it populates is keyed on
+	// (pane, created), which survives the rename below untouched. Without
+	// this, a title-sync lookup moments from now — asking with the NEW
+	// name, which the transcript does not carry as a title anywhere yet —
+	// would have nothing to derive from until the runtime writes a fresh
+	// record under the new name, if it ever does.
+	if d.conversations != nil {
+		d.conversations.lookup(conversationKey{pane: live.paneID, created: live.created}, live.cwd, ref.ID,
+			live.created, processGeneration{pid: live.pid}, d.liveConversationSource(ctx, live.pid, live.cwd))
 	}
 
 	// "=" pins an exact name. Without it the multiplexer resolves prefixes and
@@ -4095,7 +4139,7 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 	// starts with this one — which on a fleet full of `<repo>-<issue>` names is
 	// not a hypothetical.
 	if _, err := d.run(ctx, d.bin, "rename-session", "-t", "="+ref.ID, to); err != nil {
-		return fleet.Ack{}, fmt.Errorf("rename: %w", err)
+		return fleet.RenameAck{}, fmt.Errorf("rename: %w", err)
 	}
 
 	// Carry the driver's own memory across, or the renamed session looks
@@ -4117,7 +4161,7 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 	// #185: a delivery lane belongs to the process, not the name.
 	d.mods.rekey(ref.ID, to)
 
-	return fleet.Ack{Accepted: true}, nil
+	return fleet.RenameAck{Accepted: true}, nil
 }
 
 func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fleet.Ack, error) {

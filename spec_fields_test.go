@@ -94,6 +94,10 @@ var specFieldTypes = map[string]any{
 	"DeliveryPath":         DeliveryPath{},
 	"DeliveryLane":         DeliveryLane{},
 	"DeliveryModuleStatus": DeliveryModuleStatus{},
+
+	// #222: rename's own response, and its title-sync half.
+	"RenameAck": RenameAck{},
+	"TitleSync": TitleSync{},
 }
 
 // specFieldExceptions records a Go field that a normative type block

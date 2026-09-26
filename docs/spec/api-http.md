@@ -940,7 +940,7 @@ proven to do nothing against text nobody has re-read.
 ```
 POST /v1/machines/{machine}/sessions/{id}/rename?startedAt=&runtime=
 { "name": "new-name" }
-→ 202 { "accepted": true }
+→ 202 RenameAck (session-abstraction.md §2.5a)
 → 409 if startedAt disagrees, or the new name is already in use here
 ```
 
@@ -956,6 +956,31 @@ still alive — and cannot tell that from the session having died. **This event
 fires more than once per rename** — §4's event-plane section covers what the
 `corroboration` field on each one means, and why waiting for the second is
 worth doing before treating a rename as durable.
+
+**The `202` body's `title` field is a SEPARATE fact from `session.renamed`**
+(colab-fleet#222): on a runtime that keeps its own idea of a title apart from
+the id — the transcript a title-reconciling client would otherwise trust more
+than this API — whether that title was brought to the new name too, in the
+closed vocabulary `synced` / `pending` / `failed` / `not_applicable`
+(session-abstraction.md §2.5a). `session.renamed` does **not** carry it: the
+id-change announcement stays exactly as timely as it always was, and nothing
+about the title half is allowed to delay it.
+
+A `title.status` of `pending` or `failed` is retried by **`POST`ing the same
+rename again with the identical `name`** — `to == ref.ID` is not an error
+(§3), and re-attempts only the title half; the id has nothing left to move. A
+busy or stranded composer needs no new rule here: the delivery this makes is
+exactly one `/input`-shaped `/rename <name>` call, and is refused under §2.4's
+existing protection like any other — `title.receipt` carries that refusal's
+own `outcome`/`reason` verbatim, so a caller reading "the same rules as
+`/input`" never has to take it on faith.
+
+A `runtime` whose driver does not implement the optional title-syncing
+capability at all (session-abstraction.md §4) reports `title.status:
+"not_applicable"` — produced by the SERVICE, never by that driver claiming it
+for its own runtime. `title` **absent** (the key missing) means nothing is
+stated at all — a peer built before this field existed; never conflate the two
+(§5.7).
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/labels?startedAt=&runtime=

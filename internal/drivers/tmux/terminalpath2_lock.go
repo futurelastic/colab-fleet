@@ -78,6 +78,60 @@ func (d *Driver) preempted(id string) bool {
 	return d.preemptCounter(id).Load() > 0
 }
 
+// aliasComposerLock makes `to` share the SAME composer-serialisation mutex
+// `from` already has — creating one for `from` if it does not exist yet —
+// so an operation still addressed to the OLD id and a delivery this
+// service is about to make against the NEW id (colab-fleet #222's
+// title-sync, run immediately after a rename) contend on the identical
+// lock rather than two independent ones. Both ids name the same underlying
+// pane at the moment this is called from Rename, and this table is keyed
+// by id (this file's own package doc), so without the alias they would
+// otherwise never know about each other.
+//
+// Called from Rename BEFORE the multiplexer-level rename runs. Rename
+// itself never blocks on this lock — a busy composer must not turn a
+// rename into a failure — so this only ever widens what a LATER call
+// (Send, Respond, Discard, Keys) contends against; it never adds a wait
+// here.
+//
+// A residual gap, accepted rather than closed: an operation already
+// blocked on a lock `to` held before THIS rename — left by a different,
+// just-closed session that previously used the same name — is not covered.
+// That needs a close of `to`, a pending operation on it, and a rename INTO
+// `to` all inside the same narrow window; the pre-existing per-id lock
+// table is never pruned (see this file's own doc comment on why), so nothing
+// here can tell that case apart from an ordinary live contention. Filed as
+// a known limitation rather than engineered around.
+func (d *Driver) aliasComposerLock(from, to string) {
+	if from == to {
+		return
+	}
+	d.composerLocks.mu.Lock()
+	defer d.composerLocks.mu.Unlock()
+	if d.composerLocks.locks == nil {
+		d.composerLocks.locks = map[string]*sync.Mutex{}
+	}
+	mu, ok := d.composerLocks.locks[from]
+	if !ok {
+		mu = &sync.Mutex{}
+		d.composerLocks.locks[from] = mu
+	}
+	d.composerLocks.locks[to] = mu
+
+	// #180 M4's preemption counter follows the same alias, for the same
+	// reason: a Respond waiting to preempt the OLD id's holder must still
+	// see it after the rename retargets delivery to the NEW id.
+	if d.composerLocks.preempt == nil {
+		d.composerLocks.preempt = map[string]*atomic.Int32{}
+	}
+	c, ok := d.composerLocks.preempt[from]
+	if !ok {
+		c = &atomic.Int32{}
+		d.composerLocks.preempt[from] = c
+	}
+	d.composerLocks.preempt[to] = c
+}
+
 // lockComposerOps acquires (creating if needed) the mutex for one session id
 // and returns the function that releases it. Every composer-touching entry
 // point acquires this as its very first act and releases it via defer,

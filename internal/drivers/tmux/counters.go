@@ -438,6 +438,27 @@ const (
 	// "a transcript that records a different turn is treated as silence, and
 	// the screen fallback reports queued".
 	counterTranscriptDifferentTurnRecorded = "transcript_source.different_turn_recorded"
+
+	// colab-fleet #222: SyncTitle's own outcomes, one exclusive counter per
+	// fleet.TitleSyncStatus a tmux SyncTitle call can actually produce (never
+	// title_sync.not_applicable — that value is the SERVICE's, for a driver
+	// that does not implement TitleSyncer at all, so this driver never
+	// increments it).
+	counterTitleSyncSynced  = "title_sync.synced"
+	counterTitleSyncPending = "title_sync.pending"
+	counterTitleSyncFailed  = "title_sync.failed"
+	// counterTitleSyncCommandWithoutTitle counts a `pending` specifically
+	// where the runtime's own local_command/<command-name> entry confirmed
+	// the /rename command ran (colab-fleet #187) but no custom-title entry
+	// followed it within the confirmation window — the live rate of the one
+	// fact this repo has NOT measured about the runtime (#222's own plan:
+	// whether/when /rename writes a fresh custom-title at all).
+	counterTitleSyncCommandWithoutTitle = "title_sync.command_without_title"
+	// counterTitleSyncRecordedOtherTitle counts a `failed` specifically
+	// where a custom-title entry DID appear after this delivery's offset,
+	// but named a different title than the one this delivery asked for —
+	// distinct from every other failed cause, which never got that far.
+	counterTitleSyncRecordedOtherTitle = "title_sync.recorded_other_title"
 )
 
 // confirmLatencyBucket maps an observed confirm latency onto one of the five
