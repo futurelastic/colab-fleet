@@ -54,8 +54,8 @@ func TestWarningsOfEmptyWhenNoNoticeIsPainted(t *testing.T) {
 func TestWarningsOfDoesNotMisreadKnownChrome(t *testing.T) {
 	cases := map[string]string{
 		"model/plan row + auto-mode hint (fixtureWorking's own footer)": fixtureWorking,
-		"manual mode indicator":                                         "  Done.\n✻ Brewed for 1s\n" + rule + "\n❯\n" + rule + "\n  ⏸ manual mode on · ? for shortcuts · ← for agents",
-		"bypass mode indicator":                                         "  Done.\n✻ Brewed for 1s\n" + rule + "\n❯\n" + rule + "\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+		"manual mode indicator": "  Done.\n✻ Brewed for 1s\n" + rule + "\n❯\n" + rule + "\n  ⏸ manual mode on · ? for shortcuts · ← for agents",
+		"bypass mode indicator": "  Done.\n✻ Brewed for 1s\n" + rule + "\n❯\n" + rule + "\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
 	}
 	for name, fixture := range cases {
 		t.Run(name, func(t *testing.T) {
