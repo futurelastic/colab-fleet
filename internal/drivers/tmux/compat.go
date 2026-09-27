@@ -191,9 +191,11 @@ func newCompatSuite(h *compatHarness) compat.Suite {
 	h.addBoot(&s)
 	h.addDrafts(&s)
 	h.addSends(&s)
+	h.addRename(&s)
 	h.addBootChecks(&s)
 	h.addComposerChecks(&s)
 	h.addSendChecks(&s)
+	h.addRenameChecks(&s)
 	return s
 }
 

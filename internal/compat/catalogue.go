@@ -183,6 +183,12 @@ var catalogue = []Spec{
 		Asserts:  "The record's status moves off idle while a turn runs and back, with statusUpdatedAt advancing at each change. Nothing in this driver reads it yet, so this is warn-only: it is the record's own liveness signal.",
 		ReliedOn: []string{"internal/drivers/tmux/terminalpath2_transcript.go#processSessionRecord"},
 	},
+	{
+		ID:       "H-RENAME",
+		Gate:     GateWarn,
+		Asserts:  "Whether, and after how long, a programmatic rename — the driver's own Rename followed by its own SyncTitle, delivered via the composer exactly as the service delivers it — is followed by a custom-title transcript entry naming the session's new id. SyncTitle already degrades honestly to pending when this has not happened within its own four-second window; this is warn-only because that degradation, not this finding, is what the driver relies on. It reads for far longer than that window so a runtime that is merely slow to write the entry is not reported the same as one that never does.",
+		ReliedOn: []string{"internal/drivers/tmux/titlesync.go#transcriptTitleScan"},
+	},
 }
 
 // Catalogue returns a copy of the catalogue, in report order.

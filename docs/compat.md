@@ -293,6 +293,7 @@ build.
 | `B2` | must | The -n value names the per-process record and the transcript's title, and the driver joins the session to its conversation by that name, with remote control off. | `internal/drivers/tmux/conversation.go#conversationStore` |
 | `B7a` | must | A system-prompt file passed with --append-system-prompt-file is honoured: an instruction in it shows in the reply. | `internal/drivers/tmux/tmux.go#claudeCodeCommand` |
 | `D2` | warn | The record's status moves off idle while a turn runs and back, with statusUpdatedAt advancing at each change. Nothing in this driver reads it yet, so this is warn-only: it is the record's own liveness signal. | `internal/drivers/tmux/terminalpath2_transcript.go#processSessionRecord` |
+| `H-RENAME` | warn | Whether, and after how long, a programmatic rename — the driver's own Rename followed by its own SyncTitle, delivered via the composer exactly as the service delivers it — is followed by a custom-title transcript entry naming the session's new id. SyncTitle already degrades honestly to pending when this has not happened within its own four-second window; this is warn-only because that degradation, not this finding, is what the driver relies on. It reads for far longer than that window so a runtime that is merely slow to write the entry is not reported the same as one that never does. | `internal/drivers/tmux/titlesync.go#transcriptTitleScan` |
 <!-- compat:catalogue:end -->
 
 ## The external-imports question
@@ -342,9 +343,13 @@ reason; they do not report them as unable to run.
 | 2 | Five sessions: a trusted directory whose instruction file imports a file from outside it (C1, D1, D3, D4, B2, E-*…), an untrusted one (F-TRUST), a trusted one never approved to import (F-IMPORTS), and two in bypass mode (B5, F-BYPASS; and F-MODE reads the default-mode and bypass sessions' indicator rows, after giving each up to ten seconds to paint it — measured: the composer is up about a second before the row under it). | 0 |
 | 3 | Drafts pasted into the composer and cleared again (F-COMPOSER, F-MLDRAFT, F-PASTEMARK, F-WRAP), and a session used once to enter shell mode (G6). | 0 |
 | 4 | Five sends on the trusted session: a first one that creates the transcript, then a short one, a single line over 800 bytes, a 40-line paste, and text with control bytes and a tab (G1, G2, E-USER, E-PASTE, E-NAME, E-SLUG, B2, B7a, D2). | 5 |
+| 5 | One programmatic rename of the trusted session — the driver's own Rename then its own SyncTitle, the same two calls and order the service uses (H-RENAME). No model turn: a rename is a driver-level call, not a prompt. | 0 |
 
-Measured on one full run against a current supported build: **26 checks, 5 model turns,
-about 46 seconds.** Every turn is a synthetic, nonce-tagged prompt at the smallest model
+Measured on one full run against a current supported build: **27 checks, 5 model turns,
+about 46 seconds** when the rename resolves quickly, **up to `compatRenameWait` (30s) longer**
+when it does not — H-RENAME keeps reading the transcript for that long before it reports
+the runtime never wrote a custom-title, so a slow "no" costs wall time even though it spends
+no model turn. Every turn is a synthetic, nonce-tagged prompt at the smallest model
 and lowest effort. The first send is made only to create the transcript, because the
 runtime writes it at the first turn and the driver confirms a send by the screen until it
 exists; the confirmation checks are asserted on the sends after it.
@@ -406,7 +411,7 @@ not needed. If one is ever needed it gets a new issue. Not built:
   pasted text not answering an open dialog (**G5**);
 - the spinner and the permission, question and multi-select dialogs (**F-SPIN**, **F-PERM**,
   **F-ASKQ**, **F-MULTI**), and the respond and multi-select key paths (**G3**);
-- local-command entries and `/rename` (**E-CMD**, **H-RENAME**);
+- local-command entries in general (**E-CMD**) — `/rename` itself is now measured (**H-RENAME**);
 - the umbrella comparison of every transcript entry type's key paths (**E-SCHEMA**), and replay of
   the committed classifier corpus against a candidate (**F-CORPUS**).
 
