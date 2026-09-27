@@ -11,6 +11,7 @@ package tmux
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -187,6 +188,30 @@ func (r *modRig) waitLive(id string) {
 	waitFor(r.t, "the session's lane to read live", func() bool {
 		v := r.view(id)
 		return v != nil && v.ClientConnected
+	})
+}
+
+// waitAllLive waits for every listed session's lane to read live, under one
+// deadline scaled to how many are attaching at once (colab-fleet#221).
+// TestModuleSend_ManySessionsConcurrent attaches n lanes together, and they
+// contend for the same locks the attach path holds — waiting on them one at
+// a time with waitLive's fixed per-lane budget still bounds each lane to that
+// same fixed budget, however many others are attaching alongside it. A
+// loaded -race run pushed one lane past that budget once (the same class of
+// flake as #214 and #186); scaling the shared deadline by n gives every lane
+// room for the contention the others add. A healthy run still returns in
+// well under a second — this only widens the ceiling nothing should hit.
+func (r *modRig) waitAllLive(ids []string) {
+	r.t.Helper()
+	deadline := time.Now().Add(time.Duration(len(ids)) * waitForTimeout)
+	waitForDeadline(r.t, fmt.Sprintf("all %d sessions' lanes to read live", len(ids)), deadline, func() bool {
+		for _, id := range ids {
+			v := r.view(id)
+			if v == nil || !v.ClientConnected {
+				return false
+			}
+		}
+		return true
 	})
 }
 

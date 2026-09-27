@@ -5593,12 +5593,30 @@ func (h *settleHarness) keysPressed() []string {
 	return append([]string(nil), h.chosen...)
 }
 
+// waitForTimeout is the per-condition budget waitFor waits before giving up.
+// A caller whose condition is inherently shared across several concurrent
+// actors (so its real cost scales with how many there are, not a fixed
+// constant) should not reuse this value as-is — see waitForDeadline.
+const waitForTimeout = 15 * time.Second
+
 // waitFor polls rather than sleeping a guessed amount: the settle loop's own
 // interval is long on purpose (a startup is slow), so a fixed sleep would be
 // either flaky or the slowest test in the package.
 func waitFor(t *testing.T, why string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	waitForDeadline(t, why, time.Now().Add(waitForTimeout), cond)
+}
+
+// waitForDeadline is waitFor with the deadline supplied rather than assumed.
+// It exists for a condition whose real budget is not the package's ordinary
+// waitForTimeout — e.g. several actors doing the same wait concurrently,
+// which contend for the same locks and so take longer under load the more of
+// them there are (colab-fleet#221, the same class of fixed-wall-clock flake
+// as #214 and #186: the bound a healthy run needs is milliseconds, but the
+// bound that must never misfire under a loaded -race run is a different,
+// larger number, and picking one fixed constant for both is what flaked).
+func waitForDeadline(t *testing.T, why string, deadline time.Time, cond func() bool) {
+	t.Helper()
 	for time.Now().Before(deadline) {
 		if cond() {
 			return

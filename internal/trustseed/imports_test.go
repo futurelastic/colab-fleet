@@ -372,9 +372,10 @@ func TestBothPathVariantsOfASymlinkedRootGetTheImportsKeys(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	// Through SeedPath, the create-time entry point: WalkDir does not descend
-	// through a symlinked root, so a full pass would find nothing here — a limit
-	// this test does not exercise and the trust key has always had.
+	// Through SeedPath, the create-time entry point. (A full SeedAll pass over
+	// this same symlinked root is covered separately, by
+	// TestSeedAllFindsARepositoryUnderASymlinkedRoot in trustseed_test.go —
+	// colab-fleet #213.)
 	s := New(statePath, home, []string{link})
 	if err := s.SeedPath(filepath.Join(link, "one")); err != nil {
 		t.Fatal(err)

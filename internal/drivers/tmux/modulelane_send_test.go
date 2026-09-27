@@ -544,9 +544,7 @@ func TestModuleSend_ManySessionsConcurrent(t *testing.T) {
 	for i := range ids {
 		ids[i] = r.create(fmt.Sprintf("many%d", i), nil).ID
 	}
-	for _, id := range ids {
-		r.waitLive(id)
-	}
+	r.waitAllLive(ids)
 	var wg sync.WaitGroup
 	got := make([]fleet.DeliveryReceipt, n)
 	start := time.Now()

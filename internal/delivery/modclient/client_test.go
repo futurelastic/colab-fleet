@@ -225,26 +225,51 @@ func TestClient_DeadlineMissIsUnavailableNotResult(t *testing.T) {
 
 func TestClient_HelloRefused(t *testing.T) {
 	huge := strings.Repeat("x", 5<<20)
+	const defaultHelloTimeout = 150 * time.Millisecond
 	cases := []struct {
 		name   string
 		script modtest.HelloScript
 		reason string
+		// timeout overrides defaultHelloTimeout; zero means use the default.
+		timeout time.Duration
 	}{
-		{"WrongProtocol", modtest.HelloScript{Protocol: modtest.Int(2)}, "protocol 2"},
-		{"MissingOp", modtest.HelloScript{Ops: []string{"prepare-launch", "attach", "send", "confirm", "close"}}, "health"},
-		{"InvalidJSON", modtest.HelloScript{Raw: "this is not json{"}, "not a valid hello"},
-		{"Silence", modtest.HelloScript{NoLine: true}, "no hello line"},
-		{"OversizeLine", modtest.HelloScript{Raw: huge}, "line limit"},
-		{"MalformedPrefix", modtest.HelloScript{ReservedEnvPrefixes: []string{"OK_", "not ok"}}, "reserved environment prefix"},
+		{"WrongProtocol", modtest.HelloScript{Protocol: modtest.Int(2)}, "protocol 2", 0},
+		{"MissingOp", modtest.HelloScript{Ops: []string{"prepare-launch", "attach", "send", "confirm", "close"}}, "health", 0},
+		{"InvalidJSON", modtest.HelloScript{Raw: "this is not json{"}, "not a valid hello", 0},
+		{"Silence", modtest.HelloScript{NoLine: true}, "no hello line", 0},
+		// This case, alone among these, has to move 5 MB across the fake's
+		// in-memory pipe before the client sees a complete line — dozens of
+		// synchronous Read/Write handoffs, not a constant-time parse. The
+		// other cases' lines are a few bytes and finish long before any
+		// plausible timer, so defaultHelloTimeout is really a bound on the
+		// Silence case's deliberate wait for it to expire, not a budget this
+		// case's real transfer has to fit inside. Under `-race` on a loaded
+		// runner that transfer can itself pass 150ms, and the timer firing
+		// first reports "no hello line within 150ms" instead of "line limit"
+		// (#225 — reddened trunk twice with exactly that text, on commits
+		// that never touched this package). Give it a backstop generous
+		// enough that only a genuinely stuck transfer would ever hit it,
+		// the same shape as #214's realChildHello.
+		{"OversizeLine", modtest.HelloScript{Raw: huge}, "line limit", 5 * time.Second},
+		{"MalformedPrefix", modtest.HelloScript{ReservedEnvPrefixes: []string{"OK_", "not ok"}}, "reserved environment prefix", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			script := tc.script
 			f := modtest.NewFake(modtest.Behaviour{Hello: &script})
-			c, r := newClient(t, f, func(cfg *modclient.Config) { cfg.HelloTimeout = 150 * time.Millisecond })
+			timeout := tc.timeout
+			if timeout == 0 {
+				timeout = defaultHelloTimeout
+			}
+			c, r := newClient(t, f, func(cfg *modclient.Config) { cfg.HelloTimeout = timeout })
 			c.Start()
 
-			waitFor(t, func() bool { return c.Status().State == modclient.StateDisabled }, 3*time.Second, "the module to be disabled")
+			// The wait bound has to outlast the HelloTimeout it is waiting
+			// on, with slack on top for the refuse/kill bookkeeping that
+			// follows it — a passing run never spends anywhere near it, so
+			// the extra margin costs nothing but headroom.
+			wait := timeout + 3*time.Second
+			waitFor(t, func() bool { return c.Status().State == modclient.StateDisabled }, wait, "the module to be disabled")
 			st := c.Status()
 			if !strings.Contains(st.Reason, "hello refused") || !strings.Contains(st.Reason, tc.reason) {
 				t.Errorf("reason = %q, want it to say the hello was refused and why (%q)", st.Reason, tc.reason)
