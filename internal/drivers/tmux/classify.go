@@ -1883,6 +1883,35 @@ func selectionPrompt(s screen) (string, bool) {
 // found at all, which is a different fact from "found, and it was
 // finished".
 func spinner(s screen) (running bool, found bool) {
+	// Never scan below the composer's own closing rule, when one is found.
+	//
+	// colab-fleet#229: a footer NOTICE the runtime paints under the composer
+	// — "⚠ Transcript writes are failing (disk full — ENOSPC) · recent
+	// messages may …" — has exactly the shape statusLine matches: a single
+	// non-ASCII symbol, a space, a capitalised word, and (because the
+	// runtime truncated the notice with an ellipsis) the running tense's own
+	// marker. A backward scan that does not stop at the composer reads that
+	// notice before it ever reaches the real, finished spinner line drawn
+	// ABOVE the composer — and unlike a spinner, a footer notice does not
+	// clear until the runtime next redraws the whole screen, so the false
+	// "working" this produces can outlive the condition that caused it by
+	// hours (measured: 1-2h after the disk that triggered it was freed).
+	//
+	// The turn-status line is transcript, and the TUI never draws it beneath
+	// the composer — only chrome (the mode indicator, this notice, keyboard
+	// hints) lives there. So bounding the scan at the composer's closing
+	// rule is a structural fact about the layout, not a rule about this one
+	// notice's wording: it holds for any footer content this driver has not
+	// been told about yet, not only the ENOSPC case that found it.
+	//
+	// Only when a composer is actually FOUND: composerAbsent and
+	// composerClipped mean this driver does not know where the composer
+	// (and so the boundary) is, and the scan falls back to the whole screen
+	// exactly as it always has for those.
+	top := len(s.lines) - 1
+	if _, last, scan := composerSpan(s); scan == composerFound {
+		top = last
+	}
 	// Scan upward for the LAST line that is a status line in one of its two
 	// shapes, rather than stopping at the first line that merely begins with
 	// a symbol.
@@ -1894,7 +1923,7 @@ func spinner(s screen) (running bool, found bool) {
 	// spinner line in neither shape and gave up. Chrome is full of symbols —
 	// `❯`, `⏵⏵`, `▸`, `⎿` — and a matcher loose enough to survive an
 	// animation frame must not treat the first symbol it meets as decisive.
-	for i := len(s.lines) - 1; i >= 0; i-- {
+	for i := top; i >= 0; i-- {
 		if running, ok := statusLine(strings.TrimSpace(s.lines[i])); ok {
 			return running, true
 		}
