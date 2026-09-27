@@ -228,6 +228,55 @@ func TestSeedAllReportsAMissingRootWithoutFailingTheOthers(t *testing.T) {
 	}
 }
 
+// A full SeedAll pass over a root that is itself a symlink once found
+// nothing under it at all: filepath.WalkDir opens its root argument with
+// os.Lstat, so a symlinked root arrives at its own callback as "not a
+// directory" and the walk never descends past it (colab-fleet #213).
+// discoverIslands now resolves each configured root once, at construction,
+// and walks that resolved form, so a full pass finds what SeedPath's
+// per-directory entry point already could.
+func TestSeedAllFindsARepositoryUnderASymlinkedRoot(t *testing.T) {
+	home := tempHome(t)
+	statePath := filepath.Join(home, ".claude.json")
+	writeState(t, statePath, nil)
+
+	real := filepath.Join(home, "real-workspace")
+	repo := filepath.Join(real, "one")
+	mkRepo(t, repo)
+	link := filepath.Join(home, "linked-workspace")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	s := New(statePath, home, []string{link})
+	result, err := s.SeedAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Islands != 1 {
+		t.Fatalf("Islands = %d, want 1 (the repository under the symlinked root)", result.Islands)
+	}
+	// Granted counts per project KEY, not per island — and this one island's
+	// spelled path (under the symlinked root) resolves to a second, distinct
+	// key via lookupKeys, so both get counted (same reason
+	// TestBothPathVariantsOfASymlinkedRootGetTheImportsKeys's two entries
+	// below both come out true).
+	if result.Granted != 2 {
+		t.Fatalf("Granted = %d, want 2 (one for each of the two project keys this symlinked island has)", result.Granted)
+	}
+	if len(result.RootsMissing) != 0 {
+		t.Fatalf("RootsMissing = %v, want none — the root exists, it is just a symlink", result.RootsMissing)
+	}
+
+	// Reported under the root's own spelling — the form underConfiguredRoot
+	// and a caller's directory arguments use — not the resolved form the
+	// walk actually ran against.
+	wantAllThreeTrue(t, projectEntry(t, statePath, filepath.Join(link, "one")), "the path as configured")
+	// lookupKeys resolves that spelling's symlink forward and writes the
+	// resolved form too, the same second key SeedPath already produced.
+	wantAllThreeTrue(t, projectEntry(t, statePath, repo), "the resolved path")
+}
+
 func TestSeedPathRefusesOutsideConfiguredRoot(t *testing.T) {
 	home := tempHome(t)
 	statePath := filepath.Join(home, ".claude.json")

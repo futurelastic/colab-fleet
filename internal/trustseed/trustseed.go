@@ -145,9 +145,9 @@ var errLostRace = errors.New("trustseed: state file changed since it was read; a
 // before asking it to do nothing.
 type Seeder struct {
 	statePath string
-	roots     []string // absolute, cleaned
-	home      string   // absolute, cleaned; "" if unknown
-	sysRoot   string   // the filesystem root, e.g. "/"
+	roots     []configuredRoot
+	home      string // absolute, cleaned; "" if unknown
+	sysRoot   string // the filesystem root, e.g. "/"
 	// keys are the fields this Seeder sets on a project entry: seededKeys for
 	// every Seeder New builds, the trust key alone for NewTrustOnly.
 	keys []string
@@ -183,6 +183,10 @@ type Seeder struct {
 // is dropped here rather than reported per-pass — that is a configuration
 // mistake at construction time, not the "root not found yet" case
 // CounterRootMissing exists for.
+//
+// Each surviving root is resolved once, here, into a configuredRoot — see
+// its doc comment for why discoverIslands needs both forms (colab-fleet
+// #213).
 func New(statePath, home string, roots []string) *Seeder {
 	s := &Seeder{
 		statePath:  statePath,
@@ -201,9 +205,44 @@ func New(statePath, home string, roots []string) *Seeder {
 			continue
 		}
 		seen[c] = true
-		s.roots = append(s.roots, c)
+		s.roots = append(s.roots, configuredRoot{spelling: c, walk: resolveRootForWalk(c)})
 	}
 	return s
+}
+
+// configuredRoot carries one configured trust root in the two forms this
+// package needs kept apart (colab-fleet #213):
+//
+//   - spelling is exactly what the operator wrote (cleaned, absolute). Every
+//     "is this directory under a configured root" check — underConfiguredRoot,
+//     and so SeedPath's scope guard — compares against this form, because a
+//     caller hands SeedPath a path built the way the operator's own
+//     configuration and tooling spell it, not a resolved one.
+//   - walk is spelling with its symlinks resolved once, at construction. It
+//     exists because filepath.WalkDir opens its root argument with os.Lstat
+//     to build the entry it hands its own callback, and a root that is
+//     itself a symlink therefore arrives at that callback as "not a
+//     directory" — WalkDir never descends past it, so a SeedAll pass over a
+//     symlinked root silently finds nothing. Resolving up front, once,
+//     rather than re-resolving every pass, is what makes discoverIslands
+//     walk the real directory a symlinked root points at.
+//
+// A root that fails to resolve (does not exist yet, or any other os.Lstat
+// error) gets walk == spelling: discoverIslands's own os.Stat on that path
+// then fails the same way it always did, and the root is reported through
+// CounterRootMissing exactly as before — resolution failing here does not
+// invent a new failure shape.
+type configuredRoot struct {
+	spelling string
+	walk     string
+}
+
+func resolveRootForWalk(spelling string) string {
+	resolved, err := filepath.EvalSymlinks(spelling)
+	if err != nil {
+		return spelling
+	}
+	return resolved
 }
 
 // NewTrustOnly builds a Seeder that answers the folder-trust question and
@@ -419,7 +458,7 @@ func hasGitEntry(dir string) bool {
 
 func (s *Seeder) underConfiguredRoot(dir string) bool {
 	for _, r := range s.roots {
-		if dir == r || withinRoot(dir, r) {
+		if dir == r.spelling || withinRoot(dir, r.spelling) {
 			return true
 		}
 	}
@@ -440,15 +479,26 @@ func withinRoot(dir, root string) bool {
 // silently skipped (the issue: "a configured root that does not exist is a
 // configuration error worth reporting"); every OTHER configured root is
 // still walked.
+//
+// The walk itself runs against root.walk — the resolved form — never
+// root.spelling, so a root that is itself a symlink is actually descended
+// into (colab-fleet #213; see configuredRoot's doc comment for why
+// WalkDir(spelling) alone cannot do this). Every island the walk finds is
+// then re-spelled back onto root.spelling before being returned, so the
+// rest of this package keeps working with the path form the operator
+// configured and a caller's directory arguments actually use — and so that
+// lookupKeys, given that spelling, can resolve its own symlink prefix
+// forward and recover the walked form as the second key it writes. Islands
+// are reported once each even when two configured roots happen to overlap.
 func (s *Seeder) discoverIslands() (islands []string, missing []string) {
 	seen := map[string]bool{}
 	for _, root := range s.roots {
-		info, err := os.Stat(root)
+		info, err := os.Stat(root.walk)
 		if err != nil || !info.IsDir() {
-			missing = append(missing, root)
+			missing = append(missing, root.spelling)
 			continue
 		}
-		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		walkErr := filepath.WalkDir(root.walk, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				// An unreadable subtree (permissions, a vanished directory
 				// mid-walk) is skipped, not fatal to the rest of the walk —
@@ -460,18 +510,39 @@ func (s *Seeder) discoverIslands() (islands []string, missing []string) {
 			if !d.IsDir() {
 				return nil
 			}
-			if path != root && skipDescent(d.Name()) {
+			if path != root.walk && skipDescent(d.Name()) {
 				return filepath.SkipDir
 			}
-			if hasGitEntry(path) && !seen[path] {
-				seen[path] = true
-				islands = append(islands, path)
+			if hasGitEntry(path) {
+				spelled := reSpell(path, root.walk, root.spelling)
+				if !seen[spelled] {
+					seen[spelled] = true
+					islands = append(islands, spelled)
+				}
 			}
 			return nil
 		})
 		_ = walkErr // WalkDir's own errors are already surfaced per-entry above
 	}
 	return islands, missing
+}
+
+// reSpell rewrites path — found by walking walkRoot, the resolved form of a
+// configured root — back into the operator's own spelling of that root, by
+// replacing the walkRoot prefix with spelling. When walkRoot and spelling are
+// equal (the ordinary case: no symlink was involved) this returns path
+// unchanged. Falls back to path unchanged if path does not actually fall
+// under walkRoot, which should not happen since it was produced by walking
+// walkRoot in the first place.
+func reSpell(path, walkRoot, spelling string) string {
+	rel, err := filepath.Rel(walkRoot, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return path
+	}
+	if rel == "." {
+		return spelling
+	}
+	return filepath.Join(spelling, rel)
 }
 
 // skipDescent names directories that are never themselves a repository root
