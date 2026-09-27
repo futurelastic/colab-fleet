@@ -220,6 +220,10 @@ type compatEvidence struct {
 	// made into a composer that is not empty, so none is attempted: evidence from
 	// a contaminated composer is worse than none.
 	dirty string
+	// rename is what driving one programmatic rename of session A showed
+	// (colab-fleet #227). It runs last, after every send, because it changes
+	// session A's own id.
+	rename compatRename
 }
 
 func (h *compatHarness) draftOf(name string) *compatDraft {
