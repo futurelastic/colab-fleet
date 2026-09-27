@@ -2316,6 +2316,122 @@ func TestRenameSurvivesARuntimeRevert(t *testing.T) {
 	})
 }
 
+// colab-fleet #223: a name the multiplexer would silently mangle (naming.go's
+// sanitizeName) must be refused, not renamed-to-and-announced — the same
+// principle as the "already in use" collision case a few lines above in
+// Rename itself.
+func TestRenameRefusesANameTheMultiplexerWouldMangle(t *testing.T) {
+	ctx := context.Background()
+	started := time.Unix(1785600000, 0)
+	req := testCaller
+	req.Expect.StartedAt = &started
+
+	cases := []struct {
+		name string
+		to   string
+	}{
+		{"a period the multiplexer mangles to an underscore", "renamed.session"},
+		{"a colon, the multiplexer's own target separator", "renamed:session"},
+		{"a leading dash, which argv parsing downstream reads as a flag", "-renamed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := twoSessions()
+			d := newTestDriver(f)
+			_, err := d.Rename(ctx, req, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, tc.to)
+			if err == nil {
+				t.Fatalf("renaming to %q must be refused, not silently cleaned and announced", tc.to)
+			}
+			if clean := sanitizeName(tc.to); !strings.Contains(err.Error(), clean) {
+				t.Errorf("refusal %q does not name the clean form %q a caller could retry with", err, clean)
+			}
+			// The multiplexer must not have been touched at all: the old id
+			// is still live, and no session carries the requested (unclean) name.
+			col, lerr := d.List(ctx, testCaller, driver.ListFilter{})
+			if lerr != nil {
+				t.Fatal(lerr)
+			}
+			if !hasSessionID(col, "alpha💬") || hasSessionID(col, tc.to) {
+				t.Fatalf("a refused rename must leave the multiplexer untouched: %v", idsOf(col))
+			}
+		})
+	}
+
+	t.Run("already-clean names are unaffected", func(t *testing.T) {
+		f := twoSessions()
+		d := newTestDriver(f)
+		if _, err := d.Rename(ctx, req, fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "renamed-session"); err != nil {
+			t.Fatalf("rename of an already-clean name must succeed: %v", err)
+		}
+	})
+}
+
+// colab-fleet #223: the four per-id records d.observed's own move (above, in
+// Rename) and d.mods.rekey (#185) did not already cover — a stranded
+// delivery, its tombstones, the #184 cross-path ledger, and the delivery
+// mark #111's `turns` is counted from — must move to the new id too, or a
+// resume/lookup against the NEW id finds nothing while the OLD id's entry
+// sits orphaned forever.
+func TestRenameMovesPerIDStateToTheNewID(t *testing.T) {
+	ctx := context.Background()
+	f := twoSessions()
+	d := newTestDriver(f)
+
+	const oldID, newID, cwd = "alpha💬", "renamed💬", "/work/alpha"
+
+	// Seed a live stranded record AND a tombstone (a second, different
+	// strand buries the first — draftrule_test.go's own setup shape).
+	d.noteStranded(oldID, cwd, "first text", composerTextDigest("first text"))
+	d.noteStranded(oldID, cwd, "second text", composerTextDigest("second text"))
+	// Seed the #184 cross-path ledger.
+	d.noteUnconfirmed(oldID, unconfirmedEntry{Key: "k1", Cwd: cwd})
+	// Seed a delivery mark (#111's `turns` denominator).
+	d.noteDelivery(oldID, cwd)
+
+	started := time.Unix(1785600000, 0)
+	req := testCaller
+	req.Expect.StartedAt = &started
+	if _, err := d.Rename(ctx, req, fleet.SessionRef{Machine: "testbox", ID: oldID}, newID); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	d.mu.Lock()
+	_, strandedOldGone := d.stranded[oldID]
+	strandedNew, strandedNewOK := d.stranded[newID]
+	tombstonesOldGone := len(d.tombstones[oldID]) == 0
+	tombstonesNew := len(d.tombstones[newID])
+	_, unconfirmedOldGone := d.unconfirmed[oldID]
+	unconfirmedNew := len(d.unconfirmed[newID])
+	_, deliveredOldGone := d.delivered[oldID]
+	deliveredNew, deliveredNewOK := d.delivered[newID]
+	d.mu.Unlock()
+
+	if strandedOldGone {
+		t.Error("a stranded record is still keyed to the old id")
+	}
+	if !strandedNewOK || strandedNew.Text != "second text" {
+		t.Errorf("the stranded record did not move to the new id: %+v (ok=%v)", strandedNew, strandedNewOK)
+	}
+	if !tombstonesOldGone {
+		t.Error("a tombstone is still keyed to the old id")
+	}
+	if tombstonesNew != 1 {
+		t.Errorf("tombstones under the new id = %d, want 1", tombstonesNew)
+	}
+	if unconfirmedOldGone {
+		t.Error("a #184 ledger entry is still keyed to the old id")
+	}
+	if unconfirmedNew != 1 {
+		t.Errorf("#184 ledger entries under the new id = %d, want 1", unconfirmedNew)
+	}
+	if deliveredOldGone {
+		t.Error("a delivery mark is still keyed to the old id")
+	}
+	if !deliveredNewOK || deliveredNew.Cwd != cwd {
+		t.Errorf("the delivery mark did not move to the new id: %+v (ok=%v)", deliveredNew, deliveredNewOK)
+	}
+}
+
 func evidenceMentionsDrift(col fleet.Collection[fleet.Session], liveID, want string) bool {
 	for _, s := range col.Items() {
 		if s.ID == liveID && strings.Contains(s.State.Evidence, want) {
