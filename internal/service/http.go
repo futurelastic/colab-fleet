@@ -459,8 +459,16 @@ func handleHealth(svc *Service) http.HandlerFunc {
 			// (colab-fleet #153). Its presence is also how a relaying peer
 			// learns this service carries labels at all, so a labelled
 			// create is refused there rather than silently stripped here.
-			"labels":  fleet.SelfLabelLimits(),
-			"drivers": svc.driverSummaries(),
+			"labels": fleet.SelfLabelLimits(),
+			// Whether this service's create endpoint understands
+			// conversationId (colab-fleet #224) — the same reason `labels`
+			// is reported one line up: this is a wire-protocol fact, learned
+			// by internal/drivers/remote's peerHealth the same way it learns
+			// build and labels, so a create carrying the field is refused
+			// against an older peer rather than silently forwarded and
+			// dropped there.
+			"supportsConversationId": true,
+			"drivers":                svc.driverSummaries(),
 			// counters is the read path #9 asked for onto the registry #44
 			// built (internal/drivers/tmux/counters.go): an integer per
 			// named fact, keyed by runtime. It is deliberately read here
@@ -837,6 +845,11 @@ type createSessionBody struct {
 	PermissionMode string             `json:"permissionMode"`
 	Consents       []fleet.PromptKind `json:"consents"`
 
+	// ConversationId asks the runtime to start a NEW conversation under a
+	// caller-chosen UUID (colab-fleet #224) — mutually exclusive with Resume,
+	// which continues one. See fleet.SessionSpec.ConversationId.
+	ConversationId string `json:"conversationId"`
+
 	// McpConfig names tool-server configuration files by path. See
 	// fleet.SessionSpec for why paths and not content, and createNeedsSend for
 	// why it is one of the fields that asks for more than a create.
@@ -958,6 +971,27 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error() + " (#153)", Machine: machine})
 			return
 		}
+		// colab-fleet #224: checked here, before any driver is resolved —
+		// same placement as rejectOverLength and ValidateLabels above, and
+		// for the same reason stated on rejectOverLength: a relayed create is
+		// pre-checked against these two rules before the call ever crosses to
+		// a peer, so a malformed or self-contradictory request never pays for
+		// a round trip it was always going to lose.
+		if body.ConversationId != "" {
+			if body.Resume != "" {
+				writeError(w, &fleet.Error{
+					Kind: fleet.ErrorInvalid,
+					Message: "conversationId and resume are mutually exclusive: one starts a new " +
+						"conversation, the other continues one (#224)",
+					Machine: machine,
+				})
+				return
+			}
+			if err := fleet.ValidateConversationId(body.ConversationId); err != nil {
+				writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error() + " (#224)", Machine: machine})
+				return
+			}
+		}
 
 		// Two things in this body ask for more than a create.
 		//
@@ -1034,6 +1068,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			Name: body.Name, Prompt: body.Prompt, ContextRef: body.ContextRef,
 			Marker: body.Marker, RemoteControl: body.RemoteControl,
 			TrustCwd: body.TrustCwd, Env: body.Env, Resume: body.Resume,
+			ConversationId: body.ConversationId,
 			PermissionMode: body.PermissionMode, Consents: body.Consents,
 			McpConfig: body.McpConfig, Labels: body.Labels,
 		}

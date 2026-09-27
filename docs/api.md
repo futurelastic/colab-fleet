@@ -249,7 +249,8 @@ nothing else in the API can explain.
   "runtime": "", "cwd": "/abs/path", "agent": "", "model": "", "effort": "",
   "name": "", "prompt": "", "contextRef": "/abs/path", "marker": "",
   "remoteControl": true, "trustCwd": false, "env": {}, "resume": "",
-  "permissionMode": "", "consents": [], "mcpConfig": [], "labels": {}
+  "conversationId": "", "permissionMode": "", "consents": [], "mcpConfig": [],
+  "labels": {}
 }
 ```
 
@@ -263,6 +264,21 @@ without `:`, values up to 128 bytes. Opaque to the service: it stores them and
 filters on them, and never interprets them. Over the bounds is a `400` naming
 the limit. Sending them needs only `create`. Relayed to a peer that predates
 labels, the create is refused `unsupported` before anything is started there.
+
+**`conversationId`** (#224) is a caller-chosen UUID that asks the runtime to
+start a NEW conversation under it, instead of the driver deriving one after
+the fact — so the `201` already carries `conversation` (`known: true`,
+`source: "captured"`) rather than making the caller poll `GET .../sessions/{id}`
+until the runtime's own record shows up. Mutually exclusive with `resume`
+(one starts, the other continues) — sending both is `400`. Must be
+UUID-shaped, and `400` if it already names a conversation this machine has on
+record for the same `cwd`, so two sessions never end up sharing one
+transcript. A runtime with no way to launch under a caller-chosen id, or a
+peer that predates the field, answers `unsupported` before anything is
+started — the same rule `labels` follows one paragraph up. If a later read's
+own resolution disagrees with the id that was requested, `conversation` flips
+to a named mismatch (`known: false`) rather than silently keeping either
+answer.
 
 ### `POST …/{id}/input` — send text
 
