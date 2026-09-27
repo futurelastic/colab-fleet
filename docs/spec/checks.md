@@ -34,7 +34,11 @@ Registered types live in `specFieldTypes` (`spec_fields_test.go`):
 `AttachHint`, `ConversationRef`, `DriverCapabilities`, `SourceStatus`,
 `PromptDelivery`, `PinOutcome`, `PinResult`, `RuntimeSurfaceRef`,
 `IdentityAssertion`, `PeerStanding`, `DeliveryPath`, `DeliveryLane`,
-`DeliveryModuleStatus`.
+`DeliveryModuleStatus`, `Warning`.
+
+(This list is illustrative, not exhaustive as of every commit — read
+`specFieldTypes` itself for the current membership, the same caveat this file
+already states for `specFieldExceptions` two sections down.)
 
 **Field names only — never types, tags-minus-name, or ordering.** A field
 that changes shape (say, a field renamed to a different key with the same

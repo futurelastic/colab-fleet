@@ -276,6 +276,89 @@ type TurnEnd struct {
 	Retryable bool `json:"retryable,omitempty"`
 }
 
+// WarningKind names what a footer notice (see Warning) is ABOUT, when this
+// driver recognises its wording.
+//
+// # Why a named type with exactly one member today
+//
+// Unlike Status or PermissionModeState, this is not a survey of every shape
+// the runtime's footer can take — nobody has looked at more than one notice
+// yet. It exists so the *one* cause worth branching on today
+// (colab-fleet#229, #230) has a name a caller can compare against instead of
+// a substring it has to keep matching against prose the runtime is free to
+// reword, and so a second cause found later has somewhere to go without
+// widening Warning.Text's contract. More members arrive as they are
+// measured, the same way WaitingReason's own doc says its set is not closed
+// by having only three members.
+//
+// # Empty is a real answer, not an error — and not the same absence Status uses
+//
+// A Warning already existing in SessionState.Warnings is this driver's
+// positive claim "a notice-shaped footer line is here" (see Warning's own
+// doc for the structural test). Kind empty on that Warning says this driver
+// does not yet recognise what the notice is about — the line is still
+// surfaced, with Text carrying the runtime's own words, rather than being
+// silently dropped for lack of a name. That is a different, milder absence
+// than Status or ControlChannelState reject at the wire (those two are
+// always-answered classifications where "" would mean nothing was decided);
+// here "" coexists with a populated, meaningful Text on the same value, so
+// there is no MarshalJSON rejection to match theirs — omitempty alone is
+// enough to keep an unrecognised Kind off the wire.
+type WarningKind string
+
+const (
+	// WarningTranscriptUnreliable: the runtime's own footer says its writes
+	// to this session's transcript are failing — recent turns may not have
+	// been recorded, independent of whether the turn itself is otherwise
+	// healthy (colab-fleet#229's incident, #230's field). Matched on the
+	// runtime's own wording ("Transcript writes are failing"), which is
+	// exactly as durable as ControlChannelState's anchor and no more: it
+	// holds until the runtime rewords the notice, at which point the line
+	// still surfaces (see WarningKind's own doc) with Kind merely reverting
+	// to empty rather than the notice disappearing outright.
+	WarningTranscriptUnreliable WarningKind = "transcript-unreliable"
+)
+
+// Warning is one footer notice this driver read below the composer's closing
+// rule — chrome the runtime redraws, never transcript the session under
+// watch can write into (colab-fleet#229's boundary; see the tmux driver's
+// footerLines).
+//
+// # Why this exists, and why it very nearly did not need to
+//
+// colab-fleet#229 found that this exact class of notice can satisfy the
+// structural test spinner() uses for a real turn-status line — a single
+// non-ASCII symbol, a space, a capitalised word, a tense marker — and fixed
+// the misread by bounding spinner()'s backward scan at the composer's
+// closing rule, so the notice is never read as a turn status again. That fix
+// throws the line away once it has been ruled out as a spinner. This type is
+// the other half #229 explicitly left open (see its own Background): a
+// session whose transcript is not being recorded is worth a caller knowing
+// about on its own terms, not only worth NOT misreading as "working".
+//
+// # Independent of Status, the same way ControlChannel and PermissionMode are
+//
+// A transcript-write failure changes nothing else SessionState reports — the
+// composer, Status, Prompt all read exactly as they would without it — so a
+// caller that only watches Status never learns that this session's most
+// recent turns may be unrecorded. Folding it into Status or Evidence would
+// repeat the precedence mistake §2.3's own history already names once for
+// Quota; this is deliberately its own field for the same reason
+// ControlChannel and PermissionMode are theirs.
+type Warning struct {
+	// Kind is the closed-so-far vocabulary a caller may branch on. See
+	// WarningKind's own doc for why empty here is a real, expected answer
+	// and not a decode failure.
+	Kind WarningKind `json:"kind,omitempty"`
+
+	// Text is the runtime's own words, trimmed — often truncated by the
+	// runtime itself with a trailing ellipsis, the very shape that let #229's
+	// incident happen. Prose for humans and logs; do not branch on it, the
+	// same discipline TurnEnd.Reason and ControlChannel.Reason already hold
+	// themselves to.
+	Text string `json:"text"`
+}
+
 type SessionState struct {
 	Status     Status     `json:"status"`
 	Confidence Confidence `json:"confidence"`
@@ -377,6 +460,20 @@ type SessionState struct {
 	// cycling toward a target stops on it. Neither is ever a guess, and neither
 	// is evidence about which mode the session is in.
 	PermissionMode PermissionModeState `json:"permissionMode,omitempty"`
+
+	// Warnings lists footer notices this driver read below the composer's
+	// closing rule (colab-fleet#230) — chrome the runtime redraws, the same
+	// region ControlChannel and PermissionMode are read from, and for the
+	// same reason: independent of Status, and otherwise invisible through
+	// every other field here (see Warning's own doc).
+	//
+	// Nil means no notice-shaped footer line was found on this read — a
+	// positive finding (§5.7), not merely "not observed"; only one driver
+	// reads footers at all today and it always looks, so there is no
+	// separate capability flag the way ControlChannel and PermissionMode
+	// have one — see those two fields' own DriverCapabilities entries before
+	// adding a second driver that reads footers differently.
+	Warnings []Warning `json:"warnings,omitempty"`
 
 	// ScreenDigest fingerprints the whole screen this state was read from.
 	//
@@ -554,6 +651,15 @@ func UnknownState(confidence Confidence, evidence string) SessionState {
 // leave a mirror showing the mode the session had before somebody pressed the
 // key. It changes only when the mode does, so it cannot produce a storm.
 //
+// Warnings (#230) is material for the identical reason ControlChannel is: a
+// transcript-write failure appearing or clearing moves nothing else here, so
+// a feed that did not fire on it would leave a mirror believing this
+// session's transcript is fine long after the footer said otherwise — the
+// same invisibility ControlChannel's own doc measured, one field over. It
+// changes only when the footer's own set of notices changes, which is not a
+// per-keystroke event, so it cannot produce a storm the way ScreenDigest
+// would.
+//
 // The rule for adding a field to this comparison: if a caller may branch on
 // it, it is material; if the documentation says not to parse it, it is not.
 func (s SessionState) MateriallyDiffers(other SessionState) bool {
@@ -578,6 +684,9 @@ func (s SessionState) MateriallyDiffers(other SessionState) bool {
 		return true
 	}
 	if !sameTurns(s.Turns, other.Turns) {
+		return true
+	}
+	if !sameWarnings(s.Warnings, other.Warnings) {
 		return true
 	}
 	return !sameStamp(s.CredentialGeneration, other.CredentialGeneration)
@@ -663,6 +772,25 @@ func sameControlChannel(a, b *ControlChannel) bool {
 		return a == b
 	}
 	return a.State == b.State && a.Reason == b.Reason
+}
+
+// sameWarnings compares the footer notices read below the composer.
+//
+// Order matters: both sides are built by the identical top-to-bottom scan
+// over the same footer region (see the tmux driver's warningsOf), so two
+// reads that found the same notices in a different order are evidence the
+// footer itself reordered them — a fact worth an event, not noise to
+// suppress by sorting it away.
+func sameWarnings(a, b []Warning) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Kind != b[i].Kind || a[i].Text != b[i].Text {
+			return false
+		}
+	}
+	return true
 }
 
 func sameStamp(a, b *Timestamp) bool {

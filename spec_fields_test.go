@@ -98,6 +98,9 @@ var specFieldTypes = map[string]any{
 	// #222: rename's own response, and its title-sync half.
 	"RenameAck": RenameAck{},
 	"TitleSync": TitleSync{},
+
+	// #230: footer notices read below the composer.
+	"Warning": Warning{},
 }
 
 // specFieldExceptions records a Go field that a normative type block

@@ -2371,9 +2371,16 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 	// session, an idle one and one blocked on a prompt alike, and a branch added
 	// later that returned around it would make the field read as "not observed"
 	// exactly when a client cycling toward a mode most needs an answer.
+	// Warnings (colab-fleet#230) is stamped in this same deferred block for
+	// the identical reason ControlChannel and PermissionMode are: a footer
+	// notice is true of a working session, an idle one, and one blocked on a
+	// prompt alike, and a branch added later that returned around this would
+	// make the field read as "nothing to report" exactly when a caller most
+	// needs the answer.
 	defer func() {
 		st.ControlChannel = controlChannelOf(s)
 		st.PermissionMode = permissionModeOf(s)
+		st.Warnings = warningsOf(s)
 	}()
 
 	if len(s.lines) == 0 {

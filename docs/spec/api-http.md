@@ -1298,6 +1298,28 @@ permission-mode class (#148) is deliberately not a source: it has two values
 (`bypass` or `prompting`), is written once at launch, and so can neither tell the
 prompting modes apart nor follow a press of `BTab`.
 
+`state.warnings` — when present — lists footer notices the driver read below
+the composer's closing fence (colab-fleet #230), the same region
+`controlChannel` and `permissionMode` are read from: `[{"kind":
+"transcript-unreliable","text":"Transcript writes are failing (disk full —
+ENOSPC) · recent messages may …"}]`. It exists for the same reason those two
+do — a notice there is otherwise invisible through every other field. #229
+found that this exact notice can satisfy the shape test the runtime's real
+turn-status line uses, and fixed the misread by bounding that scan at the
+composer; this is the other half, surfacing what #229 only had to rule out.
+
+**Absent means no notice-shaped line was found — not merely unobserved**
+(§5.7). Only one driver reads footers today and it always looks, so there is
+no `observes…` flag in `/v1/runtimes` for this field the way there is for
+`controlChannel` and `permissionMode`; a second driver reading footers a
+different way should add one rather than reuse this absence. `kind` absent on
+one entry is a milder, different absence: the notice was found (`text`
+carries it) and this driver does not yet recognise its wording — never a
+reason to drop the finding. The vocabulary is expected to grow as new notices
+are measured; it is not claimed exhaustive by having one member today. A
+change fires `session.state` on the event stream (§4) like any other material
+change. It never changes `status`.
+
 `state.prompt.kind` — when present — names what is being asked
 (`resume-chooser`, `folder-trust`, `external-imports`, `settings-trust`,
 `tool-permission`, `feedback-review`). `bypass-permissions` is deliberately absent from what CLASSIFICATION can produce:
