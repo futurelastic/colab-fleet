@@ -968,6 +968,7 @@ proven to do nothing against text nobody has re-read.
 POST /v1/machines/{machine}/sessions/{id}/rename?startedAt=&runtime=
 { "name": "new-name" }
 → 202 RenameAck (session-abstraction.md §2.5a)
+→ 400 if the name is empty, or a substrate would silently mangle it as given
 → 409 if startedAt disagrees, or the new name is already in use here
 ```
 
@@ -976,6 +977,19 @@ id is the name an operator sees, anything less renames the session in this API
 and leaves their terminal saying the old thing. Send `?startedAt=` for the same
 reason `DELETE` wants it: acting on the wrong session here succeeds *silently*
 and leaves it wearing somebody else's name.
+
+**`name` is refused, not silently cleaned, when a driver's own substrate would
+hold a different string than the one asked for** (colab-fleet#223) — a tmux
+driver refuses a name it would have to mangle (a `.` tmux itself turns into
+`_`, a leading `-` an argv parser downstream would read as a flag, `:`, the
+multiplexer's own target separator) rather than rename to the mangled form and
+announce an id that is not the multiplexer's real one. This is deliberately
+NOT `create`'s behavior (session-abstraction.md's "naming rules belong to the
+driver" — a created name may still be silently cleaned and numbered): a
+rename's `to` is client-facing top to bottom, `session.renamed` announces it
+verbatim, and `RenameAck` carries no field a caller could read the actual
+applied name back from if a driver quietly changed it. The 400's message names
+the clean form the caller could retry with.
 
 Subscribers receive `session.renamed` carrying `from` and `to`. A client
 filtering by id **must** re-key on it, or it stops matching a session that is

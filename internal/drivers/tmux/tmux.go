@@ -4084,6 +4084,30 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 		return fleet.RenameAck{Accepted: true}, nil
 	}
 
+	// colab-fleet #223: refuse a name the multiplexer would silently mangle
+	// (naming.go's sanitizeName — e.g. '.' -> '-', a leading '-' dropped),
+	// rather than rename to it and announce an id that is not the
+	// multiplexer's real one. This is the same principle as the collision
+	// check just below — refuse rather than let the multiplexer decide —
+	// applied to shape instead of uniqueness.
+	//
+	// Deliberately a REFUSAL, not Create's silent clean-and-proceed
+	// (resolveName): a create's requested name was never authoritative
+	// anyway (it may still be renumbered on collision), but a rename's `to`
+	// is client-facing top to bottom — session.renamed announces it
+	// verbatim, and RenameAck carries no "resolved name" field a caller
+	// could read instead. Silently renaming to a DIFFERENT string than what
+	// was asked for would just move today's mismatch from "this driver vs.
+	// the multiplexer" to "this driver vs. its own caller". Surfacing the
+	// clean form in the error lets the caller retry with a name this
+	// substrate can hold exactly.
+	if clean := sanitizeName(to); clean != to {
+		if clean == "" {
+			return fleet.RenameAck{}, fmt.Errorf("rename: %q sanitizes to nothing this multiplexer can hold as a session name", to)
+		}
+		return fleet.RenameAck{}, fmt.Errorf("rename: %q is not a name this multiplexer can hold as given; retry with %q", to, clean)
+	}
+
 	rows, _, err := d.enumerate(ctx)
 	if err != nil {
 		return fleet.RenameAck{}, err
@@ -4178,6 +4202,10 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 	d.noteRenamed(ref.ID, to, live.cwd, live.paneID, live.created)
 	// #185: a delivery lane belongs to the process, not the name.
 	d.mods.rekey(ref.ID, to)
+	// #223: the four per-id records #185/#97/d.observed's own move above did
+	// not already cover — see rekeySessionState's own doc comment for why
+	// each of the four needs a rename move at all.
+	d.rekeySessionState(ref.ID, to)
 
 	return fleet.RenameAck{Accepted: true}, nil
 }
@@ -6239,6 +6267,65 @@ func (d *Driver) forgetStranded(id string) {
 	defer d.mu.Unlock()
 	delete(d.stranded, id)
 	d.saveStrandedLocked()
+}
+
+// rekeySessionState moves this driver's per-id memory of a session from an
+// OLD id to a NEW one after Rename's multiplexer-level rename has already
+// succeeded — colab-fleet #223, the same principle d.observed (Rename, above)
+// and d.mods.rekey (#185) already apply, extended to the four records #223
+// found were left behind: a stranded delivery, its tombstones, the #184
+// cross-path ledger, and the delivery mark #111's `turns` is counted from.
+// Left keyed to the OLD id, each of these is orphaned by a rename — a resume
+// against the NEW id would not find a stranded record still sitting under
+// the id that no longer exists, and the same blindness applies to every
+// other reader of these four maps.
+//
+// The two singular records (stranded, delivery mark) are moved the same way
+// d.mods.rekey moves a lane: unconditionally overwriting whatever the new id
+// already holds. That mirrors d.observed's own move a few lines above in
+// Rename, and a live entry under the NEW id is not expected — Rename's
+// caller has just been refused a moment ago if `to` named a currently-live
+// session, so anything found here is, at most, a stale leftover of a past
+// session that once carried this exact id.
+//
+// The two list-shaped records (tombstones, unconfirmed ledger) are MERGED
+// instead of overwritten, because unlike the singular records they are
+// evidence about several distinct past deliveries, each self-corroborated by
+// its own Cwd field (§5.4) rather than by the id alone — dropping the new
+// id's own list to make room for the old one's would silently reopen the
+// double-delivery and draft-misattribution gaps those two ledgers exist to
+// close, for whichever session last held the new id.
+func (d *Driver) rekeySessionState(from, to string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if rec, ok := d.stranded[from]; ok {
+		delete(d.stranded, from)
+		d.stranded[to] = rec
+	}
+	if list, ok := d.tombstones[from]; ok {
+		delete(d.tombstones, from)
+		merged := append(append([]strandedTombstone(nil), d.tombstones[to]...), list...)
+		if len(merged) > tombstonesPerSession {
+			merged = merged[len(merged)-tombstonesPerSession:]
+		}
+		d.tombstones[to] = merged
+	}
+	if list, ok := d.unconfirmed[from]; ok {
+		delete(d.unconfirmed, from)
+		merged := append(append([]unconfirmedEntry(nil), d.unconfirmed[to]...), list...)
+		if len(merged) > unconfirmedPerSession {
+			merged = merged[len(merged)-unconfirmedPerSession:]
+		}
+		d.unconfirmed[to] = merged
+	}
+	d.saveStrandedLocked()
+
+	if rec, ok := d.delivered[from]; ok {
+		delete(d.delivered, from)
+		d.delivered[to] = rec
+	}
+	d.saveDeliveryLocked()
 }
 
 // sweepStrandedLocked drops records older than strandedRetention. Caller
