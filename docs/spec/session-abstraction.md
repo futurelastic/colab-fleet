@@ -85,6 +85,7 @@ SessionSpec {
   contextRef?: AbsolutePath       // see §5.3 — never inline, never argv
   env?       : map<string,string> // out of band only, never argv (§5.3)
   resume?    : string             // a prior conversation this session continues
+  conversationId?: string         // a caller-chosen UUID this session starts a NEW conversation under; mutually exclusive with resume
   permissionMode?: string         // a non-default permission posture; "bypass" is the only value
   mcpConfig? : AbsolutePath[]     // tool-server configuration, by path, never inline (§5.3)
   consents?  : PromptKind[]       // boot questions the caller pre-answers (§2.7)
@@ -106,6 +107,27 @@ placed on a command line, and the exact validation each one gets — lives in `s
 `agent`, `model` and `effort` are **hints**, not guarantees. A driver that
 cannot honour one must say so at creation rather than silently substituting a
 default; see §4.3. `remoteControl` is a hint in the same family.
+
+**`conversationId` asks a create to START a new conversation under a
+caller-chosen id, `resume` asks it to CONTINUE one — the same question
+answered two incompatible ways** (colab-fleet #224). Sending both is refused
+`invalid`. It exists so a client that opens a viewer keyed by conversation id
+does not have to poll `GET .../sessions/{id}` until the runtime's own
+per-process record shows up (measured at ~2s on a fresh session): a driver
+that honours it reports the id back as `conversation` on the `201` itself,
+`known: true` with `source: captured` (§2.9) — a fact this service
+established by *telling* the runtime which id to use, not by matching a
+title. It is a hint like `resume`: a driver with no way to launch its runtime
+under a caller-chosen id refuses the create `unsupported` rather than start
+one under an id of its own choosing that merely looks right, and a relay to a
+peer that predates the field is refused the same way, before the peer ever
+sees it (api-http.md §3.3). The id must be UUID-shaped, and refused as
+`invalid` if it already names a conversation this machine has on record for
+the same `cwd` — starting a second conversation under it would make two
+conversations share one transcript. A later read whose own resolution
+disagrees with the requested id is a loud, named mismatch, never a silent
+overwrite of one with the other — the same invariant §2.9 already states for
+a replaced process's stale identifier.
 
 **`labels` are caller facts, not hints and not configuration** (colab-fleet #153). A caller
 attaches what IT knows about a session — the unit of work it serves, the working tree it uses, what

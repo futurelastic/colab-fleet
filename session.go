@@ -150,6 +150,26 @@ type SessionSpec struct {
 	// somebody's other session.
 	Resume string `json:"resume,omitempty"`
 
+	// ConversationId is a caller-chosen UUID this create asks the runtime to
+	// start a NEW conversation under (colab-fleet #224), so the id is known
+	// from the `201` rather than only after the runtime's own per-process
+	// record shows up — measured at about 2s on a fresh session, during
+	// which a caller wanting "click → open the session" has nothing to open.
+	//
+	// Mutually exclusive with Resume: one names a conversation to CONTINUE,
+	// the other names one to START. Sending both is refused invalid, because
+	// they answer the same question — "which conversation is this session's"
+	// — in two incompatible ways.
+	//
+	// It is a HINT like Resume, Agent and Model: a driver with no way to
+	// launch its runtime under a caller-chosen id must refuse the create as
+	// unsupported rather than start a session under an id of its own
+	// choosing that merely looks right (§2.1). See ValidateConversationId
+	// for the shape this must have, and ConversationCaptured for how a
+	// driver that honours it reports the id back before anything the
+	// runtime wrote can be read.
+	ConversationId string `json:"conversationId,omitempty"`
+
 	// PermissionMode requests a runtime permission posture other than the
 	// default. The only value this fleet's runtime has is "bypass" — the mode
 	// in which the agent stops asking before acting.

@@ -419,6 +419,13 @@ type Driver struct {
 	// id with cwd carried for corroboration (§5.4). See resumeintent.go.
 	resumeIntents map[string]resumeIntentRecord
 
+	// conversationIntents is resumeIntents' mirror for the opposite request:
+	// the conversation id a create asked the runtime to START (colab-fleet
+	// #224), so a later List can tell whether the runtime's own record
+	// agrees with it. Same shape, same reasons, same corroboration. See
+	// conversationintent.go.
+	conversationIntents map[string]conversationIntentRecord
+
 	// createRecords remembers, per session, what a create asked to pin, ask
 	// for a runtime surface, and carry as a prompt — the durable notes #84,
 	// #85 and #86 need to answer what was APPLIED rather than only what was
@@ -806,6 +813,7 @@ func New(machine fleet.MachineId, opts ...Option) *Driver {
 	d.loadStranded()
 	d.loadDelivery()
 	d.loadResumeIntents()
+	d.loadConversationIntents()
 	d.loadCreateRecords()
 	d.initModules()
 	return d
@@ -1712,6 +1720,16 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		// than looking like an ordinary healthy start.
 		if requested, ok := d.resumeIntentFor(p.name, p.cwd); ok {
 			sessions[p.index].ResumeOutcome = resumeOutcomeFor(requested, conv)
+		}
+		// #224: the mirror check for a create that asked to START a
+		// conversation under a caller-chosen id rather than continue one.
+		// Unlike ResumeOutcome this REPLACES Conversation rather than adding
+		// a sibling field — conversationIntentOutcome's own doc says why: the
+		// 201 already told the caller its captured id, and a plain "nobody
+		// looked yet" here would be a caller-visible regression from what
+		// create already reported, not a new, more honest answer.
+		if requested, ok := d.conversationIntentFor(p.name, p.cwd); ok {
+			sessions[p.index].Conversation = conversationIntentOutcome(requested, conv)
 		}
 	}
 
@@ -4235,6 +4253,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 			return fleet.Session{
 				SessionRef: ref, Cwd: spec.Cwd,
 				Pins: pins, RuntimeSurface: surface, PromptDelivery: prompt,
+				Conversation:      conversationCapturedRef(spec.ConversationId),
 				IdentityAssertion: d.identityAssertionForCreate(ref.ID),
 				Marker:            d.markerForCreate(ref.ID),
 			}, nil
@@ -4245,6 +4264,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 			return fleet.Session{
 				SessionRef: adopted, Cwd: spec.Cwd,
 				Pins: pins, RuntimeSurface: surface, PromptDelivery: prompt,
+				Conversation:      conversationCapturedRef(spec.ConversationId),
 				IdentityAssertion: d.identityAssertionForCreate(adopted.ID),
 				Marker:            d.markerForCreate(adopted.ID),
 			}, nil
@@ -4331,6 +4351,52 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		return fleet.Session{}, fmt.Errorf(
 			"create: resume %q would be read as a flag by the agent, not as a conversation id",
 			spec.Resume)
+	}
+	// colab-fleet #224: conversationId asks for a NEW conversation, resume
+	// asks to continue one — sending both answers the same question two
+	// incompatible ways. Checked again here even though handleCreateSession
+	// already refuses this combination before any driver is reached (§10 of
+	// this repo's own docs/api.md): this method is a public Driver method a
+	// test or another embedder may call directly, and it must not trust that
+	// some other layer already validated its own argument.
+	if spec.ConversationId != "" {
+		if spec.Resume != "" {
+			return fleet.Session{}, &fleet.Error{
+				Kind: fleet.ErrorInvalid,
+				Message: "create: conversationId and resume are mutually exclusive — one starts a " +
+					"new conversation, the other continues one",
+				Machine: d.machine,
+			}
+		}
+		if err := fleet.ValidateConversationId(spec.ConversationId); err != nil {
+			return fleet.Session{}, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "create: " + err.Error(), Machine: d.machine}
+		}
+		// "Already known as a live conversation" (the Ask in #224): a record
+		// already on file for this id, in this working directory's own store,
+		// is not proof a session is running against it RIGHT NOW, but it is
+		// proof that starting a fresh conversation under the same id would
+		// make two conversations share one transcript file — which #224 asks
+		// to refuse regardless of whether the earlier session is still alive.
+		// Scoped to spec.Cwd deliberately: the runtime's own store partitions
+		// records by working directory (recordDirFor), so an id colliding
+		// under a DIFFERENT cwd is not a collision the runtime could ever
+		// produce here. This is a stat, not a lock — a second create for the
+		// same id racing this one between the check and the launch below is
+		// not closed by it, the same TOCTOU every other pre-launch check in
+		// this function already lives with.
+		if d.conversations != nil {
+			if path, ok := d.conversations.recordPathWithin(string(spec.Cwd), spec.ConversationId); ok {
+				if _, statErr := os.Stat(path); statErr == nil {
+					return fleet.Session{}, &fleet.Error{
+						Kind: fleet.ErrorInvalid,
+						Message: fmt.Sprintf("create: conversationId %q already names a conversation "+
+							"recorded for this working directory; two sessions must never share one transcript",
+							spec.ConversationId),
+						Machine: d.machine,
+					}
+				}
+			}
+		}
 	}
 	// colab-fleet #84: Agent/Model/Effort get the same guard Resume already has,
 	// four lines above. Before this, a value beginning with "-" silently failed
@@ -4450,6 +4516,13 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		// the runtime actually honoured it — see resumeintent.go.
 		d.noteResumeIntent(name, string(spec.Cwd), string(spec.Resume))
 	}
+	if spec.ConversationId != "" {
+		// #224: recorded now, for the mirror reason resumeIntent is recorded
+		// above — before there is any way yet to tell whether the runtime's
+		// own record agrees with the id this create asked it to start under.
+		// See conversationintent.go.
+		d.noteConversationIntent(name, string(spec.Cwd), spec.ConversationId)
+	}
 	// #84/#85/#86: recorded now, before there is any way yet to tell what
 	// became of the pin, the surface, or the prompt — see createrecord.go.
 	// The same record List reads back on every later listing, so the 201
@@ -4490,6 +4563,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	return fleet.Session{
 		SessionRef: ref, Cwd: spec.Cwd,
 		Pins: pins, RuntimeSurface: surface, PromptDelivery: prompt,
+		Conversation:      conversationCapturedRef(spec.ConversationId),
 		IdentityAssertion: d.identityAssertionForCreate(name),
 		Marker:            d.markerForCreate(name),
 	}, nil
@@ -4521,6 +4595,13 @@ func claudeCodeCommand(spec fleet.SessionSpec, contextFile string) []string {
 	// is applied to every caller-supplied element from here down.
 	if spec.Resume != "" && safeArgvValue(string(spec.Resume)) {
 		argv = append(argv, "--resume", spec.Resume)
+	}
+	// #224: the mirror of --resume above — a caller-chosen id to START a
+	// conversation under, rather than one to continue. Create refuses the
+	// combination of the two before argv is ever built (see the mutual-
+	// exclusion check there), so at most one of these two ever appends.
+	if spec.ConversationId != "" && safeArgvValue(spec.ConversationId) {
+		argv = append(argv, "--session-id", spec.ConversationId)
 	}
 	// # Resuming pins the bridge the transcript remembers (#48)
 	//

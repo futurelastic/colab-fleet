@@ -180,6 +180,13 @@ type Driver struct {
 	// peer has not answered yet or it predates labels — see requireLabels,
 	// which trusts only a positive answer and re-asks before refusing.
 	labelLimits *fleet.LabelLimits
+	// supportsConversationId is what the peer's /v1/health said about the
+	// conversationId create field (colab-fleet #224), on the same probe as
+	// build and labelLimits. Nil means either the peer has not answered yet
+	// or it predates the field — see requireConversationId, which trusts
+	// only a positive answer and re-asks before refusing, the same rule
+	// requireLabels already applies to labelLimits.
+	supportsConversationId *bool
 
 	// self is this machine's own id, named to the peer when asking whether it
 	// is listed there (colab-fleet #154). Empty means the standing probe is
@@ -430,6 +437,7 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 			d.build = h.Build
 			d.maxInputBytes = h.MaxInputBytes
 			d.labelLimits = h.Labels
+			d.supportsConversationId = h.SupportsConversationId
 			d.mu.Unlock()
 		}
 		return nil
@@ -447,6 +455,13 @@ type peerHealthBody struct {
 	MaxInputBytes int         `json:"maxInputBytes"`
 	// Labels is absent on a peer that predates session labels (#153).
 	Labels *fleet.LabelLimits `json:"labels"`
+	// SupportsConversationId is absent on a peer that predates the
+	// conversationId create field (colab-fleet #224) — the same shape as
+	// Labels one field up, but a bare flag rather than a limits struct: there
+	// is no bound to report, only whether the field is understood at all. A
+	// machine that has it always sends true; absence, not the value, is what
+	// tells "predates the feature" from "has it".
+	SupportsConversationId *bool `json:"supportsConversationId"`
 }
 
 // requireLabels refuses a labelled write to a peer that would drop the labels
@@ -479,6 +494,45 @@ func (d *Driver) requireLabels(ctx context.Context, req fleet.Request) error {
 			Kind: fleet.ErrorUnsupported,
 			Message: fmt.Sprintf("peer %s does not carry session labels (older build); the request was not sent, "+
 				"because that peer would accept it and silently drop the labels", d.machine),
+			Machine: d.machine,
+		}
+	}
+	return nil
+}
+
+// requireConversationId refuses forwarding a caller-chosen conversation id to
+// a peer that would drop it (colab-fleet #224) — requireLabels' own pattern
+// applied to a second field that predates on some peers.
+//
+// A peer on an older build decodes a create body with encoding/json, which
+// ignores a field it does not know: it would start the session under an id of
+// its own choosing, answer 201, and the caller would have no way to tell its
+// request was silently dropped one machine away — a session bound to nothing
+// that looks bound, the same failure #153 built requireLabels to prevent. Only
+// a positive cached answer is trusted; anything else is asked again, so a peer
+// that has since upgraded is not refused on stale evidence.
+func (d *Driver) requireConversationId(ctx context.Context, req fleet.Request) error {
+	d.mu.RLock()
+	supported := d.supportsConversationId
+	d.mu.RUnlock()
+	if supported != nil && *supported {
+		return nil
+	}
+	h, err := d.peerHealth(ctx, req)
+	if err != nil {
+		return fmt.Errorf("remote: could not confirm %s carries conversationId, so the create was not sent: %w", d.machine, err)
+	}
+	d.mu.Lock()
+	d.build = h.Build
+	d.maxInputBytes = h.MaxInputBytes
+	d.labelLimits = h.Labels
+	d.supportsConversationId = h.SupportsConversationId
+	d.mu.Unlock()
+	if h.SupportsConversationId == nil || !*h.SupportsConversationId {
+		return &fleet.Error{
+			Kind: fleet.ErrorUnsupported,
+			Message: fmt.Sprintf("peer %s does not carry conversationId (older build); the create was not sent, "+
+				"because that peer would accept it and silently start a conversation under an id of its own choosing", d.machine),
 			Machine: d.machine,
 		}
 	}
@@ -1022,6 +1076,11 @@ type createBody struct {
 	Resume         string             `json:"resume,omitempty"`
 	PermissionMode string             `json:"permissionMode,omitempty"`
 	Consents       []fleet.PromptKind `json:"consents,omitempty"`
+	// ConversationId travels with the create (colab-fleet #224), the same
+	// shape as Labels three fields down: Create refuses a peer that has not
+	// confirmed it carries the field rather than send it there to be silently
+	// dropped by a build that predates it — see requireConversationId.
+	ConversationId string `json:"conversationId,omitempty"`
 	// McpConfig names PATHS, and the paths are the peer's. Forwarded rather
 	// than resolved here for the same reason ContextRef is: this machine's
 	// filesystem is not the one the session will read from, and a proxy that
@@ -1089,10 +1148,16 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		PermissionMode: spec.PermissionMode, Consents: spec.Consents,
 		McpConfig: spec.McpConfig,
 		Marker:    spec.Marker, RemoteControl: spec.RemoteControl,
-		Labels: spec.Labels,
+		Labels:         spec.Labels,
+		ConversationId: spec.ConversationId,
 	}
 	if len(spec.Labels) > 0 {
 		if err := d.requireLabels(ctx, req); err != nil {
+			return fleet.Session{}, err
+		}
+	}
+	if spec.ConversationId != "" {
+		if err := d.requireConversationId(ctx, req); err != nil {
 			return fleet.Session{}, err
 		}
 	}

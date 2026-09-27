@@ -66,6 +66,7 @@ GET /v1/health
                    "version": "v0.1.0-2-g3ce7e27" },  ← null when unstamped
         "maxInputBytes": 1024,
         "labels": { "maxKeys": 16, "maxKeyBytes": 128, "maxValueBytes": 128 },
+        "supportsConversationId": true,
         "drivers": [...] }
 
 GET /v1/machines[?verify=1]
@@ -381,6 +382,7 @@ Idempotency-Key: <caller-supplied, required>
   "effort": "...", "name": "...", "marker": "...", "remoteControl": true,
   "prompt": "...", "contextRef": "/abs/path", "trustCwd": false,
   "env": {"NAME": "value"}, "resume": "<conversation id>",
+  "conversationId": "<caller-chosen uuid>",
   "permissionMode": "bypass", "consents": ["folder-trust"],
   "mcpConfig": ["/abs/servers.json"], "labels": {"issue": "153"} }
 
@@ -430,6 +432,19 @@ concurrent burst can have the runtime silently start a fresh conversation
 instead, with no refusal and no degraded status (colab-fleet #72). Poll the
 session afterward and read `resumeOutcome` (§2.10) once its `conversation`
 resolves; do not infer success from the create response alone.
+
+**A 201 for a `conversationId` create is the opposite case: `conversation`
+already resolves on the create response itself** (colab-fleet #224),
+`known: true` with `source: "captured"` (§2.9) — this service told the runtime
+which id to start under, so there is nothing to poll for. `conversationId` and
+`resume` answer the same question two incompatible ways and are refused
+`invalid` together; a malformed id or one already recorded for this `cwd` is
+also `invalid`; a runtime or peer that predates the field is `unsupported`
+(§3.1's `supportsConversationId`) rather than silently forwarding it to be
+dropped. If a *later* read's own resolution disagrees with the id that was
+requested, that is reported as a fresh, named mismatch — `conversation` reads
+`known: false` naming both ids — never a silent overwrite of one with the
+other.
 
 **A 201 for a create that asked to pin `agent`/`model`/`effort` is not proof
 the pin was applied** — a value this driver cannot pass through safely is
@@ -544,6 +559,15 @@ service restart — a different question with an unfortunately similar name. A
 resumed session commonly meets the resume chooser; see `consents` for why that
 one is yours to answer.
 
+**`conversationId` starts a NEW one under a caller-chosen id** (colab-fleet
+#224) — `resume`'s mirror, and mutually exclusive with it. Must be
+UUID-shaped, and refused `invalid` if it already names a conversation this
+machine has on record for the same `cwd`: starting a second conversation under
+it would make two conversations share one transcript. Unlike `resume`, a
+driver that honours it reports the id back as `conversation` on the `201`
+itself, `source: "captured"` — see the create endpoint's own note above for
+why that is the whole point of the field.
+
 **`permissionMode` requests a non-default permission posture.** One value:
 `bypass`. It requires the **`send` grant** too — a session in that mode acts
 without asking, and between "may start a session" and "may start a session that
@@ -584,7 +608,10 @@ Caller-supplied values that land in the agent's argv (`agent`, `model`, `effort`
 `resume`, `mcpConfig`) may not begin with `-`: the CLI would read them as flags,
 which would turn a create grant into "run the agent with arguments of my
 choosing". That guard is what a caller with no field for its tool servers used to
-hit while smuggling the flag through a pin.
+hit while smuggling the flag through a pin. `conversationId` lands in the same
+argv and is covered the same way, structurally rather than by the same
+leading-dash check: its UUID-shape validation (refused `invalid` otherwise)
+already rules out anything that could be read as a flag.
 
 ```
 GET /v1/machines/{machine}/sessions/{id}/environment?runtime=

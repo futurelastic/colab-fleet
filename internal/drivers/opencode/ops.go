@@ -18,12 +18,12 @@ import (
 // Agent, Model and Effort are §2.1's "hints, not guarantees": this driver
 // genuinely honours Agent and Model (opencode's own create body carries
 // both) and REFUSES rather than silently drops Effort, Env, ContextRef,
-// McpConfig, PermissionMode and Resume — none of which this substrate has
-// an honest mechanism for. TrustCwd and Consents are left as no-ops: a
-// substrate with no such boot-time question honours them by having
-// nothing to do (session.go's own rule for a HINT), and opencode's
-// session.create is a plain REST call with no interactive dialog to
-// pre-answer. RemoteControl is likewise a no-op — every opencode session
+// McpConfig, PermissionMode, Resume and ConversationId (colab-fleet #224) —
+// none of which this substrate has an honest mechanism for. TrustCwd and
+// Consents are left as no-ops: a substrate with no such boot-time question
+// honours them by having nothing to do (session.go's own rule for a HINT),
+// and opencode's session.create is a plain REST call with no interactive
+// dialog to pre-answer. RemoteControl is likewise a no-op — every opencode session
 // is reachable over this driver's HTTP API, so there is no "local-only"
 // mode either to grant or to refuse.
 func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec fleet.SessionSpec) (fleet.Session, error) {
@@ -53,6 +53,11 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		"mcpConfig":      len(spec.McpConfig) > 0,
 		"permissionMode": spec.PermissionMode != "",
 		"resume":         spec.Resume != "",
+		// colab-fleet #224: opencode's session.create has no equivalent of
+		// Claude Code's --session-id — this substrate assigns its own id and
+		// this driver has no honest way to make it start under a caller's
+		// instead. Refused for the same reason as resume, three lines above.
+		"conversationId": spec.ConversationId != "",
 	} {
 		if set {
 			return fleet.Session{}, &fleet.Error{

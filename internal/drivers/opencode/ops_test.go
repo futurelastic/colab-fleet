@@ -60,6 +60,23 @@ func TestCreate_RefusesEffortRatherThanDroppingIt(t *testing.T) {
 	}
 }
 
+// colab-fleet #224: this substrate assigns its own conversation id and has no
+// equivalent of Claude Code's --session-id, so a caller-chosen one must be
+// refused rather than silently ignored — the same rule Effort follows above.
+func TestCreate_RefusesConversationIdRatherThanDroppingIt(t *testing.T) {
+	f := newFakeServer(t)
+	d := newTestDriver(t, f)
+	_, err := d.Create(context.Background(), fleet.RequestFrom(fleet.Caller{}), "key",
+		fleet.SessionSpec{Cwd: "/work/x", ConversationId: "7f3a1c22-0b9e-4d51-9f2a-8e6b1d4c5a70"})
+	if err == nil {
+		t.Fatal("Create with ConversationId set succeeded, want a refusal — this driver has no honest way to honour it")
+	}
+	var fe *fleet.Error
+	if errors.As(err, &fe) && fe.Kind != fleet.ErrorUnsupported {
+		t.Errorf("error kind = %q, want unsupported", fe.Kind)
+	}
+}
+
 func TestCreate_ModelMustBeProviderSlashModel(t *testing.T) {
 	f := newFakeServer(t)
 	d := newTestDriver(t, f)

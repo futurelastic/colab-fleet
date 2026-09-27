@@ -100,8 +100,10 @@ const (
 	ConversationDerived ConversationSource = "derived"
 
 	// ConversationCaptured means the driver observed the identifier as the
-	// session was created, with nothing to match. Reserved; see the type
-	// comment for why it is named before it is produced.
+	// session was created, with nothing to match — first produced by a
+	// create carrying SessionSpec.ConversationId (colab-fleet #224): the
+	// driver told the runtime which id to start under, so there is nothing
+	// to derive and no title to match against.
 	ConversationCaptured ConversationSource = "captured"
 )
 
@@ -149,6 +151,45 @@ func ResolvedConversation(id string, source ConversationSource, evidence string)
 // "no lookup was attempted", which is the absent field.
 func UnresolvedConversation(evidence string) *ConversationRef {
 	return &ConversationRef{Evidence: evidence}
+}
+
+// ValidateConversationId reports whether id is shaped like a UUID a runtime
+// can be launched under: 8-4-4-4-12 hexadecimal, the same shape
+// internal/drivers/tmux already requires of every conversation id it reads
+// back out of a runtime's own store (#180 L5). Checked here, in the fleet
+// package every driver already imports, so "not a UUID" is refused at the API
+// boundary (colab-fleet #224) before the value ever reaches a driver that
+// would pass it straight to a runtime's command line.
+func ValidateConversationId(id string) error {
+	if !uuidShaped(id) {
+		return fmt.Errorf("fleet: conversationId %q is not UUID-shaped (8-4-4-4-12 hexadecimal)", id)
+	}
+	return nil
+}
+
+// uuidShaped reports whether s is 8-4-4-4-12 hexadecimal — copied rather than
+// imported from internal/drivers/tmux's own identically-named, unexported
+// helper: this package is imported BY every driver (including tmux), so a
+// dependency the other way is not available, and the shape is small and
+// stable enough that duplicating it once costs less than restructuring which
+// package owns it.
+func uuidShaped(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ErrConversationRefIncoherent is returned when a ref would state something it

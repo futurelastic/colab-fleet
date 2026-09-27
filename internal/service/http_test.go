@@ -77,6 +77,29 @@ func TestHealth_OK(t *testing.T) {
 	}
 }
 
+// colab-fleet #224: a peer's own /v1/health is how internal/drivers/remote
+// learns whether it may forward conversationId without it being silently
+// dropped (requireConversationId) — the same protocol-level signal `labels`
+// already is one field up.
+func TestHealth_ReportsSupportsConversationId(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	req := authedRequest(t, http.MethodGet, srv.URL+"/v1/health", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got, ok := body["supportsConversationId"].(bool); !ok || !got {
+		t.Errorf("supportsConversationId = %v (present=%v), want true", body["supportsConversationId"], ok)
+	}
+}
+
 // countingStubDriver is stub.Driver plus a fixed set of counters — the
 // smallest fake that exercises handleHealth's optional-capability branch
 // (#9) without standing up a real tmux session to increment a real one.
@@ -238,6 +261,61 @@ func TestCreateSession_OverLongPromptIs400(t *testing.T) {
 	}
 	if !strings.Contains(env.Error.Message, "prompt") || !strings.Contains(env.Error.Message, strconv.Itoa(defaultMaxInputBytes)) {
 		t.Fatalf("message = %q, want it to name the field and the %d-byte limit", env.Error.Message, defaultMaxInputBytes)
+	}
+}
+
+// colab-fleet #224: conversationId and resume answer the same question —
+// which conversation this session's is — in two incompatible ways, so
+// sending both is refused before any driver is even resolved.
+func TestCreateSession_ConversationIdAndResumeIs400(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]string{
+		"runtime": "stub", "cwd": "/tmp",
+		"conversationId": "7f3a1c22-0b9e-4d51-9f2a-8e6b1d4c5a70",
+		"resume":         "some-other-conversation",
+	})
+	req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions", body)
+	req.Header.Set("Idempotency-Key", "key-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (#224: conversationId + resume is mutually exclusive)", resp.StatusCode)
+	}
+	env := decodeError(t, resp)
+	if env.Error.Kind != fleet.ErrorInvalid {
+		t.Fatalf("error kind = %q, want %q", env.Error.Kind, fleet.ErrorInvalid)
+	}
+}
+
+// colab-fleet #224: a conversationId that is not UUID-shaped is refused at
+// the boundary, before it can ever reach a driver that would pass it straight
+// to a runtime's command line.
+func TestCreateSession_MalformedConversationIdIs400(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]string{
+		"runtime": "stub", "cwd": "/tmp",
+		"conversationId": "not-a-uuid",
+	})
+	req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions", body)
+	req.Header.Set("Idempotency-Key", "key-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (#224: conversationId must be UUID-shaped)", resp.StatusCode)
+	}
+	env := decodeError(t, resp)
+	if env.Error.Kind != fleet.ErrorInvalid {
+		t.Fatalf("error kind = %q, want %q", env.Error.Kind, fleet.ErrorInvalid)
 	}
 }
 

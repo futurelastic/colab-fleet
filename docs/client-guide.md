@@ -686,6 +686,7 @@ Idempotency-Key: 4f1c9e2a-…          ← REQUIRED
   "consents": ["folder-trust"],      ← optional, the general form of the line above; also "external-imports"
   "env": {"MY_SESSION_ID": "…"},     ← optional, delivered out of band — never argv
   "resume": "<conversation id>",     ← optional, continue a prior conversation
+  "conversationId": "<caller uuid>", ← optional, START a new one under this id; mutually exclusive with resume
   "permissionMode": "bypass",        ← optional, needs the send grant
   "contextRef": "/abs/path" }        ← optional, a PATH — never inline content
 ```
@@ -925,6 +926,20 @@ second variable invented out of your value).
 `supportsResume` in `/v1/runtimes`, which reports whether sessions survive a
 service restart — same word, different question.
 
+**`conversationId`** (colab-fleet #224) starts a NEW conversation under a UUID
+*you* choose, instead of one the driver derives afterward — so the `201`
+already carries `conversation` (`known: true, source: "captured"`) and you
+never have to poll `GET .../sessions/{id}` waiting for the runtime's own
+record to show up. Mutually exclusive with `resume` — send one or the other,
+never both (`invalid` if you do). Must be a UUID, and refused `invalid` if it
+already names a conversation this machine has on record for the same `cwd` —
+two conversations must never share one transcript. A runtime with no way to
+launch under your id, or a peer on a build old enough to not know the field,
+answers `unsupported` rather than silently starting a conversation under an id
+of its own. If a later read ever disagrees with the id you asked for, that
+shows up as a fresh, named mismatch on `conversation` — never a quiet
+overwrite.
+
 **`permissionMode`** takes one value, `bypass`. It needs the `send` grant like a
 consent does: a session in that mode acts without asking, which is a larger
 authority than starting one. An unrecognised value is refused, not passed
@@ -948,7 +963,9 @@ also starts those is a larger authority than starting a session.
 
 One rule shared by everything that reaches the agent's own argv — `agent`,
 `model`, `effort`, `resume`, `mcpConfig`: **a value may not begin with `-`**, or
-the CLI reads it as a flag rather than as your value.
+the CLI reads it as a flag rather than as your value. `conversationId` lands in
+the same argv too; its UUID-shape check (refused `invalid` otherwise) already
+guarantees that.
 
 Pass context by path (`contextRef`), never inline. Prompts and context never
 reach a command line.

@@ -209,6 +209,112 @@ func TestFlagShapedResumeIsRefusedRatherThanDropped(t *testing.T) {
 	}
 }
 
+// colab-fleet #224: the mirror of TestResumeAndPermissionModeReachTheAgentArgv
+// for a create that asks to START a conversation rather than continue one.
+func TestConversationIdReachesTheAgentArgv(t *testing.T) {
+	f := twoSessions()
+	_, argv := createWith(t, f, fleet.SessionSpec{
+		Name: "started", Cwd: "/work/x",
+		ConversationId: "7f3a1c22-0b9e-4d51-9f2a-8e6b1d4c5a70",
+	})
+	agent := agentArgv(argv)
+	got, ok := flagValue(agent, "--session-id")
+	if !ok || got != "7f3a1c22-0b9e-4d51-9f2a-8e6b1d4c5a70" {
+		t.Errorf("--session-id = %q (present=%v); a session that cannot be launched under a "+
+			"caller-chosen id is a different kind of session", got, ok)
+	}
+}
+
+// conversationId and resume answer the same question two incompatible ways
+// (#224's own Ask): sending both is refused before any argv is built.
+func TestConversationIdAndResumeAreMutuallyExclusive(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	_, err := d.Create(context.Background(), testCaller, "k-cr",
+		fleet.SessionSpec{Name: "cr", Cwd: "/work/x",
+			ConversationId: "7f3a1c22-0b9e-4d51-9f2a-8e6b1d4c5a70", Resume: "some-other-conv"})
+	if err == nil {
+		t.Fatal("a create carrying both conversationId and resume was accepted")
+	}
+	var ferr *fleet.Error
+	if !errors.As(err, &ferr) {
+		t.Fatalf("error is not a *fleet.Error: %v", err)
+	}
+	if ferr.Kind != fleet.ErrorInvalid {
+		t.Errorf("Kind = %q, want %q", ferr.Kind, fleet.ErrorInvalid)
+	}
+	if newSessionArgv(f) != nil {
+		t.Error("the session was started anyway; the refusal must happen before the spawn")
+	}
+}
+
+// A conversationId that is not UUID-shaped is refused rather than passed to
+// the runtime, which would read it back as a plain string with no format
+// guarantee at all.
+func TestMalformedConversationIdIsRefused(t *testing.T) {
+	f := twoSessions()
+	d := newTestDriver(f)
+	_, err := d.Create(context.Background(), testCaller, "k-m",
+		fleet.SessionSpec{Name: "m", Cwd: "/work/x", ConversationId: "not-a-uuid"})
+	if err == nil {
+		t.Fatal("a malformed conversationId was accepted")
+	}
+	var ferr *fleet.Error
+	if !errors.As(err, &ferr) {
+		t.Fatalf("error is not a *fleet.Error: %v", err)
+	}
+	if ferr.Kind != fleet.ErrorInvalid {
+		t.Errorf("Kind = %q, want %q", ferr.Kind, fleet.ErrorInvalid)
+	}
+	if newSessionArgv(f) != nil {
+		t.Error("the session was started anyway; the refusal must happen before the spawn")
+	}
+}
+
+// THE Ask in #224: an id already recorded for this working directory must be
+// refused, because starting a fresh conversation under it would make two
+// conversations share one transcript file.
+func TestConversationIdAlreadyRecordedForThisCwdIsRefused(t *testing.T) {
+	f := twoSessions()
+	root := t.TempDir()
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		WithRecordRoot(root))
+	writeRecord(t, root, "/work/x", "7f3a1c22-0b9e-4d51-9f2a-8e6b1d4c5a70", "whatever", sessionStart)
+
+	_, err := d.Create(context.Background(), testCaller, "k-dup",
+		fleet.SessionSpec{Name: "dup", Cwd: "/work/x", ConversationId: "7f3a1c22-0b9e-4d51-9f2a-8e6b1d4c5a70"})
+	if err == nil {
+		t.Fatal("a conversationId already recorded for this cwd was accepted")
+	}
+	var ferr *fleet.Error
+	if !errors.As(err, &ferr) {
+		t.Fatalf("error is not a *fleet.Error: %v", err)
+	}
+	if ferr.Kind != fleet.ErrorInvalid {
+		t.Errorf("Kind = %q, want %q", ferr.Kind, fleet.ErrorInvalid)
+	}
+	if newSessionArgv(f) != nil {
+		t.Error("the session was started anyway; the refusal must happen before the spawn")
+	}
+}
+
+// The same id is fine under a DIFFERENT working directory: the runtime's own
+// store partitions records by cwd (recordDirFor), so this is not a collision
+// it could ever produce.
+func TestConversationIdRecordedElsewhereDoesNotBlockADifferentCwd(t *testing.T) {
+	f := twoSessions()
+	root := t.TempDir()
+	d := New("testbox", withExec(f.exec), withNonce(func() string { return testNonce }),
+		WithRecordRoot(root))
+	writeRecord(t, root, "/work/other", "7f3a1c22-0b9e-4d51-9f2a-8e6b1d4c5a70", "whatever", sessionStart)
+
+	_, err := d.Create(context.Background(), testCaller, "k-ok",
+		fleet.SessionSpec{Name: "ok", Cwd: "/work/x", ConversationId: "7f3a1c22-0b9e-4d51-9f2a-8e6b1d4c5a70"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+}
+
 func TestUnknownPermissionModeIsRefused(t *testing.T) {
 	f := twoSessions()
 	d := newTestDriver(f)
