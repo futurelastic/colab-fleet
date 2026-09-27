@@ -212,6 +212,12 @@ SessionState {
   credentialGeneration?: Timestamp // this machine's local credential generation at read time (#12)
   controlChannel?: ControlChannel  // what the RUNTIME says about its own remote-control channel (#48)
   permissionMode?: PermissionMode  // the permission mode the runtime shows the session to be in, when the driver can read it (#194); absent = nothing was read
+  warnings?      : Warning[]       // footer notices the driver read below the composer (#230); absent = none found, not merely unobserved
+}
+
+Warning {
+  kind?: string  // closed-so-far vocabulary naming what the notice is about (today: "transcript-unreliable"); absent = notice-shaped line found, not yet named
+  text : string  // the runtime's own words, trimmed; for humans and logs, never branched on
 }
 
 ControlChannel {
@@ -326,6 +332,33 @@ TurnEnd {
 > `plan mode on` must not read as being in plan mode, or a client that stops
 > cycling at `plan` stops on a lie. A change fires `session.state` (§4) like any
 > other material change. It never changes `status`.
+
+> **`warnings` lists footer notices the driver read below the composer's closing
+> rule (colab-fleet issue #230), the same region `controlChannel` and
+> `permissionMode` are read from and for the same reason: independent of
+> `status`, and otherwise invisible through every other field here.** #229 found
+> that a footer notice — "⚠ Transcript writes are failing (disk full — ENOSPC) ·
+> recent messages may …" — can satisfy the shape test the TUI's real turn-status
+> line uses, and fixed the misread by bounding the spinner scan at the
+> composer's closing rule. This field is the other half: a session whose
+> transcript is not being recorded is worth a caller knowing about on its own
+> terms, not only worth not being misread as `working`.
+>
+> **Absent means no notice-shaped line was found — a positive finding, not
+> merely unobserved (§5.7).** Only one driver reads footers today and it
+> always looks, so there is no separate `observes…` capability the way
+> `controlChannel` and `permissionMode` each have one; a second driver reading
+> footers by a different method should add one rather than silently reuse this
+> absence.
+>
+> **`kind` absent on an individual `Warning` is a different, milder absence than
+> `status` or `permissionMode`'s `unknown`.** The entry already existing in the
+> list is the driver's claim "a notice-shaped line is here" (the same shape
+> test #229 built); `kind` empty says only that this driver does not yet
+> recognise the wording, and `text` still carries the runtime's own words
+> rather than the line being dropped for lack of a name. The vocabulary is
+> expected to grow as new notices are measured, the same way `waitingOn`'s set
+> is not claimed to be exhaustive by having only three members.
 
 > **`ControlChannel.reason` is sourced from the runtime's own durable record,
 > never from a screen (colab-fleet issue #69).** `state` alone cannot say
