@@ -37,6 +37,22 @@ const fixtureIdle = `  Done — the userscript hides both columns and centres th
   ▸ Opus 5 · agents
   ⏵⏵ auto mode on (shift+tab to cycle) · ← 3 agents`
 
+// idle, but with a footer NOTICE below the composer that shares a running
+// spinner's shape (colab-fleet#229): a single symbol, a space, a capitalised
+// word, and a trailing ellipsis where the runtime truncated the notice. A
+// scan that does not stop at the composer's closing rule reads this line
+// before the real, finished spinner above the composer, and reports a
+// session that is actually idle as `working` — a misread that does not clear
+// on its own, because nothing here repaints until the session's next turn.
+const fixtureIdleWithTranscriptWarning = `  Done — the userscript hides both columns and centres the timeline.
+✻ Brewed for 8m 21s
+` + rule + `
+❯
+` + rule + `
+  ▸ Opus 5 · agents
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 3 agents
+  ⚠ Transcript writes are failing (disk full — ENOSPC) · recent messages may …`
+
 // waiting_input via unsent composer text: turn finished, human has typed
 // but not submitted. This is the §2.4 hazard case.
 const fixtureUnsent = `  Want me to fold the composer-text hazard into the skill?
@@ -87,6 +103,7 @@ func TestClassifyStatuses(t *testing.T) {
 	}{
 		{"running spinner", fixtureWorking, fleet.StatusWorking},
 		{"finished spinner, empty composer", fixtureIdle, fleet.StatusIdle},
+		{"finished spinner, empty composer, ENOSPC footer notice (#229)", fixtureIdleWithTranscriptWarning, fleet.StatusIdle},
 		{"finished spinner, unsent composer text", fixtureUnsent, fleet.StatusWaitingInput},
 		{"blocking selection menu", fixtureMenu, fleet.StatusWaitingInput},
 		{"echoed history above an empty composer", fixtureEchoedHistory, fleet.StatusUnknown},
@@ -164,6 +181,20 @@ func TestSpinnerVerbIsNotLoadBearing(t *testing.T) {
 		if !found || running {
 			t.Errorf("verb %q: finished spinner not recognised (found=%v running=%v)", verb, found, running)
 		}
+	}
+}
+
+// colab-fleet#229: a footer notice below the composer's closing rule must
+// never win the backward scan over the real spinner line drawn above the
+// composer, even though the notice matches statusLine's shape byte for byte
+// (symbol, space, capitalised word, ellipsis).
+func TestSpinnerIgnoresFooterNoticeBelowComposer(t *testing.T) {
+	running, found := spinner(newScreen(fixtureIdleWithTranscriptWarning))
+	if !found {
+		t.Fatal("the finished spinner above the composer must still be found")
+	}
+	if running {
+		t.Error("a footer notice below the composer must not be read as a running spinner")
 	}
 }
 
