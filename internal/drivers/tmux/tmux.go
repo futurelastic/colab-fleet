@@ -4276,6 +4276,36 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// before doing anything (§10, see idempotency.go).
 	if ref, rec, found := d.idem.lookup(key); found {
 		if rec.Phase == idemComplete {
+			// colab-fleet #234: a completed key's session can have ended since
+			// it was recorded — the process exited, someone killed it from a
+			// terminal — and returning it here unconditionally answered with
+			// the same 201-shaped session a live create gets, with nothing to
+			// tell the two apart. Corroborate against what is actually running
+			// before replaying the record, the same existence check
+			// resolvePending below makes for a PENDING record's own recovery.
+			live, err := d.sessionLive(ctx, ref.ID)
+			if err != nil {
+				// §5.7: a failed read is never presented as an observation —
+				// this driver does not know whether the session survives, so
+				// it must not answer as if it had checked. The idempotency
+				// record is left exactly as it was; the caller's retry (of
+				// this same call) gets another chance once the multiplexer
+				// answers again.
+				return fleet.Session{}, fmt.Errorf(
+					"create: verifying that idempotency key %q's recorded session %q is still live: %w",
+					key, ref.ID, err)
+			}
+			if !live {
+				closedAt := d.now()
+				return fleet.Session{}, &fleet.Error{
+					Kind:     fleet.ErrorConflict,
+					Reason:   fleet.ReasonReplayOfEndedSession,
+					Message:  fmt.Sprintf("create: idempotency key %q already produced session %q, which is no longer present; mint a fresh key to start a new one (§10)", key, ref.ID),
+					Machine:  d.machine,
+					Session:  &fleet.SessionRef{Machine: ref.Machine, ID: ref.ID, Name: ref.Name},
+					ClosedAt: &closedAt,
+				}
+			}
 			cr, ok := d.createRecordFor(ref.ID, string(spec.Cwd))
 			pins, surface, prompt := sessionFactsFor(cr, ok, ref.ID)
 			return fleet.Session{

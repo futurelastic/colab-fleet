@@ -44,7 +44,7 @@ served, and the federated ones have been exercised peer to peer.
 | `invalid` | 400 | Malformed request |
 | `unauthorized` | 401 / 403 | Caller not permitted for this verb on this machine |
 | `not_found` | 404 | The machine answered, and there is no such session |
-| `conflict` | 409 | Idempotency key reused with a different body; or a destructive request whose `startedAt` disagrees with the live session (§5.4) — the request is well formed, the caller's belief is stale |
+| `conflict` | 409 | Idempotency key reused with a different body; a replayed key whose session has since ended (`reason: "replay-of-ended-session"`, §3.3); or a destructive request whose `startedAt` disagrees with the live session (§5.4) — the request is well formed, the caller's belief is stale |
 | `unsupported` | 501 | Driver lacks the capability (§4.3 of the model) |
 | `unreachable` | 504 | **The machine did not answer.** Nothing is known. |
 
@@ -53,6 +53,14 @@ knows the session does not exist; the other means the fleet knows nothing at
 all. This is §5.7 expressed at the wire, and it is the single most important
 line in this document: a client that treats 504 as 404 will confidently report
 work as gone while it is running fine on an unreachable host.
+
+**`reason` further classifies some `conflict` bodies beyond what `kind` alone
+distinguishes**, so a caller can branch without parsing `message`. Absent
+unless a case documents one — today the only one is `create`'s own
+`replay-of-ended-session` (§3.3), which also carries `session` (the ended
+session's own ref) and `closedAt` (when this machine observed the absence, an
+upper bound on the true end — the same rule `GET .../sessions/closed`'s own
+`closedAt` follows for a `ClosedByAbsent` tombstone, §3.2).
 
 ## 3. Endpoints
 
@@ -394,12 +402,31 @@ Idempotency-Key: <caller-supplied, required>
         "state": {...} }
 → 200 (same body) if the key was already seen — the existing session
 → 409 if the key was seen with a different body
+→ 409 { "kind": "conflict", "reason": "replay-of-ended-session",
+        "session": {"machine": "...", "id": "...", "name": "..."},
+        "closedAt": "..." } if the key was already seen with the SAME body and
+        that session no longer exists
 ```
 
 `Idempotency-Key` is **required, not optional**. A create without one is
 rejected with `invalid`. The rationale is §10: a timed-out federated create
 that gets retried produces two agents writing to the same working directory,
 and the caller cannot detect it afterwards.
+
+**A replay whose recorded session has since ended is `409`, not the ordinary
+`201` (colab-fleet #234).** Before this, a same-key-same-body replay answered
+201 with the dead session's own id — the identical shape a live create
+returns — so a caller checking only the status code could not tell "your
+session is running" from "your session died earlier and this key produced
+nothing just now". `reason` is `"replay-of-ended-session"`; `session` is the
+ended session's own ref; `closedAt` is when THIS machine observed the
+absence, an upper bound on the true end (the same rule `GET
+.../sessions/closed`'s own tombstones follow for `ClosedByAbsent`, §3.2 —
+this driver does not poll for a precise end time on your behalf). The key
+itself is untouched by this: it stays spent for its normal retention, so a
+third call with the same key gets the same 409, not a silently fresh session.
+The caller's fix is to mint a **new** `Idempotency-Key` — retrying this one is
+asking the same already-answered question again.
 
 **`prompt` is capped by this machine's effective limit** — 1024 bytes by
 default, and a machine setting rather than a compiled-in constant since

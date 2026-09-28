@@ -92,7 +92,31 @@ type Error struct {
 	Message   string    `json:"message"`
 	Machine   MachineId `json:"machine,omitempty"`
 	Retryable bool      `json:"retryable"`
+
+	// Reason further classifies some Kind values beyond what the fixed Kind
+	// enum distinguishes, so a caller can branch on the specific condition
+	// without parsing Message — see ReasonReplayOfEndedSession below for the
+	// one case that sets it today. Absent unless a case documents one.
+	Reason string `json:"reason,omitempty"`
+
+	// Session and ClosedAt are set together with Reason ==
+	// ReasonReplayOfEndedSession (colab-fleet #234): an Idempotency-Key
+	// replay whose recorded session no longer exists. Session is that
+	// session's own ref — never the replaying caller's — and ClosedAt is
+	// when this machine observed the absence, an upper bound on the true end,
+	// the same rule ClosedSession.ClosedAt follows for ClosedByAbsent
+	// (closed.go).
+	Session  *SessionRef `json:"session,omitempty"`
+	ClosedAt *Timestamp  `json:"closedAt,omitempty"`
 }
+
+// ReasonReplayOfEndedSession marks the ErrorConflict a create's
+// Idempotency-Key replay returns when the key's recorded session is no
+// longer present (api-http.md §3.3, colab-fleet #234). The key itself is
+// untouched by this — it stays spent for its normal retention
+// (idemStore.sweepLocked) — so "same key, same answer" (§10) still holds;
+// the caller's fix is to mint a FRESH key, not to retry this one.
+const ReasonReplayOfEndedSession = "replay-of-ended-session"
 
 func (e *Error) Error() string {
 	if e.Machine != "" {
