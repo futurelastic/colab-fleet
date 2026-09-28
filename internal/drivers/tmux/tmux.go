@@ -1017,6 +1017,15 @@ func (d *Driver) bounded(ctx context.Context) (context.Context, context.CancelFu
 	return context.WithDeadline(ctx, own)
 }
 
+// managedSessionOption is the tmux user option Create sets on every session
+// this driver starts (colab-fleet #236). reapDeadRows reads it back through
+// enumerate's format string to tell a session this service created from one
+// it merely happens to see on a shared multiplexer server — see Create's own
+// comment on that sharing. A user option is scoped by name alone; any value
+// this driver picks is safe as long as nothing else on the box sets the same
+// name for an unrelated purpose, which a "colab-" prefix makes unlikely.
+const managedSessionOption = "@colab-managed"
+
 // paneRow is one session's metadata as returned by the batched enumeration.
 type paneRow struct {
 	session string
@@ -1034,6 +1043,12 @@ type paneRow struct {
 	// — see FINDINGS 3. Carried as a version hint; never used to decide
 	// what a session is.
 	title string
+	// managed is true only for a session this driver's own Create set
+	// managedSessionOption on (colab-fleet #236). reapDeadRows reads this,
+	// not dead alone, before acting — a pane can be dead AND belong to a
+	// session this driver never started, one it shares its multiplexer
+	// server with (Create's own comment on that sharing).
+	managed bool
 }
 
 // enumerate performs the whole fleet read in one subprocess: one metadata
@@ -1056,6 +1071,14 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]paneCaptu
 		// whether or not anything is dead this round.
 		"#{pane_dead_status}",
 		"#{pane_current_command}",
+		// colab-fleet #236: the marker Create sets on every session this
+		// driver starts (managedSessionOption). A pane option would not see
+		// it — the option is set at the session, not the pane — but a
+		// format expression follows tmux's own option inheritance
+		// (session → window → pane) unless something more specific
+		// overrides it, and nothing here ever sets a pane- or window-level
+		// override, so this reads the session's value for every pane in it.
+		"#{" + managedSessionOption + "}",
 	}, sep)
 
 	args := []string{"list-panes", "-a", "-f", activeOnly, "-F", format}
@@ -1457,8 +1480,8 @@ func parseRows(out, sep string) ([]paneRow, error) {
 			continue
 		}
 		f := strings.Split(line, sep)
-		if len(f) != 8 {
-			return nil, fmt.Errorf("parseRows: expected 8 fields, got %d in %q", len(f), line)
+		if len(f) != 9 {
+			return nil, fmt.Errorf("parseRows: expected 9 fields, got %d in %q", len(f), line)
 		}
 		pid, _ := strconv.Atoi(f[3])
 		createdUnix, _ := strconv.ParseInt(f[4], 10, 64)
@@ -1472,6 +1495,11 @@ func parseRows(out, sep string) ([]paneRow, error) {
 			dead:       f[5] == "1",
 			deadStatus: deadStatus,
 			title:      f[7],
+			// colab-fleet #236: an option that was never set reads back as
+			// the empty string, same as any other unset tmux format
+			// variable — never "1" — so an unmanaged session's pane always
+			// parses to false here.
+			managed: f[8] == "1",
 		})
 	}
 	return rows, nil
@@ -4268,11 +4296,22 @@ func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fl
 }
 
 // reapDeadRows finds, among an ALREADY-fetched enumeration, every pane whose
-// own process has already exited — remain-on-exit (see Create's own comment
-// on the option) is the only reason such a row can exist in rows at all, and
-// nothing about a pane going dead reaches control mode's lifecycle
+// own process has already exited AND whose session this driver's own Create
+// marked as its own (managedSessionOption) — remain-on-exit (see Create's own
+// comment on the option) is the only reason such a row can exist in rows at
+// all, and nothing about a pane going dead reaches control mode's lifecycle
 // notifications the way a session or window actually closing does
 // (subscribe.go's isLifecycleNote), so this is where "something looks".
+//
+// The marker check is load-bearing, not defensive: Create's own comment on
+// remain-on-exit says this driver's multiplexer server may host sessions
+// other tools started, and colab-fleet #236 found this func acting on every
+// dead pane it saw regardless of origin — an operator (or another tool) that
+// sets remain-on-exit on its own session, for its own reasons, had this
+// driver kill it, capture its screen, and report an exit it never owned, the
+// moment that session's process happened to exit. A dead pane with no marker
+// is left exactly as it was before colab-fleet #235 ever shipped: not killed,
+// not captured, not reported — this func has no opinion about it at all.
 //
 // The screen this SAME enumeration already captured for it (classifyCaptureArgs'
 // shape — the escapes are harmless in a plain evidence file, and reusing it
@@ -4283,7 +4322,7 @@ func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fl
 // from what List returns — a session this driver just confirmed dead must
 // never be reported live.
 //
-// Ordinary case (nothing dead) costs nothing extra at all: no new
+// Ordinary case (nothing dead-and-managed) costs nothing extra at all: no new
 // invocation, matching driver.Driver.List's constant-spawn contract. Killing
 // a genuinely dead session is the one case that is NOT constant-cost, and it
 // is meant to be — it is rare by construction and the alternative is a
@@ -4293,19 +4332,19 @@ func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fl
 // next List to find and retry — nothing is reported until the kill lands, so
 // a retry can never double-report the same exit.
 func (d *Driver) reapDeadRows(ctx context.Context, rows []paneRow, captures map[string]paneCapture) []paneRow {
-	hasDead := false
+	hasReapable := false
 	for _, r := range rows {
-		if r.dead {
-			hasDead = true
+		if r.dead && r.managed {
+			hasReapable = true
 			break
 		}
 	}
-	if !hasDead {
+	if !hasReapable {
 		return rows
 	}
 	kept := make([]paneRow, 0, len(rows))
 	for _, r := range rows {
-		if !r.dead {
+		if !r.dead || !r.managed {
 			kept = append(kept, r)
 			continue
 		}
@@ -4711,6 +4750,23 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// today's behaviour (vanishes with its process) if it never applies.
 	if _, err := d.run(ctx, d.bin, "set-option", "-t", name, "remain-on-exit", "on"); err != nil {
 		log.Printf("tmux: create %q: could not enable remain-on-exit, its own exit will not be captured: %v", name, err)
+	}
+	// colab-fleet #236: mark this session as one this driver started, in a
+	// SEPARATE invocation for the same reason remain-on-exit above is
+	// separate from new-session — chaining either into a single call would
+	// fail the whole create over a rejected option, which is worse than the
+	// residual race narrowed rather than closed here. reapDeadRows reads
+	// this back (managedSessionOption) before ever killing a dead pane: a
+	// session sharing this multiplexer server that this driver did not
+	// start must never carry it, so a session created outside this driver
+	// is left alone even with remain-on-exit set by someone else. A session
+	// option, not -g and not -p: it is inherited by the session's own
+	// panes without touching anything else on the server. Best-effort, like
+	// remain-on-exit: a failure here does not fail a create that already
+	// succeeded, and the session simply falls back to today's un-owned
+	// behaviour (its dead pane, if any, is never reaped by this driver).
+	if _, err := d.run(ctx, d.bin, "set-option", "-t", name, managedSessionOption, "1"); err != nil {
+		log.Printf("tmux: create %q: could not mark it as managed, its dead pane will never be reaped: %v", name, err)
 	}
 	// #185: the process exists now, so the module can be asked to attach —
 	// asynchronously; this create's response never waits on it.

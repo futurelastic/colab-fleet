@@ -161,8 +161,11 @@ func TestLiveMarkerInHistoryMarginIsNotCredited(t *testing.T) {
 // status and screen — instead of the generic "absent" a later listing would
 // otherwise be left to infer, and no leftover multiplexer session survives
 // it. Drives the multiplexer directly, like the other live tests in this
-// file, and sets remain-on-exit by hand the same way Create does for a
-// session it starts itself (see Create's own comment on the option).
+// file, and sets remain-on-exit AND managedSessionOption by hand the same
+// way Create does for a session it starts itself (see Create's own comments
+// on both options) — colab-fleet #236 made the marker load-bearing here:
+// without it this session reads as one this driver never started, and
+// reapDeadRows leaves it alone.
 func TestLiveExitIsCapturedBeforeThePaneIsGone(t *testing.T) {
 	m := newLiveMux(t)
 	// A short sleep before exiting, not an instant exit: remain-on-exit is set
@@ -174,6 +177,7 @@ func TestLiveExitIsCapturedBeforeThePaneIsGone(t *testing.T) {
 	m.run("new-session", "-d", "-x", "80", "-y", "24", "-s", "exitpane",
 		"sh", "-c", "printf 'boom\\n'; sleep 0.3; exit 7")
 	m.run("set-option", "-t", "exitpane", "remain-on-exit", "on")
+	m.run("set-option", "-t", "exitpane", managedSessionOption, "1")
 	// Let the pane's own process actually exit before this driver ever looks.
 	deadline := time.Now().Add(5 * time.Second)
 	for strings.TrimSpace(m.run("display-message", "-t", "exitpane", "-p", "#{pane_dead}")) != "1" {

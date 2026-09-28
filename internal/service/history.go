@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -57,6 +59,17 @@ import (
 // filtered on every read, so an idle service does not keep answering with
 // records past their window. A seen record not sighted within the retention
 // period is dropped too — it can only belong to a runtime no longer listed.
+//
+// A ClosedByExit tombstone (#235) also names a file under this store's own
+// exit-screens/ directory. colab-fleet #236: that file follows the SAME
+// retention as the record naming it — one rule, not two — so pruning a
+// tombstone here removes its file too, and a start-up sweep removes any file
+// left behind with no record at all (one saved by saveExitScreen just before
+// a crash prevented the tombstone from ever being written, or one whose
+// record was pruned by an older build that predates this file-aware prune).
+// A "keep the newest N files" cap was considered and rejected: it is a
+// second rule that could drift from the store's own retention instead of
+// reusing it.
 
 // historyStateName is this store's document in the state directory.
 const historyStateName = "session-history"
@@ -115,6 +128,14 @@ func (h *historyStore) load(st *state.Store) error {
 	var doc historyDoc
 	found, err := st.Load(historyStateName, &doc)
 	if err != nil || !found {
+		// colab-fleet #236: even a first run (found == false) or a store
+		// with nothing to load may have exit-screens/ files left over from
+		// a previous process — e.g. a crash between saveExitScreen and the
+		// tombstone write. h.closed is empty either way, so this call
+		// removes every file the directory holds; that is correct, not
+		// aggressive, because there is by construction no live record for
+		// any of them yet.
+		h.sweepOrphanExitScreensLocked()
 		return err
 	}
 	for i := range doc.Seen {
@@ -126,7 +147,65 @@ func (h *historyStore) load(st *state.Store) error {
 	}
 	h.closed = doc.Closed
 	h.savedAt = h.now()
+	h.sweepOrphanExitScreensLocked()
 	return nil
+}
+
+// exitScreensDirLocked names the directory the tmux driver's saveExitScreen
+// writes to (colab-fleet #235) — the same state.Store, so the same Dir(), as
+// the one this history store persists into (cmd/colab-fleetd wires both from
+// one *state.Store). Empty when there is no store at all (a throwaway
+// instance, a test): every caller here already treats that as "nothing to
+// do", the same convention state.Store.Dir() itself uses.
+func (h *historyStore) exitScreensDirLocked() string {
+	dir := h.st.Dir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "exit-screens")
+}
+
+// removeExitScreenLocked deletes the file a pruned ClosedByExit tombstone
+// named, if any (colab-fleet #236). Best-effort: a closed-session record is
+// already gone from h.closed by the time this runs, and a leftover file a
+// failed remove could not clear is exactly what the start-up sweep in load()
+// exists to catch on the next restart.
+func (h *historyStore) removeExitScreenLocked(c fleet.ClosedSession) {
+	if c.Exit == nil || c.Exit.ScreenPath == "" {
+		return
+	}
+	_ = os.Remove(c.Exit.ScreenPath)
+}
+
+// sweepOrphanExitScreensLocked removes every file under exit-screens/ that no
+// live closed-session record names (colab-fleet #236). Run once at load —
+// not on every prune, where removeExitScreenLocked already deletes a file the
+// instant its own record ages out; this is only for a file whose record never
+// made it into h.closed at all, or already left it by some path other than
+// pruneLocked. A directory that does not exist yet, or cannot be read, is
+// silently left alone — sweeping is a cleanliness pass, never load-bearing
+// for correctness.
+func (h *historyStore) sweepOrphanExitScreensLocked() {
+	dir := h.exitScreensDirLocked()
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	live := make(map[string]bool, len(h.closed))
+	for _, c := range h.closed {
+		if c.Exit != nil && c.Exit.ScreenPath != "" {
+			live[filepath.Base(c.Exit.ScreenPath)] = true
+		}
+	}
+	for _, e := range entries {
+		if e.IsDir() || live[e.Name()] {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, e.Name()))
+	}
 }
 
 // setRetention changes how long tombstones are kept. Non-positive restores
@@ -147,6 +226,10 @@ func (h *historyStore) pruneLocked(now time.Time) bool {
 	for _, c := range h.closed {
 		if c.ClosedAt.Before(cut) {
 			changed = true
+			// colab-fleet #236: this record is the only thing naming this
+			// file (ScreenPath is never reused across records); once it
+			// ages out here, nothing else will ever remove the file.
+			h.removeExitScreenLocked(c)
 			continue
 		}
 		kept = append(kept, c)

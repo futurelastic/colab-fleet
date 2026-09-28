@@ -387,6 +387,10 @@ type fakeSession struct {
 	// alongside dead: true.
 	deadStatus int
 	title      string
+	// managed models the marker set-option Create leaves on every session
+	// this driver starts (colab-fleet #236, managedSessionOption). Defaults
+	// to false, matching a real session nobody ever set the option on.
+	managed bool
 }
 
 const testNonce = "0badc0de"
@@ -494,9 +498,13 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			if s.dead {
 				dead = "1"
 			}
+			managed := ""
+			if s.managed {
+				managed = "1"
+			}
 			b.WriteString(strings.Join([]string{
 				s.name, s.paneID, s.cwd, itoa(s.pid), itoa64(s.created), dead,
-				itoa(s.deadStatus), s.title,
+				itoa(s.deadStatus), s.title, managed,
 			}, sep))
 			b.WriteString("\n")
 		}
