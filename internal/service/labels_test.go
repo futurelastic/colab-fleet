@@ -31,6 +31,11 @@ type labelDriver struct {
 	sessions map[string]fleet.Session
 	n        int
 	epoch    time.Time
+
+	// pendingExits is exitVia's queue, drained by DrainExits — the fake's
+	// stand-in for what a real ExitReporter driver's reapExited captures
+	// (colab-fleet #235).
+	pendingExits []driver.CapturedExit
 }
 
 func newLabelDriver() *labelDriver {
@@ -109,6 +114,29 @@ func (d *labelDriver) vanish(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.sessions, id)
+}
+
+// exitVia simulates an ExitReporter driver (colab-fleet #235): removes the
+// session the way a real reapExited already killed it by the time anyone
+// asks, and queues its captured exit for the next DrainExits.
+func (d *labelDriver) exitVia(id string, status int, screenPath string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.sessions, id)
+	d.pendingExits = append(d.pendingExits, driver.CapturedExit{
+		ID:   id,
+		Exit: fleet.SessionExit{Status: status, At: time.Now(), ScreenPath: screenPath},
+	})
+}
+
+// DrainExits implements driver.ExitReporter, so labelDriver can stand in for
+// one in tests (colab-fleet #235).
+func (d *labelDriver) DrainExits() []driver.CapturedExit {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := d.pendingExits
+	d.pendingExits = nil
+	return out
 }
 
 func labelServer(t *testing.T, svc *Service, d *labelDriver, cfg Config) *httptest.Server {

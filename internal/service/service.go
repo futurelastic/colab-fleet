@@ -565,9 +565,19 @@ func (s *Service) ListSessions(ctx context.Context, req fleet.Request, scope Sco
 		if complete {
 			s.labels.retain(rt, its, listedAt)
 		}
+		// colab-fleet #235: a driver capable of it already removed these
+		// sessions from its runtime, in the same call that just answered —
+		// an exact, positive fact that holds whether or not THIS particular
+		// read was filtered, unlike absence, which only a complete read may
+		// conclude (§5.7). So this drains on every call, filtered or not.
+		var exits []driver.CapturedExit
+		if er, ok := d.(driver.ExitReporter); ok {
+			exits = er.DrainExits()
+		}
 		// Closed-session records (#179) take the same rule: only a complete
-		// answer may end anything, but every answer is a sighting.
-		s.history.observe(rt, its, complete, listedAt)
+		// answer may end anything by absence, but every answer is a
+		// sighting, and a captured exit ends something outright.
+		s.history.observe(rt, its, complete, listedAt, exits)
 		for i := range its {
 			its[i].Labels = s.labels.get(rt, its[i].ID, its[i].StartedAt)
 		}

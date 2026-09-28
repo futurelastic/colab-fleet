@@ -220,6 +220,13 @@ was known — plus:
   the next complete read (a live event stream, a listing, or the service's own
   start-up read). The end lies after `lastSeenAt` and no later than `closedAt`;
   read the two together, never `closedAt` alone as the moment it died.
+- `closedBy: "exit"` — a driver capable of it captured the session's own
+  process exit before removing the session, in the same pass (#235);
+  `closedAt` is exact, like `"close"`. The record carries `exit: {status, at,
+  screenPath}`: `status` is the process's own exit status, `at` is when it was
+  captured, and `screenPath` names a file on THAT machine holding the pane's
+  last lines — never the text itself, which is never served over this API.
+  `exit` is absent for every other `closedBy`.
 
 A rename is not an end. A peer on a build that predates the route shows up in
 `sources` as `degraded`, so a fleet read is `complete: false` rather than

@@ -329,7 +329,8 @@ retention period, across restarts (colab-fleet #179). It is deliberately not a
 persisted event window: the record carries only the metadata the live record
 already carried as last seen (`machine`, `id`, `name`, `runtime`, `cwd`,
 `startedAt`, and `conversation` when it was known), never content, plus
-`lastSeenAt`, `closedAt`, `closedBy` and `evidence`.
+`lastSeenAt`, `closedAt`, `closedBy`, `evidence`, and — only for
+`closedBy: "exit"` — `exit` (#235, below).
 
 `closedBy` separates observation from inference (session-abstraction.md §5.2):
 
@@ -340,6 +341,17 @@ already carried as last seen (`machine`, `id`, `name`, `runtime`, `cwd`,
   its runtime, or its id now names a session with a different `startedAt`
   (§5.4). `closedAt` is when the absence was observed; the end lies after
   `lastSeenAt`. A filtered or partial read never ends anything (§5.7).
+- `exit` — a driver capable of it (an `ExitReporter`) captured the session's
+  own process exit — status and last screen — before removing the session,
+  and reported it in the same pass (#235). `closedAt` is exact, like `close`:
+  it is the moment the driver captured the pane, not an upper bound inferred
+  from a later listing. The record carries `exit: {status, at, screenPath}`:
+  `status` is the process's own exit status; `screenPath` names a file kept
+  on that machine's own disk holding the pane's last lines — never the text
+  itself, which this route never serves (pane text can hold anything the
+  runtime printed, and putting it on the API is a data-exposure surface this
+  route deliberately does not open). `exit` is absent for every other
+  `closedBy`.
 
 A session missing under its old id while exactly one newly-seen session of the
 same runtime carries its `startedAt` is a **rename**, not an end; with more than

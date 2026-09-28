@@ -453,6 +453,14 @@ type Driver struct {
 	// make counting something contend with it for no reason.
 	counters counterSet
 
+	// exitedMu guards exitedPending — colab-fleet #235: what reapExited
+	// captured about a session's own process exit, waiting for DrainExits to
+	// hand it to the service. Its own mutex, not d.mu, for the same reason
+	// counters has its own: nothing else here needs the rest of the driver's
+	// state, and a slow drain must never contend with an in-flight List.
+	exitedMu      sync.Mutex
+	exitedPending []driver.CapturedExit
+
 	// conversations locates the runtime's own record of each session — see
 	// conversation.go. Nil until a record root is configured, and nil is
 	// what makes a listing report nothing at all rather than reporting that
@@ -1017,6 +1025,11 @@ type paneRow struct {
 	pid     int
 	created time.Time
 	dead    bool
+	// deadStatus is the pane's own process exit status (colab-fleet #235).
+	// Meaningful only when dead is true — the runtime reports an empty/zero
+	// value for a live pane, which parses indistinguishably from a real
+	// status of 0, but nothing reads this field without checking dead first.
+	deadStatus int
 	// title is the process's self-declared title, NOT its executable name
 	// — see FINDINGS 3. Carried as a version hint; never used to decide
 	// what a session is.
@@ -1037,6 +1050,11 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]paneCaptu
 	format := strings.Join([]string{
 		"#{session_name}", "#{pane_id}", "#{pane_current_path}",
 		"#{pane_pid}", "#{session_created}", "#{pane_dead}",
+		// colab-fleet #235: carried alongside pane_dead, in the SAME
+		// invocation, rather than a second listing once a dead pane is
+		// found — driver.Driver.List's constant-spawn contract holds
+		// whether or not anything is dead this round.
+		"#{pane_dead_status}",
 		"#{pane_current_command}",
 	}, sep)
 
@@ -1439,19 +1457,21 @@ func parseRows(out, sep string) ([]paneRow, error) {
 			continue
 		}
 		f := strings.Split(line, sep)
-		if len(f) != 7 {
-			return nil, fmt.Errorf("parseRows: expected 7 fields, got %d in %q", len(f), line)
+		if len(f) != 8 {
+			return nil, fmt.Errorf("parseRows: expected 8 fields, got %d in %q", len(f), line)
 		}
 		pid, _ := strconv.Atoi(f[3])
 		createdUnix, _ := strconv.ParseInt(f[4], 10, 64)
+		deadStatus, _ := strconv.Atoi(strings.TrimSpace(f[6]))
 		rows = append(rows, paneRow{
-			session: f[0],
-			paneID:  f[1],
-			cwd:     f[2],
-			pid:     pid,
-			created: time.Unix(createdUnix, 0),
-			dead:    f[5] == "1",
-			title:   f[6],
+			session:    f[0],
+			paneID:     f[1],
+			cwd:        f[2],
+			pid:        pid,
+			created:    time.Unix(createdUnix, 0),
+			dead:       f[5] == "1",
+			deadStatus: deadStatus,
+			title:      f[7],
 		})
 	}
 	return rows, nil
@@ -1536,6 +1556,18 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		}
 		return fleet.NewCollection([]fleet.Session{}, []fleet.SourceStatus{src})
 	}
+
+	// colab-fleet #235: reap what this SAME enumeration already found dead,
+	// using the screen it already captured — never a second listing or a
+	// second capture-pane call, which would cost every ordinary List an
+	// extra invocation (driver.Driver.List's constant-spawn contract) to
+	// cover an outcome that is rare by construction. A session whose own
+	// process already exited — remain-on-exit is what leaves its pane
+	// standing at all, see Create's own comment on the option — must never
+	// appear in what this call returns; DrainExits (called by the service
+	// right after this List) is how its captured exit reaches the history
+	// record instead.
+	rows = d.reapDeadRows(ctx, rows, captures)
 
 	// A pane can have vanished between the listing and the capture (see
 	// enumerate's own comment and #29): that row survives — it is still a
@@ -4235,6 +4267,111 @@ func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fl
 	return fleet.Ack{Accepted: true}, nil
 }
 
+// reapDeadRows finds, among an ALREADY-fetched enumeration, every pane whose
+// own process has already exited — remain-on-exit (see Create's own comment
+// on the option) is the only reason such a row can exist in rows at all, and
+// nothing about a pane going dead reaches control mode's lifecycle
+// notifications the way a session or window actually closing does
+// (subscribe.go's isLifecycleNote), so this is where "something looks".
+//
+// The screen this SAME enumeration already captured for it (classifyCaptureArgs'
+// shape — the escapes are harmless in a plain evidence file, and reusing it
+// is what keeps this from being a second, hand-rolled capture-pane call; see
+// TestClassifierCapturesAreBuiltInOnePlace) is what gets saved as its last
+// screen. Then the session is killed through the same path an ordinary Close
+// uses, so nothing about its bookkeeping is special-cased, and it is dropped
+// from what List returns — a session this driver just confirmed dead must
+// never be reported live.
+//
+// Ordinary case (nothing dead) costs nothing extra at all: no new
+// invocation, matching driver.Driver.List's constant-spawn contract. Killing
+// a genuinely dead session is the one case that is NOT constant-cost, and it
+// is meant to be — it is rare by construction and the alternative is a
+// session lingering forever under remain-on-exit.
+//
+// Best-effort: a kill that fails leaves the row exactly where it was for the
+// next List to find and retry — nothing is reported until the kill lands, so
+// a retry can never double-report the same exit.
+func (d *Driver) reapDeadRows(ctx context.Context, rows []paneRow, captures map[string]paneCapture) []paneRow {
+	hasDead := false
+	for _, r := range rows {
+		if r.dead {
+			hasDead = true
+			break
+		}
+	}
+	if !hasDead {
+		return rows
+	}
+	kept := make([]paneRow, 0, len(rows))
+	for _, r := range rows {
+		if !r.dead {
+			kept = append(kept, r)
+			continue
+		}
+		at := d.now()
+		screenPath := ""
+		if c, ok := captures[r.paneID]; ok {
+			screenPath = d.saveExitScreen(r.session, c)
+		}
+		if _, err := d.killCorroborated(ctx, fleet.SessionRef{Machine: d.machine, ID: r.session, Name: r.session}); err != nil {
+			// Still there for the next List to find and try again.
+			kept = append(kept, r)
+			continue
+		}
+		d.notePendingExit(r.session, fleet.SessionExit{Status: r.deadStatus, At: at, ScreenPath: screenPath})
+	}
+	return kept
+}
+
+// saveExitScreen writes a dying pane's last captured screen to a capped,
+// private file in this driver's own state directory (colab-fleet #235).
+// Never served over HTTP — pane text can hold anything the runtime printed,
+// and putting it on the API is a new data-exposure surface the issue's
+// ruling deliberately did not open; only the returned path goes on the
+// history record.
+//
+// Best-effort: an unconfigured store, or any failure here, returns "" rather
+// than failing the reap that depends on it — an exit with no screen is still
+// worth recording with its status alone.
+func (d *Driver) saveExitScreen(session string, c paneCapture) string {
+	if d.store == nil {
+		return ""
+	}
+	dir := filepath.Join(d.store.Dir(), "exit-screens")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	path := filepath.Join(dir, session+"-"+d.nonce()+".txt")
+	if err := os.WriteFile(path, []byte(c.text), 0o600); err != nil {
+		return ""
+	}
+	return path
+}
+
+// notePendingExit queues a captured exit for the next DrainExits (colab-fleet
+// #235). Its own mutex, not d.mu — see exitedMu's doc comment on the Driver
+// struct.
+func (d *Driver) notePendingExit(id string, e fleet.SessionExit) {
+	d.exitedMu.Lock()
+	d.exitedPending = append(d.exitedPending, driver.CapturedExit{ID: id, Exit: e})
+	d.exitedMu.Unlock()
+}
+
+// DrainExits implements driver.ExitReporter (colab-fleet #235): every exit
+// captured since the last drain, forgotten the moment it is returned so
+// nothing is ever reported twice.
+func (d *Driver) DrainExits() []driver.CapturedExit {
+	d.exitedMu.Lock()
+	defer d.exitedMu.Unlock()
+	if len(d.exitedPending) == 0 {
+		return nil
+	}
+	out := d.exitedPending
+	d.exitedPending = nil
+	return out
+}
+
 // Create starts a session (§3), honouring the caller's idempotency key
 // (§10).
 //
@@ -4560,6 +4697,20 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		// where it never does — the shell died, the agent binary was missing —
 		// and a file of values must not outlive the session it was staged for.
 		go d.sweepStagedEnv(envPath)
+	}
+	// colab-fleet #235: keep this session's pane around after its own process
+	// exits, so reapExited (below, called from List) can capture why before
+	// removing it. Without this, a pane and whatever it could have said about
+	// its own exit vanish together the instant the process dies, and the
+	// service can only ever record `closedBy: absent`. remain-on-exit is a
+	// WINDOW option — targeting the session by name here scopes it to that
+	// session's own (only) window, never global: this driver's multiplexer
+	// server may host other tools' sessions too, and -g would silently change
+	// their behaviour as well. Best-effort: a failure here does not fail a
+	// create that already succeeded; the session simply falls back to
+	// today's behaviour (vanishes with its process) if it never applies.
+	if _, err := d.run(ctx, d.bin, "set-option", "-t", name, "remain-on-exit", "on"); err != nil {
+		log.Printf("tmux: create %q: could not enable remain-on-exit, its own exit will not be captured: %v", name, err)
 	}
 	// #185: the process exists now, so the module can be asked to attach —
 	// asynchronously; this create's response never waits on it.

@@ -12,6 +12,7 @@ import (
 
 	fleet "github.com/godx-jp/colab-fleet"
 	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/godx-jp/colab-fleet/internal/state"
 )
 
 // Live tests for #180 against a PRIVATE multiplexer server (its own socket),
@@ -152,6 +153,80 @@ func TestLiveMarkerInHistoryMarginIsNotCredited(t *testing.T) {
 	defer cancel()
 	if _, _, landed := d.confirmLandedV2(ctx, "histpane", "a text that was never pasted", before, false, false); landed {
 		t.Fatal("a residue marker in the history margin was credited to this delivery")
+	}
+}
+
+// colab-fleet #235's own oracle, live: a session whose command exits
+// non-zero after printing a line gets an exact ClosedByExit-shaped capture —
+// status and screen — instead of the generic "absent" a later listing would
+// otherwise be left to infer, and no leftover multiplexer session survives
+// it. Drives the multiplexer directly, like the other live tests in this
+// file, and sets remain-on-exit by hand the same way Create does for a
+// session it starts itself (see Create's own comment on the option).
+func TestLiveExitIsCapturedBeforeThePaneIsGone(t *testing.T) {
+	m := newLiveMux(t)
+	// A short sleep before exiting, not an instant exit: remain-on-exit is set
+	// by a SEPARATE tmux invocation right after new-session (see Create's own
+	// comment — chaining the two in one invocation would fail the whole
+	// create if the option ever rejected, which is worse than the residual
+	// race this narrows rather than closes). A real crash takes at least this
+	// long to happen; this delay is standing in for that gap.
+	m.run("new-session", "-d", "-x", "80", "-y", "24", "-s", "exitpane",
+		"sh", "-c", "printf 'boom\\n'; sleep 0.3; exit 7")
+	m.run("set-option", "-t", "exitpane", "remain-on-exit", "on")
+	// Let the pane's own process actually exit before this driver ever looks.
+	deadline := time.Now().Add(5 * time.Second)
+	for strings.TrimSpace(m.run("display-message", "-t", "exitpane", "-p", "#{pane_dead}")) != "1" {
+		if time.Now().After(deadline) {
+			t.Fatal("the pane never went dead")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := New("livebox", WithBinary(m.wrapper), WithState(st))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := d.List(ctx, testCaller, driver.ListFilter{}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	exits := d.DrainExits()
+	if len(exits) != 1 {
+		t.Fatalf("DrainExits: got %d, want 1: %+v", len(exits), exits)
+	}
+	got := exits[0]
+	if got.ID != "exitpane" {
+		t.Errorf("ID = %q, want exitpane", got.ID)
+	}
+	if got.Exit.Status != 7 {
+		t.Errorf("status = %d, want 7", got.Exit.Status)
+	}
+	if got.Exit.ScreenPath == "" {
+		t.Fatal("no screen path captured")
+	}
+	screen, err := os.ReadFile(got.Exit.ScreenPath)
+	if err != nil {
+		t.Fatalf("reading captured screen: %v", err)
+	}
+	if !strings.Contains(string(screen), "boom") {
+		t.Errorf("captured screen = %q, want it to contain %q", screen, "boom")
+	}
+
+	// No leftover session: the multiplexer itself agrees, and a second List
+	// finds nothing new to drain — the exit is reported exactly once.
+	if out := m.run("list-sessions"); strings.Contains(out, "exitpane") {
+		t.Fatalf("a leftover session survived: %s", out)
+	}
+	if _, err := d.List(ctx, testCaller, driver.ListFilter{}); err != nil {
+		t.Fatalf("List (second): %v", err)
+	}
+	if again := d.DrainExits(); len(again) != 0 {
+		t.Fatalf("the same exit was reported twice: %+v", again)
 	}
 }
 
