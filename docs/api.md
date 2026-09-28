@@ -259,6 +259,10 @@ nothing else in the API can explain.
 each one hands the new session authority its creator would otherwise have to
 grant interactively.
 
+Replaying a spent `Idempotency-Key` against a session that has since ended is
+`409` (`reason: "replay-of-ended-session"`), not `201` — colab-fleet #234. The
+key stays spent regardless; mint a new one rather than retrying this call.
+
 `labels` is a map of up to 16 caller facts about the session — keys 1–128 bytes
 without `:`, values up to 128 bytes. Opaque to the service: it stores them and
 filters on them, and never interprets them. Over the bounds is a `400` naming
@@ -841,6 +845,10 @@ answer, not a degraded response.
 
 `not_found` and `unreachable` must never be conflated. One is an answer; the
 other is the absence of one.
+
+A `conflict` may carry `reason` for finer classification than `kind` alone
+gives — e.g. `create`'s own `"replay-of-ended-session"` — plus whatever fields
+that reason needs; check it before parsing `message`.
 
 ---
 

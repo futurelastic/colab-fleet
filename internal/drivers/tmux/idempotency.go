@@ -158,6 +158,24 @@ func (s *idemStore) saveLocked() error {
 	return s.store.Save(idemFileName, idemFile{Keys: s.keys})
 }
 
+// sessionLive reports whether id currently names a live session on this
+// machine — colab-fleet #234's mirror of the question resolvePending asks for
+// a PENDING record: did a COMPLETED create's session survive to be replayed
+// against? A non-nil error means the listing itself failed, not that the
+// session is absent (§5.7) — the caller must not treat the two alike.
+func (d *Driver) sessionLive(ctx context.Context, id string) (bool, error) {
+	rows, _, err := d.enumerate(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range rows {
+		if r.session == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // resolvePending decides what an interrupted create actually did, by looking
 // for what it may have started. See this file's doc comment for why both
 // outcomes are safe.

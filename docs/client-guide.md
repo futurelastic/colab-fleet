@@ -730,7 +730,21 @@ times out and gets retried without one produces two agents in the same working
 directory, and nothing afterwards can detect it. Same key + same body returns
 the original session; same key + different body is a `409`.
 
-On `409`, the guide's advice is "re-read and decide", and the decision is
+**Same key + same body, but that session has since ended, is also a `409`**
+(colab-fleet #234) — not the plain `201` it used to be. Before this fix, a
+replay of a key whose session had already died came back with the identical
+shape a live create returns, so a client that only checked the status code had
+no way to learn its session was gone. Now the body carries `reason:
+"replay-of-ended-session"`, the ended session's own `session` ref, and
+`closedAt` (when this machine noticed, not necessarily the true end — see
+`GET .../sessions/closed` for that distinction). **The fix here is different
+from the general `409` advice below: mint a FRESH `Idempotency-Key` and create
+again.** The old key is not cleared by this — it stays pointed at the same
+dead session for its normal retention, so retrying it gets the same 409 again,
+not a new session.
+
+On the ordinary `409` (a different body, or a destructive call whose belief is
+stale), the guide's advice is "re-read and decide", and the decision is
 genuinely yours — but it is a narrow one. The conflict means the session at
 that id is not the session you looked at. Re-read it: if the working directory
 and start time describe something you did not mean to touch, **stop** and
@@ -1375,9 +1389,12 @@ open; one that does not must not be handed a guess.
 | `invalid` | 400 | malformed request |
 | `unauthorized` | 401/403 | you lack the grant for this verb on this machine |
 | `not_found` | 404 | the machine answered; no such session |
-| `conflict` | 409 | idempotency key reused differently, or `startedAt` disagrees |
+| `conflict` | 409 | idempotency key reused differently; reused against a since-ended session (`reason: "replay-of-ended-session"`, §7); or `startedAt` disagrees |
 | `unsupported` | 501 | the driver cannot do this |
 | `unreachable` | 504 | **the machine did not answer** |
+
+`reason` names a `conflict` more specifically than `kind` alone can, for the
+cases that have one — check it before parsing `message`.
 
 `message` names the grant you were missing, which makes a permissions problem a
 one-line fix rather than a guess.
@@ -1464,6 +1481,7 @@ boundaries.)
 - [ ] Never treats `504` as `404`
 - [ ] Never acts destructively on `unknown`
 - [ ] Sends `Idempotency-Key` on every create
+- [ ] On a create `409` naming `reason: "replay-of-ended-session"`, mints a fresh `Idempotency-Key` rather than retrying the same one
 - [ ] Sends `?startedAt=` on every delete
 - [ ] Sends `nonce` on every respond, and never blind-accepts a default
 - [ ] Subscribes rather than polls, and handles `control.resync`

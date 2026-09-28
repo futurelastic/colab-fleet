@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -36,6 +37,12 @@ func TestIdempotencyKeysSurviveARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// #234: the replay below now corroborates the record against what is
+	// actually running, so the fixture has to say the session survived —
+	// same convention conversationintent_test.go and resumeintent_test.go
+	// already follow for a session a Create call is expected to outlive.
+	f.addSession(fakeSession{name: "gamma", paneID: "%gamma", cwd: "/work/new",
+		pid: 900, created: 1785760000, title: "2_1_220"}, idleFixtureFor("gamma"))
 
 	// A new process, same state directory — this is the restart.
 	second := stateDriver(t, f, dir)
@@ -138,6 +145,64 @@ func TestPendingAdoptionCorroboratesMoreThanTheName(t *testing.T) {
 	}
 }
 
+// colab-fleet #234: a replay whose recorded session has since ended must not
+// come back as an ordinary 201 — that was indistinguishable from a live
+// create succeeding, so a caller checking only the status code never learned
+// its session was gone. Lucy's ruling (option a): 409, naming the ended
+// session and when this driver observed the absence, and the key itself
+// stays spent — no duplicate session, and no release that would let a THIRD
+// replay quietly start one.
+func TestReplayOfAnEndedSessionIsRefusedNotAnsweredAsLive(t *testing.T) {
+	dir := t.TempDir()
+	f := twoSessions()
+	d := stateDriver(t, f, dir)
+
+	created, err := d.Create(context.Background(), testCaller, "key-234",
+		fleet.SessionSpec{Cwd: "/work/ghost", Name: "ghost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The runtime process exits — same shape as a crash or a human closing it
+	// from a terminal. Nothing about that goes through this service, so the
+	// only trace is the pane disappearing from the next listing.
+	f.dropSession("ghost")
+
+	before := countCalls(f, "new-session")
+	_, err = d.Create(context.Background(), testCaller, "key-234",
+		fleet.SessionSpec{Cwd: "/work/ghost", Name: "ghost"})
+	if err == nil {
+		t.Fatal("expected the replay to be refused, not answered as a live create")
+	}
+	if countCalls(f, "new-session") != before {
+		t.Error("a replay of an ended session must never start a second one")
+	}
+
+	var ferr *fleet.Error
+	if !errors.As(err, &ferr) {
+		t.Fatalf("error = %v, want a *fleet.Error the HTTP layer can pass straight through", err)
+	}
+	if ferr.Kind != fleet.ErrorConflict {
+		t.Errorf("Kind = %q, want %q (409, not a fresh classification of what is really a stale key)", ferr.Kind, fleet.ErrorConflict)
+	}
+	if ferr.Reason != fleet.ReasonReplayOfEndedSession {
+		t.Errorf("Reason = %q, want %q — a caller must be able to branch on this without parsing Message", ferr.Reason, fleet.ReasonReplayOfEndedSession)
+	}
+	if ferr.Session == nil || ferr.Session.ID != created.ID {
+		t.Errorf("Session = %+v, want the ended session's own ref (%q)", ferr.Session, created.ID)
+	}
+	if ferr.ClosedAt == nil {
+		t.Error("ClosedAt is nil; the caller has no bound on when the session it named actually ended")
+	}
+
+	// §10: "same key, same answer" — the key is not released, so it keeps
+	// naming the SAME ended session rather than being silently reusable for a
+	// brand new one.
+	ref, rec, found := d.idem.lookup("key-234")
+	if !found || rec.Phase != idemComplete || ref.ID != created.ID {
+		t.Errorf("lookup(key-234) = %+v, %+v, %v; the key must stay spent on the same record, not be cleared by the refusal", ref, rec, found)
+	}
+}
+
 // A failed create must not leave a reservation, or a retry is answered with a
 // session that was never started.
 func TestFailedCreateReleasesItsReservation(t *testing.T) {
@@ -180,6 +245,9 @@ func TestNoStoreStillEnforcesIdempotencyWithinTheProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// #234: the replay is now corroborated against what is actually running.
+	f.addSession(fakeSession{name: "n", paneID: "%n", cwd: "/w",
+		pid: 900, created: 1785760000, title: "2_1_220"}, idleFixtureFor("n"))
 	before := countCalls(f, "new-session")
 	b, err := d.Create(context.Background(), testCaller, "k", fleet.SessionSpec{Cwd: "/w", Name: "n"})
 	if err != nil {

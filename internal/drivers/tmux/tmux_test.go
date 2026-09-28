@@ -1304,6 +1304,9 @@ func TestCreateIsIdempotentPerKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// #234: the replay is now corroborated against what is actually running.
+	f.addSession(fakeSession{name: "gamma", paneID: "%gamma", cwd: "/work/new",
+		pid: 900, created: 1785760000, title: "2_1_220"}, idleFixtureFor("gamma"))
 	before := countCalls(f, "new-session")
 	second, err := d.Create(context.Background(), testCaller, "key-1", spec)
 	if err != nil {
