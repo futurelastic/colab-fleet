@@ -383,7 +383,10 @@ type fakeSession struct {
 	pid     int
 	created int64
 	dead    bool
-	title   string
+	// deadStatus is pane_dead_status (colab-fleet #235). Meaningful only
+	// alongside dead: true.
+	deadStatus int
+	title      string
 }
 
 const testNonce = "0badc0de"
@@ -492,7 +495,8 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 				dead = "1"
 			}
 			b.WriteString(strings.Join([]string{
-				s.name, s.paneID, s.cwd, itoa(s.pid), itoa64(s.created), dead, s.title,
+				s.name, s.paneID, s.cwd, itoa(s.pid), itoa64(s.created), dead,
+				itoa(s.deadStatus), s.title,
 			}, sep))
 			b.WriteString("\n")
 		}

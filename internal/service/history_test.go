@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +95,59 @@ func TestClosed_SurvivesRestartWithStartAndEnd(t *testing.T) {
 
 	// The live list is unchanged: the closed session is not in it.
 	_, live, _ := listLocal(t, srv2, "")
+	if len(live) != 0 {
+		t.Errorf("live list should be empty, got %+v", live)
+	}
+}
+
+// colab-fleet #235: a driver that captured a session's own exit before
+// removing it is tombstoned with that exit's status and screen path, exact
+// like a close — never the generic "absent" a driver with no such visibility
+// would be left to report — and the screen's own content never reaches the
+// wire, only its path.
+func TestClosed_ExitIsCapturedByTheDriver(t *testing.T) {
+	d := newLabelDriver()
+	srv := labelServer(t, New("test-machine"), d, tokenCfg())
+	_, raw := create(t, srv, testToken, nil)
+	sess := decodeSession(t, raw)
+	listLocal(t, srv, "")
+
+	screenPath := filepath.Join(t.TempDir(), "screen.txt")
+	if err := os.WriteFile(screenPath, []byte("boom\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	d.exitVia(sess.ID, 7, screenPath)
+	after := time.Now()
+
+	listLocal(t, srv, "")
+	col, body := listClosed(t, srv, "")
+	if len(col.Items()) != 1 {
+		t.Fatalf("want one closed session, got %s", body)
+	}
+	got := col.Items()[0]
+	if got.ClosedBy != fleet.ClosedByExit {
+		t.Errorf("closedBy = %q, want exit", got.ClosedBy)
+	}
+	if got.ClosedAt.Before(before) || got.ClosedAt.After(after) {
+		t.Errorf("closedAt %v outside the capture window [%v, %v]", got.ClosedAt, before, after)
+	}
+	if got.Exit == nil {
+		t.Fatal("no exit captured on the record")
+	}
+	if got.Exit.Status != 7 {
+		t.Errorf("exit status = %d, want 7", got.Exit.Status)
+	}
+	if got.Exit.ScreenPath != screenPath {
+		t.Errorf("exit screenPath = %q, want %q", got.Exit.ScreenPath, screenPath)
+	}
+	// The pane's own text never appears on the wire — only its path does.
+	if strings.Contains(string(body), "boom") {
+		t.Fatalf("the pane's screen text leaked onto the API: %s", body)
+	}
+
+	// The live list is unchanged: the closed session is not in it.
+	_, live, _ := listLocal(t, srv, "")
 	if len(live) != 0 {
 		t.Errorf("live list should be empty, got %+v", live)
 	}

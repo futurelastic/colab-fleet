@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -32,6 +33,10 @@ import (
 //     seen session: an upper bound (fleet.ClosedByAbsent). A filtered or
 //     partial listing proves nothing about absence (§5.7) and never ends
 //     anything — the same rule the label store's retain follows.
+//   - A driver that can capture a session's own exit before removing it
+//     (colab-fleet #235, driver.ExitReporter) reports it alongside its
+//     listing: exact, like a close, because the driver observed the pane
+//     itself rather than merely noticing it missing later.
 //   - A local session.closed event does NOT write a tombstone by itself: a
 //     rename also retires the old id on the stream. It asks for a local
 //     re-listing instead (requestSweep), which settles the question with the
@@ -238,6 +243,32 @@ func (h *historyStore) tombstoneLocked(r *seenRecord, at time.Time, by fleet.Clo
 	})
 }
 
+// tombstoneExitLocked writes the tombstone for a session an ExitReporter
+// driver captured and already removed (colab-fleet #235). ClosedAt is the
+// driver's own capture moment (e.Exit.At), not `now`: the capture happened
+// synchronously inside the List call this observe is folding in, and using
+// that moment keeps ClosedByExit exact the same way ClosedByClose's is,
+// rather than backdating it to whenever this fold-in happened to run.
+func (h *historyStore) tombstoneExitLocked(r *seenRecord, e driver.CapturedExit) {
+	name := r.Name
+	if name == "" {
+		name = r.ID
+	}
+	exit := e.Exit
+	h.closed = append(h.closed, fleet.ClosedSession{
+		SessionRef:   fleet.SessionRef{Machine: h.self, ID: r.ID, Name: name},
+		Runtime:      r.Runtime,
+		Cwd:          r.Cwd,
+		StartedAt:    r.StartedAt,
+		Conversation: r.Conversation,
+		LastSeenAt:   r.LastSeen,
+		ClosedAt:     exit.At,
+		ClosedBy:     fleet.ClosedByExit,
+		Evidence:     fmt.Sprintf("captured its own exit status (%d) before removing the session", exit.Status),
+		Exit:         &exit,
+	})
+}
+
 // created records a session this service just started, so a close that
 // arrives before any listing still has something to describe.
 func (h *historyStore) created(rt fleet.RuntimeId, s fleet.Session) {
@@ -289,12 +320,38 @@ func (h *historyStore) closedByRequest(rt fleet.RuntimeId, id string) {
 // unfiltered listing every source answered ok; only such a listing may end a
 // session. listedAt is when the listing was requested: a record sighted after
 // it (a create that finished while the listing ran) is not missing, merely
-// later than the snapshot.
-func (h *historyStore) observe(rt fleet.RuntimeId, items []fleet.Session, complete bool, listedAt time.Time) {
+// later than the snapshot. exits is whatever an ExitReporter driver (#235)
+// captured and already removed in the SAME call that produced items — every
+// id in it is guaranteed absent from items, by construction of the driver
+// side of this contract.
+func (h *historyStore) observe(rt fleet.RuntimeId, items []fleet.Session, complete bool, listedAt time.Time, exits []driver.CapturedExit) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := h.now()
 	changed := false
+
+	// colab-fleet #235: settle every captured exit before the ordinary
+	// present/absent bookkeeping below ever sees its id. The driver already
+	// removed these sessions, so none of them can appear in items this round —
+	// without this they would fall through to the complete-scan's generic
+	// "absent from a listing" tombstone below, the very thing an ExitReporter
+	// exists to do better than.
+	for _, e := range exits {
+		k := labelKey{rt, e.ID}
+		r, ok := h.seen[k]
+		if !ok {
+			// Never sighted by this service — its own process exited before
+			// any listing reached it. The end is still a fact worth keeping
+			// with the exit the driver captured; only the rest of the
+			// metadata is thin, and it says so by being absent, same as
+			// closedByRequest's identical fallback.
+			r = &seenRecord{Runtime: rt, ID: e.ID}
+		} else {
+			delete(h.seen, k)
+		}
+		h.tombstoneExitLocked(r, e)
+		changed = true
+	}
 
 	present := make(map[string]bool, len(items))
 	fresh := make([]fleet.Session, 0)

@@ -267,6 +267,32 @@ type LabelRelayer interface {
 	Labels(ctx context.Context, req fleet.Request, ref fleet.SessionRef, patch map[string]*string) (fleet.Session, error)
 }
 
+// CapturedExit is one session's own process exit, captured by an
+// ExitReporter driver in the same pass that removed the session from its
+// runtime (colab-fleet #235). ID is the driver's own session id; the caller
+// already knows which runtime it asked.
+type CapturedExit struct {
+	ID   string
+	Exit fleet.SessionExit
+}
+
+// ExitReporter is an OPTIONAL capability: a LOCAL driver that can capture
+// what a session's own process reported when it exited on its own, before
+// the driver removed the session that held it (colab-fleet #235). Peer
+// drivers never implement it — a peer reports its own exits through its own
+// ClosedSession records, read via ClosedLister above, not through this.
+//
+// The service drains this right after List, so a session this driver
+// captured an exit for is tombstoned with that exit's status and screen
+// path rather than the generic "absent from a listing" a driver with no such
+// visibility leaves behind.
+type ExitReporter interface {
+	// DrainExits returns every exit captured since the last drain and
+	// forgets them — each call answers "since I last asked", never
+	// "everything ever measured". A driver with nothing new returns nil.
+	DrainExits() []CapturedExit
+}
+
 // SubscribeFilter narrows which events a subscription receives (§3, §5.5).
 //
 // # Granularity is a cost parameter, not a convenience
