@@ -93,29 +93,9 @@ jobs:
           # the toolchain floor is stated in exactly one place.
           go-version-file: go.mod
 
-      - name: gofmt
-        run: |
-          unformatted="$(gofmt -l .)"
-          if [ -n "$unformatted" ]; then
-            echo "These files are not gofmt-clean:"
-            echo "$unformatted"
-            exit 1
-          fi
-
-      - name: go build
-        run: go build ./...
-
-      - name: go vet
-        run: go vet ./...
-
-      # -race because this codebase runs control-mode clients, pumps and an
-      # event engine concurrently; a data race there would surface as an
-      # event stream that is subtly wrong rather than one that crashes.
-      #
-      # The driver integration tests are opt-in via FLEET_TMUX_INTEGRATION
-      # and skip here: CI has no multiplexer and no sessions to look at.
-      # That is deliberate — those tests assert against a live machine, and
-      # a green CI run means the unit suite passed, not that the substrate
-      # behaved.
-      - name: go test -race
-        run: go test -race ./...
+      # gofmt, build, vet, test -race — the same script a session runs locally
+      # before it ships (#233). One file, not a hand-copied list of steps: a
+      # local gate that reruns this list from memory is exactly how #230
+      # reached trunk gofmt-dirty while build/vet/test all passed.
+      - name: gate (scripts/gate.sh)
+        run: ./scripts/gate.sh

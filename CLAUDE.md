@@ -29,6 +29,11 @@ This repo follows the [colab-handbook](https://github.com/godx-jp/colab-handbook
   when it is off (#201). `go run ./cmd/colab-fleetd doctor --offline` from a
   clone prints a `hooks.pre-commit` row; `warn` means commits there are not
   scanned. Check it before your first commit in a clone you have not used.
+- **Gate:** `scripts/gate.sh` — `gofmt -l .`, `go build ./...`, `go vet ./...`,
+  `go test -race ./...`. Run it before you wrap; `ci.yml`'s `go` job calls this
+  same file, so a local pass and CI answer the same question by construction
+  (#233 — a gate remembered separately in two places had already drifted when
+  #230 shipped gofmt-dirty with build/vet/test all green).
 
 ## This repo is PUBLIC
 

@@ -16,3 +16,7 @@ trunk: main
 # trunk: detected (the repo's default branch, 2026-08-17)
 stack: Go — standard library only, no third-party dependencies
 # stack: supplied by --stack (2026-08-17)
+gate: scripts/gate.sh
+# gate: the repo's declared quality gate — gofmt -l, go build, go vet, go test
+# -race. ci.yml's `go` job calls this exact file, so a session's local run and
+# CI answer the same question by construction and cannot drift apart (#233).
