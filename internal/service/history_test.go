@@ -313,3 +313,117 @@ func TestClosed_PrematureCloseIsWithdrawn(t *testing.T) {
 		t.Fatalf("a still-running session kept its tombstone: %s", body)
 	}
 }
+
+// colab-fleet #236: an exit's screen file follows the same retention as the
+// tombstone that names it. Aging the tombstone out on a later write (list()
+// itself only filters a read — the comment on pruneLocked/list — so this
+// forces an actual prune by closing a second session once the clock has
+// moved past the window) must remove the file too, not just hide the record.
+func TestClosed_ExitScreenFileAgesOutWithItsTombstone(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewWithState("test-machine", st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetClosedRetention(48 * time.Hour)
+	clock := time.Now()
+	svc.history.now = func() time.Time { return clock }
+
+	d := newLabelDriver()
+	srv := labelServer(t, svc, d, tokenCfg())
+
+	_, raw := create(t, srv, testToken, nil)
+	sess := decodeSession(t, raw)
+
+	screenDir := filepath.Join(st.Dir(), "exit-screens")
+	if err := os.MkdirAll(screenDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	screenPath := filepath.Join(screenDir, "old.txt")
+	if err := os.WriteFile(screenPath, []byte("boom\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.exitVia(sess.ID, 7, screenPath)
+	listLocal(t, srv, "") // folds the exit in, writes the tombstone
+
+	if _, err := os.Stat(screenPath); err != nil {
+		t.Fatalf("screen file should exist right after the exit: %v", err)
+	}
+
+	clock = clock.Add(49 * time.Hour) // past the 48h retention
+	_, raw = create(t, srv, testToken, nil)
+	other := decodeSession(t, raw)
+	closeSession(t, srv, other.ID) // a write, so pruneLocked actually runs
+
+	if matches := listMustNotContain(t, srv, sess.ID); len(matches) != 0 {
+		t.Fatalf("the aged-out record is still returned: %+v", matches)
+	}
+	if _, err := os.Stat(screenPath); !os.IsNotExist(err) {
+		t.Fatalf("screen file should have been removed with its aged-out tombstone, stat err = %v", err)
+	}
+}
+
+// listMustNotContain is TestClosed_ExitScreenFileAgesOutWithItsTombstone's
+// own small helper: it returns every closed item matching id, so the caller
+// can fail with the match in hand rather than a bare boolean.
+func listMustNotContain(t *testing.T, srv *httptest.Server, id string) []fleet.ClosedSession {
+	t.Helper()
+	col, _ := listClosed(t, srv, "")
+	var matches []fleet.ClosedSession
+	for _, c := range col.Items() {
+		if c.ID == id {
+			matches = append(matches, c)
+		}
+	}
+	return matches
+}
+
+// colab-fleet #236: a file left in exit-screens/ with no closed-session
+// record naming it — a save that happened just before a crash prevented the
+// tombstone from ever being written, or a record pruned by an older build
+// that predates the file-aware prune — is removed at the next start-up.
+// A file a live record still names must survive the same sweep.
+func TestClosed_LoadSweepsOrphanExitScreenFiles(t *testing.T) {
+	dir := t.TempDir()
+	screenDir := filepath.Join(dir, "exit-screens")
+	if err := os.MkdirAll(screenDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	orphanPath := filepath.Join(screenDir, "orphan.txt")
+	if err := os.WriteFile(orphanPath, []byte("orphan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	livePath := filepath.Join(screenDir, "live.txt")
+	if err := os.WriteFile(livePath, []byte("live\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := historyDoc{Closed: []fleet.ClosedSession{{
+		SessionRef: fleet.SessionRef{Machine: "test-machine", ID: "s1"},
+		ClosedBy:   fleet.ClosedByExit,
+		ClosedAt:   time.Now(),
+		Exit:       &fleet.SessionExit{Status: 1, At: time.Now(), ScreenPath: livePath},
+	}}}
+	if err := st.Save(historyStateName, doc); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewWithState("test-machine", st); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(orphanPath); !os.IsNotExist(err) {
+		t.Fatalf("orphan file should be swept at load, stat err = %v", err)
+	}
+	if _, err := os.Stat(livePath); err != nil {
+		t.Fatalf("a file a live record still names should survive the sweep: %v", err)
+	}
+}
