@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -646,8 +647,57 @@ type processSessionRecord struct {
 // see that field's own doc comment for why ParseProcessStartTime (time.Local)
 // is the wrong parser for it, even though the two share an identical textual
 // layout.
+//
+// The runtime writes this field in one of two shapes, by platform. The textual
+// layout above is what it writes where it reads the start time from `ps`. On
+// Linux it writes the raw `starttime` field of /proc/<pid>/stat instead — a
+// bare decimal count of clock ticks since boot (measured: "343765263" for a
+// process `ps -o lstart=` reports as starting at boot + 3437652 s). Rejecting
+// that shape left the per-process record unusable on every Linux machine, so
+// a session's conversation stayed unknown until its transcript existed — and
+// a freshly spawned session with no turn yet has none.
+//
+// The ticks are converted exactly the way procps renders `lstart`: boot time
+// plus whole seconds of ticks, truncated. Both sides are then whole seconds
+// derived from the same two kernel values, so corroborateProcessRecord's
+// exact-equality check keeps its meaning — a recycled pid still has a
+// different starttime and still fails it.
 func parseProcessSessionRecordStartTime(s string) (time.Time, error) {
+	if ticks, err := strconv.ParseUint(s, 10, 64); err == nil {
+		boot, err := linuxBootTime()
+		if err != nil {
+			return time.Time{}, fmt.Errorf("procStart %q is a Linux tick count, but boot time is unavailable: %w", s, err)
+		}
+		return boot.Add(time.Duration(ticks/linuxUserHZ) * time.Second), nil
+	}
 	return time.ParseInLocation(psStartTimeLayout, s, time.UTC)
+}
+
+// linuxUserHZ is the unit of /proc/<pid>/stat's starttime. The kernel exports
+// every tick-valued /proc field in USER_HZ, which is fixed at 100 as userspace
+// ABI regardless of the kernel's internal HZ — the same constant procps divides
+// by. Go's standard library has no sysconf(_SC_CLK_TCK) to ask for it.
+const linuxUserHZ = 100
+
+// linuxBootTime reads the `btime` line of /proc/stat — the boot instant, in
+// whole seconds since the epoch, that procps adds a process's starttime to.
+// A variable so a test can pin boot time without a real /proc; off Linux the
+// read fails, which leaves a tick-shaped procStart unparsed exactly as before.
+var linuxBootTime = func() (time.Time, error) {
+	b, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return time.Time{}, err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, "btime "); ok {
+			secs, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+			if err != nil {
+				return time.Time{}, fmt.Errorf("/proc/stat btime %q: %w", v, err)
+			}
+			return time.Unix(secs, 0), nil
+		}
+	}
+	return time.Time{}, errors.New("/proc/stat has no btime line")
 }
 
 // processSessionRecordBytes returns the raw bytes of one process-sessions file,
