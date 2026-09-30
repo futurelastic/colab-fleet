@@ -720,16 +720,36 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 	sources := []fleet.SourceStatus{{Machine: s.self, Status: fleet.SourceOK, ObservedAt: now}}
 
 	for machine, d := range s.peerDrivers() {
-		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, callerDeadline)
-		callCtx, cancel := context.WithTimeout(ctx, deadline)
-		_, err := d.List(callCtx, req, driver.ListFilter{})
-		cancel()
-
 		status := fleet.SourceOK
 		errText := ""
-		if err != nil && errors.Is(err, context.DeadlineExceeded) {
+		// A peer that has already stopped answering is reported from what
+		// its driver remembers, never dialled again on this request's path
+		// (colab-fleet #237): the answer is already known, and asking would
+		// cost the full deadline to learn it a second time.
+		if down, ok := peerDownOf(d); ok {
 			status = fleet.SourceUnreachable
-			errText = fmt.Sprintf("no answer within %s", deadline)
+			errText = down
+		} else {
+			deadline := effectiveDeadline(d.Capabilities().DeadlineMs, callerDeadline)
+			callCtx, cancel := context.WithTimeout(ctx, deadline)
+			col, err := d.List(callCtx, req, driver.ListFilter{})
+			cancel()
+			switch {
+			case err != nil && errors.Is(err, context.DeadlineExceeded):
+				status = fleet.SourceUnreachable
+				errText = fmt.Sprintf("no answer within %s", deadline)
+			case err == nil:
+				// A remote driver folds "the peer did not answer" into the
+				// envelope's own sources rather than returning an error, so
+				// a nil error is not proof of contact. Reading the sources is
+				// what keeps an unreachable peer from being listed as ok.
+				for _, src := range col.Sources() {
+					if src.Machine == machine && src.Status == fleet.SourceUnreachable {
+						status, errText = fleet.SourceUnreachable, src.Error
+						break
+					}
+				}
+			}
 		}
 		observed := time.Now()
 		// A peer's build is whatever the last successful probe learned —
@@ -768,6 +788,21 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 	}
 
 	return fleet.NewCollection(items, sources)
+}
+
+// peerDownOf reports, from a driver's own memory and without a network call,
+// whether the peer it fronts is marked down, with the text to show for it.
+func peerDownOf(d driver.Driver) (string, bool) {
+	r, ok := d.(driver.PeerDownReporter)
+	if !ok {
+		return "", false
+	}
+	down, since, failures := r.PeerDown()
+	if !down {
+		return "", false
+	}
+	return fmt.Sprintf("marked down: no answer since %s (%d consecutive failures); re-probing in the background",
+		since.UTC().Format(time.RFC3339), failures), true
 }
 
 // ListRuntimes answers GET /v1/runtimes (api-http.md §3.1), local drivers

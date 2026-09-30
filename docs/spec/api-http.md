@@ -379,6 +379,22 @@ expiry the service returns the envelope with that source marked
 not a 5xx for the whole call. One unresponsive peer degrades an envelope; it
 never fails a fleet-wide query.
 
+**A peer that stops answering is remembered** (#237). A deadline bounds one
+call; it does not stop the next call from dialling a machine that has just
+failed, and a sleeping peer would otherwise cost every read the full bound.
+After **3 consecutive** transport failures (a dial error, or a deadline this
+service itself enforced) the peer is marked down: a call that would have
+dialled it fails at once with the same retryable `unreachable`, the
+`sources[].error` names when the peer began failing, and `GET /v1/machines`
+reports the peer `unreachable` from that memory without dialling. A background
+probe (`GET /v1/health`) retries on a doubling backoff from 2 s to 30 s, and
+the first answer of any kind — even a refusal — clears the state. A deadline
+the *caller* shortened below the service's own bound, and a caller that hangs
+up, are not evidence about the peer and never count. `scope=local` never
+touches a peer in any state. The wire shape is unchanged; only the wait is.
+While a peer is marked down, mutations to it are refused the same way, so a
+false positive costs at most one backoff interval.
+
 A service relaying a call to a peer announces *less* than it enforces: its
 remaining budget minus a transit reserve (the smaller of 250 ms and one fifth
 of what remains), never below 1 ms. The peer therefore sees a smaller value

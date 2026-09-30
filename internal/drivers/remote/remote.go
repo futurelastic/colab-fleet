@@ -196,6 +196,11 @@ type Driver struct {
 	// reported it — see refreshStanding and PeerStanding.
 	standing     fleet.PeerStanding
 	standingSeen bool
+
+	// down is what this driver remembers about how the peer has been
+	// answering, and downPol is its tuning — see down.go (colab-fleet #237).
+	down    downState
+	downPol downPolicy
 }
 
 // Option configures a Driver.
@@ -322,6 +327,7 @@ func New(machine fleet.MachineId, base string, opts ...Option) *Driver {
 		deadline: defaultDeadlineMs * time.Millisecond,
 		margin:   2 * time.Second,
 		now:      time.Now,
+		downPol:  defaultDownPolicy(),
 	}
 	for _, o := range opts {
 		o(d)
@@ -793,6 +799,10 @@ func (d *Driver) doWithHeaders(ctx context.Context, req fleet.Request, method, p
 	if !ok {
 		return ErrNoCallerAuthority
 	}
+	// A peer already known to be down is not dialled: see down.go.
+	if ferr := d.admit(); ferr != nil {
+		return ferr
+	}
 	var rdr io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -831,9 +841,10 @@ func (d *Driver) doWithHeaders(ctx context.Context, req fleet.Request, method, p
 		// not answer, so nothing at all is known about the session
 		// (api-http.md §2: "the single most important line in this
 		// document").
-		return d.transportFailure(ctx, method, path, behalf, started, err)
+		return d.transportFailure(ctx, req, method, path, behalf, started, err)
 	}
 	defer resp.Body.Close()
+	d.noteReached()
 
 	// A response is a domain answer, whatever the status: the peer is up
 	// and speaking the protocol (colab-fleet #67). Excluded here are the two
@@ -1204,7 +1215,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 // A caller that hung up is not a peer miss — the requester went away, the
 // peer may well have been answering — so it returns the same error but is
 // not logged, rather than logged as the peer's fault.
-func (d *Driver) transportFailure(ctx context.Context, method, path, behalf string, started time.Time, err error) *fleet.Error {
+func (d *Driver) transportFailure(ctx context.Context, req fleet.Request, method, path, behalf string, started time.Time, err error) *fleet.Error {
 	after := d.now().Sub(started).Round(time.Millisecond)
 	ferr := &fleet.Error{
 		Kind:      fleet.ErrorUnreachable,
@@ -1216,12 +1227,18 @@ func (d *Driver) transportFailure(ctx context.Context, method, path, behalf stri
 		return ferr
 	}
 	budget := "none"
+	var budgetDur time.Duration
 	if dl, ok := ctx.Deadline(); ok {
-		budget = dl.Sub(started).Round(time.Millisecond).String()
+		budgetDur = dl.Sub(started)
+		budget = budgetDur.Round(time.Millisecond).String()
 	}
 	kind := "transport"
 	if errors.Is(err, context.DeadlineExceeded) {
 		kind = "deadline"
+	}
+	// Evidence about the peer, not about this caller's patience (#237).
+	if d.countsAsPeerFailure(kind == "deadline", budgetDur) {
+		d.noteFailure(req, started)
 	}
 	// The route, never the query: label filters carry caller-supplied values.
 	// The transport's own error repeats the whole URL, query included, so
@@ -1246,6 +1263,9 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 	if !ok {
 		return ErrNoCallerAuthority
 	}
+	if ferr := d.admit(); ferr != nil {
+		return ferr
+	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("remote: encoding request: %w", err)
@@ -1265,9 +1285,10 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 	started := d.now()
 	resp, err := d.client.Do(httpReq)
 	if err != nil {
-		return d.transportFailure(ctx, method, path, behalf, started, err)
+		return d.transportFailure(ctx, req, method, path, behalf, started, err)
 	}
 	defer resp.Body.Close()
+	d.noteReached()
 
 	// Same reasoning as do(): a response, whatever the status, is a domain
 	// answer and proof the peer is up (colab-fleet #67). doWithKey's only

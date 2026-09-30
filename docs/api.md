@@ -49,7 +49,10 @@ will meet them one at a time.
 > #81).
 
 **Deadlines.** `Fleet-Deadline-Ms: <ms>` on any request. A caller may only
-shorten a driver's declared deadline, never extend it.
+shorten a driver's declared deadline, never extend it. A peer that fails
+three calls in a row is remembered as down: reads then answer at once with it
+`unreachable` (and say since when) instead of waiting out the deadline again,
+and it is re-probed in the background (#237; `docs/spec/api-http.md` §3.3).
 
 **Corroboration.** Any session-addressed operation accepts `?startedAt=` — the
 value from a prior read. A destructive operation uses it to refuse acting on a
