@@ -647,6 +647,25 @@ type BuildReporter interface {
 	Build() fleet.Build
 }
 
+// PeerDownReporter is another OPTIONAL capability, same shape as
+// BuildReporter: a driver fronting a PEER machine that remembers its own
+// recent failures and can say, from memory and without a network call, that
+// the peer has stopped answering (colab-fleet #237).
+//
+// Optional for the same reason BuildReporter is: a LOCAL driver has no
+// transport to fail. The service reads it where it would otherwise dial a
+// peer just to learn what the previous calls already established
+// (GET /v1/machines), so a sleeping peer costs a read a map lookup rather
+// than the full deadline.
+//
+// A driver that does not implement it reads as "not known to be down": the
+// service falls back to asking, exactly as it did before.
+type PeerDownReporter interface {
+	// PeerDown reports whether the peer is currently marked down, when it
+	// began failing, and how many consecutive calls have failed since.
+	PeerDown() (down bool, since time.Time, failures int)
+}
+
 // MaxInputBytesReporter is another OPTIONAL capability, same shape as
 // BuildReporter: a driver fronting a PEER machine that has learned, by
 // probing that peer's own /v1/health, the effective limit that peer

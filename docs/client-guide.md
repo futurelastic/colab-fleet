@@ -1408,6 +1408,11 @@ A peer that misses its deadline **degrades the envelope** — that machine is
 marked `unreachable` in `sources` — rather than failing your whole query. One
 slow machine never takes down a fleet-wide read.
 
+A machine that keeps missing is remembered: after three consecutive failures
+the service stops dialling it, and reads report it `unreachable` immediately —
+with the time it began failing in `sources[].error` — until a background probe
+hears it answer. A `scope=local` read never waits on a peer at all.
+
 When your service relays the call to a peer, it announces a slightly shorter
 deadline than yours, so a peer that is up but slow can still get its own
 report back to you. The peer's source then carries the peer's own status and
