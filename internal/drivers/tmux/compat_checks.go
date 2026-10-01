@@ -334,7 +334,7 @@ func (h *compatHarness) addBootChecks(s *compat.Suite) {
 					if _, perr := parseProcessSessionRecordStartTime(ps); perr != nil {
 						detail += fmt.Sprintf("; procStart %q does not parse in the layout the driver expects", ps)
 					} else {
-						detail += "; procStart parses, so it does not match the process's own start time (UTC text assumed)"
+						detail += "; procStart parses, so it does not match the process's own start time (UTC text, or Linux ticks since boot, assumed)"
 					}
 				} else {
 					detail += "; the record has no procStart"
@@ -344,7 +344,7 @@ func (h *compatHarness) addBootChecks(s *compat.Suite) {
 			if id, _ := m["sessionId"].(string); id != b.live.sessionID {
 				return compat.Failed("the corroborated session id differs from the record's")
 			}
-			return compat.Passed("procStart is UTC text that matches the running process, so the record is corroborated as this process's")
+			return compat.Passed("procStart matches the running process's own start time, so the record is corroborated as this process's")
 		}},
 
 		compat.Check{ID: "D4", Probes: []string{"boot.a"}, Eval: func() compat.Verdict {

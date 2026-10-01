@@ -90,7 +90,7 @@ var catalogue = []Spec{
 	{
 		ID:       "D3",
 		Gate:     GateMust,
-		Asserts:  "The record's process start time is UTC text that corroborates the running process, so the record can be trusted to belong to that process and not to a recycled pid.",
+		Asserts:  "The record's process start time (UTC text, or on Linux clock ticks since boot) corroborates the running process, so the record can be trusted to belong to that process and not to a recycled pid.",
 		ReliedOn: []string{"internal/drivers/tmux/terminalpath2_transcript.go#parseProcessSessionRecordStartTime"},
 	},
 	{
