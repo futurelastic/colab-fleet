@@ -26,7 +26,7 @@ release:
   # (2026-10-02, #250) public-tool: every green trunk head gets a candidate (rc -> npm `next`),
   # and the newest clean candidate finalizes automatically after 3 days (-> npm `latest`).
   # The npm publish is NOT the template's single-package `npm:` job: muster ships five packages,
-  # so .github/workflows/release-auto.yml calls release-npm.yml with the tag instead.
+  # so .github/workflows/release-auto.yml dispatches release-npm.yml with the tag instead.
   route: public-tool
   candidates: auto
   test-period: 3d

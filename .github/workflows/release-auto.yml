@@ -12,18 +12,18 @@ name: Release (auto)
 # clean) is the colab CLI's, read from .github/project.yml. This file schedules
 # it and publishes what it tagged.
 #
-# PUBLISHING HAPPENS IN THIS RUN. A tag pushed with GITHUB_TOKEN triggers no
-# other workflow, so a tag-push listener would never fire. The `publish-*` jobs
-# call release-npm.yml (a reusable workflow) with the tag this run just created:
+# PUBLISHING IS STARTED FROM THIS RUN. A tag pushed with GITHUB_TOKEN triggers no
+# other workflow, so a tag-push listener would never fire. The `publish` job
+# DISPATCHES release-npm.yml with the tag this run just created and waits for it:
 # a candidate goes to npm `next`, a final to `latest`.
 #
 # NO GITHUB RELEASE. Nothing is attached to a Release and nothing installs from
 # one: npx is the one install surface (see release-npm.yml).
 #
-# TRUSTED PUBLISHING. npm matches the CALLING workflow, so the trusted publisher
-# on each of the five packages must name `release-auto.yml`. A manual
-# `release-npm.yml` dispatch needs it to name `release-npm.yml` instead; the
-# package setting holds one workflow name, so see #250 for which is configured.
+# TRUSTED PUBLISHING. npm matches the workflow that STARTED the run, and a
+# called (reusable) workflow reports its caller. So publishing is a dispatch, not
+# a call: release-npm.yml runs top-level and the trusted publisher on each of the
+# five packages stays `release-npm.yml`, for this path and for a manual dispatch.
 #
 # IT NEVER WRITES A COMMIT. The only refs pushed are the annotated tags
 # `colab release cut` / `finalize` create.
@@ -148,29 +148,48 @@ jobs:
             esac
           fi
 
-  # Publishes what the release job tagged, in this same run: the candidate to
-  # `next`, then the final to `latest` (a run can create both). Each is a call
-  # to release-npm.yml, which skips a version already on npm, so re-running a
-  # failed run finishes the publish.
-  publish-candidate:
-    name: Publish the candidate
+  # Publishes what the release job tagged: the candidate to `next`, then the
+  # final to `latest` (a run can create both). Each is a DISPATCH of
+  # release-npm.yml, not a call: npm matches the OIDC token's workflow_ref
+  # against the trusted publisher, and a called workflow reports its CALLER, so
+  # a call would need release-auto.yml configured on every package (#250 run
+  # 37054986272: ENEEDAUTH). A dispatched run is its own top-level run, so its
+  # workflow_ref is release-npm.yml, which is what the packages trust.
+  # GITHUB_TOKEN starts no new run from an event it creates EXCEPT
+  # workflow_dispatch, which is why this works without a token of ours.
+  # release-npm.yml skips a version already on npm, so re-running a failed run
+  # finishes the publish.
+  publish:
+    name: Publish to npm
     needs: release
-    if: needs.release.outputs.cut-tag != ''
+    if: needs.release.outputs.cut-tag != '' || needs.release.outputs.final-tag != ''
+    runs-on: ubuntu-latest
     permissions:
+      actions: write # dispatch release-npm.yml and watch the run
       contents: read
-      id-token: write # the OIDC token npm trusted publishing exchanges
-    uses: ./.github/workflows/release-npm.yml
-    with:
-      tag: ${{ needs.release.outputs.cut-tag }}
-
-  publish-final:
-    name: Publish the final
-    needs: [release, publish-candidate]
-    # always(): publish-candidate is skipped on a run that cut nothing.
-    if: always() && needs.release.outputs.final-tag != '' && needs.publish-candidate.result != 'failure'
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/release-npm.yml
-    with:
-      tag: ${{ needs.release.outputs.final-tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      CUT_TAG: ${{ needs.release.outputs.cut-tag }}
+      FINAL_TAG: ${{ needs.release.outputs.final-tag }}
+    steps:
+      - name: Dispatch release-npm.yml and wait for it
+        run: |
+          set -euo pipefail
+          publish() {
+            tag="$1"
+            since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            gh workflow run release-npm.yml --ref main -f "tag=$tag" -f dry_run=false
+            id=""
+            for _ in $(seq 1 30); do
+              id="$(gh run list --workflow release-npm.yml --event workflow_dispatch \
+                --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$since\")] | sort_by(.createdAt) | last | .databaseId // empty")"
+              [ -n "$id" ] && break
+              sleep 5
+            done
+            [ -n "$id" ] || { echo "::error::release-npm.yml run for $tag never appeared"; exit 1; }
+            echo "Dispatched release-npm.yml for $tag: run $id" | tee -a "$GITHUB_STEP_SUMMARY"
+            gh run watch "$id" --exit-status --interval 20
+          }
+          [ -z "$CUT_TAG" ] || publish "$CUT_TAG"
+          [ -z "$FINAL_TAG" ] || publish "$FINAL_TAG"
