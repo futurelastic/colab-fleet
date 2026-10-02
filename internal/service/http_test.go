@@ -100,6 +100,46 @@ func TestHealth_ReportsSupportsConversationId(t *testing.T) {
 	}
 }
 
+// muster #247: a peer's /v1/health is how internal/drivers/remote learns
+// whether it may forward `settings` (requireLaunchSettings).
+func TestHealth_ReportsSupportsLaunchSettings(t *testing.T) {
+	_, srv := newTestServer(t)
+	resp, err := http.DefaultClient.Do(authedRequest(t, http.MethodGet, srv.URL+"/v1/health", nil))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got, ok := body["supportsLaunchSettings"].(bool); !ok || !got {
+		t.Errorf("supportsLaunchSettings = %v (present=%v), want true", body["supportsLaunchSettings"], ok)
+	}
+}
+
+// muster #247: bad shape and the bypass-only pairing are 400s that name the
+// problem, before any driver is resolved.
+func TestCreate_RefusesInvalidLaunchSettings(t *testing.T) {
+	_, srv := newTestServer(t)
+	for _, tc := range []struct{ name, body, want string }{
+		{"no bypass", `{"cwd":"/w","settings":{"a":1}}`, "permissionMode"},
+		{"not an object", `{"cwd":"/w","permissionMode":"bypass","settings":["a"]}`, "JSON object"},
+	} {
+		req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions", []byte(tc.body))
+		req.Header.Set("Idempotency-Key", "k-settings-"+tc.name)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: Do: %v", tc.name, err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(raw), tc.want) {
+			t.Errorf("%s: got %d %s, want 400 naming %q", tc.name, resp.StatusCode, raw, tc.want)
+		}
+	}
+}
+
 // countingStubDriver is stub.Driver plus a fixed set of counters — the
 // smallest fake that exercises handleHealth's optional-capability branch
 // (#9) without standing up a real tmux session to increment a real one.

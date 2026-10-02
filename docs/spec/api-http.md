@@ -75,6 +75,7 @@ GET /v1/health
         "maxInputBytes": 1024,
         "labels": { "maxKeys": 16, "maxKeyBytes": 128, "maxValueBytes": 128 },
         "supportsConversationId": true,
+        "supportsLaunchSettings": true,
         "drivers": [...] }
 
 GET /v1/machines[?verify=1]
@@ -420,7 +421,8 @@ Idempotency-Key: <caller-supplied, required>
   "env": {"NAME": "value"}, "resume": "<conversation id>",
   "conversationId": "<caller-chosen uuid>",
   "permissionMode": "bypass", "consents": ["folder-trust"],
-  "mcpConfig": ["/abs/servers.json"], "labels": {"issue": "153"} }
+  "mcpConfig": ["/abs/servers.json"],
+  "settings": {"crossSessionInbound": "accept"}, "labels": {"issue": "153"} }
 
 → 201 { "machine": "...", "id": "...", "name": "...", "runtime": "...",
         "marker": "...",
@@ -658,6 +660,23 @@ and for the same shape of reason: these configurations name servers the session
 will LAUNCH, and between "may start a session" and "may start a session that
 also starts these", the second is plainly the larger authority. The refusal names
 the field, so a caller fixes one line rather than re-reading its whole request.
+
+**`settings` carries launch-time runtime settings for the agent CLI** (muster
+#247): a JSON object serialized onto argv as the CLI's `--settings '<json>'`. It
+exists for the settings the CLI reads only at boot and from no environment
+variable, so `env` cannot carry them — without a field a client that needs one
+starts the process itself and misses everything the service wires in at launch.
+
+It is accepted **only with `permissionMode: "bypass"`**: `settings` on any other
+session is refused `invalid` with the reason, so it cannot widen a session that
+still asks before acting. It must be a JSON object (invalid JSON, `[…]`, a
+scalar, or more than 4096 bytes compacted is `invalid`; `null` means absent); its
+keys are not interpreted. It requires the **`send` grant in addition to
+`create`**, like `permissionMode`. Because the value is an argv element, it is
+for launch-time switches only — never a credential; those go in `env` or a file
+named by `mcpConfig`. A runtime with no CLI to hand it to answers `unsupported`,
+and so does a peer that predates the field (§3.1's `supportsLaunchSettings`),
+before anything is started there.
 
 Caller-supplied values that land in the agent's argv (`agent`, `model`, `effort`,
 `resume`, `mcpConfig`) may not begin with `-`: the CLI would read them as flags,

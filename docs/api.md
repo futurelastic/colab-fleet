@@ -260,14 +260,37 @@ nothing else in the API can explain.
   "name": "", "prompt": "", "contextRef": "/abs/path", "marker": "",
   "remoteControl": true, "trustCwd": false, "env": {}, "resume": "",
   "conversationId": "", "permissionMode": "", "consents": [], "mcpConfig": [],
-  "labels": {}
+  "settings": {}, "labels": {}
 }
 ```
 
-`201` with the session. Four fields — `trustCwd`, `consents`, `permissionMode`,
-`mcpConfig` — additionally require the `send` grant on top of `create`, because
+`201` with the session. Five fields — `trustCwd`, `consents`, `permissionMode`,
+`mcpConfig`, `settings` — additionally require the `send` grant on top of `create`, because
 each one hands the new session authority its creator would otherwise have to
 grant interactively.
+
+**`settings`** (#247) is a JSON object passed to the agent CLI at launch as
+`--settings '<json>'`, for settings the CLI reads only at boot and from no
+environment variable — so `env` cannot carry them. The motivating case is a
+bypass-mode session that must accept inbound cross-session messages:
+`{"permissionMode": "bypass", "settings": {"crossSessionInbound": "accept"}}`.
+Rules:
+
+- **Bypass only.** `settings` without `permissionMode: "bypass"` is `400`, with
+  the reason. It cannot widen a session that still asks before acting.
+- **A JSON object, at most 4096 bytes once compacted.** Invalid JSON, an array,
+  a scalar, or an oversize value is `400` naming which. `null` is the same as
+  absent. Keys are not interpreted: the CLI owns what its settings may switch on.
+- **Not for secrets.** The compacted JSON is one argv element, readable from any
+  process table on the machine. Launch-time switches only; credentials go in
+  `env` or a file named by `mcpConfig`.
+- **Needs `send`** on top of `create`, like `permissionMode`.
+- A session without `settings` is created exactly as before, and a non-bypass
+  session never carries `--settings`. A runtime with no CLI to hand it to
+  (the opencode driver) answers `unsupported`.
+- Relayed to a peer that predates the field, the create is refused
+  `unsupported` before anything is started there (`GET /v1/health` on the peer
+  reports `supportsLaunchSettings: true` when it carries it).
 
 Replaying a spent `Idempotency-Key` against a session that has since ended is
 `409` (`reason: "replay-of-ended-session"`), not `201` — muster #234. The

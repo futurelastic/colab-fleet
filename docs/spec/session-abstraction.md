@@ -88,6 +88,7 @@ SessionSpec {
   conversationId?: string         // a caller-chosen UUID this session starts a NEW conversation under; mutually exclusive with resume
   permissionMode?: string         // a non-default permission posture; "bypass" is the only value
   mcpConfig? : AbsolutePath[]     // tool-server configuration, by path, never inline (§5.3)
+  settings?  : JSON object        // launch-time runtime settings for the agent CLI; bypass-only, never secrets (api-http.md §3.3)
   consents?  : PromptKind[]       // boot questions the caller pre-answers (§2.7)
   trustCwd?  : boolean            // superseded by consents; means exactly ["folder-trust"]
 }
@@ -95,7 +96,7 @@ SessionSpec {
 
 Six of these were undocumented here until muster issue #57's audit — found alongside §2.3's
 drift, and by the same mechanism: each is already fully specified in this repository, just not in
-this block. `env`, `resume`, `permissionMode` and `mcpConfig` are **hints**, the same family as
+this block. `env`, `resume`, `permissionMode`, `mcpConfig` and `settings` are **hints**, the same family as
 `agent`/`model`/`effort` above: a driver that cannot honour one must say so at creation rather than
 silently substitute a default (§4.3). `consents` and `trustCwd` are not hints — they are a caller's
 standing answer to a boot question the driver would otherwise leave the session parked in front of;
