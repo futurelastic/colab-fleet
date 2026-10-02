@@ -535,6 +535,26 @@ labels alone — the pane is cut off and a wrapped label is one string — and t
 receipt names which question of a tabbed dialog it answered. If the highlight does
 not arrive the receipt is `unknown` and nothing is confirmed.
 
+**Tabbed dialogs** (two or more questions) report their tab bar, so a client can
+draw "question 2 of 4" and what the others are called:
+
+```json
+"tabs": [ {"header": "Layout",  "state": "answered"},
+          {"header": "Theme",   "state": "current"},
+          {"header": "Density", "state": "pending"} ],
+"tab": 1
+```
+
+`tabs` lists the question tabs in bar order (the runtime's own `Submit` tab is not
+a question and is left out); `state` is `answered`, `current` or `pending`; `tab`
+is the 0-based index of the current one — `0` is a value, not an absence. This is
+only the bar: another tab's question and options are not drawn until it is
+current, so they are not here. Both fields fail to absent — on a single-question
+dialog, on a bar whose highlighted tab cannot be read, and on a peer built before
+they existed — so check for `tabs` before drawing progress. On the review screen
+(the highlight on `Submit`) `tabs` is present and `tab` is not. Answering is
+unchanged: `respond` answers the current tab, with the nonce the same read gave.
+
 **Multi-select questions** report `prompt.multiSelect: true`; their leading
 options are checkboxes, painted `[ ] Label` / `[✔] Label`. Answer them with a set
 instead of `choice`:

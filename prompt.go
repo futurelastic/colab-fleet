@@ -216,6 +216,29 @@ const (
 // affirmative option is as unambiguous as folder-trust's — an entry to
 // consentableKinds. Never the reverse order.
 
+// PromptTabState says where one tab of a tabbed question dialog stands.
+type PromptTabState string
+
+const (
+	// PromptTabAnswered: the tab's question has been answered (the runtime
+	// paints it ☒) and is not the one on screen.
+	PromptTabAnswered PromptTabState = "answered"
+	// PromptTabCurrent: the tab on screen — the one State.Prompt's Question
+	// and Options describe. It is current even if it was answered earlier and
+	// the dialog was walked back to it.
+	PromptTabCurrent PromptTabState = "current"
+	// PromptTabPending: not answered yet (painted ☐) and not on screen.
+	PromptTabPending PromptTabState = "pending"
+)
+
+// PromptTab is one question tab of a tabbed dialog's bar.
+type PromptTab struct {
+	// Header is the tab's label as the runtime paints it, without its
+	// answered/pending glyph. It is the agent's own text.
+	Header string         `json:"header"`
+	State  PromptTabState `json:"state"`
+}
+
 type SessionPrompt struct {
 	// Question is the text above the options, best effort. It may be empty
 	// when the prompt is terse; the options are the load-bearing part. It is
@@ -263,6 +286,27 @@ type SessionPrompt struct {
 	// its placeholder, and after an answer has been typed there is nothing
 	// left to find it by.
 	FreeText bool `json:"freeText,omitempty"`
+
+	// Tabs is the tab bar of a tabbed question dialog, one entry per question
+	// in the order the bar shows them (the runtime's own "Submit" tab is not a
+	// question and is not listed), and Tab the 0-based index of the one this
+	// prompt is. Together they let a caller draw progress — "question 2 of 4",
+	// what the others are called, which are answered — where Question and
+	// Options describe the current tab alone (muster#242).
+	//
+	// Both fail to absent, never to a guess. They are absent on a dialog with
+	// fewer than two questions (a lone question has no bar worth drawing), on
+	// a bar whose current tab could not be read from the screen, and on a peer
+	// built before the field existed — so the field is its own capability
+	// signal, as MultiSelect and FreeText are. Tab is also absent while the
+	// bar is shown but the highlight is on its Submit tab (the review screen):
+	// the tabs are all there, and none of them is current.
+	//
+	// The tab bar is what the screen shows and nothing more: it carries the
+	// tab headers, never another tab's question or options, which the
+	// runtime does not draw until that tab is current.
+	Tabs []PromptTab `json:"tabs,omitempty"`
+	Tab  *int        `json:"tab,omitempty"`
 
 	// Kind is what the driver thinks is being asked, or empty when it does
 	// not recognise the question. Advisory — see PromptKind. Empty must never

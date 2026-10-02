@@ -426,6 +426,14 @@ POST /v1/machines/{machine}/sessions/{id}/respond
   text is no longer offered, and is answered with `choice` (`0` accepts what is
   there) or `cancel`. Keep answers short — a long one can push the dialog out of
   what the driver reads.
+- A **tabbed** dialog reports `prompt.tabs` (each question's `header` and
+  `state`: `answered`, `current`, `pending`) and `prompt.tab` (0-based index of
+  the current one), so a card can show progress before the dialog has been
+  answered tab by tab. Only the current tab's question and options are on the
+  screen, so only they are in the prompt. Both are absent on a single-question
+  dialog and on a peer that predates them — draw the single-question card then —
+  and `tab` is absent on the review screen, where none of the tabs is current.
+  `tab: 0` is the first tab, not a missing value.
 - **Never blindly accept the default.** A real prompt in the wild highlights
   `No, exit` — a client that reflexively confirms would kill the session it was
   trying to start. That is why `options` and `selected` are both on the wire.
