@@ -18,7 +18,7 @@ import (
 // Agent, Model and Effort are §2.1's "hints, not guarantees": this driver
 // genuinely honours Agent and Model (opencode's own create body carries
 // both) and REFUSES rather than silently drops Effort, Env, ContextRef,
-// McpConfig, PermissionMode, Resume and ConversationId (muster #224) —
+// McpConfig, Settings (muster #247), PermissionMode, Resume and ConversationId (muster #224) —
 // none of which this substrate has an honest mechanism for. TrustCwd and
 // Consents are left as no-ops: a substrate with no such boot-time question
 // honours them by having nothing to do (session.go's own rule for a HINT),
@@ -47,10 +47,13 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		return fleet.Session{}, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "create: cwd is required", Machine: d.machine}
 	}
 	for name, set := range map[string]bool{
-		"effort":         spec.Effort != "",
-		"env":            len(spec.Env) > 0,
-		"contextRef":     spec.ContextRef != "",
-		"mcpConfig":      len(spec.McpConfig) > 0,
+		"effort":     spec.Effort != "",
+		"env":        len(spec.Env) > 0,
+		"contextRef": spec.ContextRef != "",
+		"mcpConfig":  len(spec.McpConfig) > 0,
+		// muster #247: launch-time CLI settings have no meaning for a runtime
+		// with no CLI to hand them to.
+		"settings":       len(spec.Settings) > 0,
 		"permissionMode": spec.PermissionMode != "",
 		"resume":         spec.Resume != "",
 		// muster #224: opencode's session.create has no equivalent of

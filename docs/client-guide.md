@@ -975,6 +975,16 @@ It needs the `send` grant on top of `create`, like `permissionMode`: these
 configurations name servers the session will launch, and starting a session that
 also starts those is a larger authority than starting a session.
 
+**`settings`** is a JSON object handed to the agent CLI at launch as
+`--settings '<json>'`, for a switch the CLI reads only at boot and from no
+environment variable — so `env` cannot carry it. The case it exists for: a
+bypass session that must accept inbound cross-session messages,
+`"permissionMode": "bypass", "settings": {"crossSessionInbound": "accept"}`.
+It is accepted **only with `permissionMode: "bypass"`** (anything else is a
+`400` with the reason), must be a JSON object of at most 4096 bytes, and needs
+the `send` grant like `permissionMode`. It lands on a command line, so it is for
+launch-time switches, never a credential.
+
 One rule shared by everything that reaches the agent's own argv — `agent`,
 `model`, `effort`, `resume`, `mcpConfig`: **a value may not begin with `-`**, or
 the CLI reads it as a flag rather than as your value. `conversationId` lands in

@@ -1,6 +1,9 @@
 package fleet
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Timestamp is a point in time as stamped by one machine's own clock (§11).
 // Every response carries the stamping machine's current clock reading
@@ -220,6 +223,42 @@ type SessionSpec struct {
 	// session that also starts these", the second is plainly the larger
 	// authority.
 	McpConfig []AbsolutePath `json:"mcpConfig,omitempty"`
+
+	// Settings carries runtime settings the agent CLI reads only at launch
+	// (muster #247) — a JSON object the driver serializes onto argv as the
+	// CLI's `--settings '<json>'`.
+	//
+	// # Why a field, when Env exists
+	//
+	// The motivating switch is the one that makes a bypass-mode session accept
+	// inbound cross-session messages (`{"crossSessionInbound":"accept"}`): the
+	// CLI reads it from `--settings` or from its own settings file at boot and
+	// from NO environment variable, so Env cannot carry it. Without a field here a
+	// client that needs the switch has to start the process itself, and a session
+	// started that way misses everything this service wires in at launch.
+	//
+	// # Scoped to bypass, deliberately
+	//
+	// Accepted only with PermissionMode "bypass" and refused otherwise (see
+	// ValidateLaunchSettings): it cannot widen a session that still asks before
+	// acting. The alternative recorded for #247 — writing the value into the
+	// machine-wide settings file — was rejected because it changes every session
+	// on the machine, not only bypass ones; the other shape considered, this
+	// service emitting the one cross-session switch itself whenever the mode is
+	// bypass, was passed over because it would hard-code one setting of someone
+	// else's CLI into this API and need a new release for the next switch.
+	//
+	// It requires the `send` grant on top of `create`, like PermissionMode: it is
+	// configuration for a session that acts without asking.
+	//
+	// # Not for secrets
+	//
+	// The compacted JSON is an argv element, readable from any process table on
+	// the machine — which is why McpConfig names files. Launch-time switches only.
+	//
+	// It is a HINT like Env and McpConfig: a driver with no CLI to hand it to
+	// refuses the create as unsupported rather than drop it.
+	Settings json.RawMessage `json:"settings,omitempty"`
 
 	// Consents lists the boot questions the caller answers in advance, so the
 	// driver may clear them instead of leaving a new session parked in front of

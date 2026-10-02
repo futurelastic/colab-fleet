@@ -187,6 +187,10 @@ type Driver struct {
 	// only a positive answer and re-asks before refusing, the same rule
 	// requireLabels already applies to labelLimits.
 	supportsConversationId *bool
+	// supportsLaunchSettings is what the peer's /v1/health said about the
+	// `settings` create field (muster #247), cached and re-asked exactly as
+	// supportsConversationId is — see requireLaunchSettings.
+	supportsLaunchSettings *bool
 
 	// self is this machine's own id, named to the peer when asking whether it
 	// is listed there (muster #154). Empty means the standing probe is
@@ -444,6 +448,7 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 			d.maxInputBytes = h.MaxInputBytes
 			d.labelLimits = h.Labels
 			d.supportsConversationId = h.SupportsConversationId
+			d.supportsLaunchSettings = h.SupportsLaunchSettings
 			d.mu.Unlock()
 		}
 		return nil
@@ -468,6 +473,10 @@ type peerHealthBody struct {
 	// machine that has it always sends true; absence, not the value, is what
 	// tells "predates the feature" from "has it".
 	SupportsConversationId *bool `json:"supportsConversationId"`
+	// SupportsLaunchSettings is absent on a peer that predates the `settings`
+	// create field (muster #247); the same bare-flag shape as
+	// SupportsConversationId, for the same reason.
+	SupportsLaunchSettings *bool `json:"supportsLaunchSettings"`
 }
 
 // requireLabels refuses a labelled write to a peer that would drop the labels
@@ -533,12 +542,52 @@ func (d *Driver) requireConversationId(ctx context.Context, req fleet.Request) e
 	d.maxInputBytes = h.MaxInputBytes
 	d.labelLimits = h.Labels
 	d.supportsConversationId = h.SupportsConversationId
+	d.supportsLaunchSettings = h.SupportsLaunchSettings
 	d.mu.Unlock()
 	if h.SupportsConversationId == nil || !*h.SupportsConversationId {
 		return &fleet.Error{
 			Kind: fleet.ErrorUnsupported,
 			Message: fmt.Sprintf("peer %s does not carry conversationId (older build); the create was not sent, "+
 				"because that peer would accept it and silently start a conversation under an id of its own choosing", d.machine),
+			Machine: d.machine,
+		}
+	}
+	return nil
+}
+
+// requireLaunchSettings refuses forwarding launch-time CLI settings to a peer
+// that would drop them (muster #247) — requireConversationId's pattern for a
+// third field that predates on some peers.
+//
+// A peer on an older build ignores a create-body field it does not know: it
+// would start the session in bypass mode, answer 201, and the session would
+// lack the setting it was created with — here, a bypass session that silently
+// holds inbound cross-session messages. Only a positive cached answer is
+// trusted; anything else is asked again, so an upgraded peer is not refused on
+// stale evidence.
+func (d *Driver) requireLaunchSettings(ctx context.Context, req fleet.Request) error {
+	d.mu.RLock()
+	supported := d.supportsLaunchSettings
+	d.mu.RUnlock()
+	if supported != nil && *supported {
+		return nil
+	}
+	h, err := d.peerHealth(ctx, req)
+	if err != nil {
+		return fmt.Errorf("remote: could not confirm %s carries launch settings, so the create was not sent: %w", d.machine, err)
+	}
+	d.mu.Lock()
+	d.build = h.Build
+	d.maxInputBytes = h.MaxInputBytes
+	d.labelLimits = h.Labels
+	d.supportsConversationId = h.SupportsConversationId
+	d.supportsLaunchSettings = h.SupportsLaunchSettings
+	d.mu.Unlock()
+	if h.SupportsLaunchSettings == nil || !*h.SupportsLaunchSettings {
+		return &fleet.Error{
+			Kind: fleet.ErrorUnsupported,
+			Message: fmt.Sprintf("peer %s does not carry launch settings (older build); the create was not sent, "+
+				"because that peer would accept it and silently start the session without them", d.machine),
 			Machine: d.machine,
 		}
 	}
@@ -1099,6 +1148,12 @@ type createBody struct {
 	// the peer or approve one that is not.
 	McpConfig []fleet.AbsolutePath `json:"mcpConfig,omitempty"`
 
+	// Settings is launch-time CLI configuration (muster #247), forwarded
+	// verbatim: the peer validates the bypass-only pairing against its own
+	// request, and a peer that predates the field is refused first —
+	// see requireLaunchSettings.
+	Settings json.RawMessage `json:"settings,omitempty"`
+
 	// Labels travel with the create (muster #153); Create refuses a peer
 	// that would drop them rather than send them there to be ignored.
 	Labels map[string]string `json:"labels,omitempty"`
@@ -1157,8 +1212,8 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		Prompt: spec.Prompt, ContextRef: spec.ContextRef,
 		TrustCwd: spec.TrustCwd, Env: spec.Env, Resume: spec.Resume,
 		PermissionMode: spec.PermissionMode, Consents: spec.Consents,
-		McpConfig: spec.McpConfig,
-		Marker:    spec.Marker, RemoteControl: spec.RemoteControl,
+		McpConfig: spec.McpConfig, Settings: spec.Settings,
+		Marker: spec.Marker, RemoteControl: spec.RemoteControl,
 		Labels:         spec.Labels,
 		ConversationId: spec.ConversationId,
 	}
@@ -1169,6 +1224,11 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	}
 	if spec.ConversationId != "" {
 		if err := d.requireConversationId(ctx, req); err != nil {
+			return fleet.Session{}, err
+		}
+	}
+	if len(spec.Settings) > 0 {
+		if err := d.requireLaunchSettings(ctx, req); err != nil {
 			return fleet.Session{}, err
 		}
 	}

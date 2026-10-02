@@ -257,6 +257,7 @@ func TestTrustCwdNeedsSendOnTopOfCreate(t *testing.T) {
 		{"consents-external-imports", `{"runtime":"stub","cwd":"/w","consents":["external-imports"]}`},
 		{"permissionMode", `{"runtime":"stub","cwd":"/w","permissionMode":"bypass"}`},
 		{"mcpConfig", `{"runtime":"stub","cwd":"/w","mcpConfig":["/abs/servers.json"]}`},
+		{"settings", `{"runtime":"stub","cwd":"/w","permissionMode":"bypass","settings":{"crossSessionInbound":"accept"}}`},
 	} {
 		if !denied(create("tok-new-"+tc.name, tc.body)) {
 			t.Errorf("%s: a principal without send got it through the create route", tc.name)

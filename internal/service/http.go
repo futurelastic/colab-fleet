@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -468,6 +469,12 @@ func handleHealth(svc *Service) http.HandlerFunc {
 			// against an older peer rather than silently forwarded and
 			// dropped there.
 			"supportsConversationId": true,
+			// Whether the create endpoint understands `settings` (muster
+			// #247) — the same wire-protocol fact, for the same reason: a relaying
+			// peer asks before forwarding, so a create carrying launch settings
+			// is refused against an older build rather than forwarded and
+			// silently dropped there.
+			"supportsLaunchSettings": true,
 			"drivers":                svc.driverSummaries(),
 			// counters is the read path #9 asked for onto the registry #44
 			// built (internal/drivers/tmux/counters.go): an integer per
@@ -855,6 +862,10 @@ type createSessionBody struct {
 	// why it is one of the fields that asks for more than a create.
 	McpConfig []fleet.AbsolutePath `json:"mcpConfig"`
 
+	// Settings is launch-time runtime configuration for the agent CLI
+	// (muster #247), bypass-mode only. See fleet.SessionSpec.Settings.
+	Settings json.RawMessage `json:"settings"`
+
 	// Labels are stored by the service against the created session
 	// (muster #153). Only create is needed to send them, as for name
 	// and marker: they describe the session, they grant it nothing.
@@ -881,6 +892,10 @@ func createNeedsSend(body createSessionBody) string {
 		// "may start a session that also starts these" are different
 		// authorities, and only the second needs saying out loud.
 		return "mcpConfig"
+	case len(bytes.TrimSpace(body.Settings)) > 0 && !bytes.Equal(bytes.TrimSpace(body.Settings), []byte("null")):
+		// Runtime settings for a session that acts without asking (#247); the
+		// same step up as permissionMode, which it can only accompany.
+		return "settings"
 	}
 	return ""
 }
@@ -969,6 +984,13 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 		}
 		if err := fleet.ValidateLabels(body.Labels); err != nil {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error() + " (#153)", Machine: machine})
+			return
+		}
+		// muster #247: shape and the bypass-only pairing, refused here with a
+		// reason before a driver — or a peer — is involved. A driver checks
+		// again (Create is a public method), so this is the cheap early answer.
+		if _, err := fleet.ValidateLaunchSettings(body.PermissionMode, body.Settings); err != nil {
+			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error() + " (#247)", Machine: machine})
 			return
 		}
 		// muster #224: checked here, before any driver is resolved —
@@ -1071,6 +1093,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			ConversationId: body.ConversationId,
 			PermissionMode: body.PermissionMode, Consents: body.Consents,
 			McpConfig: body.McpConfig, Labels: body.Labels,
+			Settings: body.Settings,
 		}
 
 		deadline := effectiveDeadline(d.Capabilities().DeadlineMs, parseDeadline(r))
