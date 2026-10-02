@@ -1508,6 +1508,23 @@ its placeholder: a person's text, or an earlier attempt's, is not typed over. A
 `text` sent to such a prompt is refused, and `choice` (`0` accepts what is in the
 row) or `cancel` answers it.
 
+`state.prompt.tabs` and `state.prompt.tab` report the tab bar of a tabbed dialog
+(muster issue #242). `tabs` is one `{header, state}` per question tab in the
+order the bar shows them — `state` is `answered` (painted ☒), `current` (the tab
+on screen, even if it was answered earlier) or `pending` (☐) — and `tab` is the
+0-based index of the current one. The bar's own `Submit` tab is not a question
+and is not listed. They are read from the bar's row of the same capture the
+question is, so they cannot disagree with it; they carry the tab *headers* and
+nothing of another tab's question or options, which the runtime does not draw
+until that tab is current. Both fail to absent (§5.7): on a dialog with fewer than
+two questions, on a bar whose current tab cannot be read (the others' states
+would then be a guess, since the current tab is painted ☐ like a pending one),
+on a tab painted with a glyph that was never measured, and on a peer that
+predates them. `tab` is `0` on the first tab — a value, never omitted for being
+zero — and is absent while the highlight is on `Submit` (the review screen), where
+`tabs` is present and none of them is current. Walking the tabs to read every
+question is not offered: it would move the dialog's focus.
+
 A question whose options carry a preview is drawn with the option list and a
 box side by side, and `state.prompt` reads the LIST only (muster issue
 #204): `options` are the labels — a label that wraps across rows is one string —

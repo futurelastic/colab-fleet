@@ -677,6 +677,13 @@ SessionPrompt {
   kind?    : PromptKind    // what the driver thinks is being asked; advisory, fails to absent
   multiSelect? : boolean   // the leading options are checkboxes; answer with Response.choices
   freeText?    : boolean   // one option is the free-text row; answer in your own words with Response.text
+  tabs?        : PromptTab[]  // a tabbed dialog's question tabs in bar order, Submit excluded; fails to absent
+  tab?         : number    // 0-based index of the current tab; absent on the review screen
+}
+
+PromptTab {
+  header : string          // the tab's label as painted, without its glyph
+  state  : "answered" | "current" | "pending"
 }
 
 PromptKind =
@@ -775,6 +782,17 @@ highlighted option". It is set only on a shape whose key sequence has been
 measured, and it is absent again once the row holds text: the row is found by its
 placeholder, and after an answer has been typed there is nothing left to find it
 by. The nonce digests the options, so typing into the row changes it.
+
+**`tabs` and `tab` say where a tabbed dialog stands** (muster issue #242). A
+dialog of two or more questions draws a bar of one tab per question, and the
+driver reports it as it is drawn: each tab's header with its state (`answered`,
+`current` or `pending`) and the 0-based index of the current one. The bar's
+own `Submit` tab is not a question and is not listed; another tab's question and
+options are not drawn until it is current, so they are not reported. Like the
+fields above they fail to absent — on a dialog with fewer than two questions, on
+a bar whose current tab cannot be read, and on a driver that predates them — and
+`tab` is absent while the highlight is on `Submit`, where no listed tab is current.
+Nothing about answering changes.
 
 **`feedback-review` is a notice, and it is reported only while it is in the way**
 (muster issue #215). When an agent drafts product feedback the runtime

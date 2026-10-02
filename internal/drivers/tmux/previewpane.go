@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	fleet "github.com/futurelastic/muster"
 )
 
 // This file reads the two things a question dialog paints that the rest of the
@@ -251,6 +253,53 @@ func dialogTabPosition(raw string) tabPosition {
 		}
 	}
 	return pos
+}
+
+// dialogTabs reads a tabbed dialog's whole bar from the row as captured,
+// escapes included (muster#242): one entry per question tab, Submit left out,
+// and the 0-based index of the current one, or -1 when none of them is.
+//
+// ok is false — and the bar is not published at all — when it holds fewer than
+// two question tabs, when a tab opens with neither glyph the runtime paints
+// (a state read off an unrecognised shape would be a guess), or when no tab at
+// all can be read as the highlighted one: with the current tab unknown the
+// others' states are a guess too, because the current tab is painted ☐ like any
+// pending one. A highlight on the Submit tab is a position that was read: the
+// tabs come back, none of them current.
+//
+// The current tab is found by where the highlight sits (activeTab), never by
+// its label, for the reason dialogTabPosition gives.
+func dialogTabs(raw string) (tabs []fleet.PromptTab, current int, ok bool) {
+	visible, _ := paintedRuns(raw)
+	all := headerTabs(visible)
+	at := activeTab(raw)
+	if at < 0 || at >= len(all) {
+		return nil, -1, false
+	}
+	current = -1
+	for i, tab := range all {
+		if tab == submitTab {
+			continue
+		}
+		var state fleet.PromptTabState
+		var header string
+		switch {
+		case strings.HasPrefix(tab, "☒"):
+			state, header = fleet.PromptTabAnswered, strings.TrimPrefix(tab, "☒")
+		case strings.HasPrefix(tab, "☐"):
+			state, header = fleet.PromptTabPending, strings.TrimPrefix(tab, "☐")
+		default:
+			return nil, -1, false
+		}
+		if i == at {
+			state, current = fleet.PromptTabCurrent, len(tabs)
+		}
+		tabs = append(tabs, fleet.PromptTab{Header: strings.TrimSpace(header), State: state})
+	}
+	if len(tabs) < 2 {
+		return nil, -1, false
+	}
+	return tabs, current, true
 }
 
 // activeTab is the index, into headerTabs of the row's visible text, of the

@@ -1010,6 +1010,14 @@ func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 			rawHeader = s.raw[headerRow]
 		}
 		shape.tab = dialogTabPosition(rawHeader)
+		if isDialogTabBar(header) {
+			if tabs, cur, ok := dialogTabs(rawHeader); ok {
+				p.Tabs = tabs
+				if cur >= 0 {
+					p.Tab = &cur
+				}
+			}
+		}
 		p.Nonce = promptNonceWithHeader(p, header, shape.tab)
 	} else {
 		p.Nonce = promptNonce(p)
