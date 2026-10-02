@@ -21,8 +21,8 @@ name: Release npm
 #                      workflow and not `on: push: tags` / `on: release`: a tag
 #                      created with GITHUB_TOKEN does not trigger other
 #                      workflows, so a listener would never fire for an
-#                      automated release. No such release workflow exists yet;
-#                      when one does, it `uses:` this file after tagging.
+#                      automated release. release-auto.yml calls this file from
+#                      the run that cuts or finalizes the tag (#250).
 #   workflow_dispatch  publish (or dry-run) an existing tag by hand — also how
 #                      a tag cut before this workflow existed is backfilled.
 #
@@ -30,9 +30,9 @@ name: Release npm
 # the job refuses to run if one is in its environment. One-time setup on
 # npmjs.com, for EACH of the five packages: Settings -> Trusted publishing ->
 # GitHub Actions, this repository, workflow file name = the file that STARTS the
-# run. For a manual dispatch that is `release-npm.yml`; once a release workflow
-# calls this one it is THAT file's name (npm checks the caller, not the called
-# workflow).
+# run. For a manual dispatch that is `release-npm.yml`; when release-auto.yml
+# calls this one it is `release-auto.yml` — npm is expected to check the caller,
+# not the called workflow (#250 records what the first real publish showed).
 #
 # GITHUB-HOSTED, ALWAYS. npm trusted publishing does not support self-hosted
 # runners. The repo is public, so this costs nothing.
