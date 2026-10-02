@@ -1,7 +1,7 @@
 # ADR 217 — The feedback card's other states are recognised, not answered
 
 **Status:** accepted (2026-09-26)
-**Issue:** colab-fleet #217 · builds on #215 (ADR 215), #134
+**Issue:** muster #217 · builds on #215 (ADR 215), #134
 
 ## Context
 

@@ -8,12 +8,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
-// colab-fleet issue #63: probeHolders folded driver.ErrUnsupported — a
+// muster issue #63: probeHolders folded driver.ErrUnsupported — a
 // driver's firm, permanent "I can never hold a session" — into the same
 // inconclusive bucket as a driver that is merely unreachable right now.
 // One runtime being down then poisoned bare-id resolution for every

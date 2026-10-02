@@ -50,7 +50,7 @@ func TestLoadConfigWithoutTrustRootsLeavesItEmpty(t *testing.T) {
 	}
 }
 
-// colab-fleet issue #60: defaultRuntime is a plain, optional field on the
+// muster issue #60: defaultRuntime is a plain, optional field on the
 // same file trustRoots lives on, and round-trips the same way.
 func TestLoadConfigReadsDefaultRuntime(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -85,7 +85,7 @@ func TestLoadConfigWithoutDefaultRuntimeLeavesItEmpty(t *testing.T) {
 	}
 }
 
-// colab-fleet #130: maxInputBytes is a plain, optional field on the same
+// muster #130: maxInputBytes is a plain, optional field on the same
 // file defaultRuntime already lives on, and round-trips the same way.
 func TestLoadConfigReadsMaxInputBytes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -120,7 +120,7 @@ func TestLoadConfigWithoutMaxInputBytesLeavesItZero(t *testing.T) {
 	}
 }
 
-// colab-fleet issue #94: sessionEnv is a plain, optional field on the same
+// muster issue #94: sessionEnv is a plain, optional field on the same
 // file trustRoots and defaultRuntime already live on, and round-trips the
 // same way — including appliesTo, which is itself optional within an entry.
 func TestLoadConfigReadsSessionEnv(t *testing.T) {
@@ -188,7 +188,7 @@ func TestLoadConfigWithoutSessionEnvLeavesItEmpty(t *testing.T) {
 	}
 }
 
-// The loader's DisallowUnknownFields (colab-fleet issue #94's finding 1: the
+// The loader's DisallowUnknownFields (muster issue #94's finding 1: the
 // code ships before the config entry, never the reverse) must keep applying
 // inside a sessionEnv entry, not just at the top level — a typo here is
 // exactly the kind of mistake that should fail the daemon at startup rather
@@ -229,7 +229,7 @@ func TestTrustSeedIntervalDefaultsAndValidates(t *testing.T) {
 	}
 }
 
-// colab-fleet #95: main.go's FLEET_TOKEN gate is only safe to relax for a
+// muster #95: main.go's FLEET_TOKEN gate is only safe to relax for a
 // missing token when loadConfig's own guards are trustworthy — an
 // unreadable file, a malformed one, and a file naming no principals must
 // all still refuse to load, exactly as before. These three had no direct
@@ -269,7 +269,7 @@ func TestLoadConfigRejectsAnEmptyPrincipalTable(t *testing.T) {
 	}
 }
 
-// colab-fleet #98: selfCredential is what lets a table-only deployment give
+// muster #98: selfCredential is what lets a table-only deployment give
 // its own outbound peer identity a credential — Service.peerRequest already
 // names that identity "system:"+self, so the table only needs to carry a
 // principal by that exact name.

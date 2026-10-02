@@ -1,6 +1,6 @@
 package tmux
 
-// This file is colab-fleet #184's routing layer: which path a send takes, what
+// This file is muster #184's routing layer: which path a send takes, what
 // is counted about it, and the ledger that keeps one message from arriving
 // twice when the two paths meet.
 //
@@ -33,9 +33,9 @@ import (
 	"fmt"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/inboxclient"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/inboxclient"
 )
 
 // unconfirmedPerSession bounds the ledger: a session that is sent many

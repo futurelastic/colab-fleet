@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/compat"
-	"github.com/godx-jp/colab-fleet/internal/trustseed"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/compat"
+	"github.com/futurelastic/muster/internal/trustseed"
 )
 
 // fakeCandidate writes an executable stand-in for the runtime: a script that
@@ -96,7 +96,7 @@ func TestStaticMarkersAreTiedToTheClassifier(t *testing.T) {
 		"auto mode on": func() bool {
 			return permissionModeOf(newScreen(paneWithIndicator("  ⏵⏵ auto mode on"))) == fleet.PermissionModeAuto
 		},
-		// feedback card (colab-fleet#217): each marker is a substring of the
+		// feedback card (muster#217): each marker is a substring of the
 		// wording the recogniser matches whole, and that wording still reads.
 		"send without reviewing": func() bool {
 			return feedbackWordingReads(feedbackConfirmText, "send without reviewing", feedbackConfirm)

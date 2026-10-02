@@ -11,11 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
-	"github.com/godx-jp/colab-fleet/internal/inboxclient"
+	"github.com/futurelastic/muster/internal/drivers/tmux"
+	"github.com/futurelastic/muster/internal/inboxclient"
 )
 
-// This file is colab-fleet #122's wiring for #119's inbox delivery path: a
+// This file is muster #122's wiring for #119's inbox delivery path: a
 // real tmux.InboxResolver implementation, built here in the composition root
 // exactly the way the ADR (docs/adr/119-inbox-delivery.md, "Why a resolver
 // function, not a path convention") says one must be — from machine-local
@@ -40,7 +40,7 @@ import (
 // is optional; an empty value defaults to "unix" the same way tmux.InboxAddress's
 // own doc comment says sendViaInbox already treats an empty Network.
 //
-// colab-fleet #146: a record keyed by pid alone cannot tell "the process
+// muster #146: a record keyed by pid alone cannot tell "the process
 // this driver resolved a moment ago" apart from "an unrelated process the
 // kernel has since handed the same pid" — the same hazard #116 named for
 // this driver's own ProcessIdentity, one layer up at this index. Two fields
@@ -48,7 +48,7 @@ import (
 //
 //   - StartedAt binds the record to one exact process run — but NOT in the
 //     textual form ResolveProcessIdentity produces (`ps -o lstart=`, no zone
-//     field). colab-fleet #147 measured that layout going into this index
+//     field). muster #147 measured that layout going into this index
 //     verbatim from a UTC-rendering writer, compared via
 //     time.ParseInLocation(layout, s, time.Local) on the identity side too —
 //     a comparison that is false for every session, on every call,
@@ -79,7 +79,7 @@ type inboxIndexEntry struct {
 	StartedAt string `json:"started_at"`
 	// ModeClass is the permission-mode class the process at Socket's other
 	// end is RUNNING IN — "bypass" or "prompting", the receiving runtime's
-	// own two-value vocabulary (inboxclient.ModeClass). colab-fleet #148.
+	// own two-value vocabulary (inboxclient.ModeClass). muster #148.
 	//
 	// Optional, and its absence is the ordinary shape of "this writer does
 	// not know yet": the entry still resolves, delivery simply falls back to
@@ -94,7 +94,7 @@ type inboxIndexEntry struct {
 }
 
 // indexStartTimeMismatches counts every resolve call that found an index
-// entry for the requested pid whose StartedAt did not match — colab-fleet
+// entry for the requested pid whose StartedAt did not match — muster
 // #147's own "also worth fixing while here": a mismatch that happens on
 // every call and is never surfaced is indistinguishable from one that never
 // happens, the same reasoning internal/drivers/tmux/counters.go already
@@ -126,7 +126,7 @@ var indexUnattestableEntries atomic.Int64
 // Exported as a function for the same reason its sibling is.
 func indexUnattestableEntryCount() int64 { return indexUnattestableEntries.Load() }
 
-// The names the two counters above carry in GET /v1/health. colab-fleet #163:
+// The names the two counters above carry in GET /v1/health. muster #163:
 // until then both were atomics only a test could read, while the deploy notes
 // told an operator to watch one of them.
 //

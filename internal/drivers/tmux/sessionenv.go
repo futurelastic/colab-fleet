@@ -6,11 +6,11 @@ import (
 	"os"
 	"strings"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/delivery"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/delivery"
 )
 
-// colab-fleet issue #94: an operator declaring what THIS machine's sessions
+// muster issue #94: an operator declaring what THIS machine's sessions
 // always carry, instead of every caller having to pass the same variable on
 // every create forever — and the one caller that forgets not failing, but
 // starting a healthy-looking session that falls back to whatever ambient
@@ -34,7 +34,7 @@ import (
 //
 // The list of entries — which variables, from which files, required or not,
 // scoped to what — is machine configuration, read at daemon start
-// (cmd/colab-fleetd/config.go's DisallowUnknownFields means it must exist in
+// (cmd/muster/config.go's DisallowUnknownFields means it must exist in
 // the code before it can exist in a config file at all, so enabling this
 // needs a restart same as DefaultRuntime and TrustRoots).
 //
@@ -89,7 +89,7 @@ func (s SessionEnvScope) matches(spec fleet.SessionSpec) bool {
 type SessionEnvEntry struct {
 	// Name is the variable name a session process will see. Validated at
 	// startup by ValidateSessionEnv, not on every create, for the same
-	// reason colab-fleet issue #60's DefaultRuntime is: a typo here should
+	// reason muster issue #60's DefaultRuntime is: a typo here should
 	// be a message an operator reads once, not a refusal every later
 	// caller meets.
 	Name string
@@ -112,7 +112,7 @@ type SessionEnvEntry struct {
 // ValidateSessionEnv checks every entry's shape once, at startup, so a
 // misconfiguration is a message an operator reads at daemon start rather
 // than a create-time refusal every later caller meets — the same reasoning
-// colab-fleet issue #60 states for DefaultRuntime.
+// muster issue #60 states for DefaultRuntime.
 func ValidateSessionEnv(entries []SessionEnvEntry) error {
 	seen := make(map[string]bool, len(entries))
 	for _, e := range entries {
@@ -159,7 +159,7 @@ func (d *Driver) ValidateSessionEnvReserved() error {
 }
 
 // provisionSessionEnv merges this machine's declared identity into spec.Env,
-// and is where colab-fleet issue #94's precedence table (recorded in full on
+// and is where muster issue #94's precedence table (recorded in full on
 // the issue) is implemented:
 //
 //   - required entry, caller silent           → configuration provides it
@@ -308,7 +308,7 @@ func (d *Driver) provisionSessionEnv(spec fleet.SessionSpec) (map[string]string,
 // validateEnv's later pass over the merged map, because a bound violation in
 // a configured value is this machine's problem, not the caller's — folding
 // it into validateEnv would report an operator's bad file to the caller as
-// a 400, exactly the misattribution colab-fleet issue #94 warns against for
+// a 400, exactly the misattribution muster issue #94 warns against for
 // the missing-file case. A value that passes this check is guaranteed to
 // pass validateEnv afterward, so that later pass never fires for a reason
 // that traces back to configuration.

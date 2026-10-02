@@ -98,7 +98,7 @@ func decoration(name string) string {
 	return string(runes[i:])
 }
 
-// markerState is colab-fleet #96's answer to "does name already carry
+// markerState is muster #96's answer to "does name already carry
 // marker" — exact when a session record is available to answer from,
 // honest about not knowing when one is not.
 //
@@ -221,7 +221,7 @@ const maxNameAttempts = 64
 // keying on a trailing marker can see it.
 //
 // The second return, applied, reports whether THIS call appended marker —
-// colab-fleet #96/#97's fact for the caller (Create) to hand to
+// muster #96/#97's fact for the caller (Create) to hand to
 // noteAssertedName, so the NEXT resolveName for this same string can answer
 // markerStateFor exactly instead of guessing again.
 func (d *Driver) resolveName(ctx context.Context, requested, marker string) (name string, applied bool, ok bool) {

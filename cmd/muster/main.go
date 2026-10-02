@@ -1,4 +1,4 @@
-// Command colab-fleetd runs the machine-local colab-fleet service.
+// Command muster runs the machine-local muster service.
 //
 // # Configuration
 //
@@ -25,7 +25,7 @@
 //	                       "tmux" on PATH — which a non-interactive ssh
 //	                       session may not have.
 //	FLEET_RUNTIME_OPENCODE set to 1 to ALSO register a second local driver
-//	                       (colab-fleet issue #55) over opencode
+//	                       (muster issue #55) over opencode
 //	                       (github.com/sst/opencode), a third-party agent
 //	                       this process spawns as a subprocess and talks
 //	                       to over HTTP. Additive, not a replacement for
@@ -53,7 +53,7 @@
 //	                       second local driver is registered — absent means
 //	                       bare-id addressing among more than one stays
 //	                       refused, the older behaviour), and this machine's
-//	                       sessionEnv (colab-fleet issue #94: an identity
+//	                       sessionEnv (muster issue #94: an identity
 //	                       declared for every session this machine starts,
 //	                       rather than every caller having to pass it on
 //	                       every create forever). When present the
@@ -61,7 +61,7 @@
 //	                       FLEET_ALLOW_* are ignored. Absent means
 //	                       single-token mode.
 //
-//	                       colab-fleet #98: a table-only deployment (no
+//	                       muster #98: a table-only deployment (no
 //	                       FLEET_TOKEN) has nothing to present for its OWN
 //	                       long-lived peer reads unless the table names a
 //	                       principal for this machine's system identity —
@@ -83,7 +83,7 @@
 //	                       daemon can find it and offer it), and on the peer
 //	                       under some principal holding at least the read
 //	                       grant (GrantRead — GET /v1/events is gated by
-//	                       reading(), colab-fleet #80) — grants beyond that
+//	                       reading(), muster #80) — grants beyond that
 //	                       are unneeded for a subscription and are the
 //	                       peer-side operator's call, same as any other
 //	                       principal. Configuring only the local half leaves
@@ -117,7 +117,7 @@
 //	                       how often the above re-scans for a worktree
 //	                       created since the last pass. Defaults to 2m;
 //	                       Go duration syntax.
-//	FLEET_INBOX_INDEX      directory an operator points at colab-fleet #119's
+//	FLEET_INBOX_INDEX      directory an operator points at muster #119's
 //	                       delivery path (tmux.WithInboxResolver). Absent
 //	                       means the feature does nothing — #122 found it
 //	                       shipped and deployed with nothing ever calling
@@ -128,11 +128,11 @@
 //	                       started_at, mode_class) — a shape this repository
 //	                       defines for itself, never the real third-party
 //	                       address convention (see
-//	                       cmd/colab-fleetd/inboxresolver.go). GET
+//	                       cmd/muster/inboxresolver.go). GET
 //	                       /v1/runtimes reports whether this wiring is live
 //	                       as deliversToInbox, so an operator never has to
 //	                       infer it from a receipt's wording.
-//	                       colab-fleet #148: mode_class names the permission-
+//	                       muster #148: mode_class names the permission-
 //	                       mode class the target session RUNS IN, and without
 //	                       it a send cannot be attested and falls back to the
 //	                       pane path — so an index whose writer does not yet
@@ -142,16 +142,16 @@
 //	                       unrecognised value is rejected outright rather
 //	                       than guessed at, because the receiving runtime
 //	                       holds a wrong class as firmly as a missing one.
-//	                       colab-fleet #163: setting this also adds the
+//	                       muster #163: setting this also adds the
 //	                       resolver's inbox_index.* counters to the terminal
 //	                       runtime's counters in GET /v1/health.
-//	                       colab-fleet #196: setting this REQUIRES a principal
+//	                       muster #196: setting this REQUIRES a principal
 //	                       table (FLEET_CONFIG) on the tmux runtime — the
 //	                       service refuses to start otherwise, because who
 //	                       relays a person's messages must be a grant, not a
-//	                       header (cmd/colab-fleetd/inboxgate.go).
+//	                       header (cmd/muster/inboxgate.go).
 //	FLEET_DELIVERY_MODULES ordered, comma-separated names of OPTIONAL external
-//	                       delivery modules to enable (colab-fleet #185), in order
+//	                       delivery modules to enable (muster #185), in order
 //	                       of preference. Empty or unset means none, and this
 //	                       daemon behaves exactly as it did before they existed.
 //	                       Set the same value in every machine's service
@@ -162,7 +162,7 @@
 //	                       state.
 //	FLEET_MODULES_DIR      where module executables live, one file per module named
 //	                       by the module. Defaults to
-//	                       <prefix>/libexec/colab-fleet/modules, <prefix> being the
+//	                       <prefix>/libexec/muster/modules, <prefix> being the
 //	                       parent of this binary's directory after symlinks
 //	                       resolve — set it explicitly when the binary is reached
 //	                       through a symlink.
@@ -173,7 +173,7 @@
 //	FLEET_CAPTURE_LINES    how many lines of each pane this driver captures
 //	                       to classify it. Absent, or not a positive
 //	                       integer, means the built-in default is used and
-//	                       this option is never called. colab-fleet #148:
+//	                       this option is never called. muster #148:
 //	                       the default was effectively hard-coded — the
 //	                       option existed with no caller — and a composer
 //	                       pushed past the capture window by accumulated
@@ -181,7 +181,7 @@
 //	                       driver correctly refuses to act on what it cannot
 //	                       see (#134) and an operator's only exit was to
 //	                       attach to the multiplexer by hand. This is the
-//	                       lever that was missing. colab-fleet #169: a
+//	                       lever that was missing. muster #169: a
 //	                       composer is now read only from the visible
 //	                       pane, so a wider margin no longer makes a tall
 //	                       composer readable; it widens the transcript
@@ -192,24 +192,35 @@
 //
 // Operator subcommands run and exit without starting the service:
 //
-//	colab-fleetd principal add|list   enrol a client (enrol.go)
-//	colab-fleetd doctor [--json]      read-only check that this installation is
+//	muster principal add|list   enrol a client (enrol.go)
+//	muster doctor [--json]      read-only check that this installation is
 //	                                  complete — token, config, grants, state
 //	                                  directory, inbox index, peers (doctor.go,
-//	                                  colab-fleet #160). Run it under the service
+//	                                  muster #160). Run it under the service
 //	                                  unit's environment.
-//	colab-fleetd compat --claude PATH check a candidate build of the agent runtime
+//	muster compat --claude PATH check a candidate build of the agent runtime
 //	                                  against the assumptions this service makes
 //	                                  about it, in an isolated multiplexer
 //	                                  server, and print a versioned report
-//	                                  (compat.go, docs/compat.md, colab-fleet
+//	                                  (compat.go, docs/compat.md, muster
 //	                                  #183). Reports only; never installs,
 //	                                  pins or promotes a build.
-//	colab-fleetd -h | --help          print usage and exit 0
+//	muster serve                      start the service
+//	muster --version                  print the build and exit 0
+//	muster -h | --help          print usage and exit 0
 //
 // Any other argument is a usage error (exit 2) and starts nothing
-// (colab-fleet #177). The service itself takes no arguments: it is started
-// bare, and configured entirely by its environment.
+// (muster #177). The service takes no further arguments: it is started with
+// `serve` alone, and configured entirely by its environment. A bare `muster`
+// is a usage error too; only the legacy name (below) still starts bare.
+//
+// # Legacy name
+//
+// The service was released as colab-fleetd and started with no arguments.
+// When the binary is invoked under that name with no arguments it behaves as
+// `muster serve`, so an installed unit or symlink keeps working while a
+// machine moves to the new name. This compatibility is removed in the release
+// after every machine has moved.
 package main
 
 import (
@@ -227,33 +238,37 @@ import (
 	"syscall"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/drivers/opencode"
-	"github.com/godx-jp/colab-fleet/internal/drivers/remote"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
-	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
-	"github.com/godx-jp/colab-fleet/internal/service"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/drivers/opencode"
+	"github.com/futurelastic/muster/internal/drivers/remote"
+	"github.com/futurelastic/muster/internal/drivers/stub"
+	"github.com/futurelastic/muster/internal/drivers/tmux"
+	"github.com/futurelastic/muster/internal/service"
+	"github.com/futurelastic/muster/internal/state"
 )
 
 func main() {
+	args := os.Args[1:]
+	if legacyBare(os.Args) {
+		args = []string{"serve"}
+	}
 	// Operator subcommands run and exit — they never start a service. Handled
 	// before anything else so that enrolling a principal does not require the
 	// environment a running instance needs.
 	//
-	// doctor (colab-fleet #160) is read-only and never needs the environment
+	// doctor (muster #160) is read-only and never needs the environment
 	// to be complete either — reporting that it is not is its whole job.
-	if handled, code := runDoctor(os.Args[1:], os.Getenv, os.Stdout, os.Stderr); handled {
+	if handled, code := runDoctor(args, os.Getenv, os.Stdout, os.Stderr); handled {
 		os.Exit(code)
 	}
-	// compat (colab-fleet #183) checks a candidate runtime build in a private
+	// compat (muster #183) checks a candidate runtime build in a private
 	// multiplexer server. It never starts the service and never touches the
 	// service's own sessions, so like doctor it needs none of its environment.
-	if handled, code := runCompat(os.Args[1:], os.Getenv, os.Stdout, os.Stderr); handled {
+	if handled, code := runCompat(args, os.Getenv, os.Stdout, os.Stderr); handled {
 		os.Exit(code)
 	}
-	if handled, err := runPrincipal(os.Args[1:]); handled {
+	if handled, err := runPrincipal(args); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
@@ -261,11 +276,11 @@ func main() {
 		return
 	}
 	// Anything else on the command line is refused here, before any startup
-	// work (colab-fleet #177). The service is configured by its environment
+	// work (muster #177). The service is configured by its environment
 	// alone, so the only way to start it is with no arguments at all; a
 	// typo or a help flag used to fall through and count as "start", which
 	// from an operator's shell means starting as the installed service.
-	if handled, code := runUsage(os.Args[1:], os.Stdout, os.Stderr); handled {
+	if handled, code := runUsage(args, os.Stdout, os.Stderr); handled {
 		os.Exit(code)
 	}
 
@@ -274,13 +289,13 @@ func main() {
 	// Logged before anything else can fail, so a crash report says which
 	// code crashed. See fleet.Build.
 	selfBuild := fleet.SelfBuild()
-	log.Printf("colab-fleetd: build %s (%s)", selfBuild.Short(), selfBuild.Go)
+	log.Printf("muster: build %s (%s)", selfBuild.Short(), selfBuild.Go)
 
 	// A principal table, when configured, decides everything about who may
 	// do what (§6). Without one the service runs in single-token mode,
 	// which is honest for one machine and unstatable for a fleet.
 	//
-	// Loaded BEFORE the token gate below (colab-fleet #95): the doc comment
+	// Loaded BEFORE the token gate below (muster #95): the doc comment
 	// on FLEET_CONFIG promises that a configured principal table makes
 	// FLEET_TOKEN irrelevant, but a fatal token check that runs first can
 	// never see that table, so it refused a deployment the documentation
@@ -294,7 +309,7 @@ func main() {
 		var err error
 		cfgFile, err = loadConfig(path)
 		if err != nil {
-			log.Fatalf("colab-fleetd: %v", err)
+			log.Fatalf("muster: %v", err)
 		}
 	}
 
@@ -306,7 +321,7 @@ func main() {
 	// to invoke main()'s os.Exit path.
 	token := os.Getenv("FLEET_TOKEN")
 	if requireToken(cfgFile) && token == "" {
-		log.Fatal("colab-fleetd: FLEET_TOKEN must be set — there is no unauthenticated mode (api-http.md §5)")
+		log.Fatal("muster: FLEET_TOKEN must be set — there is no unauthenticated mode (api-http.md §5)")
 	}
 
 	// Durable state (§7.3, §10, §12). Nil is a valid configuration; a
@@ -314,15 +329,15 @@ func main() {
 	// anyway would silently be the in-memory behaviour this replaces.
 	store, err := state.Open(os.Getenv("FLEET_STATE_DIR"))
 	if err != nil {
-		log.Fatalf("colab-fleetd: %v", err)
+		log.Fatalf("muster: %v", err)
 	}
 	if store != nil {
-		log.Printf("colab-fleetd: state directory %s", store.Dir())
+		log.Printf("muster: state directory %s", store.Dir())
 	}
 
 	svc, err := service.NewWithState(self, store)
 	if err != nil {
-		log.Fatalf("colab-fleetd: %v", err)
+		log.Fatalf("muster: %v", err)
 	}
 	// The service's own authority for long-lived peer reads (event
 	// subscriptions, §14 D9). Never used for a proxied unary call — those
@@ -407,7 +422,7 @@ func main() {
 		}
 		for _, r := range trustRoots {
 			if !filepath.IsAbs(r) {
-				log.Fatalf("colab-fleetd: trust root %q must be an absolute path", r)
+				log.Fatalf("muster: trust root %q must be an absolute path", r)
 			}
 		}
 		if len(trustRoots) > 0 {
@@ -415,20 +430,20 @@ func main() {
 			home, homeErr := os.UserHomeDir()
 			if trustStatePath == "" {
 				if homeErr != nil {
-					log.Fatalf("colab-fleetd: trust roots are configured but the home directory "+
+					log.Fatalf("muster: trust roots are configured but the home directory "+
 						"could not be determined (needed for the state file path and the "+
 						"never-seed-home guard): %v", homeErr)
 				}
 				trustStatePath = filepath.Join(home, ".claude.json")
 			}
 			if homeErr != nil {
-				log.Fatalf("colab-fleetd: trust roots are configured but the home directory "+
+				log.Fatalf("muster: trust roots are configured but the home directory "+
 					"could not be determined (needed for the never-seed-home guard): %v", homeErr)
 			}
 			opts = append(opts, tmux.WithTrustSeed(trustStatePath, home, trustRoots))
-			log.Printf("colab-fleetd: trust-seed configured for %d root(s)", len(trustRoots))
+			log.Printf("muster: trust-seed configured for %d root(s)", len(trustRoots))
 		}
-		// colab-fleet issue #94: an identity this machine's sessions carry,
+		// muster issue #94: an identity this machine's sessions carry,
 		// declared once here instead of every caller passing the same
 		// variable on every create forever. Config-file-only, like
 		// TrustRoots and DefaultRuntime above — which credential a
@@ -439,12 +454,12 @@ func main() {
 		if cfgFile != nil && len(cfgFile.SessionEnv) > 0 {
 			entries := cfgFile.sessionEnv()
 			if err := tmux.ValidateSessionEnv(entries); err != nil {
-				log.Fatalf("colab-fleetd: %v", err)
+				log.Fatalf("muster: %v", err)
 			}
 			opts = append(opts, tmux.WithSessionEnv(entries))
-			log.Printf("colab-fleetd: sessionEnv configured for %d entry(ies) (#94)", len(entries))
+			log.Printf("muster: sessionEnv configured for %d entry(ies) (#94)", len(entries))
 		}
-		// colab-fleet #122: #119's inbox delivery path only engages once a
+		// muster #122: #119's inbox delivery path only engages once a
 		// resolver is actually wired — verified live after #119's own
 		// deploy that nothing did this. Off by default like every option
 		// above it: an absent FLEET_INBOX_INDEX means WithInboxResolver is
@@ -452,16 +467,16 @@ func main() {
 		// #119 existed. See inboxresolver.go for what the directory holds
 		// and why its shape is not the real runtime's own convention.
 		if dir := os.Getenv("FLEET_INBOX_INDEX"); dir != "" {
-			// colab-fleet #196 (ruled on #195): the inbox route is refused
+			// muster #196 (ruled on #195): the inbox route is refused
 			// without a principal table, because who relays a person's
 			// messages has to be a grant and not a header. A refusal to start,
 			// like the token gate above — see inboxgate.go. Placed before the
 			// resolver is wired so nothing half-configured is left behind.
 			if err := requireTableForInbox(dir, cfgFile != nil); err != nil {
-				log.Fatalf("colab-fleetd: %v", err)
+				log.Fatalf("muster: %v", err)
 			}
 			opts = append(opts, tmux.WithInboxResolver(newFileInboxResolver(dir)))
-			// colab-fleet #163: the resolver's own index counters join the
+			// muster #163: the resolver's own index counters join the
 			// terminal driver's counters in GET /v1/health. Wired only here,
 			// beside the resolver, so a machine with no index reports no
 			// inbox_index.* name at all rather than a zero it never measured.
@@ -470,9 +485,9 @@ func main() {
 			// and FLEET_CREDENTIAL_PATH already follow above: this process's
 			// own stdout is not the place machine-local filesystem layout
 			// belongs, committed repo or not.
-			log.Print("colab-fleetd: inbox delivery configured (#119, #122)")
+			log.Print("muster: inbox delivery configured (#119, #122)")
 		}
-		// colab-fleet #148: the capture window had no caller, so its default
+		// muster #148: the capture window had no caller, so its default
 		// was hard-coded in practice. A pane whose composer has been pushed
 		// past the window cannot be classified, #134's guard then correctly
 		// refuses to send a key it cannot reason about, and the documented
@@ -485,10 +500,10 @@ func main() {
 		if raw := os.Getenv("FLEET_CAPTURE_LINES"); raw != "" {
 			n, err := strconv.Atoi(raw)
 			if err != nil || n <= 0 {
-				log.Printf("colab-fleetd: ignoring FLEET_CAPTURE_LINES=%q (want a positive integer)", raw)
+				log.Printf("muster: ignoring FLEET_CAPTURE_LINES=%q (want a positive integer)", raw)
 			} else {
 				opts = append(opts, tmux.WithCaptureLines(n))
-				log.Printf("colab-fleetd: pane capture window set to %d lines (#148)", n)
+				log.Printf("muster: pane capture window set to %d lines (#148)", n)
 			}
 		}
 		// #185: optional external delivery modules. Off unless
@@ -497,7 +512,7 @@ func main() {
 		exe, _ := os.Executable()
 		deliveryModules = loadDeliveryModules(os.Getenv, exe, os.Getenv("FLEET_STATE_DIR"))
 		for _, line := range deliveryModules.describe() {
-			log.Print("colab-fleetd: " + line)
+			log.Print("muster: " + line)
 		}
 		if len(deliveryModules.Enabled) > 0 {
 			deliveryModules.Config.Logf = log.Printf
@@ -507,21 +522,21 @@ func main() {
 		// #180: this machine's own sessionEnv may not name a variable the
 		// delivery module reserves either — the module is the sole setter.
 		if err := d.ValidateSessionEnvReserved(); err != nil {
-			log.Fatalf("colab-fleetd: %v", err)
+			log.Fatalf("muster: %v", err)
 		}
 		// An unreadable key table is surfaced, never absorbed: continuing
 		// with an empty one is exactly the behaviour §10 calls a disaster.
 		if err := d.StateError(); err != nil {
-			log.Fatalf("colab-fleetd: %v", err)
+			log.Fatalf("muster: %v", err)
 		}
 		// Startup is reconciliation for trust seeding too: a worktree that
 		// existed before this process started should not have to wait for
 		// the first interval tick, any more than the reconciliation block
 		// below waits to report what it found.
 		if got, err := d.SeedTrustRoots(); err != nil {
-			log.Printf("colab-fleetd: trust-seed: %v", err)
+			log.Printf("muster: trust-seed: %v", err)
 		} else if got.Islands > 0 {
-			log.Printf("colab-fleetd: trust-seed: startup pass — %s", got)
+			log.Printf("muster: trust-seed: startup pass — %s", got)
 		}
 		if len(trustRoots) > 0 {
 			go runTrustSeedLoop(d, trustSeedInterval())
@@ -530,13 +545,13 @@ func main() {
 	case "stub":
 		localDriver, runtimeID = &stub.Driver{DeadlineMs: 5000}, "stub"
 	default:
-		log.Fatalf("colab-fleetd: unknown FLEET_RUNTIME %q (want tmux or stub)", name)
+		log.Fatalf("muster: unknown FLEET_RUNTIME %q (want tmux or stub)", name)
 	}
 	if err := svc.RegisterLocalDriver(runtimeID, localDriver); err != nil {
-		log.Fatalf("colab-fleetd: registering local runtime: %v", err)
+		log.Fatalf("muster: registering local runtime: %v", err)
 	}
 
-	// --- second local driver (colab-fleet issue #55) --------------------
+	// --- second local driver (muster issue #55) --------------------
 	//
 	// Additive and optional, unlike the switch above: this machine may run
 	// tmux (or stub) AND opencode at once, which is the entire proof #55
@@ -556,18 +571,18 @@ func main() {
 		bin := os.Getenv("FLEET_OPENCODE_BIN")
 		d, err := opencode.New(context.Background(), self, opencode.WithBinary(bin))
 		if err != nil {
-			log.Printf("colab-fleetd: opencode runtime not started, continuing without it: %v", err)
+			log.Printf("muster: opencode runtime not started, continuing without it: %v", err)
 		} else if err := svc.RegisterLocalDriver(opencode.DefaultRuntime, d); err != nil {
-			log.Printf("colab-fleetd: registering opencode runtime: %v", err)
+			log.Printf("muster: registering opencode runtime: %v", err)
 			_ = d.Shutdown()
 		} else {
 			opencodeDriver = d
-			log.Printf("colab-fleetd: opencode runtime registered (#55)")
+			log.Printf("muster: opencode runtime registered (#55)")
 		}
 	}
 
 	// The bare-id tiebreak once a second local driver is registered
-	// (colab-fleet issue #60, ⚖ ruling). Config-file-only, like TrustRoots
+	// (muster issue #60, ⚖ ruling). Config-file-only, like TrustRoots
 	// and Peers: which runtimes exist is a fact about this machine, not the
 	// fleet, and belongs in the file an operator already edits per machine.
 	//
@@ -577,13 +592,13 @@ func main() {
 	// exactly like sessions having disappeared.
 	if cfgFile != nil && cfgFile.DefaultRuntime != "" {
 		if err := svc.SetDefaultRuntime(fleet.RuntimeId(cfgFile.DefaultRuntime)); err != nil {
-			log.Fatalf("colab-fleetd: %v", err)
+			log.Fatalf("muster: %v", err)
 		}
-		log.Printf("colab-fleetd: default runtime %q configured for bare-id resolution (§60)", cfgFile.DefaultRuntime)
+		log.Printf("muster: default runtime %q configured for bare-id resolution (§60)", cfgFile.DefaultRuntime)
 	}
 
 	// The `prompt` (create) / `text` (input) length limit, made a machine
-	// setting by colab-fleet #130 instead of a compiled-in constant.
+	// setting by muster #130 instead of a compiled-in constant.
 	// Config-file-only and validated here for the same reason DefaultRuntime
 	// is just above: a typo or a meaningless value should fail startup once,
 	// not turn into a confusing refusal on the first caller that hits it.
@@ -593,22 +608,22 @@ func main() {
 	// setting existed.
 	if cfgFile != nil && cfgFile.MaxInputBytes != 0 {
 		if err := svc.SetMaxInputBytes(cfgFile.MaxInputBytes); err != nil {
-			log.Fatalf("colab-fleetd: %v", err)
+			log.Fatalf("muster: %v", err)
 		}
-		log.Printf("colab-fleetd: input length limit %d bytes configured (#130)", cfgFile.MaxInputBytes)
+		log.Printf("muster: input length limit %d bytes configured (#130)", cfgFile.MaxInputBytes)
 	}
 	// #185: the names a caller may force with `route`. The service checks them
 	// in its request-shape switch, before any driver is resolved, so this is
 	// set whether or not the module's executable is present.
 	if err := svc.SetDeliveryModuleRoutes(deliveryModules.Enabled); err != nil {
-		log.Fatalf("colab-fleetd: %v", err)
+		log.Fatalf("muster: %v", err)
 	}
 	if cfgFile != nil && cfgFile.ClosedRetentionDays != 0 {
 		if cfgFile.ClosedRetentionDays < 0 {
-			log.Fatalf("colab-fleetd: closedRetentionDays must be positive, got %d", cfgFile.ClosedRetentionDays)
+			log.Fatalf("muster: closedRetentionDays must be positive, got %d", cfgFile.ClosedRetentionDays)
 		}
 		svc.SetClosedRetention(time.Duration(cfgFile.ClosedRetentionDays) * 24 * time.Hour)
-		log.Printf("colab-fleetd: closed-session records kept %d days (#179)", cfgFile.ClosedRetentionDays)
+		log.Printf("muster: closed-session records kept %d days (#179)", cfgFile.ClosedRetentionDays)
 	}
 
 	// --- peers ---------------------------------------------------------
@@ -626,18 +641,18 @@ func main() {
 	for _, spec := range peerSpecs {
 		name, base, ok := strings.Cut(spec, "=")
 		if !ok || name == "" || base == "" {
-			log.Fatalf("colab-fleetd: bad FLEET_PEERS entry %q (want name=url)", spec)
+			log.Fatalf("muster: bad FLEET_PEERS entry %q (want name=url)", spec)
 		}
 		machine := fleet.MachineId(strings.TrimSpace(name))
 		if machine == self {
-			log.Fatalf("colab-fleetd: peer %q is this machine; fan-out is one hop and peers never recurse (§13.1)", machine)
+			log.Fatalf("muster: peer %q is this machine; fan-out is one hop and peers never recurse (§13.1)", machine)
 		}
 		// No credential is handed to the peer driver, and none exists to
 		// hand: it presents the authority of whoever made the request
 		// (§13). A proxy holding its own identity is the confused deputy
 		// this design forbids.
 		// WithSelf lets the probe ask the peer whether it lists this machine
-		// back (colab-fleet #154).
+		// back (muster #154).
 		opts := []remote.Option{remote.WithDeadline(3 * time.Second), remote.WithSelf(self)}
 		// The credential THIS machine holds on that peer. Distinct from
 		// anything a caller presents here, and distinct from the peer's
@@ -650,9 +665,9 @@ func main() {
 		}
 		peer := remote.New(machine, strings.TrimSpace(base), opts...)
 		if err := svc.RegisterPeerDriver(machine, peer); err != nil {
-			log.Fatalf("colab-fleetd: registering peer %q: %v", machine, err)
+			log.Fatalf("muster: registering peer %q: %v", machine, err)
 		}
-		log.Printf("colab-fleetd: peer %s configured", machine)
+		log.Printf("muster: peer %s configured", machine)
 
 		// Learn the peer's declared deadline so this driver does not
 		// abandon calls the peer would have completed (§14 D7). Best
@@ -664,10 +679,10 @@ func main() {
 			if err := p.RefreshCapabilities(ctx, fleet.Request{
 				Caller: fleet.Caller{Principal: "system:self", Credential: token},
 			}); err != nil {
-				log.Printf("colab-fleetd: peer %s capabilities unknown for now: %v", m, err)
+				log.Printf("muster: peer %s capabilities unknown for now: %v", m, err)
 				return
 			}
-			log.Printf("colab-fleetd: peer %s deadline learned: %dms",
+			log.Printf("muster: peer %s deadline learned: %dms",
 				m, p.Capabilities().DeadlineMs)
 
 			// Version skew, said out loud. Two machines ran different
@@ -678,7 +693,7 @@ func main() {
 			// where a comparison cannot be trusted rather than staying
 			// quiet about them.
 			if why := selfBuild.DifferenceFrom(p.Build()); why != "" {
-				log.Printf("colab-fleetd: NOTE peer %s build %s vs ours %s — %s; "+
+				log.Printf("muster: NOTE peer %s build %s vs ours %s — %s; "+
 					"a disagreement between these two may be skew rather than a bug",
 					m, p.Build().Short(), selfBuild.Short(), why)
 			}
@@ -689,7 +704,7 @@ func main() {
 	// what this HOST exposes, and what this instance may do as a CLIENT.
 	allowLocal := os.Getenv("FLEET_ALLOW_MUTATIONS") == "1"
 	allowRelay := os.Getenv("FLEET_ALLOW_RELAY") == "1"
-	log.Printf("colab-fleetd: local mutations=%v · relay to peers=%v (§6; both default off)",
+	log.Printf("muster: local mutations=%v · relay to peers=%v (§6; both default off)",
 		allowLocal, allowRelay)
 	svcCfg := service.Config{
 		Token:               token,
@@ -699,11 +714,11 @@ func main() {
 	if cfgFile != nil {
 		principals, err := cfgFile.principals()
 		if err != nil {
-			log.Fatalf("colab-fleetd: %v", err)
+			log.Fatalf("muster: %v", err)
 		}
 		svcCfg.Principals = principals
 		for _, p := range principals {
-			log.Printf("colab-fleetd: principal %q grants=%v", p.Name, p.Grants)
+			log.Printf("muster: principal %q grants=%v", p.Name, p.Grants)
 		}
 	}
 	mux := service.NewMux(svc, svcCfg)
@@ -722,18 +737,18 @@ func main() {
 		got, err := rec.Reconcile(ctx)
 		cancel()
 		if err != nil {
-			log.Printf("colab-fleetd: reconciliation failed: %v", err)
+			log.Printf("muster: reconciliation failed: %v", err)
 		} else {
-			log.Printf("colab-fleetd: reconciled — %s", got)
+			log.Printf("muster: reconciled — %s", got)
 			// Orphans and disappearances are named individually. §12 rule 4
 			// forbids acting on them, which makes reporting them the entire
 			// value: a session this service cannot explain is one for a
 			// human to look at, and a human cannot look at a count.
 			for _, s := range got.Orphaned {
-				log.Printf("colab-fleetd:   orphaned %q cwd=%s (%s)", s.ID, s.Cwd, s.State.Evidence)
+				log.Printf("muster:   orphaned %q cwd=%s (%s)", s.ID, s.Cwd, s.State.Evidence)
 			}
 			for _, s := range got.Vanished {
-				log.Printf("colab-fleetd:   vanished %q (%s)", s.ID, s.State.Evidence)
+				log.Printf("muster:   vanished %q (%s)", s.ID, s.State.Evidence)
 			}
 			// #185: an adopted session's delivery lane stays, to be re-attached
 			// when its module is ready; a vanished one's is closed and dropped.
@@ -767,7 +782,7 @@ func main() {
 	addrs := splitList(getenv("FLEET_ADDR", "127.0.0.1:0"))
 	for _, a := range addrs {
 		if strings.HasPrefix(a, "0.0.0.0:") {
-			log.Print("colab-fleetd: WARNING binding 0.0.0.0 — this service can read paths and (when mutations are enabled) start processes; bind a specific interface instead")
+			log.Print("muster: WARNING binding 0.0.0.0 — this service can read paths and (when mutations are enabled) start processes; bind a specific interface instead")
 		}
 	}
 	addrs = withLoopback(addrs)
@@ -784,16 +799,16 @@ func main() {
 			for _, prev := range listeners {
 				_ = prev.Close()
 			}
-			log.Fatalf("colab-fleetd: listen %s: %v", a, err)
+			log.Fatalf("muster: listen %s: %v", a, err)
 		}
 		listeners = append(listeners, ln)
-		log.Printf("colab-fleetd: listening on %s (machine=%s runtime=%s)", ln.Addr(), self, runtimeID)
+		log.Printf("muster: listening on %s (machine=%s runtime=%s)", ln.Addr(), self, runtimeID)
 	}
 
 	for _, ln := range listeners {
 		go func(ln net.Listener) {
 			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("colab-fleetd: serve %s: %v", ln.Addr(), err)
+				log.Fatalf("muster: serve %s: %v", ln.Addr(), err)
 			}
 		}(ln)
 	}
@@ -815,7 +830,7 @@ func main() {
 	// This process spawned the opencode server; nothing else will stop it.
 	if opencodeDriver != nil {
 		if err := opencodeDriver.Shutdown(); err != nil {
-			log.Printf("colab-fleetd: stopping opencode server: %v", err)
+			log.Printf("muster: stopping opencode server: %v", err)
 		}
 	}
 }
@@ -828,7 +843,7 @@ func getenv(key, fallback string) string {
 }
 
 // requireToken reports whether the absence of FLEET_TOKEN is fatal, given
-// the outcome of loading FLEET_CONFIG (colab-fleet #95). cfgFile is nil for
+// the outcome of loading FLEET_CONFIG (muster #95). cfgFile is nil for
 // two different reasons that must be treated alike here: FLEET_CONFIG was
 // never set, or main already called log.Fatal on a loadConfig error before
 // this is ever consulted — either way, nil means no validated principal
@@ -847,7 +862,7 @@ func requireToken(cfgFile *fileConfig) bool {
 
 // peerCredential decides what this service presents for its OWN long-lived
 // peer subscriptions (internal/service.Service.SetPeerCredential, §14 D9;
-// colab-fleet #98). token is FLEET_TOKEN as read in main; self is this
+// muster #98). token is FLEET_TOKEN as read in main; self is this
 // machine's own id, the same one Service.peerRequest names ("system:"+self).
 //
 // FLEET_TOKEN wins when set — single-token mode, and the "config and token
@@ -945,7 +960,7 @@ func trustSeedInterval() time.Duration {
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil || d <= 0 {
-		log.Printf("colab-fleetd: FLEET_TRUST_SEED_INTERVAL %q invalid, using %s", raw, def)
+		log.Printf("muster: FLEET_TRUST_SEED_INTERVAL %q invalid, using %s", raw, def)
 		return def
 	}
 	return d
@@ -963,11 +978,11 @@ func runTrustSeedLoop(d *tmux.Driver, interval time.Duration) {
 	for range t.C {
 		got, err := d.SeedTrustRoots()
 		if err != nil {
-			log.Printf("colab-fleetd: trust-seed: %v", err)
+			log.Printf("muster: trust-seed: %v", err)
 			continue
 		}
 		if got.Granted > 0 || got.ImportsGranted > 0 || len(got.RootsMissing) > 0 || got.LostRace {
-			log.Printf("colab-fleetd: trust-seed: %s", got)
+			log.Printf("muster: trust-seed: %s", got)
 		}
 	}
 }
@@ -976,31 +991,47 @@ func runTrustSeedLoop(d *tmux.Driver, interval time.Duration) {
 // subcommands, whose detailed usage each prints for itself.
 func usageTop() string {
 	return strings.Join([]string{
-		"usage: colab-fleetd                      start the service (configured by FLEET_* environment only)",
-		"       colab-fleetd doctor [--json] ...  read-only installation check (colab-fleetd doctor --help)",
-		"       colab-fleetd compat --claude PATH  check a candidate runtime build (colab-fleetd compat --help)",
-		"       colab-fleetd principal add|list   enrol or list clients (colab-fleetd principal)",
-		"       colab-fleetd -h | --help          print this usage",
+		"usage: muster serve                    start the service (configured by FLEET_* environment only)",
+		"       muster doctor [--json] ...      read-only installation check (muster doctor --help)",
+		"       muster compat --claude PATH     check a candidate runtime build (muster compat --help)",
+		"       muster principal add|list       enrol or list clients (muster principal)",
+		"       muster --version                print the build",
+		"       muster -h | --help              print this usage",
 		"",
-		"The service takes no arguments. Anything else is refused before any startup work.",
+		"The service takes no arguments beyond `serve`. Anything else is refused before any startup work.",
 	}, "\n")
 }
 
+// legacyBare reports whether the binary was invoked under its former name
+// with no arguments, which used to mean "start the service".
+func legacyBare(argv []string) bool {
+	return len(argv) == 1 && filepath.Base(argv[0]) == "colab-fleetd"
+}
+
 // runUsage decides what remains of the command line once the subcommands
-// have had their turn. No arguments means "start the service" and is left to
-// main. A help flag prints usage and exits 0. Anything else — a typo, an
-// unknown flag, a stray word — is refused with exit 2, because the
-// alternative is starting a full instance nobody asked for (colab-fleet
-// #177). Pure, so the gate has a test that does not go through os.Exit.
+// have had their turn. `serve` alone means "start the service" and is left to
+// main. A help flag prints usage and exits 0; --version prints the build and
+// exits 0. Anything else — a bare invocation, a typo, an unknown flag, a stray
+// word — is refused with exit 2, because the alternative is starting a full
+// instance nobody asked for (muster #177). Pure, so the gate has a test that
+// does not go through os.Exit.
 func runUsage(args []string, stdout, stderr io.Writer) (handled bool, code int) {
-	if len(args) == 0 {
+	if len(args) == 1 && args[0] == "serve" {
 		return false, 0
+	}
+	if len(args) == 0 {
+		fmt.Fprintf(stderr, "muster: no command given — nothing was started\n%s\n", usageTop())
+		return true, 2
 	}
 	switch args[0] {
 	case "-h", "-help", "--help", "help":
 		fmt.Fprintln(stdout, usageTop())
 		return true, 0
+	case "--version", "version":
+		b := fleet.SelfBuild()
+		fmt.Fprintf(stdout, "muster %s (%s)\n", b.Short(), b.Go)
+		return true, 0
 	}
-	fmt.Fprintf(stderr, "colab-fleetd: unknown argument %q — nothing was started\n%s\n", args[0], usageTop())
+	fmt.Fprintf(stderr, "muster: unknown argument %q — nothing was started\n%s\n", args[0], usageTop())
 	return true, 2
 }

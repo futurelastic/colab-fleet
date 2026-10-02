@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// colab-fleet #185: the optional-module installer.
+// muster #185: the optional-module installer.
 //
 // scripts/fetch-module.sh builds one optional delivery module from a source,
 // with the caller's own access, or does nothing at all; scripts/deploy.sh has
@@ -694,7 +694,7 @@ func TestFetchModule_DeploySectionInactiveWithoutSources(t *testing.T) {
 	}
 	for _, set := range [][]string{nil, {"FLEET_MODULE_SOURCES="}} {
 		env, tmp := fmEnv(t, set...)
-		code, so, se := fmRunDeploySection(t, env, "local", filepath.Join(binDir, "colab-fleetd"))
+		code, so, se := fmRunDeploySection(t, env, "local", filepath.Join(binDir, "muster"))
 		if code != 0 || so != "HARNESS-DONE\n" || se != "" {
 			t.Errorf("%v: exit=%d stdout=%q stderr=%q, want nothing but the harness marker", set, code, so, se)
 		}
@@ -725,7 +725,7 @@ func TestFetchModule_DeploySectionMalformedEntryWarnsOnce(t *testing.T) {
 	env, tmp := fmEnv(t,
 		"FLEET_MODULE_SOURCES="+strings.Join(entries, " "),
 		"FLEET_MODULES_DIR="+modules)
-	code, so, se := fmRunDeploySection(t, env, "local", filepath.Join(base, "bin", "colab-fleetd"))
+	code, so, se := fmRunDeploySection(t, env, "local", filepath.Join(base, "bin", "muster"))
 	if code != 0 || !strings.Contains(so, "HARNESS-DONE") {
 		t.Fatalf("a malformed entry stopped the deploy: exit=%d stdout=%q stderr=%q", code, so, se)
 	}
@@ -762,14 +762,14 @@ func TestFetchModule_DeploySectionMalformedEntryWarnsOnce(t *testing.T) {
 	fmNoDebris(t, "modules dir", modules, "fine")
 	entriesLeft, _ := os.ReadDir(tmp)
 	for _, e := range entriesLeft {
-		if strings.HasPrefix(e.Name(), "colab-fleet-modules") {
+		if strings.HasPrefix(e.Name(), "muster-modules") {
 			t.Errorf("staging directory %q left behind", e.Name())
 		}
 	}
 }
 
 // With FLEET_MODULES_DIR unset the module lands where the daemon looks by
-// default: <parent of the binary's directory>/libexec/colab-fleet/modules.
+// default: <parent of the binary's directory>/libexec/muster/modules.
 func TestFetchModule_DeploySectionDefaultsToTheDaemonsDirectory(t *testing.T) {
 	fmRequireTools(t)
 	base, err := filepath.EvalSymlinks(t.TempDir())
@@ -782,11 +782,11 @@ func TestFetchModule_DeploySectionDefaultsToTheDaemonsDirectory(t *testing.T) {
 	}
 	env, _ := fmEnv(t, "FLEET_MODULE_SOURCES=fake="+fmTinyModule(t))
 
-	code, so, se := fmRunDeploySection(t, env, "local", filepath.Join(binDir, "colab-fleetd"))
+	code, so, se := fmRunDeploySection(t, env, "local", filepath.Join(binDir, "muster"))
 	if code != 0 || se != "" || !strings.Contains(so, "HARNESS-DONE") {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, so, se)
 	}
-	installed := filepath.Join(base, "prefix", "libexec", "colab-fleet", "modules", "fake")
+	installed := filepath.Join(base, "prefix", "libexec", "muster", "modules", "fake")
 	got, err := exec.Command(installed).Output()
 	if err != nil || strings.TrimSpace(string(got)) != fmMarker {
 		t.Errorf("no working module at %s: out=%q err=%v", installed, got, err)
@@ -816,7 +816,7 @@ func TestFetchModule_DeploySectionFailedFetchInstallsNothingAndKeepsWhatWasThere
 	env, tmp := fmEnv(t,
 		"FLEET_MODULE_SOURCES=kept=example.invalid/mod@v1.0.0 other="+fmBrokenModule(t)+" third=/nonexistent-fetch-module-source",
 		"FLEET_MODULES_DIR="+modules)
-	code, so, se := fmRunDeploySection(t, env, "local", filepath.Join(base, "bin", "colab-fleetd"))
+	code, so, se := fmRunDeploySection(t, env, "local", filepath.Join(base, "bin", "muster"))
 	if code != 0 || so != "HARNESS-DONE\n" || se != "" {
 		t.Errorf("exit=%d stdout=%q stderr=%q, want nothing but the harness marker", code, so, se)
 	}
@@ -841,7 +841,7 @@ func TestFetchModule_DeploySectionInstallFailureWarnsAndContinues(t *testing.T) 
 	env, _ := fmEnv(t,
 		"FLEET_MODULE_SOURCES=fake="+fmTinyModule(t),
 		"FLEET_MODULES_DIR="+filepath.Join(blocker, "modules"))
-	code, so, se := fmRunDeploySection(t, env, "local", filepath.Join(base, "bin", "colab-fleetd"))
+	code, so, se := fmRunDeploySection(t, env, "local", filepath.Join(base, "bin", "muster"))
 	if code != 0 || !strings.Contains(so, "HARNESS-DONE") {
 		t.Fatalf("an install failure stopped the deploy: exit=%d stdout=%q stderr=%q", code, so, se)
 	}
@@ -888,7 +888,7 @@ exec cp "$2" "$dst"
 	for _, tc := range []struct {
 		label, modulesDir, want string
 	}{
-		{"default directory", "", filepath.Join(fakeHome, "prefix", "libexec", "colab-fleet", "modules", "fake")},
+		{"default directory", "", filepath.Join(fakeHome, "prefix", "libexec", "muster", "modules", "fake")},
 		{"explicit directory", "~/elsewhere/modules", filepath.Join(fakeHome, "elsewhere", "modules", "fake")},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
@@ -897,7 +897,7 @@ exec cp "$2" "$dst"
 			if tc.modulesDir != "" {
 				env = fmSetEnv(env, "FLEET_MODULES_DIR="+tc.modulesDir)
 			}
-			code, so, se := fmRunDeploySection(t, env, "peer", "~/prefix/bin/colab-fleetd")
+			code, so, se := fmRunDeploySection(t, env, "peer", "~/prefix/bin/muster")
 			if code != 0 || se != "" || !strings.Contains(so, "HARNESS-DONE") {
 				t.Fatalf("exit=%d stdout=%q stderr=%q", code, so, se)
 			}

@@ -6,7 +6,7 @@ import (
 )
 
 // PermissionModeState is the permission mode a session's runtime is in RIGHT
-// NOW, as the runtime itself shows it (colab-fleet #194).
+// NOW, as the runtime itself shows it (muster #194).
 //
 // It is the read side of `keys`' BTab (#188): Shift+Tab cycles the mode, which
 // mode a press lands in is the runtime's own cycle order, and a client that

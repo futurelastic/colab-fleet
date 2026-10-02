@@ -1,6 +1,6 @@
 package fleet
 
-// GrantReport answers GET /v1/whoami (api-http.md §5, colab-fleet #106): what
+// GrantReport answers GET /v1/whoami (api-http.md §5, muster #106): what
 // the presented credential is authorized to do, on the machine named.
 //
 // It exists because every other way to learn this is trial and refusal:
@@ -34,7 +34,7 @@ type GrantReport struct {
 	// under "assumed" and must be read the same way an unreached peer's
 	// capabilities are: a conservative floor, never that peer's real answer.
 	Source CapabilitySource `json:"source"`
-	// ListsYou answers a question only a SERVICE asks (colab-fleet #154): is
+	// ListsYou answers a question only a SERVICE asks (muster #154): is
 	// the machine named in `?peer=` in this machine's own roster of peers?
 	// A service probing a peer names itself there and reads this back as
 	// PeerStanding.ListsMeBack.

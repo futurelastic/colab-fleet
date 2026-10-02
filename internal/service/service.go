@@ -1,11 +1,11 @@
-// Package service is the machine-local colab-fleet instance:
+// Package service is the machine-local muster instance:
 // session-abstraction.md §13's "one service per machine, proxying to
 // peers." Service owns local drivers (one per runtime, §4.1) and peer
 // drivers (one per configured remote machine, §4.2), and NewMux wires the
 // HTTP surface of docs/spec/api-http.md over it.
 //
 // Nothing here is a "real driver" — see internal/drivers/stub, the only
-// driver wired up by cmd/colab-fleetd today. This package is the routing,
+// driver wired up by cmd/muster today. This package is the routing,
 // deadline, idempotency, auth, and error-mapping skeleton the task asked
 // for: real request parsing and real envelope construction, over a
 // deliberately fake backend.
@@ -20,10 +20,10 @@ import (
 	"sync"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/delivery"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/delivery"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/state"
 )
 
 // eventSequence is what §7.3 needs to survive a restart.
@@ -41,7 +41,7 @@ import (
 // durably storing every event, which is a much larger mechanism than the
 // problem justifies. The one question a lost window leaves a consumer unable
 // to answer — which sessions ended, and when — has its own small record
-// instead (history.go, colab-fleet #179).
+// instead (history.go, muster #179).
 type eventSequence struct {
 	Epoch  string `json:"epoch"`
 	Cursor int64  `json:"cursor"`
@@ -62,7 +62,7 @@ const (
 	ScopeFleet Scope = "fleet"
 )
 
-// Service is one machine's colab-fleet instance. A peer driver is, from
+// Service is one machine's muster instance. A peer driver is, from
 // this package's point of view, just another driver.Driver — the whole
 // point of §4.2 is that federation needs no separate interface, only a
 // second kind of registration.
@@ -96,12 +96,12 @@ type Service struct {
 
 	state *state.Store
 
-	// labels is where caller-supplied session labels live (colab-fleet
+	// labels is where caller-supplied session labels live (muster
 	// #153) — see labels.go for why the service stores them, not a driver.
 	labels *labelStore
 
 	// history keeps one record per ended local session for a bounded time
-	// (colab-fleet #179) — see history.go.
+	// (muster #179) — see history.go.
 	history *historyStore
 
 	// sweepMu guards the background re-listing a local session.closed event
@@ -120,8 +120,8 @@ type Service struct {
 
 	// defaultRuntime is the machine-local tiebreak resolveSessionDriver
 	// falls back to once existence-first resolution has genuinely nothing
-	// to route a bare id to (colab-fleet issue #60, ⚖ ruling). Empty means
-	// exactly what cmd/colab-fleetd/config.go's own doc comment says an
+	// to route a bare id to (muster issue #60, ⚖ ruling). Empty means
+	// exactly what cmd/muster/config.go's own doc comment says an
 	// absent setting always means in that file: "the older behaviour" —
 	// bare-id addressing among more than one local runtime is refused
 	// (ErrAmbiguousSession) rather than guessed.
@@ -134,7 +134,7 @@ type Service struct {
 	defaultRuntime fleet.RuntimeId
 
 	// maxInputBytes is the effective limit this machine enforces on
-	// `prompt` (create) and `text` (input) — colab-fleet #130. Initialized
+	// `prompt` (create) and `text` (input) — muster #130. Initialized
 	// to defaultMaxInputBytes (http.go) in newService and therefore never
 	// zero: an "unconfigured" instance still has an effective limit, it is
 	// simply the shipped default, exactly the behaviour #130 requires an
@@ -157,7 +157,7 @@ type Service struct {
 	// selfGrants evaluates this machine's own authorization model for a
 	// credential — installed by NewMux, which is where the model lives. Nil
 	// for a Service used without a mux, whose self standing then reads
-	// assumed rather than inventing an answer (colab-fleet #154).
+	// assumed rather than inventing an answer (muster #154).
 	selfGrants func(token string) []string
 
 	// verifyMu single-flights GET /v1/machines?verify=1: a caller holding
@@ -173,7 +173,7 @@ func (s *Service) setSelfGrantResolver(f func(token string) []string) {
 	s.selfGrants = f
 }
 
-// selfStanding is the self item's PeerStanding (colab-fleet #154): this
+// selfStanding is the self item's PeerStanding (muster #154): this
 // machine trivially lists itself, and grantsToMe is what its own table grants
 // the credential it presents to peers — so the same fact is comparable when
 // read from either machine.
@@ -194,7 +194,7 @@ func (s *Service) selfStanding() fleet.PeerStanding {
 // RefreshPeers re-probes every peer that can be probed, concurrently, each
 // bounded by its effective deadline — GET /v1/machines?verify=1, for an
 // operator who has just edited a configuration and will not wait for the
-// cached cycle (colab-fleet #154). Concurrent callers are serialized.
+// cached cycle (muster #154). Concurrent callers are serialized.
 func (s *Service) RefreshPeers(ctx context.Context, callerDeadline time.Duration) {
 	s.verifyMu.Lock()
 	defer s.verifyMu.Unlock()
@@ -373,7 +373,7 @@ func (s *Service) RegisterPeerDriver(machine fleet.MachineId, d driver.Driver) e
 }
 
 // SetDefaultRuntime configures this machine's tiebreak for bare-id session
-// resolution once more than one local driver is registered (colab-fleet
+// resolution once more than one local driver is registered (muster
 // issue #60, ⚖ ruling). runtime must already be a REGISTERED local driver —
 // refused otherwise, so an operator's typo in the config file is a startup
 // failure read once, never a fleet-wide not_found that reads exactly like
@@ -381,7 +381,7 @@ func (s *Service) RegisterPeerDriver(machine fleet.MachineId, d driver.Driver) e
 //
 // Call it only after every RegisterLocalDriver this instance will ever make.
 // There is no mechanism here to revalidate against a driver registered
-// afterwards, the same way cmd/colab-fleetd/main.go's trust-root and peer
+// afterwards, the same way cmd/muster/main.go's trust-root and peer
 // wiring are one-shot startup steps rather than something reconciled later.
 //
 // An empty runtime is accepted and clears any default previously set — the
@@ -417,7 +417,7 @@ func (s *Service) DefaultRuntime() fleet.RuntimeId {
 	return s.defaultRuntime
 }
 
-// maxInputBytesCeiling bounds a configured limit from above — colab-fleet
+// maxInputBytesCeiling bounds a configured limit from above — muster
 // #130: "a value large enough to be meaningless should be refused with a
 // clear reason rather than silently honoured." A composer is for a prompt,
 // not a document; #128 already established that detailed briefing material
@@ -429,7 +429,7 @@ func (s *Service) DefaultRuntime() fleet.RuntimeId {
 const maxInputBytesCeiling = 1 << 20 // 1 MiB
 
 // SetMaxInputBytes configures this machine's limit on `prompt` (create) and
-// `text` (input) — colab-fleet #130. Meant to be called at most once, at
+// `text` (input) — muster #130. Meant to be called at most once, at
 // startup, before this instance serves any request — the same one-shot rule
 // SetDefaultRuntime documents above: an invalid value is a message an
 // operator reads once at boot, never a refusal manufactured per request.
@@ -501,7 +501,7 @@ func (s *Service) isDeliveryModuleRoute(name string) bool {
 }
 
 // MaxInputBytes reports this machine's effective limit on `prompt` (create)
-// and `text` (input) — colab-fleet #130. Always positive: constructed with
+// and `text` (input) — muster #130. Always positive: constructed with
 // defaultMaxInputBytes in force, and only ever replaced by SetMaxInputBytes
 // with another positive value, so there is no unset state a caller could
 // read as "no limit."
@@ -549,7 +549,7 @@ func (s *Service) ListSessions(ctx context.Context, req fleet.Request, scope Sco
 	var sources []fleet.SourceStatus
 
 	// Local drivers are walked with their runtime, because a session's labels
-	// are keyed by (runtime, id) — colab-fleet #153.
+	// are keyed by (runtime, id) — muster #153.
 	s.mu.RLock()
 	local := make(map[fleet.RuntimeId]driver.Driver, len(s.local))
 	for rt, d := range s.local {
@@ -565,7 +565,7 @@ func (s *Service) ListSessions(ctx context.Context, req fleet.Request, scope Sco
 		if complete {
 			s.labels.retain(rt, its, listedAt)
 		}
-		// colab-fleet #235: a driver capable of it already removed these
+		// muster #235: a driver capable of it already removed these
 		// sessions from its runtime, in the same call that just answered —
 		// an exact, positive fact that holds whether or not THIS particular
 		// read was filtered, unlike absence, which only a complete read may
@@ -632,7 +632,7 @@ func allSourcesOK(srcs []fleet.SourceStatus) bool {
 }
 
 // publishLabels announces a session's complete label map (session.labels,
-// colab-fleet #153).
+// muster #153).
 func (s *Service) publishLabels(machine fleet.MachineId, sess fleet.Session) {
 	ref := sess.SessionRef
 	if ref.Machine == "" {
@@ -724,7 +724,7 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 		errText := ""
 		// A peer that has already stopped answering is reported from what
 		// its driver remembers, never dialled again on this request's path
-		// (colab-fleet #237): the answer is already known, and asking would
+		// (muster #237): the answer is already known, and asking would
 		// cost the full deadline to learn it a second time.
 		if down, ok := peerDownOf(d); ok {
 			status = fleet.SourceUnreachable
@@ -757,14 +757,14 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 		// probe that populates it rides RefreshCapabilities/reconcile, same
 		// as Runtime()). A driver that never implements it — every local
 		// driver, and any peer this service has never reached — reports the
-		// zero value, which is Known: false: colab-fleet #121 requires this
+		// zero value, which is Known: false: muster #121 requires this
 		// read as unknown, never as a default that looks like an answer.
 		build := fleet.Build{}
 		if reporter, ok := d.(driver.BuildReporter); ok {
 			build = reporter.Build()
 		}
 		// A peer's effective input limit, learned the same way and stale in
-		// the same manner as its build (colab-fleet #130): a driver that
+		// the same manner as its build (muster #130): a driver that
 		// has never implemented or never probed this reports the zero
 		// value, which — unlike Build's Known flag — needs no separate
 		// marker, because a real effective limit is never zero (see
@@ -774,7 +774,7 @@ func (s *Service) ListMachines(ctx context.Context, req fleet.Request, callerDea
 			maxInputBytes = reporter.MaxInputBytes()
 		}
 		// This service's own standing there, learned on the same probe
-		// (colab-fleet #154). A driver that cannot report one reads as the
+		// (muster #154). A driver that cannot report one reads as the
 		// floor — assumed, never "not listed".
 		peer := fleet.AssumedPeerStanding()
 		if reporter, ok := d.(driver.PeerStandingReporter); ok {
@@ -847,7 +847,7 @@ func (s *Service) ListRuntimes(ctx context.Context) (fleet.Collection[fleet.Runt
 			// present it as one.
 			st = fleet.SourceDegraded
 		}
-		// colab-fleet #67: the fallback row for a peer nobody has heard
+		// muster #67: the fallback row for a peer nobody has heard
 		// from — `source: assumed` with no runtime learned yet — used to be
 		// reported anyway, empty runtime id and all, as a placeholder
 		// nobody removed. That is the one option that misleads a client
@@ -919,7 +919,7 @@ func (s *Service) counterSnapshot() map[fleet.RuntimeId]map[string]int64 {
 // can legally reuse the same id.
 //
 // It is also the OLDER behaviour a configured default runtime exists to
-// relieve callers of (colab-fleet issue #60): absent a default, this is
+// relieve callers of (muster issue #60): absent a default, this is
 // still exactly what a caller gets whenever resolution genuinely cannot
 // name one driver — the config file's own "nothing here has a default; an
 // absent value means the older behaviour" carried one level down.
@@ -927,7 +927,7 @@ var ErrAmbiguousSession = errors.New("service: more than one local runtime is re
 
 // runtimeResolution records HOW resolveSessionDriver picked a driver, so a
 // caller that named its own runtime and a caller that got the machine's
-// configured default are not rendered alike (§5.7; colab-fleet issue #60
+// configured default are not rendered alike (§5.7; muster issue #60
 // guardrail 2). Only resolvedDefault is a genuine guess wearing a
 // configuration's authority — the other three are exactly as trustworthy as
 // a caller naming its own runtime, because each is either the caller's own
@@ -949,7 +949,7 @@ const (
 // endpoint but create. It is empty for create, where nothing exists yet to
 // search local drivers FOR. Threading it through is what makes
 // existence-first resolution possible at all: a version of this function
-// that never saw the id (the shape this had before colab-fleet issue #60)
+// that never saw the id (the shape this had before muster issue #60)
 // had nothing to check registered drivers against, and could only guess or
 // refuse.
 //
@@ -970,7 +970,7 @@ const (
 //     register.
 //
 //   - machine == self, runtimeHint empty, more than one local driver
-//     registered: EXISTENCE FIRST, DEFAULT AS TIEBREAK (colab-fleet #60).
+//     registered: EXISTENCE FIRST, DEFAULT AS TIEBREAK (muster #60).
 //     A nonempty id is probed against every registered local driver's own
 //     State() — ErrNoSuchSession is a driver's affirmative "I have never
 //     had this id" (errors.go) — and:
@@ -1114,7 +1114,7 @@ func (s *Service) resolveSessionDriver(ctx context.Context, req fleet.Request, m
 // the id (it has no notion of "having" anything), and it is not merely
 // unreachable right now — ErrUnsupported's own doc comment (internal/driver)
 // says this is a statement about the SUBSTRATE, permanent, true again on
-// retry. colab-fleet issue #63 measured what conflating the two costs: one
+// retry. muster issue #63 measured what conflating the two costs: one
 // runtime being temporarily unreachable poisoned resolution for every
 // runtime on the machine, including ones that structurally never held
 // anything and never will. Such a driver is folded into the same "not this

@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// colab-fleet #165: a peer's session keeps its marker through the relay.
+// muster #165: a peer's session keeps its marker through the relay.
 func TestPeerSessionCarriesItsMarkerThroughTheRelay(t *testing.T) {
 	var rec capture
 	srv := peerServing(t, 200, collectionJSON(

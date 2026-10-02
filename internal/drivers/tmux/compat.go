@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/compat"
+	"github.com/futurelastic/muster/internal/compat"
 )
 
-// colab-fleet #183: `colab-fleetd compat`.
+// muster #183: `muster compat`.
 //
 // # What this is
 //
@@ -50,7 +50,7 @@ type CompatOptions struct {
 	Only []string
 	// PackDir, when set, receives the raw evidence each check produced.
 	PackDir string
-	// Build identifies the colab-fleet code running the checks.
+	// Build identifies the muster code running the checks.
 	Build compat.Build
 	// Log receives progress lines. Nil discards.
 	Log io.Writer

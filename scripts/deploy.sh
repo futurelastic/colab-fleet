@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build colab-fleetd for a target host, install it, restart the service, and
+# Build muster for a target host, install it, restart the service, and
 # verify that what is now running is what was just built.
 #
 # WHY THIS EXISTS
@@ -31,8 +31,8 @@
 #                 identical, including the read-back at the end. This is the
 #                 ordinary case: the machine most likely to need a deploy is
 #                 the one this session is already running on.
-#   REMOTE_PATH   where the binary lands. Required — colab-fleet issue #66:
-#                 an earlier default of ~/bin/colab-fleetd did not match what
+#   REMOTE_PATH   where the binary lands. Required — muster issue #66:
+#                 an earlier default of ~/bin/muster did not match what
 #                 the service manager on either machine actually execs, so a
 #                 deploy could install a correct, freshly-stamped binary to a
 #                 path nothing runs, restart the service onto the OLD one,
@@ -58,11 +58,11 @@
 #                       was written to stop.
 #   FLEET_HEALTH_TOKEN       bearer token to verify with, taken literally.
 #                             Takes precedence over FLEET_HEALTH_TOKEN_FILE
-#                             below when set (colab-fleet #93 — see the verify
+#                             below when set (muster #93 — see the verify
 #                             section for why this exists).
 #   FLEET_HEALTH_TOKEN_FILE  path to a token file, read ON THE HOST via `cat`.
 #                             One of FLEET_HEALTH_TOKEN or this is REQUIRED
-#                             whenever FLEET_HEALTH_URL is set (colab-fleet
+#                             whenever FLEET_HEALTH_URL is set (muster
 #                             #108) — the script no longer falls back to a
 #                             hardcoded path. It has no way to tell a
 #                             single-token deployment from a principal-table
@@ -70,17 +70,17 @@
 #                             credentials, so a silent default is right for
 #                             one and silently wrong for the other. If this
 #                             host's operator convention is a token file at
-#                             ~/.config/colab-fleet/token, set it explicitly:
+#                             ~/.config/muster/token, set it explicitly:
 #                             that path is no longer assumed on your behalf.
 #   FLEET_VERIFY_TIMEOUT      seconds to poll the health URL before giving up.
-#                             Default 180 — colab-fleet #93 measured a real,
+#                             Default 180 — muster #93 measured a real,
 #                             successful startup taking 98s under load, so the
 #                             deadline needs slack above that, not just above
 #                             a quiet-box startup.
 #   FLEET_VERIFY_INTERVAL     seconds between polls while waiting. Default 2.
 #   FLEET_MODULE_SOURCES    OPTIONAL. Space-separated name=source entries, one
 #                             per optional delivery module to install beside
-#                             the daemon (colab-fleet #185). Each is fetched
+#                             the daemon (muster #185). Each is fetched
 #                             and built with THIS user's own access by
 #                             scripts/fetch-module.sh; a source this user
 #                             cannot fetch installs nothing and says nothing.
@@ -88,20 +88,20 @@
 #                             empty: this step does not run at all.
 #   FLEET_MODULES_DIR       where those modules are installed on the host.
 #                             Default: <parent of REMOTE_PATH's directory>/
-#                             libexec/colab-fleet/modules - the same place the
+#                             libexec/muster/modules - the same place the
 #                             daemon looks. Set the same value in the
 #                             service's own environment if you set it here.
 #   ALLOW_DIRTY=1       build from a modified tree anyway. The resulting
 #                       binary reports itself as dirty and will never compare
 #                       equal to anything, including the next deploy.
 #   ALLOW_WORKTREE_BUILD=1  build from a linked git worktree anyway
-#                           (colab-fleet #140). Go's own VCS stamp can embed
+#                           (muster #140). Go's own VCS stamp can embed
 #                           the PRIMARY checkout's revision instead of this
 #                           worktree's own; only set this if you have
 #                           verified your toolchain does not do that.
 #
 # The dirty-tree gate below runs `git status --porcelain`, not `git diff
-# --quiet HEAD` — colab-fleet #139: the latter only inspects tracked files,
+# --quiet HEAD` — muster #139: the latter only inspects tracked files,
 # but Go's own VCS build stamp (what a running service reports as
 # `build.modified`) is computed by `cmd/go/internal/vcs`'s gitStatus, which
 # runs plain `git status --porcelain` and is flagged by ANY untracked file
@@ -121,7 +121,7 @@ if [ -z "$HOST" ] || [ -z "$REMOTE_PATH" ]; then
 	echo "usage: scripts/deploy.sh HOST REMOTE_PATH" >&2
 	echo "       scripts/deploy.sh local REMOTE_PATH" >&2
 	echo "" >&2
-	echo "REMOTE_PATH is required (colab-fleet #66) — it must match what the" >&2
+	echo "REMOTE_PATH is required (muster #66) — it must match what the" >&2
 	echo "service manager on that machine execs, and this script has no way" >&2
 	echo "to know that on your behalf." >&2
 	exit 2
@@ -131,7 +131,7 @@ cd "$(dirname "$0")/.."
 
 # --- refuse to build from a linked worktree ---------------------------------
 #
-# colab-fleet #140: Go's own VCS build stamp (cmd/go/internal/vcs) was
+# muster #140: Go's own VCS build stamp (cmd/go/internal/vcs) was
 # measured embedding the PRIMARY checkout's HEAD, not the linked worktree's
 # own, when `go build -buildvcs=true` ran from inside a worktree — reproduced
 # twice, including after `go clean -cache`. Plain `git rev-parse HEAD` (used
@@ -156,7 +156,7 @@ GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null || true)
 if [ -n "$GIT_DIR" ] && [ -n "$GIT_COMMON_DIR" ] && [ "$GIT_DIR" != "$GIT_COMMON_DIR" ]; then
 	if [ "${ALLOW_WORKTREE_BUILD:-0}" != "1" ]; then
 		echo "deploy: this checkout is a linked git worktree, not the primary" >&2
-		echo "        checkout — colab-fleet #140. Go's own VCS build stamp can" >&2
+		echo "        checkout — muster #140. Go's own VCS build stamp can" >&2
 		echo "        embed the PRIMARY checkout's revision instead of this" >&2
 		echo "        worktree's own, which would ship a binary that lies about" >&2
 		echo "        what commit it was built from." >&2
@@ -167,7 +167,7 @@ if [ -n "$GIT_DIR" ] && [ -n "$GIT_COMMON_DIR" ] && [ "$GIT_DIR" != "$GIT_COMMON
 	fi
 	echo "deploy: WARNING building from a linked worktree (ALLOW_WORKTREE_BUILD=1)." >&2
 	echo "        The VCS stamp on this build may not be trustworthy — see" >&2
-	echo "        colab-fleet #140." >&2
+	echo "        muster #140." >&2
 fi
 
 # --- local vs. remote, behind one seam --------------------------------------
@@ -193,7 +193,7 @@ fi
 
 # --- refuse to ship something that cannot be identified ---------------------
 #
-# git status --porcelain, not git diff --quiet HEAD (colab-fleet #139): the
+# git status --porcelain, not git diff --quiet HEAD (muster #139): the
 # latter only sees tracked changes, but Go's own VCS build stamp is flagged
 # dirty by ANY untracked file too (cmd/go/internal/vcs's gitStatus runs the
 # same plain `git status --porcelain`). Matching that check here is what
@@ -216,7 +216,7 @@ fi
 REV=$(git rev-parse HEAD)
 echo "deploy: revision ${REV}"
 
-# colab-fleet #161: the release version, stamped at link time because the
+# muster #161: the release version, stamped at link time because the
 # toolchain's own build info carries the revision but never the tag — a
 # checkout builds as "(devel)". `--match 'v[0-9]*'` and no `--always`: with no
 # release tag reachable there is no release to report, and a bare sha in this
@@ -258,11 +258,11 @@ echo "deploy: building for ${GOOS}/${GOARCH}"
 # -buildvcs=true is the default, and is named here because it is the entire
 # mechanism behind build identity: without the stamp, /v1/health reports
 # "unknown" and skew becomes undetectable again.
-TMPBIN=$(mktemp -t colab-fleetd.XXXXXX)
+TMPBIN=$(mktemp -t muster.XXXXXX)
 trap 'rm -f "$TMPBIN"' EXIT
 GOOS="$GOOS" GOARCH="$GOARCH" go build -buildvcs=true \
-	-ldflags "-X github.com/godx-jp/colab-fleet.version=${VERSION}" \
-	-o "$TMPBIN" ./cmd/colab-fleetd
+	-ldflags "-X github.com/futurelastic/muster.version=${VERSION}" \
+	-o "$TMPBIN" ./cmd/muster
 
 # --- install ----------------------------------------------------------------
 #
@@ -278,7 +278,7 @@ run "chmod 0755 ${REMOTE_PATH}.incoming && mv ${REMOTE_PATH}.incoming ${REMOTE_P
 #
 # --- install optional delivery modules, when asked ---------------------------
 #
-# colab-fleet #185. Runs ONLY when FLEET_MODULE_SOURCES is set and non-empty;
+# muster #185. Runs ONLY when FLEET_MODULE_SOURCES is set and non-empty;
 # otherwise nothing below executes and a deploy is byte-for-byte what it was.
 #
 # A module is an optional helper program that lives beside the daemon and is
@@ -332,11 +332,11 @@ if [ -n "${FLEET_MODULE_SOURCES:-}" ]; then
 	else
 		# Where the daemon looks by default: the parent of the directory its
 		# own binary runs from, resolved on the host (symlinks and all, as the
-		# daemon resolves its own path), plus libexec/colab-fleet/modules.
+		# daemon resolves its own path), plus libexec/muster/modules.
 		MODULE_BIN_DIR=$(run "cd \"\$(dirname ${REMOTE_PATH})\" && pwd -P") || MODULE_BIN_DIR=""
 		if [ -n "$MODULE_BIN_DIR" ]; then
 			MODULES_DIR="$(dirname "$MODULE_BIN_DIR")"
-			MODULES_DIR="${MODULES_DIR%/}/libexec/colab-fleet/modules"
+			MODULES_DIR="${MODULES_DIR%/}/libexec/muster/modules"
 		else
 			MODULES_DIR=""
 			echo "deploy: WARNING could not work out where ${HOST} keeps delivery modules;" >&2
@@ -346,7 +346,7 @@ if [ -n "${FLEET_MODULE_SOURCES:-}" ]; then
 
 	# A module problem never fails the deploy, so even the staging directory
 	# is asked for inside an `if`.
-	if [ -n "$MODULES_DIR" ] && MODSTAGE=$(mktemp -d -t colab-fleet-modules.XXXXXX); then
+	if [ -n "$MODULES_DIR" ] && MODSTAGE=$(mktemp -d -t muster-modules.XXXXXX); then
 		# Restates the trap above (which this replaces) and adds the staging
 		# directory; ${...:-} so this is safe wherever TMPBIN is not set.
 		trap 'rm -f "${TMPBIN:-}"; rm -rf "${MODSTAGE:-}"' EXIT
@@ -416,15 +416,15 @@ if [ -z "${FLEET_HEALTH_URL:-}" ]; then
 	exit 0
 fi
 
-# colab-fleet #93: verification used to assume the token file under the
+# muster #93: verification used to assume the token file under the
 # service's own config directory, read ON THE HOST, was always a credential
 # that host's service accepts. Measured false on a federated fleet: the
 # credential that answers for a peer can be one only the machine running THIS
 # script holds, so the host's own file answered 401 for a perfectly healthy
 # service. Take the credential as configuration instead of assuming it.
 #
-# colab-fleet #108: #93 stopped short of that for whoever set NEITHER
-# variable, keeping a hardcoded fallback (~/.config/colab-fleet/token, still
+# muster #108: #93 stopped short of that for whoever set NEITHER
+# variable, keeping a hardcoded fallback (~/.config/muster/token, still
 # read ON THE HOST — the fallback was never the "wrong machine" bug, that was
 # already fixed). That fallback is correct for a single-token deployment,
 # where the file conventionally holds the same value as the service's own
@@ -437,7 +437,7 @@ fi
 # (FLEET_CONFIG is the daemon's own env var, not threaded through here) and
 # then a choice of WHICH principal if the table holds more than one — a
 # second guess, not a smaller one. Reusing the service's own outbound peer
-# identity (colab-fleet #98's "system:"+machine) has the same access problem,
+# identity (muster #98's "system:"+machine) has the same access problem,
 # plus nothing establishes that identity also carries a local read grant on
 # THIS host's table — #98 only required the *peer's* table to grant it one,
 # for a different purpose than health-checking this host. Neither trades the
@@ -455,11 +455,11 @@ else
 	echo "        the credential THIS deployment's service actually accepts." >&2
 	echo "        A single-token deployment and a principal-table deployment" >&2
 	echo "        need different credentials, and this script cannot tell" >&2
-	echo "        which one it is about to talk to — see colab-fleet #108." >&2
+	echo "        which one it is about to talk to — see muster #108." >&2
 	exit 2
 fi
 
-# colab-fleet #93: a single probe cannot tell "not up yet" from "not coming
+# muster #93: a single probe cannot tell "not up yet" from "not coming
 # up" — startup does real work (a trust-seed pass and a session
 # reconciliation) that scales with how much the machine is carrying, and was
 # measured taking 98 seconds on the busiest machine. Poll to a deadline
@@ -482,7 +482,7 @@ while :; do
 		break
 	fi
 
-	# No -f: colab-fleet #66 found a health URL pointing at the WRONG
+	# No -f: muster #66 found a health URL pointing at the WRONG
 	# service (a stray port, an unrelated server on the same host) producing
 	# a near-identical FAILED to a service that never came back up — because
 	# -f discards the body on any non-2xx status, so a 403 from something

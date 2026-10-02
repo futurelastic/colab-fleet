@@ -14,10 +14,10 @@ import (
 	"time"
 	"unicode"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/state"
-	"github.com/godx-jp/colab-fleet/internal/trustseed"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/state"
+	"github.com/futurelastic/muster/internal/trustseed"
 )
 
 // fakeMux is a stand-in for the multiplexer binary. It records every
@@ -60,7 +60,7 @@ type fakeMux struct {
 	// all — the untouched half of #32's missing branch, as distinct from
 	// composerLines' partial-clear model of the damaged half.
 	frozen map[string]bool
-	// frozenUnixLineDiscard models colab-fleet#138's own shape: C-u (even
+	// frozenUnixLineDiscard models muster#138's own shape: C-u (even
 	// preceded by composerLineEndKey) makes no progress on this pane — as
 	// if the substrate does not honour the positioning key at all — while
 	// Backspace still clears a row normally. Distinct from frozen (which
@@ -84,13 +84,13 @@ type fakeMux struct {
 	// other pane keeps the send-keys behaviour below.
 	dialog map[string]keyedScreen
 	// renameNoop models a rename-session call that reports success without
-	// actually moving anything — colab-fleet #97's "never reached the
+	// actually moving anything — muster #97's "never reached the
 	// runtime at all" hypothesis, as distinct from a real rename that later
 	// gets reverted by mutating f.sessions directly (see
 	// TestRenameSurvivesARuntimeRevert). Off by default: every rename this
 	// fake receives moves the name, exactly as the real multiplexer does.
 	renameNoop bool
-	// capChunkArgWall models colab-fleet#141's real-world failure mode: the
+	// capChunkArgWall models muster#141's real-world failure mode: the
 	// multiplexer's own command channel refusing a chained invocation
 	// outright once it carries more than this many args, producing NO
 	// output at all (not a partial one) and a nonzero exit — "command too
@@ -99,7 +99,7 @@ type fakeMux struct {
 	// test only pays for this if it asks for it.
 	capChunkArgWall int
 	// heights is a pane's height, expanded into a batched capture's marker
-	// the way the real multiplexer expands #{pane_height} (colab-fleet#169).
+	// the way the real multiplexer expands #{pane_height} (muster#169).
 	// A pane absent here leaves the format literal, which the driver reads as
 	// "height unknown" — so every test that never sets it keeps treating all
 	// captured rows as visible, exactly as before.
@@ -224,7 +224,7 @@ func composerHolding(text string) string {
 // rendered one per screen row exactly as given, INCLUDING a blank ("") row
 // at either end. composerHolding's own strings.TrimSpace(text) would erase
 // exactly that shape — a payload ending in one or more real trailing
-// newlines (colab-fleet#132) — so it cannot be used to build this fixture.
+// newlines (muster#132) — so it cannot be used to build this fixture.
 func composerHoldingRows(lines []string) string {
 	var b strings.Builder
 	b.WriteString("  transcript line\n✻ Brewed for 1m 0s\n")
@@ -278,7 +278,7 @@ func (f *fakeMux) freezeComposer(paneID string) {
 	f.frozen[paneID] = true
 }
 
-// unfreezeComposer reverses freezeComposer — colab-fleet#136's own tests
+// unfreezeComposer reverses freezeComposer — muster#136's own tests
 // need a pane that resists the ordinary pass (to get a genuine futility
 // record) and THEN responds to the sweep, which freezeComposer alone
 // cannot model (it freezes every key, forever).
@@ -290,7 +290,7 @@ func (f *fakeMux) unfreezeComposer(paneID string) {
 
 // freezeUnixLineDiscard makes C-u (whether or not composerLineEndKey
 // preceded it) a no-op against paneID, while leaving Backspace fully
-// effective — colab-fleet#138's own shape, where the positioning fix does
+// effective — muster#138's own shape, where the positioning fix does
 // not help on some substrate and only the alternate key shape converges.
 func (f *fakeMux) freezeUnixLineDiscard(paneID string) {
 	f.mu.Lock()
@@ -348,7 +348,7 @@ func (f *fakeMux) dropLastSession() {
 // dropLastSession only ever removes whichever fixture happened to be added
 // last, which is `beta` in twoSessions(), not the `alpha💬` most settle tests
 // target. Used to simulate a session vanishing out from under an in-flight
-// settleNewSession poll (colab-fleet #125).
+// settleNewSession poll (muster #125).
 func (f *fakeMux) dropSession(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -383,12 +383,12 @@ type fakeSession struct {
 	pid     int
 	created int64
 	dead    bool
-	// deadStatus is pane_dead_status (colab-fleet #235). Meaningful only
+	// deadStatus is pane_dead_status (muster #235). Meaningful only
 	// alongside dead: true.
 	deadStatus int
 	title      string
 	// managed models the marker set-option Create leaves on every session
-	// this driver starts (colab-fleet #236, managedSessionOption). Defaults
+	// this driver starts (muster #236, managedSessionOption). Defaults
 	// to false, matching a real session nobody ever set the option on.
 	managed bool
 }
@@ -434,7 +434,7 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 		if pane != "" {
 			f.pasteLog = append(f.pasteLog, content)
 		}
-		// A dialog that takes a paste says so itself (colab-fleet#206): the
+		// A dialog that takes a paste says so itself (muster#206): the
 		// runtime's free-text field receives a bracketed paste as typed text,
 		// which is not what a composer does with one.
 		if g, ok := f.dialog[pane].(interface{ paste(text string) }); ok && pane != "" {
@@ -557,7 +557,7 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			pane := sendKeysPane(args)
 			if b, ok := g.(interface{ pressBurst(keys []string) }); ok && len(sentKeys(args)) > 1 {
 				// A model that has measured what the runtime does with several
-				// keys in ONE send-keys says so itself (colab-fleet#204).
+				// keys in ONE send-keys says so itself (muster#204).
 				b.pressBurst(sentKeys(args))
 			} else {
 				for _, k := range sentKeys(args) {
@@ -568,7 +568,7 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 			return nil, nil
 		}
 		// Model the two keys clearComposer's press loop can send: C-u
-		// (unix-line-discard) for an ordinary row, and — colab-fleet#132 —
+		// (unix-line-discard) for an ordinary row, and — muster#132 —
 		// Backspace for a row that is already blank, which C-u cannot
 		// touch at all (it kills to the start of the CURRENT line and
 		// stops there; a blank line has nothing to kill and never crosses
@@ -643,7 +643,7 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 						f.captures[pane] = composerHoldingRows(lines)
 					}
 				case backspace:
-					// colab-fleet#138: Backspace against a NON-blank row,
+					// muster#138: Backspace against a NON-blank row,
 					// reached only via clearComposer's no-movement latch —
 					// the alternate shape it falls back to once End+C-u has
 					// already proven itself a no-op against this pane
@@ -668,7 +668,7 @@ func (f *fakeMux) exec(ctx context.Context, name string, args ...string) ([]byte
 					// made it a no-op for this pane, and no Backspace
 					// accompanied it this press: models "the positioning
 					// key did not help; C-u alone still cannot touch this
-					// row" — colab-fleet#138's own worst case.
+					// row" — muster#138's own worst case.
 				}
 			} else {
 				delete(f.pasted, pane)
@@ -930,7 +930,7 @@ func idleFixtureFor(label string) string {
 }
 
 // clippedComposerFixture models exactly what a `-S -N` capture returns for a
-// composer taller than the capture window (colab-fleet#134): only the TAIL of
+// composer taller than the capture window (muster#134): only the TAIL of
 // the composer is in view, with no opening rule and no ❯-marked prompt row
 // anywhere in the captured lines — both scrolled out above the window, same
 // shape as classify_test.go's TestComposerSpanMissesAComposerTallerThanTheCaptureWindow.
@@ -979,7 +979,7 @@ func TestListCostsConstantSpawns(t *testing.T) {
 	}
 }
 
-// TestListSurvivesAFleetBiggerThanOneInvocationCanCarry is colab-fleet#141's
+// TestListSurvivesAFleetBiggerThanOneInvocationCanCarry is muster#141's
 // own regression test. Before the chunking fix, a fleet large enough to
 // cross the multiplexer's own command-length wall came back with EVERY
 // session misclassified as a driver malfunction — not just the ones past
@@ -1184,7 +1184,7 @@ func TestSendRefusesWhenComposerHoldsUnsentInput(t *testing.T) {
 	}
 }
 
-// colab-fleet#134: before this fix, a composer taller than the capture
+// muster#134: before this fix, a composer taller than the capture
 // window read as composerAbsent, so this guard never fired — a delivery
 // would proceed to concatenate onto text this driver could not see. This
 // proves the fix fails closed instead: refused, and the payload never
@@ -1324,7 +1324,7 @@ func TestCreateIsIdempotentPerKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// DeepEqual, not !=: Pins/RuntimeSurface/PromptDelivery (colab-fleet
+	// DeepEqual, not !=: Pins/RuntimeSurface/PromptDelivery (muster
 	// #84/#85/#86) are freshly allocated pointers on every call even for
 	// identical content — struct-identity != spuriously fails on two
 	// independently-built Sessions describing the same thing.
@@ -2040,7 +2040,7 @@ func TestConfirmLandedIgnoresResidueAndAttributesOnlyTheNewMarker(t *testing.T) 
 	})), withNonce(func() string { return testNonce }),
 		withClock(func() time.Time { return time.Unix(1785760000, 0) }))
 
-	// "q", not "x": colab-fleet#143 made confirmLanded's literal-match needle
+	// "q", not "x": muster#143 made confirmLanded's literal-match needle
 	// the first LINE alone, which here is a single character — and "x" is a
 	// substring of "text", which appears in the fixture's own collapsed-paste
 	// marker text ("Pasted text #…"). That coincidence would satisfy the
@@ -2224,7 +2224,7 @@ func TestRenameCarriesTheDriversMemory(t *testing.T) {
 	}
 }
 
-// colab-fleet #97: a rename that is accepted, reads back correct, and then
+// muster #97: a rename that is accepted, reads back correct, and then
 // — with no request asking for it — no longer holds. List must notice and
 // put it back, whichever of the two ways it did not hold: it reached the
 // runtime and was later undone by a second actor on the machine, or it
@@ -2331,7 +2331,7 @@ func TestRenameSurvivesARuntimeRevert(t *testing.T) {
 	})
 }
 
-// colab-fleet #223: a name the multiplexer would silently mangle (naming.go's
+// muster #223: a name the multiplexer would silently mangle (naming.go's
 // sanitizeName) must be refused, not renamed-to-and-announced — the same
 // principle as the "already in use" collision case a few lines above in
 // Rename itself.
@@ -2381,7 +2381,7 @@ func TestRenameRefusesANameTheMultiplexerWouldMangle(t *testing.T) {
 	})
 }
 
-// colab-fleet #223: the four per-id records d.observed's own move (above, in
+// muster #223: the four per-id records d.observed's own move (above, in
 // Rename) and d.mods.rekey (#185) did not already cover — a stranded
 // delivery, its tombstones, the #184 cross-path ledger, and the delivery
 // mark #111's `turns` is counted from — must move to the new id too, or a
@@ -2586,7 +2586,7 @@ func sessionByID(col fleet.Collection[fleet.Session], id string) (fleet.Session,
 	return fleet.Session{}, false
 }
 
-// colab-fleet #102: the same fact evidenceMentionsDrift checks for in prose
+// muster #102: the same fact evidenceMentionsDrift checks for in prose
 // must also be readable structurally, and the two must never disagree about
 // the same read — walks the same revert scenario
 // TestRenameSurvivesARuntimeRevert does, then checks IdentityAssertion at
@@ -2679,7 +2679,7 @@ func TestIdentityAssertionReportsDriftStructurally(t *testing.T) {
 	}
 }
 
-// colab-fleet #102: a create's own response, and the first listing right
+// muster #102: a create's own response, and the first listing right
 // after it, both report the asserted identity as unresolved — nothing has
 // read the session back yet, so neither may claim the runtime carries it.
 func TestIdentityAssertionUncorroboratedAtCreate(t *testing.T) {
@@ -2769,7 +2769,7 @@ func TestDiscardRefusesWhatItCannotCorroborate(t *testing.T) {
 	})
 }
 
-// colab-fleet#134: before this fix, a composer taller than the capture
+// muster#134: before this fix, a composer taller than the capture
 // window read as composerAbsent, so Discard's early return
 // ("pending == \"\" means already clear") fired and reported success on a
 // composer that, off-screen, still held real unsent text — the exact false
@@ -2803,7 +2803,7 @@ func TestDiscardRefusesAClippedComposerRatherThanClaimingSuccess(t *testing.T) {
 	assertNoWidenedCapture(t, f)
 }
 
-// assertClippedRemedy pins colab-fleet#149's message contract for every
+// assertClippedRemedy pins muster#149's message contract for every
 // clipped-composer refusal: it carries the one shared remedy, and it no longer
 // tells the caller to wait for the composer to shrink — the advice that sent
 // unattended callers into a retry loop that could not end.
@@ -2833,7 +2833,7 @@ func assertNoWidenedCapture(t *testing.T, f *fakeMux) {
 	}
 }
 
-// colab-fleet#149: no call shape moves a clipped-composer discard. Not an
+// muster#149: no call shape moves a clipped-composer discard. Not an
 // empty expect, not a digest the caller happens to hold, and not force —
 // force authorises a stronger clear once corroboration has PASSED (#136), and
 // here there is nothing to corroborate against. Each attempt refuses the same
@@ -2996,7 +2996,7 @@ func TestDiscardRepeatsTheClearForAMultiLineComposer(t *testing.T) {
 	}
 }
 
-// colab-fleet#129's own acceptance criterion: a multi-line composer well
+// muster#129's own acceptance criterion: a multi-line composer well
 // beyond what the retired 3-second promptClearWindow allowed still clears.
 // At one press per promptClearInterval (200ms), 3 seconds bought roughly 15
 // presses at best, before any subprocess overhead — this composer needs 20,
@@ -3045,7 +3045,7 @@ func TestDiscardClearsAComposerBeyondTheOldThreeSecondBudget(t *testing.T) {
 	}
 }
 
-// colab-fleet#132: a payload ending in real trailing newlines leaves blank
+// muster#132: a payload ending in real trailing newlines leaves blank
 // rows behind in the composer, and C-u (unix-line-discard) is a guaranteed
 // no-op against a blank row — it kills to the start of the CURRENT line and
 // never crosses the boundary above it. Against the pre-fix clearComposer
@@ -3092,14 +3092,14 @@ func TestDiscardCrossesTrailingBlankLinesWithBackspace(t *testing.T) {
 	}
 	if got := countBackspaces(f.callsSnapshot()); got < 2 {
 		t.Errorf("sent %d Backspace presses; two blank rows each need one to cross the "+
-			"line boundary C-u cannot (colab-fleet#132), got %d", got, got)
+			"line boundary C-u cannot (muster#132), got %d", got, got)
 	}
 	if got := countClears(f.callsSnapshot()); got < 1 {
 		t.Error("no C-u was sent at all; the one real content row still needs it")
 	}
 }
 
-// colab-fleet#138: composerCursorRowBlank's row-blankness proxy is only
+// muster#138: composerCursorRowBlank's row-blankness proxy is only
 // valid when the cursor sits at the END of the current row — an assumption
 // clearComposer used to take on faith. This pins the fix for the ordinary
 // non-blank case: composerLineEndKey (End) must be sent immediately before
@@ -3147,7 +3147,7 @@ func TestClearComposerPositionsBeforeKillingSoCUCanWorkOnTheCursorRow(t *testing
 	}
 }
 
-// colab-fleet#138's own measured shape: residue sitting on the composer's
+// muster#138's own measured shape: residue sitting on the composer's
 // ❯-marked row itself, where composerCursorRowBlank structurally reports
 // blank=false forever (its own doc comment) — so, pre-#138, clearComposer
 // pressed plain C-u to budget exhaustion with zero movement. This proves
@@ -3217,7 +3217,7 @@ func TestClearComposerAlternatesAfterAPressThatMovedNothing(t *testing.T) {
 	}
 }
 
-// colab-fleet#132 pinned unbroken by #138: a blank current row must still
+// muster#132 pinned unbroken by #138: a blank current row must still
 // get plain Backspace alone, never composerLineEndKey first. Positioning to
 // the end of an already-empty row buys nothing (there is nothing there to
 // position after) and #138's own fix is additive to #132's, not a
@@ -3278,7 +3278,7 @@ func TestClearComposerStillSendsBSpaceAloneOnABlankRow(t *testing.T) {
 	}
 }
 
-// colab-fleet#134/#138 interaction: clearComposer's "cleared" check must
+// muster#134/#138 interaction: clearComposer's "cleared" check must
 // additionally require composerFound, not merely got=="" — a mid-pass
 // capture that comes back composerClipped (this driver's OWN capture
 // running out, not the composer actually emptying) produces exactly the
@@ -3362,7 +3362,7 @@ func TestDiscardCrossesASingleTrailingBlankLine(t *testing.T) {
 		t.Error("accepted = false on a successful clear")
 	}
 	if got := countBackspaces(f.callsSnapshot()); got < 1 {
-		t.Error("no Backspace was sent for a single trailing blank row (colab-fleet#132)")
+		t.Error("no Backspace was sent for a single trailing blank row (muster#132)")
 	}
 }
 
@@ -3405,7 +3405,7 @@ func TestDiscardCrossesAnInteriorBlankLine(t *testing.T) {
 		t.Error("accepted = false on a successful clear")
 	}
 	if got := countBackspaces(f.callsSnapshot()); got < 1 {
-		t.Error("no Backspace was sent for an interior blank row (colab-fleet#132)")
+		t.Error("no Backspace was sent for an interior blank row (muster#132)")
 	}
 	if got := countClears(f.callsSnapshot()); got < 2 {
 		t.Errorf("sent %d C-u presses; both real-content rows still need one each", got)
@@ -3449,11 +3449,11 @@ func TestDiscardCrossesSeveralTrailingBlankLines(t *testing.T) {
 	}
 	if got := countBackspaces(f.callsSnapshot()); got < 4 {
 		t.Errorf("sent %d Backspace presses; four trailing blank rows each need one "+
-			"(colab-fleet#132), got %d", got, got)
+			"(muster#132), got %d", got, got)
 	}
 }
 
-// colab-fleet#133: "a single line with no trailing newline at all" — the
+// muster#133: "a single line with no trailing newline at all" — the
 // control case the rest of this matrix is a deviation FROM. No blank row
 // exists anywhere, so this is a plain single-press C-u clear, and Backspace
 // must never be sent — pinned explicitly rather than only implied by the
@@ -3498,7 +3498,7 @@ func TestDiscardClearsASingleLineWithNoTrailingNewline(t *testing.T) {
 	}
 }
 
-// colab-fleet#133 §1: "a leading blank row ahead of the only remaining
+// muster#133 §1: "a leading blank row ahead of the only remaining
 // content row" — believed safe during #132 ("it collapses into the existing
 // 'blank rows read as already-empty' behaviour before the new blank-row check
 // is ever consulted") but never pinned. composerCursorRowBlank only ever
@@ -3543,14 +3543,14 @@ func TestDiscardCrossesALeadingBlankRowAheadOfTheOnlyRemainingContentRow(t *test
 	if got := countBackspaces(f.callsSnapshot()); got != 0 {
 		t.Errorf("sent %d Backspace presses; a leading blank row ahead of the sole content row "+
 			"should clear via an ordinary C-u on the content row, never needing to cross the "+
-			"blank row directly (colab-fleet#133 §1)", got)
+			"blank row directly (muster#133 §1)", got)
 	}
 	if got := countClears(f.callsSnapshot()); got < 1 {
 		t.Error("no C-u was sent for the one real content row")
 	}
 }
 
-// colab-fleet#133 §1: "whitespace-only payload". composerText already trims
+// muster#133 §1: "whitespace-only payload". composerText already trims
 // per line (pinned directly against classify.go by
 // TestWhitespaceOnlyComposerIsEmpty); this exercises the SAME shape through
 // Discard end to end, closing the "believed unaffected, not exercised end to
@@ -3648,11 +3648,11 @@ func TestDiscardCrossesMultipleParagraphBreaksInAMultiRowPaste(t *testing.T) {
 	}
 	if got := countBackspaces(f.callsSnapshot()); got < 2 {
 		t.Errorf("sent %d Backspace presses; two separate paragraph-break blank rows each "+
-			"need one to cross (colab-fleet#132/#133), got %d", got, got)
+			"need one to cross (muster#132/#133), got %d", got, got)
 	}
 }
 
-// --- colab-fleet#133 follow-up: the press budget itself -------------------
+// --- muster#133 follow-up: the press budget itself -------------------
 //
 // A separate reviewing pass over the same issue found the one area the
 // matrix above never touched: `clearComposer`'s press budget
@@ -3806,7 +3806,7 @@ func TestDiscardStopsGracefullyWhenTheBudgetIsNotEnough(t *testing.T) {
 	ack2, err := d.Discard(ctx2, testCaller, fleet.SessionRef{Machine: "testbox", ID: "beta"}, digest2, driver.DiscardOptions{})
 	if err != nil {
 		t.Fatalf("second discard, against the fresh digest of what the capped pass left behind: %v — "+
-			"this is exactly colab-fleet#132's own wedge if it fails", err)
+			"this is exactly muster#132's own wedge if it fails", err)
 	}
 	if !ack2.Accepted {
 		t.Error("accepted = false on the second pass; the remaining 10 rows fit well inside a " +
@@ -3893,9 +3893,9 @@ func TestDiscardStallDetectionSurvivesPriorRowCountProgress(t *testing.T) {
 	}
 }
 
-// colab-fleet#133 §1's "three caller paths" ask: clearComposer's row-level
+// muster#133 §1's "three caller paths" ask: clearComposer's row-level
 // key choice (this whole matrix's real subject) is shared code, already
-// exhaustively covered above through Discard — colab-fleet#112's own
+// exhaustively covered above through Discard — muster#112's own
 // extraction is what keeps Discard and replaceIfStranded from being able to
 // drift apart on it. What differs PER CALLER, and was untested until now (no
 // test anywhere exercised replaceIfStranded at all, blank row or not), is the
@@ -3942,7 +3942,7 @@ func TestReplaceIfStrandedCrossesATrailingBlankLine(t *testing.T) {
 	}
 	if n := countBackspaces(f.callsSnapshot()); n < 1 {
 		t.Error("no Backspace was sent to cross the trailing blank row reached via " +
-			"replaceIfStranded (colab-fleet#132/#133) — only Discard's own endpoint was " +
+			"replaceIfStranded (muster#132/#133) — only Discard's own endpoint was " +
 			"ever proven to do this")
 	}
 }
@@ -4002,7 +4002,7 @@ func TestDiscardReportsAnUntouchedComposerDistinctlyAndSafely(t *testing.T) {
 	}
 }
 
-// colab-fleet #124: Discard's own 409 should carry the same restart-
+// muster #124: Discard's own 409 should carry the same restart-
 // correlation fact State/List already surface (stampSinceLocked's "age
 // carried from before this service restarted"), instead of making an
 // operator cross-reference a separate read by hand — which is exactly what
@@ -4120,7 +4120,7 @@ func TestDiscardIncompleteFirstMessageBoundsItsOwnSafetyPromise(t *testing.T) {
 // test: unwrapped error (mapped to invalid, not conflict) and a message
 // that never says the composer is now damaged.
 //
-// colab-fleet#129 retargeted HOW this state is reached, not what it asserts.
+// muster#129 retargeted HOW this state is reached, not what it asserts.
 // Before #129, "damaged" was reached by outrunning promptClearWindow's flat
 // 3-second clock with a composer long enough that the clock, not the
 // composer, was the limiting factor — a shape #129 explicitly removed:
@@ -4319,7 +4319,7 @@ func TestDiscardStopsPromisingASafeRetryOnceItHasProvedFutile(t *testing.T) {
 	}
 }
 
-// colab-fleet#136: discardProvenFutile's message used to terminate in "close
+// muster#136: discardProvenFutile's message used to terminate in "close
 // the session (DELETE ...)" as the ONLY remedy it named. This pins that it no
 // longer does — the grep-able assertion the issue itself asks for — and that
 // the remedy it names now is force, not destruction.
@@ -4360,7 +4360,7 @@ func TestDiscardProvenFutileNamesForceNotDestruction(t *testing.T) {
 	}
 }
 
-// colab-fleet#136: force is the escape hatch — once the ordinary pass has
+// muster#136: force is the escape hatch — once the ordinary pass has
 // already been proven futile against this exact residue, a retry WITH
 // force must reach clearComposerSweep instead of being refused outright,
 // and (given a pane that responds to Backspace at all, unlike the fully
@@ -4432,7 +4432,7 @@ func TestForceReachesTheSweepAfterFutilityIsProven(t *testing.T) {
 	}
 }
 
-// colab-fleet#136: force is not a licence to skip corroboration. It changes
+// muster#136: force is not a licence to skip corroboration. It changes
 // what happens ONCE a matching digest has already been proven futile, not
 // whether a digest is required at all — a caller cannot use force to
 // discard blind, or to discard against a composer that has changed since
@@ -4617,7 +4617,7 @@ func TestResumeSubmitsOnlyWhatThisDriverStranded(t *testing.T) {
 		}
 	})
 
-	// colab-fleet #135: this used to be the dead end this whole function's own
+	// muster #135: this used to be the dead end this whole function's own
 	// doc comment describes — no record backing the composer's content meant
 	// an unconditional refusal regardless of either flag, "close to an hour"
 	// per #135's field report once the 30-minute strandedRetention window
@@ -5263,7 +5263,7 @@ func TestSendRefusesASessionThatCannotReceiveYet(t *testing.T) {
 	// A pane mid-startup: output, but no composer fenced by rules. twoSessions'
 	// alpha is created well outside startingWindow relative to the fixed test
 	// clock (newTestDriver), so this exercises the "old" branch — see
-	// colab-fleet #64 below for why that branch's wording matters.
+	// muster #64 below for why that branch's wording matters.
 	f.captures["%1"] = "starting up\nloading configuration\n"
 	d := newTestDriver(f)
 
@@ -5280,7 +5280,7 @@ func TestSendRefusesASessionThatCannotReceiveYet(t *testing.T) {
 	if !strings.Contains(got.Reason, "idle") {
 		t.Errorf("reason = %q; it must tell the caller what to wait for", got.Reason)
 	}
-	// colab-fleet #64: an old pane with no composer painted is not
+	// muster #64: an old pane with no composer painted is not
 	// necessarily "still starting or is not listening" — that guess was
 	// wrong for a session showing a full-screen interface (a
 	// control-channel dialog, measured directly). The refusal must not
@@ -5343,7 +5343,7 @@ func TestSendRefusesAYoungSessionAsStartingNotAmbiguous(t *testing.T) {
 	}
 }
 
-// colab-fleet #64: Respond's refusal fires whenever no structured prompt is
+// muster #64: Respond's refusal fires whenever no structured prompt is
 // recognised, which is right and common (nothing is being asked) — but a
 // composer present settles which case this is. An idle, empty composer is
 // definitely not a full-screen interface (that shape has no composer of its
@@ -5438,7 +5438,7 @@ func TestSendReportsUnknownWhenTheSubmitDoesNotRegister(t *testing.T) {
 	}
 }
 
-// colab-fleet #131 (item 3): the same restart-correlation fact Discard's own
+// muster #131 (item 3): the same restart-correlation fact Discard's own
 // 409s carry since 8ff743a (see TestDiscardNotesWhenTheUnsentInputStatusPredatesTheService)
 // must reach Send's own OutcomeUnknown receipts too — a caller retrying a
 // send that lands on unknown should not have to cross-reference a separate
@@ -5626,7 +5626,7 @@ func waitFor(t *testing.T, why string, cond func() bool) {
 // It exists for a condition whose real budget is not the package's ordinary
 // waitForTimeout — e.g. several actors doing the same wait concurrently,
 // which contend for the same locks and so take longer under load the more of
-// them there are (colab-fleet#221, the same class of fixed-wall-clock flake
+// them there are (muster#221, the same class of fixed-wall-clock flake
 // as #214 and #186: the bound a healthy run needs is milliseconds, but the
 // bound that must never misfire under a loaded -race run is a different,
 // larger number, and picking one fixed constant for both is what flaked).
@@ -5692,7 +5692,7 @@ func TestABlockingQuestionIsWaitedThroughRatherThanGivenUpOn(t *testing.T) {
 	}
 }
 
-// colab-fleet #124/#125: the field measurement was of the CREATE RECORD a
+// muster #124/#125: the field measurement was of the CREATE RECORD a
 // real caller reads back through List/Create's own response — not of
 // settleNewSession's internal delivery log, which TestABlockingQuestionIs-
 // WaitedThroughRatherThanGivenUpOn above already covers. Two machines in the
@@ -5747,7 +5747,7 @@ func TestABlockingQuestionAnsweredEventuallyResolvesTheCreateRecord(t *testing.T
 	}
 }
 
-// colab-fleet #125's own load-bearing requirement: a caller must be able to
+// muster #125's own load-bearing requirement: a caller must be able to
 // say WHY a prompt has not landed WHILE it is still waiting, not only once
 // the wait ends. This reads the create record DURING the wait — before the
 // dialog ever clears — and requires the live evidence to name the actual
@@ -5785,7 +5785,7 @@ func TestPendingCreateRecordExplainsWhyWhileStillWaiting(t *testing.T) {
 	}
 }
 
-// colab-fleet #126: the same live diagnosis #125 proved above must also
+// muster #126: the same live diagnosis #125 proved above must also
 // carry a machine-readable class — a caller must be able to tell needs a
 // human keypress · composer occupied · still starting apart WITHOUT parsing
 // the prose. Three fixtures exercise the three classes this driver can

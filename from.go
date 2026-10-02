@@ -1,7 +1,7 @@
 package fleet
 
 // MessageFrom is the optional `from` object on a send (POST …/input,
-// colab-fleet #158): who a session-to-session message says it comes from.
+// muster #158): who a session-to-session message says it comes from.
 // Nil, or absent on the wire, means unlabelled — the behaviour before #158.
 //
 // # What a receiver may believe, field by field

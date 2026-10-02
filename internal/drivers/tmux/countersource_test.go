@@ -2,7 +2,7 @@ package tmux
 
 import "testing"
 
-// TestCounters_MergesCounterSource is colab-fleet #163's surface half: a count
+// TestCounters_MergesCounterSource is muster #163's surface half: a count
 // kept outside the driver reaches Counters — and therefore GET /v1/health —
 // under its own name, read fresh on every call rather than captured once at
 // construction.

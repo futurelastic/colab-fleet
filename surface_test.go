@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// colab-fleet #85: "not yet resolved" and "settled, none" must round-trip
+// muster #85: "not yet resolved" and "settled, none" must round-trip
 // as distinguishable values — a caller that cannot tell them apart either
 // polls forever on a session that will never have a surface, or gives up on
 // one that would have had one.

@@ -3,10 +3,10 @@ package tmux
 import (
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// Remembering what a create asked the runtime to resume (colab-fleet #72),
+// Remembering what a create asked the runtime to resume (muster #72),
 // so a later listing can say whether it actually happened.
 //
 // # Why this has to be remembered at all

@@ -20,7 +20,7 @@ import (
 // and kept a direct handle on the substrate to make one.
 //
 // The set is move, accept, dismiss — and one key that is none of those,
-// KeyBTab, admitted by a ruling (colab-fleet #188, option A) rather than by
+// KeyBTab, admitted by a ruling (muster #188, option A) rather than by
 // the argument above.
 //
 // # BTab is not a dialog key, and it changes what the session may do

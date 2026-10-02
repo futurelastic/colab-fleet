@@ -45,7 +45,7 @@ will meet them one at a time.
 > too. A separate, narrower cross-machine-reach grant would be the most
 > precise separation and was not rejected on its merits — it costs a new
 > grant plus a migration for every existing principal, which is not worth
-> buying against a distinction nothing has yet been harmed by (colab-fleet
+> buying against a distinction nothing has yet been harmed by (muster
 > #81).
 
 **Deadlines.** `Fleet-Deadline-Ms: <ms>` on any request. A caller may only
@@ -270,7 +270,7 @@ each one hands the new session authority its creator would otherwise have to
 grant interactively.
 
 Replaying a spent `Idempotency-Key` against a session that has since ended is
-`409` (`reason: "replay-of-ended-session"`), not `201` — colab-fleet #234. The
+`409` (`reason: "replay-of-ended-session"`), not `201` — muster #234. The
 key stays spent regardless; mint a new one rather than retrying this call.
 
 `labels` is a map of up to 16 caller facts about the session — keys 1–128 bytes
@@ -467,7 +467,7 @@ a wish, never proof.
   record still matches the composer. When the live record has lapsed (it is
   kept 30 minutes) the service keeps a longer-lived record of the text it
   placed, and if the composer still holds exactly that text, the call clears
-  it and delivers this call's text — colab-fleet #135's case, still covered.
+  it and delivers this call's text — muster #135's case, still covered.
 - `replaceIfStranded` clears the service's own stranded delivery and
   delivers this call's text instead. For any composer the service cannot
   prove is its own, it needs `expect`.
@@ -619,7 +619,7 @@ deliberately not folded into `send`.
 **`BTab` — Shift+Tab — changes what the session may do, and any principal
 holding `keys` can send it.** On an idle composer the runtime uses it to cycle
 its permission mode (default, accept edits, plan, auto…), which is the only way
-to reach most of them without a person at the terminal (colab-fleet #188). Some
+to reach most of them without a person at the terminal (muster #188). Some
 of those modes let the agent act **unattended** with less asking, so pressing
 `BTab` can *escalate* a session, and which mode a press lands in is the
 runtime's own cycle — this service neither reads nor chooses it. There is
@@ -659,12 +659,12 @@ proven-futile, retry with `&force=true` on the SAME `?expect=` — this reaches
 for a stronger clear mechanism than the ordinary pass. `force` never relaxes
 `expect`; it has no effect before a prior call has actually proven this
 residue futile. `DELETE …/{id}` still works but should not be needed for a
-stuck composer alone (colab-fleet#136).
+stuck composer alone (muster#136).
 
 A `409` saying the composer is **taller than the capture window or reaches
 above the visible pane** is different: retrying with any `expect` or `force`
 gets the same refusal, and `input`/`keys` refuse the same state. Stop retrying
-and have a person read or clear the composer at the pane (colab-fleet#149,
+and have a person read or clear the composer at the pane (muster#149,
 #169).
 
 ### `POST …/{id}/rename`
@@ -685,7 +685,7 @@ title half reported separately:
 ```
 
 The id half (`accepted`) is unconditional and synchronous. `title` is a
-SEPARATE fact (colab-fleet#222): on a runtime that keeps its own idea of a
+SEPARATE fact (muster#222): on a runtime that keeps its own idea of a
 title apart from the id — the transcript a title-reconciling client would
 otherwise trust more than this API — whether that title was brought to the
 new name too, confirmed from the runtime's own record, never the screen.
@@ -868,12 +868,12 @@ No endpoint exposes version control, worktrees, issues, work claims, or
 planning. If you need one of those here, either the caller is asking the wrong
 service, or this service has begun growing into a second supervisor.
 
-> **colab-fleet knows a session has a working directory.
+> **muster knows a session has a working directory.
 > It does not know what a worktree is.**
 
 Nor does any endpoint return a session's screen text, transcript, or other
 content the session itself produced — no "give me the result" route, and
-nothing stores one on a session's behalf (colab-fleet #82). A dispatched
+nothing stores one on a session's behalf (muster #82). A dispatched
 agent's answer travels the way its input did: the caller names a reply
 address at dispatch time, and the worker delivers its answer there itself.
 

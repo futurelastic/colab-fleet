@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // The fixtures below are real pane captures taken from a machine running 22
@@ -25,7 +25,7 @@ const fixtureWorking = `  ⎿  ◻ Build first working tmux driver
 ` + rule + `
 ❯
 ` + rule + `
-  ▸ Opus 5 · colab-fleet                                                   /rc
+  ▸ Opus 5 · muster                                                   /rc
   ⏵⏵ auto mode on (shift+tab to cycle) · ← 3 agents`
 
 // idle: spinner in its finished form, composer empty.
@@ -38,7 +38,7 @@ const fixtureIdle = `  Done — the userscript hides both columns and centres th
   ⏵⏵ auto mode on (shift+tab to cycle) · ← 3 agents`
 
 // idle, but with a footer NOTICE below the composer that shares a running
-// spinner's shape (colab-fleet#229): a single symbol, a space, a capitalised
+// spinner's shape (muster#229): a single symbol, a space, a capitalised
 // word, and a trailing ellipsis where the runtime truncated the notice. A
 // scan that does not stop at the composer's closing rule reads this line
 // before the real, finished spinner above the composer, and reports a
@@ -184,7 +184,7 @@ func TestSpinnerVerbIsNotLoadBearing(t *testing.T) {
 	}
 }
 
-// colab-fleet#229: a footer notice below the composer's closing rule must
+// muster#229: a footer notice below the composer's closing rule must
 // never win the backward scan over the real spinner line drawn above the
 // composer, even though the notice matches statusLine's shape byte for byte
 // (symbol, space, capitalised word, ellipsis).
@@ -261,7 +261,7 @@ func TestSelectedMenuItemIsNotTreatedAsUnsentInput(t *testing.T) {
 	// Not merely "not found" — composerAbsent specifically. The question
 	// line sitting right above the highlighted option is real, non-blank
 	// content this driver DID see, which is what settles "definitely a
-	// menu" rather than "could not tell" (colab-fleet#134's clipped/absent
+	// menu" rather than "could not tell" (muster#134's clipped/absent
 	// split — see composerSpan's own doc comment on ranOffTop).
 	if scan != composerAbsent {
 		t.Errorf("scan = %v, want composerAbsent: a preceding question line was in view, "+
@@ -288,7 +288,7 @@ func TestWrappedComposerCapturesEveryLine(t *testing.T) {
 	}
 }
 
-// colab-fleet#129: clearComposer sizes its press budget to how many rows a
+// muster#129: clearComposer sizes its press budget to how many rows a
 // composer occupies on screen, not to a duration — composerVisualLines is
 // where that count comes from, and it must agree with composerText about
 // which screens hold a composer at all (same composerSpan underneath).
@@ -553,7 +553,7 @@ func TestYoungPaneWithNoInterfaceIsStartingNotUnknown(t *testing.T) {
 	if old.Status != fleet.StatusUnknown {
 		t.Errorf("old pane = %q, want unknown — age is the discriminator", old.Status)
 	}
-	// colab-fleet #64: composer absence has (at least) two real causes — a
+	// muster #64: composer absence has (at least) two real causes — a
 	// pane running the wrong thing, and a runtime showing a full-screen
 	// interface with no composer of its own (a control-channel dialog,
 	// measured directly). The evidence must not assert only the first as if
@@ -1233,7 +1233,7 @@ func TestUnterminatedEscapeDoesNotEatTheLine(t *testing.T) {
 	}
 }
 
-// --- colab-fleet#133: the rest of #132's blank-row matrix -------------------
+// --- muster#133: the rest of #132's blank-row matrix -------------------
 //
 // #132 pinned four shapes with trailing/interior blank ROWS by tests. What
 // follows closes shapes #132 traced through by hand and believed safe, or
@@ -1327,14 +1327,14 @@ func TestComposerSpanSurvivesControlBytesInText(t *testing.T) {
 	}
 }
 
-// colab-fleet#133 §1: "a payload taller than the visible pane, i.e. exceeding
+// muster#133 §1: "a payload taller than the visible pane, i.e. exceeding
 // the capture window" — flagged in the issue itself as possibly needing a fix
 // rather than just a test, because captureForClassify reads only the tail
 // (classifyCaptureArgs' `-S -N`, N = defaultCaptureLines = 24) of a pane, with
 // no upper end bound. A composer taller than that window has its OPENING
 // fence and prompt-marker row scrolled out of what gets captured.
 //
-// This is not hypothetical: colab-fleet#129's own field case was on the order
+// This is not hypothetical: muster#129's own field case was on the order
 // of eighty on-screen rows, more than three times this window.
 //
 // composerSpan finds the composer by walking UP from the closing rule looking
@@ -1345,7 +1345,7 @@ func TestComposerSpanSurvivesControlBytesInText(t *testing.T) {
 // This reproduces that: a screen built from only the TAIL of a tall composer,
 // the same shape a real `-S -24` capture would hand the classifier.
 //
-// CLOSED by colab-fleet#134: composerText/composerVisualLines now report
+// CLOSED by muster#134: composerText/composerVisualLines now report
 // composerClipped for this shape, not composerAbsent — every caller that used
 // to read "not found" as "nothing to protect" (Discard's early return,
 // Send's composer-guard) now fails closed instead of silently succeeding.
@@ -1390,7 +1390,7 @@ func TestComposerSpanMissesAComposerTallerThanTheCaptureWindow(t *testing.T) {
 	}
 }
 
-// colab-fleet#134: composerClipped must be a narrow predicate — reachable
+// muster#134: composerClipped must be a narrow predicate — reachable
 // only by the two "ran off the top of the capture" exits inside
 // composerSpan, never a catch-all for "did not find a composer". This pins
 // the three-way split directly: a genuinely tall/scrolled composer is

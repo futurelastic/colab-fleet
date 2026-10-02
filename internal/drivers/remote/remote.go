@@ -1,5 +1,5 @@
 // Package remote implements driver.Driver as an HTTP client to a peer
-// colab-fleet instance — session-abstraction.md §4.2, "the remote driver".
+// muster instance — session-abstraction.md §4.2, "the remote driver".
 //
 // This is the entire federation design, and the cheapest available test of
 // it. §4.2 states the claim plainly: cross-machine operation is not a
@@ -91,15 +91,15 @@ import (
 	"sync"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 const defaultDeadlineMs = 3000
 
 // capabilityStaleness bounds how long a cached, previously-`observed`
 // capability declaration may still be reported as `observed` without fresh
-// evidence from the peer it describes (colab-fleet #67).
+// evidence from the peer it describes (muster #67).
 //
 // Nothing before this bound existed: RefreshCapabilities ran exactly once,
 // at peer registration, and never again for the life of the process — which
@@ -122,7 +122,7 @@ var ErrNoCallerAuthority = errors.New(
 	"remote: req carries no credential; a proxied request presents the " +
 		"original caller's authority, and this proxy holds none of its own (§13)")
 
-// Driver is an HTTP client to one peer colab-fleet, presented as an
+// Driver is an HTTP client to one peer muster, presented as an
 // ordinary driver.Driver. The service registers it with RegisterPeerDriver
 // and never learns that it is remote — which is the design's whole claim.
 type Driver struct {
@@ -171,17 +171,17 @@ type Driver struct {
 	// has not told us, and will not until something asks again.
 	build fleet.Build
 	// maxInputBytes is the peer's own effective input-length limit
-	// (colab-fleet #130), learned on the same /v1/health probe as build
+	// (muster #130), learned on the same /v1/health probe as build
 	// and cached the same way: zero until the peer has answered at least
 	// once, which is honest — see driver.MaxInputBytesReporter.
 	maxInputBytes int
 	// labelLimits is what the peer's /v1/health said about session labels
-	// (colab-fleet #153), on the same probe as build. Nil means either the
+	// (muster #153), on the same probe as build. Nil means either the
 	// peer has not answered yet or it predates labels — see requireLabels,
 	// which trusts only a positive answer and re-asks before refusing.
 	labelLimits *fleet.LabelLimits
 	// supportsConversationId is what the peer's /v1/health said about the
-	// conversationId create field (colab-fleet #224), on the same probe as
+	// conversationId create field (muster #224), on the same probe as
 	// build and labelLimits. Nil means either the peer has not answered yet
 	// or it predates the field — see requireConversationId, which trusts
 	// only a positive answer and re-asks before refusing, the same rule
@@ -189,7 +189,7 @@ type Driver struct {
 	supportsConversationId *bool
 
 	// self is this machine's own id, named to the peer when asking whether it
-	// is listed there (colab-fleet #154). Empty means the standing probe is
+	// is listed there (muster #154). Empty means the standing probe is
 	// not made.
 	self fleet.MachineId
 	// standing is this machine's registration on the peer as the peer last
@@ -198,7 +198,7 @@ type Driver struct {
 	standingSeen bool
 
 	// down is what this driver remembers about how the peer has been
-	// answering, and downPol is its tuning — see down.go (colab-fleet #237).
+	// answering, and downPol is its tuning — see down.go (muster #237).
 	down    downState
 	downPol downPolicy
 }
@@ -292,7 +292,7 @@ func WithIdentity(token string) Option {
 }
 
 // WithSelf names this machine, so the probe can ask the peer whether it lists
-// this machine back (colab-fleet #154).
+// this machine back (muster #154).
 func WithSelf(machine fleet.MachineId) Option {
 	return func(d *Driver) { d.self = machine }
 }
@@ -364,7 +364,7 @@ func (d *Driver) Capabilities() fleet.DriverCapabilities {
 	// attributed to whatever the peer is currently running — it may have
 	// restarted onto a different build any time since — so it degrades
 	// rather than keep asserting an observation that may no longer hold
-	// (colab-fleet #67, ask #1: "a wrong `observed` is worse than a stale
+	// (muster #67, ask #1: "a wrong `observed` is worse than a stale
 	// `assumed`"). This check runs on every read, so the degrade is not
 	// contingent on a background refresh having noticed first.
 	//
@@ -404,7 +404,7 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 	// an operator at startup, and it honours the caller's context — which is
 	// where the bound belongs for a call whose purpose is to discover bounds.
 	//
-	// Standing goes first (colab-fleet #154): a credential the peer accepts
+	// Standing goes first (muster #154): a credential the peer accepts
 	// but grants no read is exactly the misconfiguration it exists to report,
 	// and the /v1/runtimes read below would refuse that credential and return
 	// before anything after it ran.
@@ -462,7 +462,7 @@ type peerHealthBody struct {
 	// Labels is absent on a peer that predates session labels (#153).
 	Labels *fleet.LabelLimits `json:"labels"`
 	// SupportsConversationId is absent on a peer that predates the
-	// conversationId create field (colab-fleet #224) — the same shape as
+	// conversationId create field (muster #224) — the same shape as
 	// Labels one field up, but a bare flag rather than a limits struct: there
 	// is no bound to report, only whether the field is understood at all. A
 	// machine that has it always sends true; absence, not the value, is what
@@ -471,7 +471,7 @@ type peerHealthBody struct {
 }
 
 // requireLabels refuses a labelled write to a peer that would drop the labels
-// (colab-fleet #153).
+// (muster #153).
 //
 // A peer on an older build decodes a create body with encoding/json, which
 // ignores a field it does not know: it would start the session, answer 201,
@@ -507,7 +507,7 @@ func (d *Driver) requireLabels(ctx context.Context, req fleet.Request) error {
 }
 
 // requireConversationId refuses forwarding a caller-chosen conversation id to
-// a peer that would drop it (colab-fleet #224) — requireLabels' own pattern
+// a peer that would drop it (muster #224) — requireLabels' own pattern
 // applied to a second field that predates on some peers.
 //
 // A peer on an older build decodes a create body with encoding/json, which
@@ -557,7 +557,7 @@ func (d *Driver) peerHealth(ctx context.Context, req fleet.Request) (peerHealthB
 
 // noteSuccessfulContact opportunistically re-probes this peer's capabilities
 // off the back of an ordinary operation that just reached it and got a
-// domain answer back — colab-fleet #67's sharpened ask, which replaces a
+// domain answer back — muster #67's sharpened ask, which replaces a
 // time-based schedule nobody was driving: "probe on first successful
 // contact, not only at startup." An ordinary verb succeeding — a create, a
 // keypress, even a guarded refusal — is proof the peer is up and speaking
@@ -605,7 +605,7 @@ func (d *Driver) noteSuccessfulContact(req fleet.Request) {
 }
 
 // refreshStanding asks the peer what it makes of THIS machine: whether its
-// roster lists us, and what it grants the credential we present (colab-fleet
+// roster lists us, and what it grants the credential we present (muster
 // #154). It asks the peer's whoami — authentication only, exempt from read —
 // so a credential the peer accepts but grants nothing still gets an observed
 // answer, and a 401 can only mean the credential matches no principal there.
@@ -659,7 +659,7 @@ func (d *Driver) refreshStanding(ctx context.Context, req fleet.Request) {
 }
 
 // PeerStanding reports this machine's standing on the peer as last observed.
-// Implements driver.PeerStandingReporter (colab-fleet #154).
+// Implements driver.PeerStandingReporter (muster #154).
 //
 // An observation older than capabilityStaleness degrades to the assumed floor,
 // for #67's reason: a peer may have been reconfigured since, and a stale
@@ -686,7 +686,7 @@ func (d *Driver) Runtime() fleet.RuntimeId {
 }
 
 // Build reports what the peer said it was running, if it has ever said.
-// Implements driver.BuildReporter (colab-fleet #121), which is how
+// Implements driver.BuildReporter (muster #121), which is how
 // internal/service.ListMachines surfaces it per peer on GET /v1/machines.
 //
 // An unknown build and a matching build must not be conflated — see
@@ -699,7 +699,7 @@ func (d *Driver) Build() fleet.Build {
 
 // MaxInputBytes reports what the peer said its own effective input-length
 // limit was, if it has ever said. Implements driver.MaxInputBytesReporter
-// (colab-fleet #130), which is how internal/service.ListMachines surfaces
+// (muster #130), which is how internal/service.ListMachines surfaces
 // it per peer on GET /v1/machines.
 //
 // Zero means "never answered" — see fleet.MachineInfo.MaxInputBytes for why
@@ -847,7 +847,7 @@ func (d *Driver) doWithHeaders(ctx context.Context, req fleet.Request, method, p
 	d.noteReached()
 
 	// A response is a domain answer, whatever the status: the peer is up
-	// and speaking the protocol (colab-fleet #67). Excluded here are the two
+	// and speaking the protocol (muster #67). Excluded here are the two
 	// paths capability discovery itself uses — RefreshCapabilities and
 	// peerBuild — so a probe triggered below does not immediately trigger
 	// another one recursively.
@@ -971,7 +971,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		return fleet.NewCollection([]fleet.Session{}, []fleet.SourceStatus{src})
 	}
 	// A peer that predates labels ignores `label=` and answers with every
-	// session it has, none carrying the key (colab-fleet #153). Those are not
+	// session it has, none carrying the key (muster #153). Those are not
 	// matches, and an empty list would claim the peer has none: say instead
 	// that this source could not answer the question. A new build always
 	// writes `labels`, so a nil map can only come from an old one. An old peer
@@ -994,7 +994,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	return out, nil
 }
 
-// ListClosed reads the peer's own closed-session records (colab-fleet #179),
+// ListClosed reads the peer's own closed-session records (muster #179),
 // asking for its LOCAL view only (§13.1) and adopting the SourceStatus it
 // returns (§13.2) — List's two rules, for the same reasons.
 //
@@ -1087,7 +1087,7 @@ type createBody struct {
 	Resume         string             `json:"resume,omitempty"`
 	PermissionMode string             `json:"permissionMode,omitempty"`
 	Consents       []fleet.PromptKind `json:"consents,omitempty"`
-	// ConversationId travels with the create (colab-fleet #224), the same
+	// ConversationId travels with the create (muster #224), the same
 	// shape as Labels three fields down: Create refuses a peer that has not
 	// confirmed it carries the field rather than send it there to be silently
 	// dropped by a build that predates it — see requireConversationId.
@@ -1099,7 +1099,7 @@ type createBody struct {
 	// the peer or approve one that is not.
 	McpConfig []fleet.AbsolutePath `json:"mcpConfig,omitempty"`
 
-	// Labels travel with the create (colab-fleet #153); Create refuses a peer
+	// Labels travel with the create (muster #153); Create refuses a peer
 	// that would drop them rather than send them there to be ignored.
 	Labels map[string]string `json:"labels,omitempty"`
 
@@ -1177,7 +1177,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if err := d.doWithKey(ctx, req, http.MethodPost, path, body, key, &out); err != nil {
 		return fleet.Session{}, err
 	}
-	// colab-fleet #84/#85/#86: adopt the peer's own answer whole, the same
+	// muster #84/#85/#86: adopt the peer's own answer whole, the same
 	// §13.2 rule List already follows for a relayed read — this machine never
 	// learns anything about the create beyond what the peer reports, and
 	// discarding everything but SessionRef here to let the HTTP handler
@@ -1187,7 +1187,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 }
 
 // transportFailure turns a call the peer never answered into the error both
-// do and doWithKey return, and logs it on the way out (colab-fleet #174).
+// do and doWithKey return, and logs it on the way out (muster #174).
 //
 // # Why it logs
 //
@@ -1291,7 +1291,7 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 	d.noteReached()
 
 	// Same reasoning as do(): a response, whatever the status, is a domain
-	// answer and proof the peer is up (colab-fleet #67). doWithKey's only
+	// answer and proof the peer is up (muster #67). doWithKey's only
 	// caller is Create, never a capability-discovery path, so no exclusion
 	// is needed here.
 	d.noteSuccessfulContact(req)
@@ -1321,7 +1321,7 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 // it is not part of the wire body's zero-cost fields, it exists solely to
 // be turned on, so a caller who never sets it produces no symptom at all.
 //
-// ReplaceIfStranded (colab-fleet #112) is exactly the same trap, one field
+// ReplaceIfStranded (muster #112) is exactly the same trap, one field
 // over: it also has no effect unless forwarded, and a caller who never sets
 // it sees no symptom at all — the owning daemon just falls back to the same
 // §2.4 refusal ResumeIfStranded's own paragraph above describes.
@@ -1450,7 +1450,7 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 // composer actually is — against what the CALLER saw, not the far driver's own
 // later reading.
 //
-// opts.Force (colab-fleet #136) is forwarded on the wire as its own query
+// opts.Force (muster #136) is forwarded on the wire as its own query
 // parameter, never folded into or inferred from expect. This is the one
 // place in the whole DiscardOptions ripple that is NOT a local signature
 // change: dropping Force here would make the escape hatch work on a local
@@ -1526,7 +1526,7 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 		path += "?startedAt=" + url.QueryEscape(want.UTC().Format(time.RFC3339Nano))
 	}
 	body := map[string]string{"name": to}
-	// colab-fleet #222: the peer already ran its own title-sync step against
+	// muster #222: the peer already ran its own title-sync step against
 	// its own driver before answering, so whatever fleet.RenameAck it sends —
 	// title included, or absent for a peer predating this field — is
 	// forwarded to OUR caller verbatim. This driver never implements
@@ -1538,7 +1538,7 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 	return ack, nil
 }
 
-// Labels forwards a label write to the peer (POST …/labels, colab-fleet
+// Labels forwards a label write to the peer (POST …/labels, muster
 // #153), corroborated by startedAt the way Rename is. Implements
 // driver.LabelRelayer.
 //

@@ -100,7 +100,7 @@ type Error struct {
 	Reason string `json:"reason,omitempty"`
 
 	// Session and ClosedAt are set together with Reason ==
-	// ReasonReplayOfEndedSession (colab-fleet #234): an Idempotency-Key
+	// ReasonReplayOfEndedSession (muster #234): an Idempotency-Key
 	// replay whose recorded session no longer exists. Session is that
 	// session's own ref — never the replaying caller's — and ClosedAt is
 	// when this machine observed the absence, an upper bound on the true end,
@@ -112,7 +112,7 @@ type Error struct {
 
 // ReasonReplayOfEndedSession marks the ErrorConflict a create's
 // Idempotency-Key replay returns when the key's recorded session is no
-// longer present (api-http.md §3.3, colab-fleet #234). The key itself is
+// longer present (api-http.md §3.3, muster #234). The key itself is
 // untouched by this — it stays spent for its normal retention
 // (idemStore.sweepLocked) — so "same key, same answer" (§10) still holds;
 // the caller's fix is to mint a FRESH key, not to retry this one.

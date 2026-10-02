@@ -17,13 +17,13 @@ import (
 	"syscall"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
-	"github.com/godx-jp/colab-fleet/internal/inboxclient"
-	"github.com/godx-jp/colab-fleet/internal/service"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/drivers/tmux"
+	"github.com/futurelastic/muster/internal/inboxclient"
+	"github.com/futurelastic/muster/internal/service"
 )
 
-// `colab-fleetd doctor` — is this installation complete? (colab-fleet #160)
+// `muster doctor` — is this installation complete? (muster #160)
 //
 // # Why this exists
 //
@@ -115,7 +115,7 @@ const accessWriteOK = 0x2
 
 func usageDoctor() string {
 	return strings.Join([]string{
-		"usage: colab-fleetd doctor [--json] [--offline] [--principal=NAME] [--skip=ID[,ID]] [--timeout=3s]",
+		"usage: muster doctor [--json] [--offline] [--principal=NAME] [--skip=ID[,ID]] [--timeout=3s]",
 		"",
 		"Read-only. One row per dependency of a working installation; exits 1 when any",
 		"row fails, 0 otherwise (warn, unknown and skip never change the exit code), 2 on",
@@ -133,7 +133,7 @@ func usageDoctor() string {
 	}, "\n")
 }
 
-// runDoctor handles `colab-fleetd doctor ...` and reports whether it consumed
+// runDoctor handles `muster doctor ...` and reports whether it consumed
 // the invocation, and the exit code to use when it did.
 func runDoctor(args []string, getenv func(string) string, stdout, stderr io.Writer) (handled bool, code int) {
 	dir, _ := os.Getwd() // an unreadable working directory leaves it empty: not applicable
@@ -455,7 +455,7 @@ func runChecks(ctx context.Context, env doctorEnv) []doctorRow {
 		}
 
 		// This machine's standing on the peer, as the peer reports it
-		// (colab-fleet #154). The row id is the one it has always had.
+		// (muster #154). The row id is the one it has always had.
 		switch {
 		case env.Offline:
 			c.add(doctorRow{ID: prefix + ".grants", Status: statusUnknown,
@@ -562,7 +562,7 @@ func doctorPeers(getenv func(string) string, cfg *fileConfig) ([]doctorPeer, err
 func supervisorGrants() []service.Grant {
 	var out []service.Grant
 	for _, g := range service.Grants() {
-		// label (colab-fleet #153) is left out for the same kind of reason
+		// label (muster #153) is left out for the same kind of reason
 		// relay is: binding a session to its work after the fact is something
 		// a supervisor MAY do, not a verb it needs to drive sessions at all.
 		// Counting it would turn every existing full supervisor into a warning
@@ -1051,7 +1051,7 @@ func probePeer(ctx context.Context, env doctorEnv, id, base, credential string) 
 }
 
 // probePeerGrants reads this machine's standing on a peer from that peer's own
-// whoami, asked with the credential this machine presents there (colab-fleet
+// whoami, asked with the credential this machine presents there (muster
 // #154): whether the peer lists this machine back, and what it grants.
 //
 // Read-only like every other row. A peer that cannot answer the question —
@@ -1201,7 +1201,7 @@ func countRows(rows []doctorRow) map[rowStatus]int {
 }
 
 func writeDoctorText(w io.Writer, self string, rows []doctorRow) {
-	fmt.Fprintf(w, "colab-fleetd doctor — build %s · machine %s\n\n", fleet.SelfBuild().Short(), self)
+	fmt.Fprintf(w, "muster doctor — build %s · machine %s\n\n", fleet.SelfBuild().Short(), self)
 	width := 0
 	for _, r := range rows {
 		if len(r.ID) > width {

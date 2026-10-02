@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// colab-fleet#169: a composer is read from the VISIBLE pane only. Rows above
+// muster#169: a composer is read from the VISIBLE pane only. Rows above
 // it came from the `-S -N` history margin — scrollback, which may be an older
 // frame of the composer or, on an alternate-screen runtime, output from before
 // the runtime drew anything at all.

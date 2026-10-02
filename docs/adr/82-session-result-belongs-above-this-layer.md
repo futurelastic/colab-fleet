@@ -109,7 +109,7 @@ witness... the first source in this model that is not an echo," and that
 unprompted provenance is exactly what makes naming it, without opening it,
 a safe thing for this service to do. A session's result is written by the
 agent **on purpose, for whoever reads it back** — the same forgeable class
-§2.3's `ControlChannel.reason` note (colab-fleet #69) already warned about,
+§2.3's `ControlChannel.reason` note (muster #69) already warned about,
 twice measured: a supervisor grepping panes for a disconnection notice
 classified *itself* as disconnected, and a prompt classifier was fooled by
 an agent that had typed "No auth bypass" into its own prompt. Same
@@ -137,7 +137,7 @@ transfer.
   relayed reply — `actor="<worker> via <worker machine>"` — but records the
   *grant*, not the route: `input` and `respond` both log `verb=send`, so a
   delivered result and an ordinary follow-up are indistinguishable in the
-  log. Filed separately as colab-fleet #105 rather than fixed here,
+  log. Filed separately as muster #105 rather than fixed here,
   because this decision's content is "no new surface," and a wire-visible
   marker distinguishing "instruction" from "answer" would itself be exactly
   that kind of surface, proposed against a harm nothing has yet caused.
@@ -145,7 +145,7 @@ transfer.
   `source: "assumed"` with every field false when unreached, so a caller
   cannot check the agent pin will be honoured before dispatching — is a
   real, separate defect that this decision does not depend on and does not
-  fix. Filed separately as colab-fleet #106.
+  fix. Filed separately as muster #106.
 - **Left genuinely open, for a human rather than this ADR:** whether "this
   service never returns session-produced content" is a permanent invariant
   — in which case it belongs in §1's non-goals, alongside version control

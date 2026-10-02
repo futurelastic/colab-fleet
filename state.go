@@ -114,7 +114,7 @@ func (c *Confidence) UnmarshalJSON(b []byte) error {
 //
 //   - SessionState.WaitingOn, below — populated only when Status is
 //     `waiting_input`; empty for every other status. Unchanged by #126.
-//   - PromptDelivery.WaitingOn (delivery.go, colab-fleet #126) — populated
+//   - PromptDelivery.WaitingOn (delivery.go, muster #126) — populated
 //     while a create's initial prompt is still pending, independent of the
 //     session's own Status: a session correctly reading `idle` or `starting`
 //     can still be carrying an undelivered prompt, which is exactly why that
@@ -141,7 +141,7 @@ func (c *Confidence) UnmarshalJSON(b []byte) error {
 // must not be parsed, and this project has already paid twice for matching
 // sentences that later changed.
 //
-// # colab-fleet #126: a third value, for a cause `waiting_input` never covered
+// # muster #126: a third value, for a cause `waiting_input` never covered
 //
 // #126 measured seven distinct things that stop a session doing its work, on
 // a live fleet, all reading identically through this API as "the session did
@@ -191,7 +191,7 @@ const (
 	// is the age, and the age is what separates somebody mid-thought from
 	// text nobody is coming back for.
 	WaitingUnsentInput WaitingReason = "unsent-input"
-	// WaitingStarting (colab-fleet #126): the runtime has not painted an
+	// WaitingStarting (muster #126): the runtime has not painted an
 	// interface capable of receiving input at all yet — no composer, no
 	// dialog, nothing there to be blocked on. Distinct from both values
 	// above: nothing is waiting on a human's answer and no text is sitting
@@ -284,7 +284,7 @@ type TurnEnd struct {
 // Unlike Status or PermissionModeState, this is not a survey of every shape
 // the runtime's footer can take — nobody has looked at more than one notice
 // yet. It exists so the *one* cause worth branching on today
-// (colab-fleet#229, #230) has a name a caller can compare against instead of
+// (muster#229, #230) has a name a caller can compare against instead of
 // a substring it has to keep matching against prose the runtime is free to
 // reword, and so a second cause found later has somewhere to go without
 // widening Warning.Text's contract. More members arrive as they are
@@ -310,7 +310,7 @@ const (
 	// WarningTranscriptUnreliable: the runtime's own footer says its writes
 	// to this session's transcript are failing — recent turns may not have
 	// been recorded, independent of whether the turn itself is otherwise
-	// healthy (colab-fleet#229's incident, #230's field). Matched on the
+	// healthy (muster#229's incident, #230's field). Matched on the
 	// runtime's own wording ("Transcript writes are failing"), which is
 	// exactly as durable as ControlChannelState's anchor and no more: it
 	// holds until the runtime rewords the notice, at which point the line
@@ -321,12 +321,12 @@ const (
 
 // Warning is one footer notice this driver read below the composer's closing
 // rule — chrome the runtime redraws, never transcript the session under
-// watch can write into (colab-fleet#229's boundary; see the tmux driver's
+// watch can write into (muster#229's boundary; see the tmux driver's
 // footerLines).
 //
 // # Why this exists, and why it very nearly did not need to
 //
-// colab-fleet#229 found that this exact class of notice can satisfy the
+// muster#229 found that this exact class of notice can satisfy the
 // structural test spinner() uses for a real turn-status line — a single
 // non-ASCII symbol, a space, a capitalised word, a tense marker — and fixed
 // the misread by bounding spinner()'s backward scan at the composer's
@@ -428,7 +428,7 @@ type SessionState struct {
 	ControlChannel *ControlChannel `json:"controlChannel,omitempty"`
 
 	// PermissionMode is the permission mode the runtime shows the session to be
-	// in, when the driver can read it (colab-fleet #194; see
+	// in, when the driver can read it (muster #194; see
 	// PermissionModeState for the closed set and what each value means).
 	//
 	// # Why it is on the state
@@ -462,7 +462,7 @@ type SessionState struct {
 	PermissionMode PermissionModeState `json:"permissionMode,omitempty"`
 
 	// Warnings lists footer notices this driver read below the composer's
-	// closing rule (colab-fleet#230) — chrome the runtime redraws, the same
+	// closing rule (muster#230) — chrome the runtime redraws, the same
 	// region ControlChannel and PermissionMode are read from, and for the
 	// same reason: independent of Status, and otherwise invisible through
 	// every other field here (see Warning's own doc).
@@ -514,7 +514,7 @@ type SessionState struct {
 	LastTurn *TurnEnd `json:"lastTurn,omitempty"`
 
 	// Turns is how many agent turns have completed since this session's most
-	// recent prompt delivery (colab-fleet #111) — the fact that tells "the
+	// recent prompt delivery (muster #111) — the fact that tells "the
 	// agent ran and produced nothing" apart from "the agent never ran at
 	// all", which look identical through every other field: both read
 	// `status: idle`, `screenDigest`/`composerDigest` empty, no pending

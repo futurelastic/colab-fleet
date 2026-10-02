@@ -5,11 +5,11 @@ import (
 	"sync"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/state"
 )
 
-// Session labels are stored here, by the service — colab-fleet #153.
+// Session labels are stored here, by the service — muster #153.
 //
 // # Why the service and not each driver
 //

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // #182: a session's conversation, identified from the runtime's own

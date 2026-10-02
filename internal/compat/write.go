@@ -24,7 +24,7 @@ func WriteText(w io.Writer, r Report) {
 	if r.Claude.Sha256 != "" {
 		fmt.Fprintf(w, "           sha256 %s  arch %s\n", r.Claude.Sha256, r.Claude.Arch)
 	}
-	fmt.Fprintf(w, "checked by colab-fleet %s\n\n", describeBuild(r.ColabFleet))
+	fmt.Fprintf(w, "checked by muster %s\n\n", describeBuild(r.ColabFleet))
 	for _, c := range r.Checks {
 		state := "pass"
 		switch {
@@ -47,7 +47,7 @@ func WriteText(w io.Writer, r Report) {
 	}
 }
 
-// describeBuild says which colab-fleet code ran the checks, and says so
+// describeBuild says which muster code ran the checks, and says so
 // plainly when it cannot: an unstamped build, or one from a tree with
 // uncommitted changes, has no identity a reader can rely on.
 func describeBuild(b Build) string {

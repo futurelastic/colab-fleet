@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/url"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // classify turns one session's entry in a SUCCESSFULLY-read status map —
@@ -29,7 +29,7 @@ func classify(present bool, st wireStatus) fleet.SessionState {
 	case "busy":
 		return fleet.ObservedState(fleet.StatusWorking, "runtime reports an active turn", nil)
 	case "retry":
-		// colab-fleet issue #52's direction note, repeated in #55: the
+		// muster issue #52's direction note, repeated in #55: the
 		// runtime's own "retry" has no member on fleet.Status and must
 		// not get one. It maps onto working plus TurnEnd.Retryable —
 		// "poke-it-and-it-continues", not a status of its own. Outcome is
@@ -59,7 +59,7 @@ func classify(present bool, st wireStatus) fleet.SessionState {
 
 // lastTurnFailure asks the runtime's own message record whether the most
 // recent turn ended in a provider-side error that GET /session/status never
-// carries (colab-fleet #77). Measured live: a turn the provider refused
+// carries (muster #77). Measured live: a turn the provider refused
 // with HTTP 402 recorded the refusal on its own assistant-message record
 // and then simply left the status map — the session reads idle, at
 // `confidence: observed`, forever after, indistinguishable from one that

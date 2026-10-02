@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // The event plane: §7.3's cursor and epoch, §13's multiplexing, and the
@@ -101,7 +101,7 @@ type hub struct {
 	linger       time.Duration
 	lingerTimer  *time.Timer
 
-	// rename is colab-fleet #103's own bookkeeping — see
+	// rename is muster #103's own bookkeeping — see
 	// rename_corroboration.go. A separate lock from mu above, deliberately:
 	// resolving a pending rename recurses into publish (to announce the
 	// follow-up), and mu is not reentrant.
@@ -176,7 +176,7 @@ func (h *hub) publish(ev fleet.Event) {
 
 	h.mu.Unlock()
 
-	// Deliberately unlocked above rather than deferred: colab-fleet #103's
+	// Deliberately unlocked above rather than deferred: muster #103's
 	// corroboration bookkeeping lives under its own lock (h.rename, never
 	// h.mu — see renamePlane's doc), and a rename that just resolved
 	// recurses into publish to announce the follow-up. h.mu is not
@@ -529,7 +529,7 @@ func (s *Service) drainStream(ctx context.Context, stream driver.EventStream) er
 			return err
 		}
 		// A LOCAL driver's session.created carries no labels — the driver
-		// never sees them (colab-fleet #153). Attach whatever this service
+		// never sees them (muster #153). Attach whatever this service
 		// already holds. A create's own labels may land a moment after this
 		// event; session.labels is what guarantees a subscriber sees them.
 		if ev.Kind == fleet.EventSessionCreated && (ev.Machine == "" || ev.Machine == s.self) {

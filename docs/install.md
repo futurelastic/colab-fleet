@@ -24,7 +24,7 @@ every keypress (#68); an unset inbox index leaves every delivery on the pane
 path (#122); an index without a permission-mode class uses the inbox for
 nothing while reporting that it delivers to it (#148).
 
-`colab-fleetd doctor` reports each of these as a row — step 9 below — so the
+`muster doctor` reports each of these as a row — step 9 below — so the
 order of this page and the order of its output are the same.
 
 ## The procedure
@@ -37,9 +37,9 @@ order of this page and the order of its output are the same.
    executes is not an install path.
 
    ```sh
-   go build -ldflags "-X github.com/godx-jp/colab-fleet.version=$(git describe --tags --match 'v[0-9]*')" \
-     -o ./colab-fleetd ./cmd/colab-fleetd
-   install -m 0755 ./colab-fleetd /usr/local/bin/colab-fleetd
+   go build -ldflags "-X github.com/futurelastic/muster.version=$(git describe --tags --match 'v[0-9]*')" \
+     -o ./muster ./cmd/muster
+   install -m 0755 ./muster /usr/local/bin/muster
    ```
 
    The `-ldflags` stamp is what `/v1/health` reports as `build.version` — the
@@ -69,11 +69,11 @@ order of this page and the order of its output are the same.
    it writes:
 
    ```sh
-   mkdir -p -m 0700 ~/.config/colab-fleet
-   printf '{}\n' > ~/.config/colab-fleet/config.json
-   export FLEET_CONFIG=~/.config/colab-fleet/config.json
+   mkdir -p -m 0700 ~/.config/muster
+   printf '{}\n' > ~/.config/muster/config.json
+   export FLEET_CONFIG=~/.config/muster/config.json
 
-   colab-fleetd principal add supervisor \
+   muster principal add supervisor \
      --grants=read,create,send,interrupt,close,rename,discard,keys,relay
    ```
 
@@ -97,7 +97,7 @@ order of this page and the order of its output are the same.
      if a will relay keys:
 
      ```sh
-     colab-fleetd principal add machine-a --grants=read,send,keys \
+     muster principal add machine-a --grants=read,send,keys \
        --token-file=./machine-a-on-b.token
      ```
 
@@ -144,7 +144,7 @@ order of this page and the order of its output are the same.
    falls back to the built-in terminal path for everything else. Unset or empty
    means none — the ordinary state, and byte-for-byte what a build without the
    feature does. To enable one, put its executable in the modules directory
-   (`FLEET_MODULES_DIR`, default `<prefix>/libexec/colab-fleet/modules` where
+   (`FLEET_MODULES_DIR`, default `<prefix>/libexec/muster/modules` where
    `<prefix>` is the parent of the daemon binary's directory — set it explicitly
    when the binary is reached through a symlink), one file per module named by
    the module, mode not group- or world-writable, and list the name. A name with
@@ -156,7 +156,7 @@ order of this page and the order of its output are the same.
 8. **Write the service unit.** Whatever the machine's service manager is, the
    unit must:
 
-   - execute the absolute path from step 1, with no arguments;
+   - execute the absolute path from step 1 with the single argument `serve` (a unit still pointing at the former `colab-fleetd` name keeps starting bare, which is the same thing for one release);
    - set `FLEET_MACHINE`, `FLEET_ADDR`, `FLEET_STATE_DIR`, `FLEET_CONFIG`, and
      where they apply `FLEET_INBOX_INDEX`, `FLEET_PEERS` and
      `FLEET_DELIVERY_MODULES` (with `FLEET_MODULES_DIR` and
@@ -175,7 +175,7 @@ order of this page and the order of its output are the same.
 
    ```sh
    env -i FLEET_MACHINE=… FLEET_ADDR=… FLEET_STATE_DIR=… FLEET_CONFIG=… \
-     FLEET_TMUX_BIN=… /usr/local/bin/colab-fleetd doctor --principal=supervisor
+     FLEET_TMUX_BIN=… /usr/local/bin/muster doctor --principal=supervisor
    ```
 
    Your login shell's environment is not the unit's. A doctor run from the
@@ -194,7 +194,7 @@ order of this page and the order of its output are the same.
 10. **Start the service and verify it** with a principal's token file:
 
     ```sh
-    curl -s -H "Authorization: Bearer $(cat ~/.config/colab-fleet/supervisor.token)" \
+    curl -s -H "Authorization: Bearer $(cat ~/.config/muster/supervisor.token)" \
       http://127.0.0.1:<port>/v1/health
     ```
 

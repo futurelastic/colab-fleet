@@ -1,6 +1,6 @@
 # Session identity — a machine declaring what its sessions carry
 
-Reference for `sessionEnv`, the `FLEET_CONFIG` entry from colab-fleet issue
+Reference for `sessionEnv`, the `FLEET_CONFIG` entry from muster issue
 #94. If you are looking for the wire shape of a create request, that is
 [`api.md`](api.md) and [`spec/api-http.md`](spec/api-http.md) — this feature
 adds no field there (see "Why this needed no wire change" below). This page is

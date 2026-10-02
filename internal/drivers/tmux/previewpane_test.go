@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // Escapes as the runtime painted them on the measured build: the current tab
@@ -17,7 +17,7 @@ const (
 )
 
 // previewScreen renders a question dialog with a preview pane the way one
-// runtime build was measured drawing it (colab-fleet#204): the list column and
+// runtime build was measured drawing it (muster#204): the list column and
 // the box side by side, the box's top border on the first option's row, its
 // left edge in one column all the way down, and below it the notes hint, a
 // rule, the chat row and the footer.

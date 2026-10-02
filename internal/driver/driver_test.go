@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 var testCaller = fleet.Request{Caller: fleet.Caller{Principal: "test:unit"}}

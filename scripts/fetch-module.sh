@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build ONE optional delivery module from its source, if - and only if - the
-# user running this script can get at that source. colab-fleet #185.
+# user running this script can get at that source. muster #185.
 #
 #   scripts/fetch-module.sh NAME SOURCE OUT
 #

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // What a created session must be, and what it must not be.

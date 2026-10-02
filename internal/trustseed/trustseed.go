@@ -6,7 +6,7 @@
 //
 // The runtime this fleet drives asks, the first time it is pointed at a
 // directory, "do you trust the files in this folder" — and blocks until a
-// human answers. colab-fleet already knows how to answer that question for a
+// human answers. muster already knows how to answer that question for a
 // session IT created, because the caller that asked for the session named
 // that directory in the same request and consented to it there (see the root
 // package's SessionSpec.Consents and prompt.go's doctrine on why that is the
@@ -19,7 +19,7 @@
 // imports". Like the first it holds a new session forever, with no bridge and
 // no conversation id for a host to link to, and like the first it is asked
 // again for every directory on a workspace whose folders all import the same
-// shared file from one place (colab-fleet #211).
+// shared file from one place (muster #211).
 //
 // # What this package does instead
 //
@@ -73,7 +73,7 @@ const (
 	// importsApprovedKey answers "allow external CLAUDE.md file imports" —
 	// the runtime saves it per project, and the project is the enclosing
 	// repository root when there is one, otherwise the directory itself
-	// (colab-fleet #211), which is the same key-per-root rule trustKey follows.
+	// (muster #211), which is the same key-per-root rule trustKey follows.
 	importsApprovedKey = "hasClaudeMdExternalIncludesApproved"
 	// importsShownKey is the runtime's record that it has already put that
 	// question on screen. It is set beside importsApprovedKey so the two never
@@ -82,7 +82,7 @@ const (
 )
 
 // The same names, exported for the one reader that has to print them: a compat
-// report that says which key the runtime stopped honouring (colab-fleet #212).
+// report that says which key the runtime stopped honouring (muster #212).
 // Aliases, not a second copy, so a rename still shows every place it matters.
 const (
 	TrustKey           = trustKey
@@ -101,7 +101,7 @@ const (
 	//
 	// It counts the TRUST key only. The imports key has a counter of its own,
 	// so a caller can tell which of the two keys is being written
-	// (colab-fleet #211): a fleet whose trust counter moves and whose imports
+	// (muster #211): a fleet whose trust counter moves and whose imports
 	// counter never does is one whose runtime stopped storing the second
 	// answer where this package writes it.
 	CounterGranted = "trust_seed.granted"
@@ -185,7 +185,7 @@ type Seeder struct {
 // CounterRootMissing exists for.
 //
 // Each surviving root is resolved once, here, into a configuredRoot — see
-// its doc comment for why discoverIslands needs both forms (colab-fleet
+// its doc comment for why discoverIslands needs both forms (muster
 // #213).
 func New(statePath, home string, roots []string) *Seeder {
 	s := &Seeder{
@@ -211,7 +211,7 @@ func New(statePath, home string, roots []string) *Seeder {
 }
 
 // configuredRoot carries one configured trust root in the two forms this
-// package needs kept apart (colab-fleet #213):
+// package needs kept apart (muster #213):
 //
 //   - spelling is exactly what the operator wrote (cleaned, absolute). Every
 //     "is this directory under a configured root" check — underConfiguredRoot,
@@ -249,7 +249,7 @@ func resolveRootForWalk(spelling string) string {
 // leaves the external-imports one standing, for a directory the runtime should
 // still ask about.
 //
-// It exists for one caller: the compat harness (`colab-fleetd compat`), which
+// It exists for one caller: the compat harness (`muster compat`), which
 // has to observe the imports question on a real candidate build and so needs a
 // directory that is trusted but not import-approved. The standing seeder can
 // never produce one, by design — it writes both answers, so that no directory
@@ -313,7 +313,7 @@ func (s *Seeder) add(name string, n int) {
 }
 
 // Result reports what one SeedAll pass did — countable, per point 6 of
-// colab-fleet issue #47's proposed shape, so a regression here is visible
+// muster issue #47's proposed shape, so a regression here is visible
 // without a human noticing that work stopped.
 type Result struct {
 	// Islands is how many repository/worktree roots were found under every
@@ -324,7 +324,7 @@ type Result struct {
 	Granted int
 	// ImportsGranted is how many project entries had the external-imports
 	// approval written this pass. Counted apart from Granted so a caller can
-	// see which of the two keys moved (colab-fleet #211).
+	// see which of the two keys moved (muster #211).
 	ImportsGranted int
 	// RootsMissing lists configured roots not found on disk this pass. See
 	// CounterRootMissing.
@@ -482,7 +482,7 @@ func withinRoot(dir, root string) bool {
 //
 // The walk itself runs against root.walk — the resolved form — never
 // root.spelling, so a root that is itself a symlink is actually descended
-// into (colab-fleet #213; see configuredRoot's doc comment for why
+// into (muster #213; see configuredRoot's doc comment for why
 // WalkDir(spelling) alone cannot do this). Every island the walk finds is
 // then re-spelled back onto root.spelling before being returned, so the
 // rest of this package keeps working with the path form the operator

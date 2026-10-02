@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/state"
 )
 
 func listAll() driver.ListFilter { return driver.ListFilter{} }
@@ -214,7 +214,7 @@ func TestSinceSurvivesARestart(t *testing.T) {
 	}
 }
 
-// A rename must not reset what a restart reads as `since` (colab-fleet
+// A rename must not reset what a restart reads as `since` (muster
 // #96/#97). The old implementation kept the durable session record keyed
 // ONLY by name, so the moment a rename changed the key, the record's own
 // history — FirstSeen, Status, StatusSince — had nothing to attach to and a

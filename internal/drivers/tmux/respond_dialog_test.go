@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // fakeDialog models the runtime's numbered menus as measured live for
-// colab-fleet#168, rather than as this driver once assumed them to be:
+// muster#168, rather than as this driver once assumed them to be:
 //
 //   - a digit alone COMMITS the answer — no confirm key is needed — on a
 //     tabbed question, on the review confirm widget, and on a single-question
@@ -147,7 +147,7 @@ func newlineSends(f *fakeMux) [][]string {
 	return out
 }
 
-// colab-fleet#168: two respond calls on a three-question tabbed dialog must
+// muster#168: two respond calls on a three-question tabbed dialog must
 // answer exactly the two questions whose nonces were quoted, with exactly the
 // options chosen. With the old digit+C-m pair the first call's C-m answered
 // question 2 with its default and moved the dialog to question 3 — the

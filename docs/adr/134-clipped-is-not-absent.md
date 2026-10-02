@@ -18,7 +18,7 @@ early return (`pending, _ := composerText(sc); if pending == "" { return
 Accepted: true }`) reports SUCCESS on a composer that, off-screen, still holds
 dozens of rows of unsent text; `Send`'s composer-busy guard never fires, so a
 delivery proceeds to concatenate onto a composer §2.4 exists to protect.
-`colab-fleet#129`'s own field case measured on the order of eighty on-screen
+`muster#129`'s own field case measured on the order of eighty on-screen
 rows — more than three times the current 24-line scrollback margin.
 
 `TestComposerSpanMissesAComposerTallerThanTheCaptureWindow` (added by #133)
@@ -155,7 +155,7 @@ message instead of routing to `respond`.
 - `composerClipped` is reachable off a fixture (`TestComposerSpanMissesAComposerTallerThanTheCaptureWindow`)
   but has not been separately confirmed against a live pane in this change —
   it requires a composer whose box is taller than `paneHeight +
-  defaultCaptureLines`, which real terminals can produce (colab-fleet#129's
+  defaultCaptureLines`, which real terminals can produce (muster#129's
   own ~80-row field case), but if the TUI caps its own composer box height
   below that, this path may be rare or unreachable off a real pane. The
   fixture-level false-negative it closes is real regardless.

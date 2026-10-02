@@ -1,4 +1,4 @@
-// Package state persists the small amount a colab-fleet service must remember
+// Package state persists the small amount a muster service must remember
 // across a restart.
 //
 // # Why any of this exists

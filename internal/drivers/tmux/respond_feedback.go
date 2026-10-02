@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// Answering the runtime's feedback-draft card (colab-fleet #215) — see
+// Answering the runtime's feedback-draft card (muster #215) — see
 // feedbackcard.go for what the card is and why it is a prompt only while it
 // hides the composer.
 //

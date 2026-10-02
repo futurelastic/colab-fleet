@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// colab-fleet#220: the parser kept the last three rows above the options as the
+// muster#220: the parser kept the last three rows above the options as the
 // question, a bound written when the rows above a dialog could be transcript.
 // Once the dialog's header row is found nothing between it and the options can
 // be, so the bound only cut a question long enough to wrap over more than three

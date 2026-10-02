@@ -1,5 +1,5 @@
 // Package fleet defines the wire and domain types shared by every
-// colab-fleet client and driver.
+// muster client and driver.
 //
 // The split is deliberate: this package depends on nothing under internal/,
 // so a third party writing only an HTTP client against

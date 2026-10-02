@@ -11,7 +11,7 @@ before anything ran.
 
 ```sh
 export FLEET_URL=http://127.0.0.1:<port>
-export FLEET_TOKEN_FILE=~/.config/colab-fleet/<name>.token
+export FLEET_TOKEN_FILE=~/.config/muster/<name>.token
 source clients/fleetctl.zsh
 ```
 

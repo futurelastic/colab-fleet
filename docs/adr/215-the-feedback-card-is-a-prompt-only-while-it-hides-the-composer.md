@@ -1,7 +1,7 @@
 # ADR 215 — The feedback-draft card is a prompt only while it hides the composer
 
 **Status:** accepted (2026-09-26)
-**Issue:** colab-fleet #215 · builds on #134, #58
+**Issue:** muster #215 · builds on #134, #58
 
 ## Context
 

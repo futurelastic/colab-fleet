@@ -1,4 +1,4 @@
-# fleetctl — a standalone client for colab-fleet: no launcher required.
+# fleetctl — a standalone client for muster: no launcher required.
 #
 # It depends on nothing: useful in a script, on a machine with no launcher
 # installed, or when you want to see the service's answers unmediated. That
@@ -10,7 +10,7 @@
 # specific machine's launcher rather than a client of this API, so it moved to
 # the workspace that owns that launcher. Nothing here depended on it.
 #
-#   source /path/to/colab-fleet/clients/fleetctl.zsh
+#   source /path/to/muster/clients/fleetctl.zsh
 #
 #   fleetctl                       list every session in the fleet
 #   fleetctl <prefix>              attach to the one session matching <prefix>
@@ -24,7 +24,7 @@
 #   FLEET_URL         the service on THIS machine — REQUIRED, no default.
 #                     The port is an operational fact, not a constant, and a
 #                     guessed default would quietly probe the wrong thing.
-#   FLEET_TOKEN_FILE  file holding this client's token  (default ~/.config/colab-fleet/token)
+#   FLEET_TOKEN_FILE  file holding this client's token  (default ~/.config/muster/token)
 #   FLEET_SSH_FMT     how to reach another machine by name, %s = machine id
 #                     e.g. "ssh -t host-%s"             (default "ssh -t %s")
 #
@@ -34,10 +34,18 @@
 # guide explains why; the short version is in each comment.
 
 if [[ -z ${FLEET_URL:-} ]]; then
-  print -u2 "fleetctl: set FLEET_URL to this machine's colab-fleet service, e.g."
+  print -u2 "fleetctl: set FLEET_URL to this machine's muster service, e.g."
   print -u2 "       export FLEET_URL=http://127.0.0.1:<port>"
 fi
-: ${FLEET_TOKEN_FILE:=$HOME/.config/colab-fleet/token}
+if [[ -z ${FLEET_TOKEN_FILE:-} ]]; then
+  # The service was released as colab-fleetd; a machine that has not moved its
+  # config directory yet still has the token under the old name.
+  if [[ -f $HOME/.config/muster/token ]]; then
+    FLEET_TOKEN_FILE=$HOME/.config/muster/token
+  else
+    FLEET_TOKEN_FILE=$HOME/.config/colab-fleet/token
+  fi
+fi
 : ${FLEET_SSH_FMT:=ssh -t %s}
 
 # ── plumbing ────────────────────────────────────────────────────────────────

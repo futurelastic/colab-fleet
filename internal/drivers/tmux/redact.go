@@ -51,7 +51,7 @@ import (
 func RedactCapture(raw string) string {
 	lines := strings.Split(raw, "\n")
 	out := make([]string, len(lines))
-	// A preview pane (colab-fleet#204) is the one shape that is not line-local:
+	// A preview pane (muster#204) is the one shape that is not line-local:
 	// its rows are recognised as a pane only by the box they close into, and
 	// the same `│ … │` cells in a table the agent printed are agent content.
 	// So the pane is found once, over the whole capture, by the same function
@@ -65,7 +65,7 @@ func RedactCapture(raw string) string {
 		}
 	}
 	pane, hasPane := findPreviewPane(stripped[:last+1])
-	// The feedback-draft card (colab-fleet#215) is the other shape that is not
+	// The feedback-draft card (muster#215) is the other shape that is not
 	// line-local, for the same reason: its rows are `│ … │` cells whose only
 	// runtime vocabulary is the key row, and the rows above it are the agent's
 	// own draft. Found once, over the whole capture, by the classifier's own
@@ -182,7 +182,7 @@ func redactRow(raw string, afterRule bool) string {
 	// statusLine is a shape — a symbol, a capital, and " for " or an ellipsis
 	// anywhere after — so a call whose arguments said "… for …" was kept whole,
 	// arguments and all, in a corpus this repository publishes (found while
-	// redacting the feedback card's states, colab-fleet#217). The spinner's
+	// redacting the feedback card's states, muster#217). The spinner's
 	// glyph is an animation frame, and the bullet is not one of them.
 	if strings.HasPrefix(content, responseBullet) {
 		return leading + responseBullet + " " + placeholderToken
@@ -214,7 +214,7 @@ func redactRow(raw string, afterRule bool) string {
 		}
 		return leading + prefix + redactOption(n, text)
 	}
-	// An UNNUMBERED menu row (colab-fleet#171) has no index to key on, so
+	// An UNNUMBERED menu row (muster#171) has no index to key on, so
 	// it is kept only when its whole text is one of the runtime's own option
 	// phrases — an exact match, never a prefix: without a number marking the
 	// row as an option, a prefix would keep any transcript line that merely
@@ -255,7 +255,7 @@ func redactRow(raw string, afterRule bool) string {
 		return stripped
 	}
 
-	// The feedback panel (colab-fleet#217) is a screen of the person's own
+	// The feedback panel (muster#217) is a screen of the person's own
 	// drafts, and only its frame is runtime vocabulary: the heavy rule across
 	// its top, its title, and the list view's footer hint. Everything else on it
 	// (draft titles, an editor's fields) falls through to the placeholder. The
@@ -388,7 +388,7 @@ var knownOptionPhrases = []string{
 	"yes, and don't ask again",
 	"no, tell claude what to do",
 	"don't ask me again",
-	// The external-imports question's two options (colab-fleet #211, #212): the
+	// The external-imports question's two options (muster #211, #212): the
 	// classifier dispatches on them, so a pack state that hides them is a state a
 	// replay cannot classify.
 	"no, disable external imports",
@@ -423,7 +423,7 @@ const (
 // redactHeader keeps a dialog header's chrome and discards each question's
 // header text: `←  ☒ Fruit  ☐ Size  ✔ Submit  →` becomes
 // `←  ☒ [redacted]  ☐ [redacted]  ✔ Submit  →`, and a lone chip `☐ Pick`
-// becomes `☐ [redacted]`. Which tab is CURRENT survives (colab-fleet#204): it
+// becomes `☐ [redacted]`. Which tab is CURRENT survives (muster#204): it
 // is painted, not written, so it is read from the escapes of the row as
 // captured and painted again on the redacted one — a case about "question 1
 // of 2" has nothing to assert without it. A fixed point by construction: the
@@ -459,7 +459,7 @@ func redactHeader(raw string) string {
 }
 
 // redactPaneRow redacts one row of a validated preview pane
-// (colab-fleet#204): the option list's cell is redacted as the row would be on
+// (muster#204): the option list's cell is redacted as the row would be on
 // its own, the pane's own text is discarded, and what is kept is the SHAPE —
 // the box's borders and the column it starts in — because the classifier reads
 // a pane by its borders and by the gap in front of them.

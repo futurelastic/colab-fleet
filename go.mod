@@ -1,3 +1,3 @@
-module github.com/godx-jp/colab-fleet
+module github.com/futurelastic/muster
 
 go 1.26

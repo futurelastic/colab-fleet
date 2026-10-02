@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
-// Tests for colab-fleet #237's service half: GET /v1/machines reads a peer's
+// Tests for muster #237's service half: GET /v1/machines reads a peer's
 // remembered down state instead of dialling it, and reports an unreachable
 // peer as unreachable even when its driver folded the failure into an
 // envelope rather than returning an error.

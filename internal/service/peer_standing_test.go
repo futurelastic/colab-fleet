@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
-// colab-fleet #154, the service's half: whoami answers "do you list me" for a
+// muster #154, the service's half: whoami answers "do you list me" for a
 // peer that names itself, and GET /v1/machines carries each machine's standing.
 
 func standingGet(t *testing.T, u, token string) (int, []byte) {

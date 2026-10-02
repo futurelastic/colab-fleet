@@ -15,7 +15,7 @@ const nameCap = 64
 const nameEllipsis = "…"
 
 // SenderName returns raw as the receiving runtime will rebuild it, or "" when
-// that cannot be guaranteed (colab-fleet #158).
+// that cannot be guaranteed (muster #158).
 //
 // # Why this has to be a fixed point, not merely "cleaned up"
 //

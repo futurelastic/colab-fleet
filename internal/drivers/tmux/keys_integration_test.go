@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // #188, against a REAL multiplexer: the unit tests above prove the driver asks

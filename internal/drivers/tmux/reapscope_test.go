@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// colab-fleet #236's own oracle: reapDeadRows must act only on a session
+// muster #236's own oracle: reapDeadRows must act only on a session
 // this driver marked as its own at Create (managedSessionOption), never on
 // every dead pane the enumeration happens to see. Create's own comment on
 // remain-on-exit says this driver's multiplexer server may host sessions
@@ -38,7 +38,7 @@ func TestReapActsOnlyOnSessionsThisDriverMarkedAsItsOwn(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 
-	// The unmarked session is left exactly as it was before colab-fleet
+	// The unmarked session is left exactly as it was before muster
 	// #235 ever shipped: still reported by List (never silently dropped),
 	// never killed.
 	byID := map[string]bool{}

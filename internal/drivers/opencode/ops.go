@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // Create starts a session (§3), honouring the caller's idempotency key
@@ -18,7 +18,7 @@ import (
 // Agent, Model and Effort are §2.1's "hints, not guarantees": this driver
 // genuinely honours Agent and Model (opencode's own create body carries
 // both) and REFUSES rather than silently drops Effort, Env, ContextRef,
-// McpConfig, PermissionMode, Resume and ConversationId (colab-fleet #224) —
+// McpConfig, PermissionMode, Resume and ConversationId (muster #224) —
 // none of which this substrate has an honest mechanism for. TrustCwd and
 // Consents are left as no-ops: a substrate with no such boot-time question
 // honours them by having nothing to do (session.go's own rule for a HINT),
@@ -35,7 +35,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if ref, ok := d.idemLookup(key); ok {
 		// A repeat of an already-completed create: report the same applied
 		// facts the original create observed and cached (markSeen), not a
-		// fresh echo of this call's own spec — colab-fleet #84 is exactly
+		// fresh echo of this call's own spec — muster #84 is exactly
 		// the failure of reporting a request as if it were a fact.
 		info, _ := d.wasSeen(ref.ID)
 		return fleet.Session{
@@ -53,7 +53,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		"mcpConfig":      len(spec.McpConfig) > 0,
 		"permissionMode": spec.PermissionMode != "",
 		"resume":         spec.Resume != "",
-		// colab-fleet #224: opencode's session.create has no equivalent of
+		// muster #224: opencode's session.create has no equivalent of
 		// Claude Code's --session-id — this substrate assigns its own id and
 		// this driver has no honest way to make it start under a caller's
 		// instead. Refused for the same reason as resume, three lines above.
@@ -121,7 +121,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 }
 
 // pinOutcomeForAgent reports what this driver actually knows about the two
-// pins it accepts (colab-fleet #84): agent is genuinely observable, because
+// pins it accepts (muster #84): agent is genuinely observable, because
 // opencode's own create response — and the cache markSeen keeps of it —
 // names the agent the runtime started with, so a request that reached this
 // point (a rejected model shape refuses before ever calling the runtime;
@@ -161,7 +161,7 @@ func (d *Driver) sendPrompt(ctx context.Context, id, text string) error {
 // substrate holds text in ahead of submission, unlike the tmux driver's
 // pane. So Submit:false has nothing honest to do: ErrUnsupported rather
 // than silently submitting anyway (§5.6). The same absence of a composer
-// means ResumeIfStranded and ReplaceIfStranded (colab-fleet #112) are both
+// means ResumeIfStranded and ReplaceIfStranded (muster #112) are both
 // silently no-ops here rather than errors: there is nothing for either to
 // act on, and neither opt-in changes this method's behaviour.
 //

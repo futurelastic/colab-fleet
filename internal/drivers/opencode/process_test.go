@@ -26,7 +26,7 @@ func TestProbe_MissingBinaryDegradesHonestly_NeverPanics(t *testing.T) {
 }
 
 // New must likewise return an error rather than crash when the binary is
-// absent, so a caller (colab-fleetd) can log and continue without this
+// absent, so a caller (muster) can log and continue without this
 // runtime instead of the whole daemon going down over one optional
 // third-party dependency.
 func TestNew_MissingBinaryReturnsError_NeverPanicsOrBlocks(t *testing.T) {
@@ -103,7 +103,7 @@ func TestStartProcess_CredentialNeverReachesArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := buildServeCmd(bin, "", port, "colab-fleet", cred)
+	cmd := buildServeCmd(bin, "", port, "muster", cred)
 
 	for _, a := range cmd.Args {
 		if strings.Contains(a, cred) {

@@ -133,7 +133,7 @@ interface.
   ruling on whether this service may even hold the credential the handshake
   needs, would be building on the "optimistic branch" #118's own issue
   explicitly warns against for a related question.
-- **No wiring into `cmd/colab-fleetd`'s startup/interval maintainer.**
+- **No wiring into `cmd/muster`'s startup/interval maintainer.**
   `ProcessIdentityCoverage` is a query a future caller — a health surface,
   or #119 itself before it starts trusting this driver — can run on demand
   or on a schedule it owns. Scheduling it here would touch the composition

@@ -134,7 +134,7 @@ func TestDeliver_ConnectionClosedBeforeAnyRead_ReturnsError(t *testing.T) {
 }
 
 // TestDeliver_OverARealSocket exercises Deliver against an actual unix
-// domain socket rather than an in-memory net.Pipe — colab-fleet #144's own
+// domain socket rather than an in-memory net.Pipe — muster #144's own
 // requirement, filed because this subsystem shipped broken twice
 // (#122: the resolver was never wired; #143: this package's framing was
 // never validated against anything real) and every test passed both times,

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // Per-principal authorization (§6).
@@ -40,7 +40,7 @@ import (
 // gets mutating()'s upgrade to this grant. A relayed mutation changes state
 // on a machine the caller is not talking to; a relayed read does not — so
 // requiring GrantRelay for both would treat reaching and changing as one
-// act. Ruled, not defaulted into: colab-fleet #81.
+// act. Ruled, not defaulted into: muster #81.
 
 // Grant is a permitted verb (§6 requirement 3).
 type Grant string
@@ -79,7 +79,7 @@ const (
 	// its own.
 	//
 	// ⚠️ This grant is also the one that lets a caller ESCALATE a session
-	// (colab-fleet #188, ruled option A). The vocabulary includes BTab
+	// (muster #188, ruled option A). The vocabulary includes BTab
 	// (Shift+Tab), which cycles the runtime's permission mode — toward
 	// accept-edits or auto, which widen what the agent may do unattended, as
 	// readily as toward plan. There is deliberately no grant of its own for
@@ -92,7 +92,7 @@ const (
 	// gains this by upgrading.
 	GrantKeys Grant = "keys"
 	// GrantLabel writes a session's labels after it exists (POST …/labels,
-	// colab-fleet #153).
+	// muster #153).
 	//
 	// Not folded into rename, though both change a session's metadata.
 	// Rename changes the handle every OTHER caller addresses a session by;
@@ -107,7 +107,7 @@ const (
 	// gains this by upgrading.
 	GrantLabel Grant = "label"
 	GrantRelay Grant = "relay" // have mutations proxied to peers
-	// GrantHumanRelay marks a principal as a HUMAN relay (colab-fleet round-3
+	// GrantHumanRelay marks a principal as a HUMAN relay (muster round-3
 	// #180 review fix; #184). What such a principal sends is a person's own
 	// message, so:
 	//
@@ -129,7 +129,7 @@ const (
 	// trusted peer's assertion of it (relayTrusted); on a machine with no
 	// principal table there is no per-caller identity at all and the assertion is
 	// honoured as it always was — which is safe only because such a machine
-	// cannot have the inbox route on (colab-fleetd refuses FLEET_INBOX_INDEX
+	// cannot have the inbox route on (muster refuses FLEET_INBOX_INDEX
 	// without a table, #196), so the assertion can only pick the terminal path.
 	//
 	// It is the grant that lets a message skip the label, so it is not one to

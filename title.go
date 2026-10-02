@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-// TitleSyncStatus is the closed vocabulary TitleSync reports (colab-fleet
+// TitleSyncStatus is the closed vocabulary TitleSync reports (muster
 // #222): a rename changes a session's id unconditionally (Ack.Accepted /
 // RenameAck.Accepted); on a substrate whose runtime ALSO keeps its own idea
 // of a title, apart from the id, this is whether that second, separate fact

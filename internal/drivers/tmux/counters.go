@@ -67,14 +67,14 @@ const (
 	// up on it — the case that used to reach nobody at all.
 	counterInitialPromptStranded = "initial_prompt.delivery_stranded"
 	// counterInitialPromptSessionGone counts every time settleNewSession gave
-	// up because the session itself was confirmed gone (colab-fleet #125),
+	// up because the session itself was confirmed gone (muster #125),
 	// never because a timer expired — there is no timer any more. A nonzero
 	// rate here says sessions are dying before their initial prompt lands,
 	// which is a different signal from delivery_stranded and worth telling
 	// apart from it.
 	counterInitialPromptSessionGone = "initial_prompt.delivery_session_gone"
 
-	// colab-fleet #104: confirmSubmitted's own doc comment already names two
+	// muster #104: confirmSubmitted's own doc comment already names two
 	// INDEPENDENT confirming signals — the composer reading fully empty, or
 	// this delivery's own attributed marker count falling below what it was
 	// pasted at — added in that order because the second one was found
@@ -120,7 +120,7 @@ const (
 	counterSubmitConfirmLatencyUnder2s    = "submit_confirm.latency_under_2s"
 	counterSubmitConfirmLatencyUnder4s    = "submit_confirm.latency_under_4s"
 
-	// colab-fleet#156: the batched capture's TIME wall. chunk_failed counts
+	// muster#156: the batched capture's TIME wall. chunk_failed counts
 	// every capture chunk that came back with nothing parseable, whatever
 	// the cause and whether or not a retry then recovered it. The rate of
 	// failures is the signal, and a retry that quietly fixes each one would
@@ -137,7 +137,7 @@ const (
 	counterCaptureRetryFailed      = "capture.retry_failed"
 	counterEnumerateSlowInvocation = "enumerate.slow_invocation"
 
-	// colab-fleet#150: the inbox send path's exits. sendViaInbox reports
+	// muster#150: the inbox send path's exits. sendViaInbox reports
 	// every fallback as the same ok=false, and a fallback costs only
 	// latency, so nothing outside this driver can tell the reasons apart —
 	// the same laundering #44 names. attempted counts every call that had a
@@ -159,7 +159,7 @@ const (
 	counterInboxFallbackWriteFailed        = "inbox.fallback_write_failed"
 	counterInboxWritten                    = "inbox.written"
 
-	// colab-fleet#184: two more exits, and what "written" now splits into.
+	// muster#184: two more exits, and what "written" now splits into.
 	//
 	// no_transcript: the inbox needs the receiver's transcript to CONFIRM a
 	// write, so a session whose transcript this driver cannot locate cannot
@@ -188,7 +188,7 @@ const (
 	counterInboxConfirmedByOriginBody = "inbox.confirmed_by_origin_body"
 	counterInboxLedgerEntryWritten    = "inbox.unconfirmed_ledger_written"
 
-	// colab-fleet#184: one family per Send, whatever path it took, so an
+	// muster#184: one family per Send, whatever path it took, so an
 	// operator can split deliveries by route. Every Send is counted exactly
 	// once in route.decided.<requested>.<taken>, where <taken> is the path the
 	// receipt names (inbox | terminal) or "none" when the receipt names no path
@@ -221,7 +221,7 @@ const (
 	counterInboxAttestChecked       = "inbox.attest_checked"
 	counterInboxAttestBodyLookalike = "inbox.attest_body_lookalike"
 
-	// colab-fleet#149: every refusal of a composer taller than the capture
+	// muster#149: every refusal of a composer taller than the capture
 	// window (#134's composerClipped), one name per verb. ADR 149 found no
 	// evidence inside this driver that makes acting on such a composer safe,
 	// so these refusals are permanent for as long as the state lasts. What
@@ -232,7 +232,7 @@ const (
 	counterComposerClippedRefusedDiscard = "composer_clipped.refused_discard"
 	counterComposerClippedRefusedKeys    = "composer_clipped.refused_keys"
 	counterComposerClippedRefusedSend    = "composer_clipped.refused_send"
-	// colab-fleet#215: refusals that named the runtime's feedback-draft card
+	// muster#215: refusals that named the runtime's feedback-draft card
 	// instead of the generic reasons they used to fall into (no composer
 	// painted, selection menu), one name per verb, and the lone-digit message
 	// the card would have read as its own shortcut. Counted at the refusal.
@@ -240,7 +240,7 @@ const (
 	counterFeedbackCardRefusedKeys    = "feedback_card.refused_keys"
 	counterFeedbackCardRefusedDiscard = "feedback_card.refused_discard"
 	counterFeedbackCardRefusedDigit   = "feedback_card.refused_lone_digit"
-	// colab-fleet#169: the subset of those refusals that happened ONLY
+	// muster#169: the subset of those refusals that happened ONLY
 	// because the composer's opening fence sat above the visible pane, in the
 	// history margin — the same rows without the pane boundary would have
 	// read as a found composer. Incremented alongside the per-verb counter,
@@ -249,7 +249,7 @@ const (
 	// kept running, since a snapshot of one fleet cannot speak for every
 	// runtime. See docs/adr/169-a-composer-is-read-from-the-visible-pane.md.
 	counterComposerClippedAboveVisiblePane = "composer_clipped.fence_above_visible_pane"
-	// colab-fleet#216: the subset of those refusals that happened because the
+	// muster#216: the subset of those refusals that happened because the
 	// composer's closing rule was cut off by the bottom of the pane — a prompt
 	// row on the pane's last row, opened by a rule. This shape read as absent
 	// before, so it was refused elsewhere or not at all; the rate at which real
@@ -257,7 +257,7 @@ const (
 	// Incremented alongside the per-verb counter, never instead of it.
 	counterComposerClippedBottomCut = "composer_clipped.bottom_cut"
 
-	// Terminal path v2 (colab-fleet round-1 research, item f). Two families:
+	// Terminal path v2 (muster round-1 research, item f). Two families:
 	//
 	// land_confirm.* names which signal confirmLandedV2 (terminalpath2.go)
 	// used to decide text had rendered — by_composer_match for the new
@@ -439,7 +439,7 @@ const (
 	// the screen fallback reports queued".
 	counterTranscriptDifferentTurnRecorded = "transcript_source.different_turn_recorded"
 
-	// colab-fleet #222: SyncTitle's own outcomes, one exclusive counter per
+	// muster #222: SyncTitle's own outcomes, one exclusive counter per
 	// fleet.TitleSyncStatus a tmux SyncTitle call can actually produce (never
 	// title_sync.not_applicable — that value is the SERVICE's, for a driver
 	// that does not implement TitleSyncer at all, so this driver never
@@ -449,7 +449,7 @@ const (
 	counterTitleSyncFailed  = "title_sync.failed"
 	// counterTitleSyncCommandWithoutTitle counts a `pending` specifically
 	// where the runtime's own local_command/<command-name> entry confirmed
-	// the /rename command ran (colab-fleet #187) but no custom-title entry
+	// the /rename command ran (muster #187) but no custom-title entry
 	// followed it within the confirmation window — the live rate of the one
 	// fact this repo has NOT measured about the runtime (#222's own plan:
 	// whether/when /rename writes a fresh custom-title at all).

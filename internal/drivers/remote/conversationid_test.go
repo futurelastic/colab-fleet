@@ -11,10 +11,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// A create's conversationId across a federation hop (colab-fleet #224). The
+// A create's conversationId across a federation hop (muster #224). The
 // rule under test is the MIXED-VERSION case, the exact mirror of labels_test.go:
 // a peer on a build that predates the field must never silently drop it on a
 // create.

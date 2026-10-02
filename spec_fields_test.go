@@ -1,6 +1,6 @@
 package fleet
 
-// This file is the mechanical check colab-fleet issue #57 asked to be left
+// This file is the mechanical check muster issue #57 asked to be left
 // behind, rather than performed once: a comparison of every JSON-tagged
 // field on the wire types below against the normative pseudocode block that
 // names them in docs/spec/session-abstraction.md or docs/spec/api-http.md.
@@ -109,14 +109,14 @@ var specFieldTypes = map[string]any{
 // so a reviewer can tell "decided" from "forgotten" without re-deriving the
 // argument.
 //
-// Empty as of colab-fleet issue #59: the last outstanding entry
+// Empty as of muster issue #59: the last outstanding entry
 // (SessionState.screenDigest) was removed when #59's ruling promoted the
 // field into session-abstraction.md §2.3 rather than leaving it excepted.
 // Left as a map, not deleted, because a future genuinely-driver-internal
 // field needs somewhere to register the same argument.
 var specFieldExceptions = map[string]map[string]string{}
 
-// TestSpecTypeBlocksMatchGoFields is colab-fleet issue #57's mechanical
+// TestSpecTypeBlocksMatchGoFields is muster issue #57's mechanical
 // check: it fails when a registered Go type carries a JSON field absent
 // from every normative pseudocode block that names it, and (the direction
 // #57 did not hit but is the same class of bug) when a pseudocode block

@@ -5,7 +5,7 @@
 
 ## Context
 
-A caller that dispatches a session (colab-fleet #82's convention: create it
+A caller that dispatches a session (muster #82's convention: create it
 with `agent`/`prompt`, poll for `idle`/`waiting_input`, receive an answer via
 the requester's own `input`) cannot tell two situations apart once the worker
 goes quiet:

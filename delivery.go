@@ -27,7 +27,7 @@ const (
 	// unverifiable.
 	OutcomeUnknown Outcome = "unknown"
 
-	// The five values below are colab-fleet #119's own: a target's own
+	// The five values below are muster #119's own: a target's own
 	// inbox — reached only when a driver capability-detects one and
 	// delivers over it instead of the terminal surface (§2.4's four values
 	// above are the terminal-surface vocabulary; these are distinct rather
@@ -278,7 +278,7 @@ func (r DeliveryReceipt) RouteOf() Route {
 // names an earlier shape, a session too young to have painted a composer at
 // all. And the natural client loop — create, then poll until idle or
 // waiting_input — returns on exactly this window by construction
-// (colab-fleet #86).
+// (muster #86).
 //
 // # Three states (§5.7)
 //
@@ -288,7 +288,7 @@ func (r DeliveryReceipt) RouteOf() Route {
 //	                       has not resolved. A real, temporary answer — while
 //	                       this state holds, `idle` is not evidence of loss
 //	                       and a caller must not re-send. See SessionState.Turns
-//	                       (colab-fleet #111): a turn observed to complete
+//	                       (muster #111): a turn observed to complete
 //	                       AFTER this delivery is independent, driver-side
 //	                       corroboration that it was received, on a substrate
 //	                       where Outcome would otherwise sit here forever.
@@ -304,7 +304,7 @@ func (r DeliveryReceipt) RouteOf() Route {
 // DeliveryReceipt copies that receipt's Reason into it. One prose field, not
 // two.
 //
-// # WaitingOn: colab-fleet #126's machine-readable half of the pending diagnosis
+// # WaitingOn: muster #126's machine-readable half of the pending diagnosis
 //
 // Evidence is prose no caller may parse (§2.3). #125 made that prose LIVE —
 // it changes as the reason a prompt has not landed yet changes — and #126 is

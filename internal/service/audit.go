@@ -4,7 +4,7 @@ import (
 	"log"
 	"net/http"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // §6 requirement 4: "Log every remote-originated mutation — actor, verb,
@@ -83,9 +83,9 @@ func outcomeOf(status int) string {
 // /v1/machines/{machine}/sessions/{id}/input") — a fact the standard library
 // itself records when the mux dispatches, not something a caller supplies.
 //
-// This is what colab-fleet#105 asked for: input and respond both require
+// This is what muster#105 asked for: input and respond both require
 // GrantSend, so verb=send alone cannot tell them apart in the audit trail,
-// and colab-fleet#82 made that collision the ordinary case rather than a
+// and muster#82 made that collision the ordinary case rather than a
 // rare one — its endorsed reply-delivery convention has a dispatched worker
 // call input on the requester's own session, so a delivered reply and a
 // respond-to-a-dialog call now differ only by route, never by grant.

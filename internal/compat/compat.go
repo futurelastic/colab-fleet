@@ -1,4 +1,4 @@
-// Package compat is the contract of `colab-fleetd compat` (colab-fleet #183):
+// Package compat is the contract of `muster compat` (muster #183):
 // the versioned report the command prints, the catalogue of check IDs behind
 // it, and the generic runner that turns "drive a candidate binary into some
 // states" plus "judge what was seen" into that report.
@@ -70,7 +70,7 @@ type Candidate struct {
 	Arch string `json:"arch,omitempty"`
 }
 
-// Build identifies the colab-fleet code that ran the checks.
+// Build identifies the muster code that ran the checks.
 type Build struct {
 	Version string `json:"version"`
 	Commit  string `json:"commit"`

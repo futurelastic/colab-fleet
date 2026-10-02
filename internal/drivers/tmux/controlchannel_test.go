@@ -3,7 +3,7 @@ package tmux
 import (
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // A pane with the footer the runtime actually renders. The label shares the
@@ -40,7 +40,7 @@ func TestControlChannelReadsEachOfTheRuntimesFourLabels(t *testing.T) {
 	}
 }
 
-// #75: a real capture (colab-fleet #70, #65) showed the active state
+// #75: a real capture (muster #70, #65) showed the active state
 // rendering as a bare `/rc` with nothing after it at all — not even a
 // trailing space — sharing the model/plan row with the project name rather
 // than the "auto mode on" row every other case here uses. The anchor used

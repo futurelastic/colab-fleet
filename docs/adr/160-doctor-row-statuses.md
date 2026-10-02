@@ -1,4 +1,4 @@
-# ADR 160 — what `colab-fleetd doctor` fails on, and what it only names
+# ADR 160 — what `muster doctor` fails on, and what it only names
 
 **Status:** accepted · **Issue:** #160
 

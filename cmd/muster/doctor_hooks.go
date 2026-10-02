@@ -11,7 +11,7 @@ import (
 )
 
 // hooks.pre-commit — will a commit made in this clone be scanned for secrets?
-// (colab-fleet #201)
+// (muster #201)
 //
 // # Why a row, and why here
 //
@@ -141,7 +141,7 @@ func cloneRoot(dir string) string {
 	}
 	for d := filepath.Clean(dir); ; {
 		if isFile(filepath.Join(d, filepath.FromSlash(preCommitHookRel))) &&
-			isDir(filepath.Join(d, "cmd", "colab-fleetd")) {
+			isDir(filepath.Join(d, "cmd", "muster")) {
 			return d
 		}
 		parent := filepath.Dir(d)

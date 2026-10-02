@@ -14,7 +14,7 @@ import (
 //
 // SessionSpec's own doc comment already states the rule: a driver that
 // cannot honour a pin must say so at creation rather than silently
-// substitute a default. Measured (colab-fleet #84): a pin whose value began
+// substitute a default. Measured (muster #84): a pin whose value began
 // with "-" failed an argv guard, the flag was never appended, and the
 // create response echoed the REQUESTED value back — so the one caller in a
 // position to notice was told the pin had been applied. An echo is not a

@@ -2,8 +2,8 @@
 // (github.com/sst/opencode), a third-party open-source coding agent this
 // driver launches as a subprocess and talks to over HTTP.
 //
-// This is colab-fleet's second local driver, and its whole reason to exist
-// is colab-fleet issue #55: the first driver against a runtime genuinely
+// This is muster's second local driver, and its whole reason to exist
+// is muster issue #55: the first driver against a runtime genuinely
 // different from the incumbent multiplexer-driven one, chosen because it
 // answers "is this session busy" from a structured API rather than a
 // terminal screen. Where the tmux driver infers, this one observes — see
@@ -91,8 +91,8 @@ import (
 	"sync"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // DefaultRuntime is the runtime id this driver registers under.
@@ -100,7 +100,7 @@ const DefaultRuntime fleet.RuntimeId = "opencode"
 
 const (
 	defaultBin        = "opencode"
-	defaultUsername   = "colab-fleet"
+	defaultUsername   = "muster"
 	defaultDeadlineMs = 8000
 	readyTimeout      = 10 * time.Second
 	readyPollInterval = 100 * time.Millisecond
@@ -223,7 +223,7 @@ func withClock(f func() time.Time) Option { return func(d *Driver) { d.now = f }
 //
 // A non-nil error here is itself the "absent install is a first-class
 // answer" contract discharged: it is returned to the caller (ordinarily
-// cmd/colab-fleetd/main.go) to decide what to do — log and continue
+// cmd/muster/main.go) to decide what to do — log and continue
 // without this runtime, in that caller's case — rather than this package
 // ever calling log.Fatal or panicking on a machine that simply does not
 // have opencode installed.
@@ -360,7 +360,7 @@ func (d *Driver) wasSeen(id string) (knownSession, bool) {
 }
 
 // forgetSeen removes id from this driver's cache — the counterpart
-// markSeen never had (colab-fleet #78). List answers entirely from this
+// markSeen never had (muster #78). List answers entirely from this
 // cache (see knownIDs' own comment on why: the runtime's own bulk listing
 // is measured unreliable, not a design this driver chose for its own
 // sake), so an id nothing ever prunes from it is an id List reports

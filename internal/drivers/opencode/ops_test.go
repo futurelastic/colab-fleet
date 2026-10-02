@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 func createOne(t *testing.T, d *Driver, cwd, key string) fleet.SessionRef {
@@ -60,7 +60,7 @@ func TestCreate_RefusesEffortRatherThanDroppingIt(t *testing.T) {
 	}
 }
 
-// colab-fleet #224: this substrate assigns its own conversation id and has no
+// muster #224: this substrate assigns its own conversation id and has no
 // equivalent of Claude Code's --session-id, so a caller-chosen one must be
 // refused rather than silently ignored — the same rule Effort follows above.
 func TestCreate_RefusesConversationIdRatherThanDroppingIt(t *testing.T) {

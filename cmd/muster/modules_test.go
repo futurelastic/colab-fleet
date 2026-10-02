@@ -33,7 +33,7 @@ func installFakeModule(t *testing.T, dir, name string) string {
 // before modules existed.
 func TestModuleConfig_Unset(t *testing.T) {
 	for _, v := range []string{"", "   ", ",,", " , "} {
-		got := loadDeliveryModules(envOf(map[string]string{"FLEET_DELIVERY_MODULES": v}), "/nowhere/bin/colab-fleetd", "")
+		got := loadDeliveryModules(envOf(map[string]string{"FLEET_DELIVERY_MODULES": v}), "/nowhere/bin/muster", "")
 		if len(got.Enabled) != 0 || len(got.Config.Clients) != 0 || len(got.Problems) != 0 || len(got.Invalid) != 0 {
 			t.Errorf("FLEET_DELIVERY_MODULES=%q resolved to %+v, want nothing", v, got)
 		}
@@ -51,7 +51,7 @@ func TestModuleConfig_Enabled(t *testing.T) {
 		"FLEET_MODULES_DIR":      dir,
 		"FLEET_STATE_DIR":        "/state",
 		"PATH":                   "/usr/bin",
-	}), "/nowhere/bin/colab-fleetd", "/state")
+	}), "/nowhere/bin/muster", "/state")
 
 	if strings.Join(got.Enabled, ",") != "relay-a,relay-b" {
 		t.Fatalf("Enabled = %v, want the deduplicated list in the configured order", got.Enabled)
@@ -118,11 +118,11 @@ func TestModuleConfig_DefaultDirFromExecutable(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	exe := filepath.Join(bin, "colab-fleetd")
+	exe := filepath.Join(bin, "muster")
 	if err := os.WriteFile(exe, nil, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	modules := filepath.Join(root, "libexec", "colab-fleet", "modules")
+	modules := filepath.Join(root, "libexec", "muster", "modules")
 	path := installFakeModule(t, modules, "relay-a")
 
 	got := loadDeliveryModules(envOf(map[string]string{"FLEET_DELIVERY_MODULES": "relay-a"}), exe, "")

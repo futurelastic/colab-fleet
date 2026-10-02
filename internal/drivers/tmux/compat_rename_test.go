@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// H-RENAME (colab-fleet #227): every branch of its Eval, built by hand the
+// H-RENAME (muster #227): every branch of its Eval, built by hand the
 // same way TestFImportsJudgesTheDialogItIsShown and
 // TestC1NamesTheImportsKeysWhenTheSeededDirectoryStillAsks build theirs — the
 // multiplexer-gated tests would prove the same findings end to end against a

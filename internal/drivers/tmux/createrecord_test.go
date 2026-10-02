@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// colab-fleet #86: a create-time prompt gets no delivery receipt directly on
+// muster #86: a create-time prompt gets no delivery receipt directly on
 // create, so a caller cannot tell "not delivered yet" from "never
 // delivered". These tests exercise the fix through the real driver path —
 // delivery_test.go in the root package already covers the fleet.PromptDelivery
@@ -275,7 +275,7 @@ func TestPromptDeliveryFor(t *testing.T) {
 		t.Errorf("prompt carried, not yet resolved: got %+v, want pending with evidence", pending)
 	}
 	if pending.WaitingOn != "" {
-		t.Errorf("colab-fleet #126: no PromptWaitingOn was ever written, want WaitingOn empty "+
+		t.Errorf("muster #126: no PromptWaitingOn was ever written, want WaitingOn empty "+
 			"(unclassified), got %q", pending.WaitingOn)
 	}
 	resolved := promptDeliveryFor(createRecord{
@@ -285,7 +285,7 @@ func TestPromptDeliveryFor(t *testing.T) {
 		t.Errorf("resolved delivery: got %+v, want submitted/e", resolved)
 	}
 	if resolved.WaitingOn != "" {
-		t.Errorf("colab-fleet #126: a resolved delivery must not carry a class, got %q", resolved.WaitingOn)
+		t.Errorf("muster #126: a resolved delivery must not carry a class, got %q", resolved.WaitingOn)
 	}
 
 	// #126: PromptWaitingOn travels alongside PromptEvidence while pending.

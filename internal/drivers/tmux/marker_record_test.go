@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// colab-fleet #165: the applied marker is published on the session record
+// muster #165: the applied marker is published on the session record
 // as a fact the driver recorded, never re-derived from the name.
 
 const markerTestCreated = int64(1785700000)

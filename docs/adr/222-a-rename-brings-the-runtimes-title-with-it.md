@@ -1,7 +1,7 @@
 # ADR 222 — A rename brings the runtime's title with it
 
 **Status:** accepted (2026-09-27)
-**Issue:** colab-fleet #222
+**Issue:** muster #222
 
 ## Context
 
@@ -55,12 +55,12 @@ or fail it.**
    the ONLY place that value is ever produced.
 4. **`SyncTitle` delivers `"/rename " + name` through the ordinary `Send`
    pipeline**, forced onto the terminal route, unlabelled. The input guard
-   already admits `/rename` for any caller (colab-fleet#180 L6); a busy or
+   already admits `/rename` for any caller (muster#180 L6); a busy or
    stranded composer refuses exactly as it would for `/input`, overwriting
    nothing.
 5. **`synced` requires the runtime's own `custom-title` entry, read from its
    transcript — never the screen, and never the weaker evidence of the
-   `/rename` command merely having run** (colab-fleet#187's local_command
+   `/rename` command merely having run** (muster#187's local_command
    confirmation). The two are different facts: the command running proves
    the runtime accepted it; the title changing proves the fact this whole
    issue is about. A poll (`transcriptTitleScan`, bounded by the same
@@ -74,7 +74,7 @@ or fail it.**
    the same pane, and `SyncTitle`'s own delivery — a new, guaranteed side
    effect of every rename — must contend on the identical mutex as
    anything already in flight against the old id, or the exact concatenation
-   hazard the lock exists to prevent (colab-fleet's own D5) reopens at the
+   hazard the lock exists to prevent (muster's own D5) reopens at the
    rename boundary. `Rename` itself never waits on this lock: a busy
    composer must not turn the id half into a failure.
 7. **The conversation-memo is primed under the OLD name, before the
@@ -98,14 +98,14 @@ or fail it.**
   doctrine — see decision 1.
 - **Carry it on `session.renamed` instead of the response.** That event
   promises exactly one accept-time member plus exactly one later
-  corroboration follow-up (colab-fleet#103); a title half would need a new,
+  corroboration follow-up (muster#103); a title half would need a new,
   normative `EventKind` in a closed set, and would either delay the
   time-sensitive id announcement or arrive as a confusing THIRD event no
   existing subscriber expects. The reconciling client this issue is about
   does not need the STATUS on the stream — it needs the runtime's title to
   actually change, which decision 4 delivers directly.
 - **A background retry queue for `pending`/`failed`.** Rejected the same
-  way colab-fleet#97's own ADR (102) rejected a poller: this call already
+  way muster#97's own ADR (102) rejected a poller: this call already
   has a retry path that costs nothing new — renaming to the SAME name again
   re-attempts only the title half (`to == ref.ID` was always a documented
   no-op for the id half; §3). Building a second, timer-driven mechanism to
@@ -158,7 +158,7 @@ or fail it.**
   can differ from the multiplexer's real one; per-id driver state other
   than `d.observed` (stranded records, delivery marks, tombstones, the #184
   ledger) is not moved off the old id by a rename, so a stranded record
-  under the old id is orphaned rather than migrated; colab-fleet#97's
+  under the old id is orphaned rather than migrated; muster#97's
   `reassertNames` does not itself sync titles, so a `failed` title plus a
   title-trusting client can still fight (bounded by `maxNameReasserts`) —
   the remedy is the same-name retry, decision 3's own escape hatch.

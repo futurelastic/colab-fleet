@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
-	"github.com/godx-jp/colab-fleet/internal/service"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/drivers/stub"
+	"github.com/futurelastic/muster/internal/service"
 )
 
 // closableDriver lists a fixed set of sessions and forgets one on Close —
-// the least a peer needs to hold a closed-session record (colab-fleet #179).
+// the least a peer needs to hold a closed-session record (muster #179).
 type closableDriver struct {
 	stub.Driver
 	mu       sync.Mutex

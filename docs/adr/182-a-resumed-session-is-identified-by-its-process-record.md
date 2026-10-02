@@ -1,7 +1,7 @@
 # ADR 182 — A resumed session is identified by its process record, not by elimination
 
 **Status:** accepted (2026-09-24)
-**Issue:** colab-fleet #182 · builds on #180 (the per-process record reader) · epic #181
+**Issue:** muster #182 · builds on #180 (the per-process record reader) · epic #181
 
 ## Context
 

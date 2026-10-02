@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/compat"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/compat"
 )
 
 // unranSend is the verdict for a send that was never made: the candidate showed

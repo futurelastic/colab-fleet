@@ -25,7 +25,7 @@ internal/drivers/remote    the second — an HTTP client to a peer (federation)
 internal/drivers/opencode  the second LOCAL driver — a spawned subprocess,
                            the first able to declare observesState: true
 internal/service           registry, one-hop fan-out, HTTP routing
-cmd/colab-fleetd           the binary
+cmd/muster           the binary
 ```
 
 The root package deliberately holds nothing but types, so a third party writing
@@ -36,7 +36,7 @@ a client never has to import a driver.
 
 **There is no hand-written span here.** The supported range is the set of runtime
 builds that have a passing compatibility report — the output of
-`colab-fleetd compat` ([`compat.md`](compat.md)) — and the report's
+`muster compat` ([`compat.md`](compat.md)) — and the report's
 `claude.version` and `claude.sha256` are the record of which build that was. A
 version written into prose goes stale the day a release ships: this section used
 to say `2.1.220` through `2.1.223` and was about sixty patch releases behind the
@@ -143,7 +143,7 @@ it on is `core.hooksPath`, which lives in one clone's own `.git/config`; a clone
 that never ran the installer commits with no scan and no output (#201, measured:
 a commit quoting a key-shaped value went through in silence in such a clone,
 where the scanner run by hand refused it). So this is the guard a clone is most
-likely to be missing without knowing. `colab-fleetd doctor`, run from inside a
+likely to be missing without knowing. `muster doctor`, run from inside a
 clone, has a row for it, `hooks.pre-commit`: `warn` when git would run no
 pre-commit hook here, or a different one, or one it cannot run (no executable
 bit, or no `gitleaks` on `PATH`, where the hook prints a notice and lets the
@@ -266,7 +266,7 @@ Stated plainly so nobody rediscovers them the expensive way.
   than its own. See spec §14 D9.
 - **Auth has no rotation or expiry.** Credentials are per principal with
   per-verb grants and an audited outcome, and enrolment is now a command
-  (`colab-fleetd principal add`) that mints a token and validates grants before
+  (`muster principal add`) that mints a token and validates grants before
   writing. What is still missing is the rest of a lifecycle: nothing expires, a
   compromised token is revoked by editing a file, and there is no way to change
   a principal's grants except by removing and re-adding it.
@@ -286,7 +286,7 @@ Stated plainly so nobody rediscovers them the expensive way.
   ~5 ms per session becomes ~0.15 ms per session, and the curve stops being a
   curve. `List` returns everything in one call for this reason.
 
-  **That "regardless of session count" needed a correction (colab-fleet#141).**
+  **That "regardless of session count" needed a correction (muster#141).**
   The multiplexer's own client-to-server command channel refuses a chained
   invocation outright once it gets big enough — measured by bisection against
   a real server, ~995 args survives and ~1007 fails — and that refusal is

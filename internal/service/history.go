@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/state"
 )
 
-// Closed-session records — colab-fleet #179. See fleet.ClosedSession for what
+// Closed-session records — muster #179. See fleet.ClosedSession for what
 // a record promises; this file is how the service keeps them.
 //
 // # Two maps, one document
@@ -36,7 +36,7 @@ import (
 //     partial listing proves nothing about absence (§5.7) and never ends
 //     anything — the same rule the label store's retain follows.
 //   - A driver that can capture a session's own exit before removing it
-//     (colab-fleet #235, driver.ExitReporter) reports it alongside its
+//     (muster #235, driver.ExitReporter) reports it alongside its
 //     listing: exact, like a close, because the driver observed the pane
 //     itself rather than merely noticing it missing later.
 //   - A local session.closed event does NOT write a tombstone by itself: a
@@ -61,7 +61,7 @@ import (
 // period is dropped too — it can only belong to a runtime no longer listed.
 //
 // A ClosedByExit tombstone (#235) also names a file under this store's own
-// exit-screens/ directory. colab-fleet #236: that file follows the SAME
+// exit-screens/ directory. muster #236: that file follows the SAME
 // retention as the record naming it — one rule, not two — so pruning a
 // tombstone here removes its file too, and a start-up sweep removes any file
 // left behind with no record at all (one saved by saveExitScreen just before
@@ -128,7 +128,7 @@ func (h *historyStore) load(st *state.Store) error {
 	var doc historyDoc
 	found, err := st.Load(historyStateName, &doc)
 	if err != nil || !found {
-		// colab-fleet #236: even a first run (found == false) or a store
+		// muster #236: even a first run (found == false) or a store
 		// with nothing to load may have exit-screens/ files left over from
 		// a previous process — e.g. a crash between saveExitScreen and the
 		// tombstone write. h.closed is empty either way, so this call
@@ -152,8 +152,8 @@ func (h *historyStore) load(st *state.Store) error {
 }
 
 // exitScreensDirLocked names the directory the tmux driver's saveExitScreen
-// writes to (colab-fleet #235) — the same state.Store, so the same Dir(), as
-// the one this history store persists into (cmd/colab-fleetd wires both from
+// writes to (muster #235) — the same state.Store, so the same Dir(), as
+// the one this history store persists into (cmd/muster wires both from
 // one *state.Store). Empty when there is no store at all (a throwaway
 // instance, a test): every caller here already treats that as "nothing to
 // do", the same convention state.Store.Dir() itself uses.
@@ -166,7 +166,7 @@ func (h *historyStore) exitScreensDirLocked() string {
 }
 
 // removeExitScreenLocked deletes the file a pruned ClosedByExit tombstone
-// named, if any (colab-fleet #236). Best-effort: a closed-session record is
+// named, if any (muster #236). Best-effort: a closed-session record is
 // already gone from h.closed by the time this runs, and a leftover file a
 // failed remove could not clear is exactly what the start-up sweep in load()
 // exists to catch on the next restart.
@@ -178,7 +178,7 @@ func (h *historyStore) removeExitScreenLocked(c fleet.ClosedSession) {
 }
 
 // sweepOrphanExitScreensLocked removes every file under exit-screens/ that no
-// live closed-session record names (colab-fleet #236). Run once at load —
+// live closed-session record names (muster #236). Run once at load —
 // not on every prune, where removeExitScreenLocked already deletes a file the
 // instant its own record ages out; this is only for a file whose record never
 // made it into h.closed at all, or already left it by some path other than
@@ -226,7 +226,7 @@ func (h *historyStore) pruneLocked(now time.Time) bool {
 	for _, c := range h.closed {
 		if c.ClosedAt.Before(cut) {
 			changed = true
-			// colab-fleet #236: this record is the only thing naming this
+			// muster #236: this record is the only thing naming this
 			// file (ScreenPath is never reused across records); once it
 			// ages out here, nothing else will ever remove the file.
 			h.removeExitScreenLocked(c)
@@ -327,7 +327,7 @@ func (h *historyStore) tombstoneLocked(r *seenRecord, at time.Time, by fleet.Clo
 }
 
 // tombstoneExitLocked writes the tombstone for a session an ExitReporter
-// driver captured and already removed (colab-fleet #235). ClosedAt is the
+// driver captured and already removed (muster #235). ClosedAt is the
 // driver's own capture moment (e.Exit.At), not `now`: the capture happened
 // synchronously inside the List call this observe is folding in, and using
 // that moment keeps ClosedByExit exact the same way ClosedByClose's is,
@@ -413,7 +413,7 @@ func (h *historyStore) observe(rt fleet.RuntimeId, items []fleet.Session, comple
 	now := h.now()
 	changed := false
 
-	// colab-fleet #235: settle every captured exit before the ordinary
+	// muster #235: settle every captured exit before the ordinary
 	// present/absent bookkeeping below ever sees its id. The driver already
 	// removed these sessions, so none of them can appear in items this round —
 	// without this they would fall through to the complete-scan's generic
@@ -596,7 +596,7 @@ func (s *Service) ListClosedSessions(ctx context.Context, req fleet.Request, sco
 func (s *Service) SetClosedRetention(d time.Duration) { s.history.setRetention(d) }
 
 // SweepLocal lists every local runtime once, unfiltered, so the history store
-// can notice sessions that ended unobserved. cmd/colab-fleetd calls it at
+// can notice sessions that ended unobserved. cmd/muster calls it at
 // start-up (sessions that ended while the service was down); requestSweep
 // calls it when a local event stream reports a session gone.
 func (s *Service) SweepLocal(ctx context.Context) {

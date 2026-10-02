@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/compat"
-	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
+	"github.com/futurelastic/muster/internal/compat"
+	"github.com/futurelastic/muster/internal/drivers/tmux"
 )
 
 // withChecker swaps the checker for the test and records what it was given.
@@ -123,7 +123,7 @@ func TestRunCompatBadInvocations(t *testing.T) {
 			if stdout != "" {
 				t.Errorf("stdout = %q, want nothing: a bad invocation produces no report", stdout)
 			}
-			if !strings.Contains(stderr, "usage: colab-fleetd compat") {
+			if !strings.Contains(stderr, "usage: muster compat") {
 				t.Errorf("stderr = %q, want the usage", stderr)
 			}
 			if call.opts.Claude != "" {
@@ -136,7 +136,7 @@ func TestRunCompatBadInvocations(t *testing.T) {
 func TestRunCompatHelp(t *testing.T) {
 	withChecker(t, compat.Report{}, nil)
 	handled, code, stdout, stderr := run(t, "compat", "--help")
-	if !handled || code != 0 || !strings.Contains(stdout, "usage: colab-fleetd compat") || stderr != "" {
+	if !handled || code != 0 || !strings.Contains(stdout, "usage: muster compat") || stderr != "" {
 		t.Errorf("handled=%v code=%d stdout=%q stderr=%q", handled, code, stdout, stderr)
 	}
 }

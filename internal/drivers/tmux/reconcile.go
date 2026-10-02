@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // §12's reconciliation, made capable of its own job.
@@ -80,11 +80,11 @@ type sessionRecord struct {
 	// record sits under is whatever the runtime carried at the last read;
 	// Name is what this driver believes it should carry. The two agreeing
 	// is the ordinary case; identityDrift is what runs when they do not
-	// (colab-fleet #97: a rename that is accepted and then, with no request
+	// (muster #97: a rename that is accepted and then, with no request
 	// asking for it, no longer holds).
 	Name string `json:"name,omitempty"`
 
-	// Marker and MarkerApplied are colab-fleet #96's fact: whether THIS
+	// Marker and MarkerApplied are muster #96's fact: whether THIS
 	// driver appended marker to Name, recorded at the instant it decided
 	// so rather than guessed afterwards from the string. Both empty/false
 	// together means either no marker was ever asked for, or this record
@@ -94,7 +94,7 @@ type sessionRecord struct {
 	Marker        string `json:"marker,omitempty"`
 	MarkerApplied bool   `json:"markerApplied,omitempty"`
 
-	// SessionMarker is colab-fleet #165's published fact: the marker the
+	// SessionMarker is muster #165's published fact: the marker the
 	// create that started this run carried AND the resolved name ended in —
 	// what fleet.Session.Marker reports. Distinct from Marker/MarkerApplied
 	// on purpose. Those answer a naming question about ONE string ("did this
@@ -104,7 +104,7 @@ type sessionRecord struct {
 	SessionMarker string `json:"sessionMarker,omitempty"`
 
 	// Reasserts counts how many times a List has already put Name back
-	// after finding the runtime disagreeing with it (colab-fleet #97).
+	// after finding the runtime disagreeing with it (muster #97).
 	// Durable, unlike the in-memory futile map Discard uses for a similar
 	// bound (tmux.go) — a second actor on the machine that keeps reverting
 	// a name is not a fact this service's own restart should forget, so the
@@ -246,7 +246,7 @@ func (d *Driver) saveRecords(recs map[string]sessionRecord) {
 // something to compare against without turning every read into a write.
 //
 // prior is the caller's own already-loaded snapshot (List loads it once, for
-// this and for identityDrift both — colab-fleet #96/#97 — rather than
+// this and for identityDrift both — muster #96/#97 — rather than
 // reading the store twice per listing).
 func (d *Driver) noteSessionSet(rows []paneRow, prior map[string]sessionRecord) {
 	if d.store == nil {
@@ -257,7 +257,7 @@ func (d *Driver) noteSessionSet(rows []paneRow, prior map[string]sessionRecord) 
 	changed := len(prior) != len(rows)
 	// Indexed once, for the case below where a row's own key carries no
 	// record: the record for its RUN may still exist, filed under a
-	// different key (colab-fleet #97 — a rename, or the runtime undoing
+	// different key (muster #97 — a rename, or the runtime undoing
 	// one, moves what name a session answers to without starting a new
 	// run).
 	byPaneCreated := indexByPaneCreated(prior)
@@ -266,7 +266,7 @@ func (d *Driver) noteSessionSet(rows []paneRow, prior map[string]sessionRecord) 
 		switch {
 		case had && rec.Created.IsZero():
 			// A stub a Create wrote before this session was ever
-			// enumerated (colab-fleet #96/#97: Name/Marker/MarkerApplied
+			// enumerated (muster #96/#97: Name/Marker/MarkerApplied
 			// were already known then; Created/Pane were not). Fill in
 			// what only a live read can supply; keep what Create already
 			// asserted.
@@ -341,7 +341,7 @@ func indexByPaneCreated(recs map[string]sessionRecord) map[paneCreated]sessionRe
 }
 
 // nameDrift is one live session whose name right now disagrees with the
-// name this driver last asserted for it — colab-fleet #97's defect, made
+// name this driver last asserted for it — muster #97's defect, made
 // detectable rather than only measurable after the fact.
 type nameDrift struct {
 	live paneRow
@@ -352,7 +352,7 @@ type nameDrift struct {
 // identityDrift compares what enumerate() just found against what this
 // driver last asserted, matching by (pane, created) rather than by name so
 // a rename — or a second actor on the machine undoing one — does not make
-// the record unfindable (colab-fleet #96/#97). A row with no asserted-name
+// the record unfindable (muster #96/#97). A row with no asserted-name
 // record, or one whose asserted name already agrees with what is live, is
 // not drift.
 func identityDrift(rows []paneRow, prior map[string]sessionRecord) []nameDrift {
@@ -374,7 +374,7 @@ func identityDrift(rows []paneRow, prior map[string]sessionRecord) []nameDrift {
 // driftSentence is the one wording for "this machine asserted X, the runtime
 // now carries Y", used by both channels that report it — SessionState.
 // Evidence's prose (§2.3, tmux.go's List) and IdentityAssertion.Evidence
-// (colab-fleet #102, identityAssertionFor below) — so the two can never
+// (muster #102, identityAssertionFor below) — so the two can never
 // disagree about the same read. The wording, and the absence of a leading
 // separator, are unchanged from what tmux.go published before #102: List's
 // own call site supplies its own "; " so the published evidence string is
@@ -386,7 +386,7 @@ func driftSentence(asserted, carried string) string {
 }
 
 // heldSentence and uncorroboratedSentence are driftSentence's siblings for
-// IdentityAssertion's other two present-but-not-drifted states — colab-fleet
+// IdentityAssertion's other two present-but-not-drifted states — muster
 // #102. Neither has a prose precedent to stay byte-identical to; both follow
 // driftSentence's voice.
 func heldSentence(asserted string) string {
@@ -399,7 +399,7 @@ func uncorroboratedSentence(asserted string) string {
 		asserted)
 }
 
-// identityAssertionFor builds colab-fleet #102's machine-readable field from
+// identityAssertionFor builds muster #102's machine-readable field from
 // exactly the facts List already has in hand for this row — no detection of
 // its own. byRun is indexByPaneCreated(prior), passed in rather than
 // recomputed, because List builds it once per listing; prior is the same map
@@ -492,7 +492,7 @@ func (d *Driver) markerForCreate(name string) string {
 	return d.loadRecords()[name].publishedMarker()
 }
 
-// markerStateFor answers colab-fleet #96 exactly, when this driver has a
+// markerStateFor answers muster #96 exactly, when this driver has a
 // record to answer from: whether the marker resolveName would apply to
 // name is already there because THIS driver put it there — never guessed
 // from the string. markerUnknown (naming.go's zero value) is the honest
@@ -513,7 +513,7 @@ func (d *Driver) markerStateFor(name, marker string) markerState {
 	return markerAbsent
 }
 
-// identityAssertionForCreate answers colab-fleet #102 for every Create-family
+// identityAssertionForCreate answers muster #102 for every Create-family
 // return — a fresh create, an idempotent replay of one already completed, or
 // an adopted pending recovery. None of the three enumerate the runtime live,
 // so none may claim more than "asserted, not yet corroborated": that
@@ -534,7 +534,7 @@ func (d *Driver) identityAssertionForCreate(name string) *fleet.IdentityAssertio
 	return fleet.IdentityUncorroborated(rec.Name, rec.NameAssertedAt, uncorroboratedSentence(rec.Name))
 }
 
-// noteAssertedName records the identity a Create just resolved — colab-fleet
+// noteAssertedName records the identity a Create just resolved — muster
 // #96's marker fact, and the first half of #97's durable record (the second
 // half is a Rename actually changing it; see noteRenamed). Merged into
 // whatever the store already holds under key, so a later List's own
@@ -562,7 +562,7 @@ func (d *Driver) noteAssertedName(key, cwd, name, marker string, applied bool) {
 	d.saveRecords(recs)
 }
 
-// noteRenamed writes colab-fleet #97's durable half: a Rename this driver
+// noteRenamed writes muster #97's durable half: a Rename this driver
 // just issued, moved from the record's old key to the new one so the next
 // read finds it either way — under the new key if the rename held, or via
 // identityDrift's (pane, created) match if a second actor on the machine
@@ -571,7 +571,7 @@ func (d *Driver) noteAssertedName(key, cwd, name, marker string, applied bool) {
 // Marker/MarkerApplied are cleared rather than carried across: the caller
 // dictated the whole new string, so whatever this driver knew about the OLD
 // name's marker is not a fact about this one. SessionMarker is carried: it
-// describes the run, not the string (colab-fleet #165).
+// describes the run, not the string (muster #165).
 func (d *Driver) noteRenamed(from, to, cwd, pane string, created time.Time) {
 	if d.store == nil {
 		return

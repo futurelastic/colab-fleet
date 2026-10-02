@@ -33,7 +33,7 @@ HOST=${1:-}
 DIR=${2:-}
 WITH_STATE=${3:-}
 [ -n "$HOST" ] && [ -n "$DIR" ] || { echo "usage: $0 local|<ssh-host> <backup-dir> [--with-state]" >&2; exit 2; }
-[ -f "${DIR}/colab-fleetd" ] || { echo "revert: no binary in ${DIR}" >&2; exit 1; }
+[ -f "${DIR}/muster" ] || { echo "revert: no binary in ${DIR}" >&2; exit 1; }
 [ -f "${DIR}/manifest.json" ] || { echo "revert: no manifest in ${DIR} — refusing an unidentified backup" >&2; exit 1; }
 
 for v in FLEET_BIN FLEET_RESTART FLEET_HEALTH_URL; do
@@ -66,7 +66,7 @@ WANT_REV=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(((
 
 # The backup must still be intact. A corrupted backup discovered DURING a
 # rollback is the worst possible moment to discover it.
-HAVE_SHA=$(shasum -a 256 "${DIR}/colab-fleetd" | cut -d' ' -f1)
+HAVE_SHA=$(shasum -a 256 "${DIR}/muster" | cut -d' ' -f1)
 [ "$HAVE_SHA" = "$WANT_SHA" ] || {
 	echo "revert: backup is corrupt — sha does not match its own manifest" >&2
 	echo "  manifest: $WANT_SHA" >&2
@@ -79,7 +79,7 @@ echo "revert: target=${HOST} restoring ${WANT_REV:-<unknown revision>}"
 # Install atomically — same reason deploy.sh does: never write over a running
 # binary in place.
 TMP="${FLEET_BIN}.revert.$$"
-put "${DIR}/colab-fleetd" "$TMP"
+put "${DIR}/muster" "$TMP"
 run "chmod 755 ${TMP} && mv -f ${TMP} ${FLEET_BIN}"
 
 CHECK=$(run "shasum -a 256 ${FLEET_BIN} | cut -d' ' -f1")

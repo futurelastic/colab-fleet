@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient"
+	"github.com/futurelastic/muster/internal/delivery/modclient"
 )
 
 func writeModule(t *testing.T, dir, name string, mode os.FileMode) string {
@@ -182,11 +182,11 @@ func TestDefaultModulesDir(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	exe := filepath.Join(bin, "colab-fleetd")
+	exe := filepath.Join(bin, "muster")
 	if err := os.WriteFile(exe, nil, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(root, "prefix", "libexec", "colab-fleet", "modules")
+	want := filepath.Join(root, "prefix", "libexec", "muster", "modules")
 	if got := modclient.DefaultModulesDir(exe); got != want {
 		t.Errorf("DefaultModulesDir(%s) = %s, want %s", exe, got, want)
 	}
@@ -205,7 +205,7 @@ func TestDefaultModulesDir(t *testing.T) {
 	}
 
 	// A path that does not exist falls back to its lexical parent.
-	if got, want := modclient.DefaultModulesDir("/opt/x/bin/colab-fleetd"), filepath.FromSlash("/opt/x/libexec/colab-fleet/modules"); got != want {
+	if got, want := modclient.DefaultModulesDir("/opt/x/bin/muster"), filepath.FromSlash("/opt/x/libexec/muster/modules"); got != want {
 		t.Errorf("unresolvable path: %s, want %s", got, want)
 	}
 	if got := modclient.DefaultModulesDir(""); got != "" {

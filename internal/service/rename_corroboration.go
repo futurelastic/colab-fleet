@@ -4,10 +4,10 @@ import (
 	"sync"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// This file closes colab-fleet #103: session.renamed used to fire exactly
+// This file closes muster #103: session.renamed used to fire exactly
 // once, at accept time, and never revisit that fact. #97 measured a rename
 // that returned 202, read back correct for roughly half an hour, then
 // silently reverted — id, name and attach target all restored — with
@@ -44,7 +44,7 @@ import (
 // restart of this process — a rename whose corroboration window was still
 // open when this service restarted gets no follow-up event at all, silently,
 // which is the exact failure this file otherwise exists to prevent. Closing
-// that needs the durable, machine-readable identity record colab-fleet #102
+// that needs the durable, machine-readable identity record muster #102
 // asks for; this file is deliberately not reaching into that scope.
 
 // renameCorroborationWindow bounds how long the hub keeps watching a rename
@@ -284,7 +284,7 @@ func (s *Service) publishRename(machine fleet.MachineId, from, to string, starte
 	s.events.watchRename(machine, from, to, startedAt)
 }
 
-// startedAtMatches answers colab-fleet #103's own corroboration question the
+// startedAtMatches answers muster #103's own corroboration question the
 // same way §5.4 already answers every other "is this really the same
 // session" question: never on the id alone. Either side unknown means no —
 // an absent StartedAt cannot corroborate, it can only fail to contradict,

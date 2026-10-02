@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // Reading the runtime's own record for WHY a control channel failed (#69) —

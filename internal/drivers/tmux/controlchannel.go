@@ -3,7 +3,7 @@ package tmux
 import (
 	"strings"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // Reading the runtime's own remote-control status label off the pane.
@@ -27,7 +27,7 @@ import (
 //
 // # The connected row above is the binary's function; it is not what renders (#75)
 //
-// A real `active` capture (colab-fleet #70, #65) showed the connected state
+// A real `active` capture (muster #70, #65) showed the connected state
 // rendering as a bare `/rc` hyperlink with NOTHING after it — no space, no
 // word, nothing an anchor requiring `"/rc "` could ever match. Two
 // independent live captures agree; controlStateIn now treats the anchor with
@@ -76,7 +76,7 @@ import (
 // region — the exact region the self-contamination came from — so promoting
 // prose out of it into a structured field would rebuild the hazard this file
 // exists to avoid, one layer higher and harder to see. The distinction is worth
-// having and is recorded as its own issue (colab-fleet #65) rather than taken
+// having and is recorded as its own issue (muster #65) rather than taken
 // on unsound evidence.
 //
 // The close codes underneath, read out of the runtime binary rather than
@@ -100,7 +100,7 @@ import (
 // transcript" — the runtime would need to put it somewhere an agent cannot
 // write, the way the footer label already is, or this field would need to
 // come from the runtime's own durable record the way QuotaBlock.since and
-// TurnEnd do (colab-fleet #56) rather than from a screen at all.
+// TurnEnd do (muster #56) rather than from a screen at all.
 //
 // # A label that is absent is absent, never "connected"
 //
@@ -168,7 +168,7 @@ func controlChannelOf(s screen) *fleet.ControlChannel {
 // guess dressed as precision, real captures or not.
 //
 // What DID need fixing, once real captures existed to check it against
-// (colab-fleet #70, #65), was the anchor match itself — see controlLabel's
+// (muster #70, #65), was the anchor match itself — see controlLabel's
 // own comment (#75) for the bare-`active` shape this line now handles.
 func controlStateIn(line string) (fleet.ControlChannelState, bool) {
 	idx := strings.Index(line, controlLabel)

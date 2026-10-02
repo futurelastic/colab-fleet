@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// TestRenameForwardsTheTitleVerbatim is colab-fleet#222's own remote
+// TestRenameForwardsTheTitleVerbatim is muster#222's own remote
 // contract: this driver never implements driver.TitleSyncer itself — the
 // peer machine's own service already ran that step against its own driver —
 // so whatever fleet.RenameAck it answers with, title included or absent,

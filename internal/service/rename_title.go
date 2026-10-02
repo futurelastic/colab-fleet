@@ -3,11 +3,11 @@ package service
 import (
 	"context"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// syncTitle is handleRename's second half (colab-fleet #222). Once the
+// syncTitle is handleRename's second half (muster #222). Once the
 // multiplexer-level id change has already succeeded and been announced
 // (svc.publishRename), this brings the runtime's OWN title to the same
 // string, on any LOCAL driver that keeps one apart from the id.

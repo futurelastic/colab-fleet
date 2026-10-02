@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Session labels (colab-fleet #153).
+// Session labels (muster #153).
 //
 // A label is an opaque key/value pair a caller attaches to a session. The
 // service stores them, returns them on every read, filters on them, and

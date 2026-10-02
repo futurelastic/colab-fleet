@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // §5.7 again: "no resume was requested" and "a resume was requested but

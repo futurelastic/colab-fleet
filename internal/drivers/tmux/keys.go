@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // Raw key delivery for the dialogs `respond` cannot see (driver.KeySender).
@@ -31,7 +31,7 @@ import (
 //     because GET publishes exactly those two fields for exactly those two
 //     cases (ComposerDigest, ScreenDigest) — and a mismatch is a refusal
 //     (§5.4 — a proxy for identity is not identity, arriving here for the
-//     fourth time; colab-fleet#127: this used to hash the whole screen
+//     fourth time; muster#127: this used to hash the whole screen
 //     unconditionally, which a caller quoting ComposerDigest back could
 //     never satisfy);
 //   - a composer holding unsent text is refused outright, because `Enter` there
@@ -166,14 +166,14 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// because every key this driver could deliver into that state is refused
 	// below regardless of which key was asked for, so the corroboration only
 	// ever has to prove the caller saw the composer, never the rest of the
-	// screen (colab-fleet#127).
+	// screen (muster#127).
 	//
 	// composer empty (or absent) -> screen scope, screenDigest(text), same as
 	// before this change. A composer-scope digest here would be the constant
 	// hash of "" no matter what a dialog says, which corroborates nothing —
 	// exactly the relaxation this driver must not make. GET publishes this as
 	// ScreenDigest, unconditionally.
-	// colab-fleet#134: composerHoldsText requires scan == composerFound, so
+	// muster#134: composerHoldsText requires scan == composerFound, so
 	// a composerClipped screen falls into the SAME digest scope as an
 	// absent composer — screenDigest(text), below. That is deliberate, not
 	// an oversight: this driver cannot form a meaningful COMPOSER-scope
@@ -252,12 +252,12 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		}, nil
 	}
 
-	// colab-fleet#215: the feedback-draft card over a composer row that holds
+	// muster#215: the feedback-draft card over a composer row that holds
 	// text. Not a prompt, so the refusal above did not fire, and the composer is
 	// not readable as a whole, so the checks below would see an absent one. A key
 	// sent now is appended to that text or read by the card.
 	//
-	// colab-fleet#217 decided what Escape does here. Over a card this driver
+	// muster#217 decided what Escape does here. Over a card this driver
 	// cannot read past, it is the one key accepted, in the three states it
 	// measurably leaves: the key row (dismisses the card; the draft stays queued),
 	// the send confirmation (returns to the key row) and the send error
@@ -292,7 +292,7 @@ func (d *Driver) Keys(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		note = feedbackEscapeNote(screen)
 	}
 
-	// colab-fleet#134: a composer taller than this driver's capture window,
+	// muster#134: a composer taller than this driver's capture window,
 	// with no recognised prompt to route to instead (that case already
 	// returned, above). Refuse rather than guess — a key sent now could
 	// submit text this driver never saw, the same hazard composerHoldsText

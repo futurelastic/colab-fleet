@@ -11,7 +11,7 @@ package main
 //	                            unset means none, and this daemon behaves exactly
 //	                            as it did before modules existed
 //	FLEET_MODULES_DIR           where module executables live; default
-//	                            <prefix>/libexec/colab-fleet/modules, <prefix>
+//	                            <prefix>/libexec/muster/modules, <prefix>
 //	                            being the parent of this binary's directory
 //	FLEET_DELIVERY_MODULE_ENV   comma-separated environment names forwarded to
 //	                            the module child; nothing else is, and a FLEET_
@@ -25,8 +25,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient"
-	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
+	"github.com/futurelastic/muster/internal/delivery/modclient"
+	"github.com/futurelastic/muster/internal/drivers/tmux"
 )
 
 // deliveryModuleSetup is what the switch resolves to.

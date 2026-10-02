@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// colab-fleet#176: a respond body whose choices contradict the rest of it is
+// muster#176: a respond body whose choices contradict the rest of it is
 // the caller's fault, rejected as a 400 in the handler, before the driver —
 // which may be a peer's, forwarding the body verbatim — sees it. The empty set matters most: marshalled onward with omitempty it would
 // arrive at a peer as {}, which means "accept the highlighted option".
@@ -48,7 +48,7 @@ func TestRespondRejectsContradictoryChoicesBeforeAnyDriver(t *testing.T) {
 	}
 }
 
-// colab-fleet#206: the same boundary for a free-text answer. A body whose text
+// muster#206: the same boundary for a free-text answer. A body whose text
 // is empty, or combined with a choice or a cancel, is the caller's fault and a
 // 400 before any driver sees it — an empty free-text field confirmed declines
 // the whole dialog, so it must never reach one — and text is held to the byte

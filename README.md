@@ -1,4 +1,4 @@
-# colab-fleet
+# muster
 
 **One API for every coding-agent session you are running — on every machine you
 are running them on.**
@@ -9,7 +9,7 @@ You have coding agents running in terminals. Probably several. Possibly on more
 than one machine. Right now the only way to know what any of them is doing is to
 look at it, and the only way to answer one is to walk over to it.
 
-`colab-fleet` is a machine-local service that **owns** those sessions and puts
+`muster` is a machine-local service that **owns** those sessions and puts
 them behind an HTTP API — list them, read what state each one is in, send one an
 instruction, answer the permission dialog one is stuck on. Peer instances
 federate, so a session on the machine in the other room is one call away and
@@ -20,7 +20,7 @@ flowchart TB
     C["supervisors & clients<br/>dashboard · CLI · your program"]
 
     subgraph MA["machine-a"]
-        S["colab-fleet<br/>HTTP API"]
+        S["muster<br/>HTTP API"]
         DT["tmux driver"]
         DO["opencode driver"]
         DR["remote driver"]
@@ -29,7 +29,7 @@ flowchart TB
     end
 
     subgraph MB["machine-b"]
-        P["peer colab-fleet"]
+        P["peer muster"]
     end
 
     C -- "HTTP + bearer token" --> S
@@ -55,7 +55,7 @@ out to a terminal multiplexer, scrapes the screen to guess what the agent is
 doing, and is thereby permanently bound to one runtime on one host. (Survey of
 comparable projects, and what that split buys: [`docs/positioning.md`](docs/positioning.md).)
 
-`colab-fleet` is the second half, extracted. Supervisors become clients.
+`muster` is the second half, extracted. Supervisors become clients.
 
 Three properties fall out of that one decision:
 
@@ -77,7 +77,7 @@ affordable.
 Version control state, worktrees, issue trackers, work claims, planning, or any
 judgement about whether work is finished.
 
-> **colab-fleet knows a session has a working directory.
+> **muster knows a session has a working directory.
 > It does not know what a worktree is.**
 
 A fleet layer that learns what an issue is has become a second supervisor, and
@@ -200,7 +200,7 @@ go build ./... && go test ./...
 export FLEET_MACHINE=machine-a
 export FLEET_TOKEN="$(openssl rand -hex 32)"
 export FLEET_ADDR=127.0.0.1:9000
-go run ./cmd/colab-fleetd
+go run ./cmd/muster
 ```
 
 ```sh
@@ -219,9 +219,9 @@ Four steps. Do **machine-b first** — machine-a needs an address to point at.
 point of the next three steps is that the two machines have distinct identities.
 
 ```sh
-mkdir -p ~/.config/colab-fleet
-openssl rand -hex 32 > ~/.config/colab-fleet/machine-a.token
-chmod 600 ~/.config/colab-fleet/machine-a.token
+mkdir -p ~/.config/muster
+openssl rand -hex 32 > ~/.config/muster/machine-a.token
+chmod 600 ~/.config/muster/machine-a.token
 ```
 
 **2. On machine-b — the one that owns the sessions.** Bind the interface the
@@ -232,10 +232,10 @@ own machine.
 
 ```sh
 export FLEET_MACHINE=machine-b
-export FLEET_TOKEN="$(cat ~/.config/colab-fleet/machine-b.token)"
+export FLEET_TOKEN="$(cat ~/.config/muster/machine-b.token)"
 export FLEET_ADDR=10.8.0.12:9000        # this machine's VPN or LAN address
 export FLEET_ALLOW_MUTATIONS=1          # permit writes to its own sessions
-colab-fleetd
+muster
 ```
 
 **3. On machine-a — the one that will call it.** A peer is statically
@@ -245,16 +245,16 @@ a fleet ends up pointing at a hostname which resolves on only one side.
 
 ```sh
 export FLEET_MACHINE=machine-a
-export FLEET_TOKEN="$(cat ~/.config/colab-fleet/machine-a.token)"
+export FLEET_TOKEN="$(cat ~/.config/muster/machine-a.token)"
 export FLEET_PEERS="machine-b=http://10.8.0.12:9000"
 export FLEET_ALLOW_RELAY=1              # permit forwarding writes to a peer
-colab-fleetd
+muster
 ```
 
 **4. Verify, from machine-a.**
 
 ```sh
-curl -s -H "Authorization: Bearer $(cat ~/.config/colab-fleet/machine-a.token)" \
+curl -s -H "Authorization: Bearer $(cat ~/.config/muster/machine-a.token)" \
   http://127.0.0.1:9000/v1/machines
 ```
 
@@ -277,7 +277,7 @@ You now have one API over both machines. What to do with it is below.
 
 > **This is a demo, not an install.** Every process above ends with its shell.
 > A service that survives a reboot — a principal table, a state directory, a
-> service unit, and a `colab-fleetd doctor` run that checks all of it — is
+> service unit, and a `muster doctor` run that checks all of it — is
 > [`docs/install.md`](docs/install.md).
 
 
@@ -292,10 +292,10 @@ sequenceDiagram
     autonumber
     actor C as client
     box transparent machine-a
-        participant A as colab-fleet (a)
+        participant A as muster (a)
     end
     box transparent machine-b
-        participant B as colab-fleet (b)
+        participant B as muster (b)
         participant T as tmux driver
         participant X as agent CLI
     end
@@ -316,7 +316,7 @@ sequenceDiagram
 
 ```sh
 FLEET=http://127.0.0.1:9000
-AUTH="Authorization: Bearer $(cat ~/.config/colab-fleet/machine-a.token)"
+AUTH="Authorization: Bearer $(cat ~/.config/muster/machine-a.token)"
 ```
 
 **Every session on both machines, as one list:**
@@ -403,8 +403,8 @@ denied, on a fresh deployment as much as an established one.
 | Know the wire protocol exactly | [`docs/spec/api-http.md`](docs/spec/api-http.md) — normative |
 | Adopt this in an existing system | [`docs/adoption.md`](docs/adoption.md) — staged so each step is reversible; §2 is the precondition that surprised us |
 | Work on the service | [`docs/internals.md`](docs/internals.md) — measurements, decided questions, known gaps |
-| Check a runtime build before the fleet takes it | [`docs/compat.md`](docs/compat.md) — `colab-fleetd compat`: a versioned report of whether a candidate build still behaves as this service assumes |
-| Install it on a new machine | [`docs/install.md`](docs/install.md) — from nothing to a running service, ending with `colab-fleetd doctor` |
+| Check a runtime build before the fleet takes it | [`docs/compat.md`](docs/compat.md) — `muster compat`: a versioned report of whether a candidate build still behaves as this service assumes |
+| Install it on a new machine | [`docs/install.md`](docs/install.md) — from nothing to a running service, ending with `muster doctor` |
 | Deploy it | [`docs/deploy.md`](docs/deploy.md) — from a merged commit to a service that already runs |
 | Declare a machine-wide session identity | [`docs/session-identity.md`](docs/session-identity.md) — `sessionEnv`, precedence against a caller, verification |
 | See what this is positioned against | [`docs/positioning.md`](docs/positioning.md) — a survey of comparable projects: category, what turned out rare, trajectory |

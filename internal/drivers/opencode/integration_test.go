@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // This file exercises the driver against a REAL opencode server this
@@ -84,7 +84,7 @@ func TestIntegration_CreateAndCloseARealSession(t *testing.T) {
 
 	dir := t.TempDir()
 	ref, err := d.Create(ctx, fleet.RequestFrom(fleet.Caller{Principal: "integration-test"}), "integration-key-1",
-		fleet.SessionSpec{Cwd: fleet.AbsolutePath(dir), Name: "colab-fleet #55 integration"})
+		fleet.SessionSpec{Cwd: fleet.AbsolutePath(dir), Name: "muster #55 integration"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestIntegration_LiveStatusTransition_SpendsProviderMoney(t *testing.T) {
 
 	dir := t.TempDir()
 	ref, err := d.Create(ctx, fleet.RequestFrom(fleet.Caller{Principal: "integration-test"}), "integration-key-2",
-		fleet.SessionSpec{Cwd: fleet.AbsolutePath(dir), Name: "colab-fleet #55 live"})
+		fleet.SessionSpec{Cwd: fleet.AbsolutePath(dir), Name: "muster #55 live"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestIntegration_RefusedTurnReportsFailedLastTurn(t *testing.T) {
 	}
 
 	ref, err := d.Create(ctx, fleet.RequestFrom(fleet.Caller{Principal: "integration-test"}), "integration-key-3",
-		fleet.SessionSpec{Cwd: fleet.AbsolutePath(dir), Name: "colab-fleet #77 live", Model: "deepseek/deepseek-chat"})
+		fleet.SessionSpec{Cwd: fleet.AbsolutePath(dir), Name: "muster #77 live", Model: "deepseek/deepseek-chat"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

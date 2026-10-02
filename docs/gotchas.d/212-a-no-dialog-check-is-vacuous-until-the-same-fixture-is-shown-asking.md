@@ -4,7 +4,7 @@
 
 ## What was asked
 
-`colab-fleetd compat` pinned the folder-trust question twice: `C1` (a seeded
+`muster compat` pinned the folder-trust question twice: `C1` (a seeded
 directory reaches its composer with no dialog) and `F-TRUST` (an unseeded one shows
 the dialog, classified). The external-imports question the service now seeds and
 answers (#211) had neither. The obvious fix — give `C1`'s directory an import of a

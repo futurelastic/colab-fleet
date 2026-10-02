@@ -9,7 +9,7 @@ import (
 	"io"
 	"net/http"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // wireTime is the {created, updated} shape opencode stamps on a session,
@@ -48,7 +48,7 @@ type wireStatus struct {
 type statusMap map[string]wireStatus
 
 // wireAssistantError is the error union opencode's AssistantMessage.error
-// carries when a turn ends without a reply (colab-fleet #77). Measured
+// carries when a turn ends without a reply (muster #77). Measured
 // against a real server's own OpenAPI document: eight distinct error
 // "name" values, each with its own "data" shape. Seven of the eight nest a
 // human-readable "message" under data; the eighth (MessageOutputLengthError)

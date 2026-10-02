@@ -47,7 +47,7 @@ func TestAttestNameGoldenBytes(t *testing.T) {
 
 // hostileNames is #158's acceptance list plus the neighbours of each case.
 var hostileNames = []string{
-	"agent-a · colab-fleet-158 · box",
+	"agent-a · muster-158 · box",
 	"👨‍👩‍👧 family",            // joiner-based compound emoji
 	"🏳️‍🌈 flag",               // joiner plus a variation selector
 	"a\x00b\x1bc\x7fd",        // control characters

@@ -32,7 +32,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient"
+	"github.com/futurelastic/muster/internal/delivery/modclient"
 )
 
 // EnvBehaviour names the environment variable that carries a JSON Behaviour to

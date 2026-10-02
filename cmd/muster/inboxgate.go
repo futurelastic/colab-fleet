@@ -2,7 +2,7 @@ package main
 
 import "errors"
 
-// The inbox route needs a principal table (colab-fleet #196, ruled on #195,
+// The inbox route needs a principal table (muster #196, ruled on #195,
 // option 2).
 //
 // Why. Since #184 a send with no `route` is `auto`, and `auto` means "by who is

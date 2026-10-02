@@ -9,7 +9,7 @@ FAKE_SWALLOW=N ignores the first N submits, modelling a swallowed Enter.
 FAKE_LOG=<path> appends every submitted turn, so a test can see exactly what
 was submitted and how often.
 
-The next three build a deliberately BROKEN candidate for `colab-fleetd compat`
+The next three build a deliberately BROKEN candidate for `muster compat`
 (#183); every one defaults to today's behaviour, so no other test changes:
 FAKE_GLYPH=<char> paints a different prompt glyph than the driver looks for.
 FAKE_NO_BRACKET=1 never asks the terminal for bracketed paste (no ESC[?2004h).

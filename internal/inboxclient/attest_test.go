@@ -40,7 +40,7 @@ func rebuild(from, fromSession, hopChain, fromName, mode, body string) string {
 		attrs = append(attrs, `hop-chain="`+hopChain+`"`)
 	}
 	// The receiver re-normalises the name it parsed before writing it back
-	// (colab-fleet #158) — omitting this step would make the round-trip
+	// (muster #158) — omitting this step would make the round-trip
 	// check blind to exactly the byte differences that discard an envelope.
 	if n := receiverRebuildName(fromName); fromName != "" && n != "" {
 		attrs = append(attrs, `from-name="`+n+`"`)

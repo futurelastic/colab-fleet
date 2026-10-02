@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // A composer whose closing rule is cut off by the bottom of the pane
-// (colab-fleet#216). The measured shape is #215's feedback-draft card on a
+// (muster#216). The measured shape is #215's feedback-draft card on a
 // 24-row pane, but the cause is general: anything tall enough above the composer
 // leaves the screen ending on the composer's opening rule and its ❯ row, with no
 // row below them for the closing rule or the mode row. These tests use a plain

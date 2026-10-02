@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // The rule under test: after this function, the machine can always reach its
@@ -66,7 +66,7 @@ func TestSplitList(t *testing.T) {
 	}
 }
 
-// colab-fleet #95: the startup doc comment on FLEET_CONFIG says that when a
+// muster #95: the startup doc comment on FLEET_CONFIG says that when a
 // principal table is present, FLEET_TOKEN is ignored — but the fatal check
 // used to run before the config file was even opened, so a fully-specified
 // principal table could never satisfy it. requireToken is the extracted
@@ -82,7 +82,7 @@ func TestRequireToken(t *testing.T) {
 	}
 }
 
-// colab-fleet #98: starting from a principal table alone left the peer
+// muster #98: starting from a principal table alone left the peer
 // credential empty, so this pins which states now proceed (a non-empty
 // credential is handed to SetPeerCredential) and which still refuse
 // (svc.SetPeerCredential("") — internal/drivers/remote.Driver.bearerFor and

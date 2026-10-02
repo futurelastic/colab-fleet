@@ -1,6 +1,6 @@
 package tmux
 
-// This file wires colab-fleet #119: delivering Send's final hop over a
+// This file wires muster #119: delivering Send's final hop over a
 // target session's own inbox, in front of the terminal-surface path this
 // driver already had, when — and only when — a caller has capability-
 // detected an inbox for that target. The terminal path (tmux.go's Send)
@@ -36,9 +36,9 @@ import (
 	"net"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/inboxclient"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/inboxclient"
 )
 
 // InboxAddress is where and how to reach one session's own inbox, for one
@@ -63,7 +63,7 @@ type InboxAddress struct {
 	// which makes the inbox path unavailable for the call (sendViaInbox
 	// below); it is not an error and not a refusal.
 	//
-	// colab-fleet #148: the receiving runtime holds a message whose sender
+	// muster #148: the receiving runtime holds a message whose sender
 	// asserts no class whenever the receiver runs with permission prompts
 	// bypassed, and holds one asserting the WRONG class in every case. Both
 	// are silent — held messages never reach the model and are dropped when
@@ -93,7 +93,7 @@ type InboxAddress struct {
 //   - ok=true, err=nil: addr is used for this delivery.
 type InboxResolver func(ctx context.Context, identity ProcessIdentity) (addr InboxAddress, ok bool, err error)
 
-// WithInboxResolver enables colab-fleet #119's delivery path. Off by
+// WithInboxResolver enables muster #119's delivery path. Off by
 // default — the same off-by-default contract WithCredentialPath and
 // WithTrustSeed already state: a driver built for a test or a sandbox must
 // never attempt an inbox delivery merely because it was constructed.
@@ -444,7 +444,7 @@ func inboxEligible(opts driver.SendOptions) bool {
 // panePrefix opens the first line the terminal path adds for a labelled send.
 const panePrefix = "[from: "
 
-// paneLabelled is the terminal path's form of the sender label (colab-fleet
+// paneLabelled is the terminal path's form of the sender label (muster
 // #158). That path has no envelope, so the label goes on as one short first
 // line of the text, followed by the relayOfHuman declaration when asked for.
 //

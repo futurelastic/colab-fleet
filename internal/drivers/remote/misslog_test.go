@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// Tests for colab-fleet #174: every peer call that gets no answer is logged
+// Tests for muster #174: every peer call that gets no answer is logged
 // by the requesting daemon, with its latency and the budget that fired.
 //
 // captureLog swaps the standard logger, so nothing in this package may call

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // titleSyncSession is transcriptSession (slashcommand_test.go) plus the one
@@ -75,7 +75,7 @@ func withStartedAt(req fleet.Request, t time.Time) fleet.Request {
 	return req
 }
 
-// TestSyncTitleBringsTheRuntimeTitleToTheNewID is colab-fleet#222's own
+// TestSyncTitleBringsTheRuntimeTitleToTheNewID is muster#222's own
 // done-when #1: a rename through the API leaves the runtime reporting the
 // new title, confirmed against a recorded transcript.
 func TestSyncTitleBringsTheRuntimeTitleToTheNewID(t *testing.T) {
@@ -183,7 +183,7 @@ func TestSyncTitleReportsFailedWhenADifferentTitleWasRecorded(t *testing.T) {
 }
 
 // TestSyncTitlePendingWhenTheCommandRanButNoTitleFollowed: the runtime
-// confirmed it ran /rename (colab-fleet#187's own local_command evidence),
+// confirmed it ran /rename (muster#187's own local_command evidence),
 // but no custom-title entry followed within the confirmation window — this
 // repo has not measured whether/when that ever happens, so the honest
 // answer is pending, never a guessed synced or failed. A short caller
@@ -352,7 +352,7 @@ func TestASessionCommandLeavesTheTurnsDenominatorAlone(t *testing.T) {
 	}
 }
 
-// reconcilerRevert is the "fake reconciler" colab-fleet#222's own done-when
+// reconcilerRevert is the "fake reconciler" muster#222's own done-when
 // #2 asks for: a client that trusts the runtime's OWN title over the
 // multiplexer's, and renames back on disagreement. Returns whether it
 // reverted anything this pass.
@@ -373,7 +373,7 @@ func reconcilerRevert(t *testing.T, d *Driver, req fleet.Request, convPath strin
 }
 
 // TestAReconcilerTrustingTheRuntimeTitleDoesNotRevertAnAPIRename is
-// colab-fleet#222's done-when #2. The "reproduces" subtest is the negative
+// muster#222's done-when #2. The "reproduces" subtest is the negative
 // control this repo's own gotchas file (#212) asks for: without it, a
 // passing "fixed" subtest would be equally consistent with "the reconciler
 // never actually checks anything".

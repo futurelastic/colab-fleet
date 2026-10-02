@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
-	tmuxdrv "github.com/godx-jp/colab-fleet/internal/drivers/tmux"
-	"github.com/godx-jp/colab-fleet/internal/service"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/drivers/stub"
+	tmuxdrv "github.com/futurelastic/muster/internal/drivers/tmux"
+	"github.com/futurelastic/muster/internal/service"
 )
 
 // These tests assemble the whole federation path in one process:
@@ -280,7 +280,7 @@ func TestFederatedListOfRealSessionsThroughARemoteDriver(t *testing.T) {
 		len(viaFleet.Items()), peerSrc.Machine, peerSrc.Status, checked)
 }
 
-// colab-fleet #174, end to end: on a fleet read the budget that fires is the
+// muster #174, end to end: on a fleet read the budget that fires is the
 // caller's own Fleet-Deadline-Ms whenever it is shorter than this driver's
 // bound, and the requesting daemon's log now says so — budget and bound side
 // by side — instead of recording nothing while consumers count the misses.

@@ -1,7 +1,7 @@
 # Stopping a runtime session before it is about ten seconds old leaves a machine-wide failed-start record, and two of them switch a rendering mode off for every session on the machine
 
 **Issue:** #183 (found while measuring a candidate runtime build for
-`colab-fleetd compat`; nothing in this repository's code showed it)
+`muster compat`; nothing in this repository's code showed it)
 
 ## What happened
 
@@ -34,7 +34,7 @@ classifiers read is exactly what changes with the renderer.
 
 Let a session you started reach about fifteen seconds of age before you stop it.
 Judge it by **age**, not by reading the runtime's private state, so the rule does
-not depend on a key name that may change. `colab-fleetd compat` does this in its
+not depend on a key name that may change. `muster compat` does this in its
 teardown (`compatSettleAge`) and waits only when it has to: a full run lasts
 minutes and never waits.
 

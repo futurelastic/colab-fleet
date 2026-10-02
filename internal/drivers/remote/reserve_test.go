@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/service"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/service"
 )
 
-// Tests for colab-fleet #175: the bound announced to a peer in
+// Tests for muster #175: the bound announced to a peer in
 // Fleet-Deadline-Ms holds a transit reserve back from the bound this driver
 // enforces, so a peer that is up but slow gets its own answer home before
 // the requester's timer fires.

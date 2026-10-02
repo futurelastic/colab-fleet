@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// colab-fleet #104: confirmSubmitted's own doc comment names two independent
+// muster #104: confirmSubmitted's own doc comment names two independent
 // confirming signals. #104 suspects one of them could be dead code nobody
 // removed, and asks for a counter per signal instead of a live capture nobody
 // can take (driving the multiplexer directly from a session is refused by

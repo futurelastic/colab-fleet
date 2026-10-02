@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
-	"github.com/godx-jp/colab-fleet/internal/service"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/drivers/stub"
+	"github.com/futurelastic/muster/internal/service"
 )
 
-// colab-fleet #154, the prober's half: what this machine learns about its own
+// muster #154, the prober's half: what this machine learns about its own
 // registration on a peer, and above all what it must NOT conclude from a peer
 // that cannot answer.
 

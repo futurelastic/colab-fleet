@@ -108,7 +108,7 @@ type ControlChannel struct {
 	State ControlChannelState `json:"state"`
 
 	// Reason is the runtime's own words about why the channel failed —
-	// sourced from its own durable record (colab-fleet #69), never from a
+	// sourced from its own durable record (muster #69), never from a
 	// screen, which is the forgeable region this whole type exists to stay
 	// out of. For humans and logs; do not branch on it, the same discipline
 	// TurnEnd.Reason already holds itself to. In particular this carries no

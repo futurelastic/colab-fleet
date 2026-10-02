@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient/modtest"
+	"github.com/futurelastic/muster/internal/delivery/modclient/modtest"
 )
 
 // TestMain lets this test binary stand in for a real external delivery module

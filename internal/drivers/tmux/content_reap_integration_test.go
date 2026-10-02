@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // The real-substrate half of reaping a content client whose session exited.

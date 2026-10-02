@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/inboxclient"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/inboxclient"
 )
 
 // A test window short enough that a delivery nothing confirms costs a fraction

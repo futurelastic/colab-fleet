@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/compat"
-	"github.com/godx-jp/colab-fleet/internal/trustseed"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/compat"
+	"github.com/futurelastic/muster/internal/trustseed"
 )
 
-// This file is the isolation of `colab-fleetd compat`: a private multiplexer
+// This file is the isolation of `muster compat`: a private multiplexer
 // server, one door to it, throwaway working directories, and a teardown that
 // always runs. Nothing here may ever address a server it did not start.
 //

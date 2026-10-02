@@ -6,7 +6,7 @@ import "testing"
 // (uni-vi-nfc-*/uni-vi-nfd-*): a Vietnamese sentence sent as precomposed
 // (NFC) text must normalize identically to the SAME sentence sent as
 // decomposed (NFD) text, because a caller and a runtime's own composer echo
-// are not guaranteed to agree on composing form (colab-fleet terminal path
+// are not guaranteed to agree on composing form (muster terminal path
 // v2, item 2b).
 func TestComposeNFCLiteVietnamese(t *testing.T) {
 	cases := []struct {

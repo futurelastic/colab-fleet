@@ -64,7 +64,7 @@ type SessionSpec struct {
 
 	// Labels are caller-supplied facts about what this session is FOR —
 	// the unit of work it serves, the working tree it uses, the kind of
-	// session it is (colab-fleet #153). Opaque to the service exactly as
+	// session it is (muster #153). Opaque to the service exactly as
 	// Marker is: the service assigns no vocabulary and attaches no meaning,
 	// and two sessions carrying the same pair is not a conflict it reports.
 	//
@@ -151,7 +151,7 @@ type SessionSpec struct {
 	Resume string `json:"resume,omitempty"`
 
 	// ConversationId is a caller-chosen UUID this create asks the runtime to
-	// start a NEW conversation under (colab-fleet #224), so the id is known
+	// start a NEW conversation under (muster #224), so the id is known
 	// from the `201` rather than only after the runtime's own per-process
 	// record shows up — measured at about 2s on a fresh session, during
 	// which a caller wanting "click → open the session" has nothing to open.
@@ -333,7 +333,7 @@ type SessionRef struct {
 // forbidden from trusting it.
 //
 // Corroboration is why a given (From, To) pair can appear MORE than once on
-// the stream (colab-fleet #103). A rename that is accepted and then reverts —
+// the stream (muster #103). A rename that is accepted and then reverts —
 // #97's own measured scenario, a `202`, a correct read for roughly half an
 // hour, then silently undone — used to emit exactly one of these, at accept
 // time, and never revisit it: a subscriber that re-keyed on it, as §3.3 tells
@@ -348,7 +348,7 @@ type SessionRenamed struct {
 	Corroboration RenameCorroboration `json:"corroboration"`
 }
 
-// RenameCorroboration is session.renamed's own truthfulness (colab-fleet
+// RenameCorroboration is session.renamed's own truthfulness (muster
 // #103): whether From/To is still just what the handler ACCEPTED, or has
 // since been checked against an independent, later observation.
 //
@@ -402,7 +402,7 @@ type Session struct {
 
 	// Agent and Model are the APPLIED values — what the runtime is actually
 	// using — reported only when the driver observed them, never an echo of
-	// what SessionSpec requested (colab-fleet #84). Empty means the driver
+	// what SessionSpec requested (muster #84). Empty means the driver
 	// does not know, the same real-answer rule StartedAt and Attach already
 	// follow below; it is not a claim that no pin was requested. What was
 	// REQUESTED, and whether it was honoured, is Pins — the two must not be
@@ -413,7 +413,7 @@ type Session struct {
 
 	// Pins states what this session's create asked to pin — Agent, Model,
 	// Effort — and, once it can be told, what the runtime actually applied
-	// (colab-fleet #84; see PinOutcome). Nil means none of the three was
+	// (muster #84; see PinOutcome). Nil means none of the three was
 	// requested at creation. A field being nil inside a non-nil PinOutcome
 	// means that particular pin was not requested; the other two follow the
 	// same rule independently.
@@ -439,7 +439,7 @@ type Session struct {
 
 	// RuntimeSurface names where this session is reachable on a surface the
 	// RUNTIME operates, distinct from Attach's local terminal and from
-	// Conversation's transcript record (colab-fleet #85; see
+	// Conversation's transcript record (muster #85; see
 	// RuntimeSurfaceRef). Nil means nobody looked — a substrate with no such
 	// surface, or a driver that does not report one; ask
 	// DriverCapabilities.ReportsRuntimeSurface to tell those apart. Non-nil
@@ -464,7 +464,7 @@ type Session struct {
 
 	// ResumeOutcome states whether this session's creation asked to resume
 	// a conversation and, once it can be told, whether that was honoured
-	// (colab-fleet #72). Named distinctly from SessionSpec.Resume (the
+	// (muster #72). Named distinctly from SessionSpec.Resume (the
 	// create-time request field, a bare conversation id) on purpose — the
 	// two are never in the same message, but one names an intent and the
 	// other names a verdict about it, and giving them the same wire name
@@ -478,7 +478,7 @@ type Session struct {
 	ResumeOutcome *ResumeOutcome `json:"resumeOutcome,omitempty"`
 
 	// PromptDelivery is what became of a prompt this session's create carried
-	// (colab-fleet #86; see PromptDelivery). Nil means this create carried no
+	// (muster #86; see PromptDelivery). Nil means this create carried no
 	// prompt — never a claim that one was carried and delivered, the same
 	// rule ResumeOutcome's own nil follows for resume.
 	PromptDelivery *PromptDelivery `json:"promptDelivery,omitempty"`
@@ -490,7 +490,7 @@ type Session struct {
 	Delivery *DeliveryLane `json:"delivery,omitempty"`
 
 	// IdentityAssertion is what this machine last asserted this session's
-	// identity to be, and whether the runtime still carries it (colab-fleet
+	// identity to be, and whether the runtime still carries it (muster
 	// #97, #102; see IdentityAssertion). Nil means this machine has asserted
 	// no identity for this session at all — an adopted, foreign or
 	// cold-store session it never named, or a driver with no state store.
@@ -499,7 +499,7 @@ type Session struct {
 	IdentityAssertion *IdentityAssertion `json:"identityAssertion,omitempty"`
 
 	// Marker is the session-type marker this session's create carried and
-	// the resolved name ended in (colab-fleet #165; see SessionSpec.Marker).
+	// the resolved name ended in (muster #165; see SessionSpec.Marker).
 	// It is a fact the driver recorded at the instant it applied the marker,
 	// so a consumer grouping sessions by type reads it here instead of
 	// running a suffix test on Name — the test #90 and #96 measured as
@@ -517,7 +517,7 @@ type Session struct {
 	Marker string `json:"marker,omitempty"`
 
 	// Labels are the caller-supplied facts attached to this session, at
-	// create or later through POST …/labels (colab-fleet #153; see
+	// create or later through POST …/labels (muster #153; see
 	// SessionSpec.Labels). They are stored by the service, not observed by
 	// the driver, which is why they survive a rename.
 	//

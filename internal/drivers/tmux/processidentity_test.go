@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // fakePS stands in for the OS process table `processStartedAt` queries via

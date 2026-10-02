@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/state"
 )
 
 // #11: a delivery this driver made and could not confirm used to live only in
@@ -130,7 +130,7 @@ func TestCloseForgetsAStrandedRecord(t *testing.T) {
 	}
 }
 
-// colab-fleet #112: the three-case refusal replacing the single "text a
+// muster #112: the three-case refusal replacing the single "text a
 // human typed" answer, and the ReplaceIfStranded door out of it.
 
 // Case 3: the composer holds THIS driver's own stranded delivery, the new
@@ -375,7 +375,7 @@ func TestReplaceIfStrandedRefusesWhenComposerDigestNoLongerMatches(t *testing.T)
 	}
 }
 
-// colab-fleet #135: resumeIfStranded/replaceIfStranded should discard-then-
+// muster #135: resumeIfStranded/replaceIfStranded should discard-then-
 // send internally instead of dead-ending at §2.4 — the shape Case 5 above
 // (TestSendStillRefusesGenuineThirdPartyTextWithOriginalWording) keeps
 // unchanged for a bare send with NEITHER flag set. These exercise the two

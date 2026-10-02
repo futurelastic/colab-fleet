@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// The runtime's feedback-draft card (colab-fleet #215). The geometry that
+// The runtime's feedback-draft card (muster #215). The geometry that
 // matters is measured, not modelled: a fleet-created pane is 24 rows by 80, the
 // card is seven of them, and what is left shows the composer's opening rule and
 // its ❯ row with nothing below — no closing rule, no mode row.
@@ -212,7 +212,7 @@ func TestFeedbackCardFooterMustBeExact(t *testing.T) {
 		{"a missing item", cardOpts{keyRow: "1 to review · 0 to dismiss"}},
 		{"a queued suffix with no count", cardOpts{keyRow: feedbackFooter + " · more queued"}},
 		{"a queued suffix that is not a number", cardOpts{keyRow: feedbackFooter + " · +x more queued"}},
-		// The card's other states are recognised now (colab-fleet#217) — but only
+		// The card's other states are recognised now (muster#217) — but only
 		// as whole texts. Their tails alone, or the question boxed as if it were
 		// a status, are not any of the four.
 		{"the error's tail alone", cardOpts{keyRow: "1 to review & retry · Esc to dismiss"}},
@@ -496,7 +496,7 @@ func TestDiscardRefusesWhenAFeedbackCardHidesTypedText(t *testing.T) {
 	if n := d.Counters()[counterFeedbackCardRefusedDiscard]; n != 1 {
 		t.Errorf("%s = %d, want 1", counterFeedbackCardRefusedDiscard, n)
 	}
-	// An empty row is refused too (colab-fleet#216). This used to answer "already
+	// An empty row is refused too (muster#216). This used to answer "already
 	// clear" — #215 read "nothing on the row" as "nothing to discard" — but the
 	// composer's closing rule is below the pane and what is under the row cannot
 	// be read, which is what a clipped composer is: the same answer the verb

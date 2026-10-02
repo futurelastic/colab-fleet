@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // #73: a real capture (#70) showed the control-channel label sharing the
@@ -134,7 +134,7 @@ func TestRedactRuleLineWithLabelIsAFixedPoint(t *testing.T) {
 	}
 }
 
-// colab-fleet#176: a multi-select question's checkbox glyphs and its dialog
+// muster#176: a multi-select question's checkbox glyphs and its dialog
 // tab bar are what corroborate the shape, so redaction keeps them — and only
 // them: the labels and question headers are the agent's words.
 func TestRedactKeepsMultiSelectChromeAndNothingElse(t *testing.T) {
@@ -186,7 +186,7 @@ func TestRedactKeepsTheExternalImportsOptionsSoARedactedDialogStillClassifies(t 
 	}
 }
 
-// colab-fleet#215: the card's key row is the runtime's own vocabulary and is
+// muster#215: the card's key row is the runtime's own vocabulary and is
 // what a replay recognises the card by; every other row between its borders is
 // the agent's draft. The redacted screen must classify exactly as the raw one.
 func TestRedactCaptureKeepsTheFeedbackCardShapeAndNothingOfTheDraft(t *testing.T) {

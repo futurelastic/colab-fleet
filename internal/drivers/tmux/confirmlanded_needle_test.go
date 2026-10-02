@@ -23,7 +23,7 @@ func sequentialFiller(n int) string {
 	return b.String()[:n]
 }
 
-// colab-fleet#143, mechanism 1: `confirmLanded` used to take a needle from
+// muster#143, mechanism 1: `confirmLanded` used to take a needle from
 // the raw payload's first 24 bytes regardless of line breaks. When the
 // payload has more than one line and the first line is under 24 characters,
 // that needle embeds a raw '\n' — but the rendered composer indents
@@ -86,7 +86,7 @@ func TestConfirmLandedNeedleNeverStraddlesTheNewline(t *testing.T) {
 	}
 }
 
-// colab-fleet#143, mechanism 2: a composer taller than confirmLanded's `-S
+// muster#143, mechanism 2: a composer taller than confirmLanded's `-S
 // -6` capture scrolls to keep the cursor — parked at the end of a fresh
 // paste — in view, so the HEAD of a long single-line payload can end up in a
 // row the runtime never painted at all. No capture depth recovers a row
@@ -158,7 +158,7 @@ func TestConfirmLandedMatchesTheTailWhenTheHeadScrolledOut(t *testing.T) {
 	}
 }
 
-// colab-fleet#145: a genuinely multi-line payload — real newlines, not a
+// muster#145: a genuinely multi-line payload — real newlines, not a
 // single line wrapped by the terminal — can lose its FIRST line entirely to
 // the same scroll-to-follow-the-cursor behavior #143 fixed for a single
 // wrapped line. A composer taller than the `-S -6` capture window scrolls to

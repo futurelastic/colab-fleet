@@ -1,6 +1,6 @@
 # Mechanical checks against these specs
 
-This file exists because colab-fleet issue #57 found that a document
+This file exists because muster issue #57 found that a document
 declaring itself normative was trusted over the code, and was wrong: §2.3's
 `SessionState` block named four fields; the Go type carried ten. The
 specific fields are fixed (see the type blocks themselves and their inline
@@ -91,7 +91,7 @@ deliberately, not accidentally, left out of the runtime-neutral model. What it
 holds at any given moment is a fact about the source, not this document — read
 `specFieldExceptions` in `spec_fields_test.go` for the current membership. Its
 one occupant to date, `SessionState.screenDigest`, was removed when
-colab-fleet issue #59 ruled on the open question it cited — whether
+muster issue #59 ruled on the open question it cited — whether
 `screenDigest` (and the `keys` operation it corroborates) belongs in the model
 at all. #59 chose capability-gated promotion over permanent wire-only status,
 so the field now has a normative block of its own (§2.3, gated by
@@ -107,7 +107,7 @@ terms.
 
 ## The compat report against `compat.md` (`internal/compat` and `internal/drivers/tmux`)
 
-`colab-fleetd compat` prints a versioned report, and [`../compat.md`](../compat.md)
+`muster compat` prints a versioned report, and [`../compat.md`](../compat.md)
 is its published contract. Six tests hold the two together, so the contract cannot
 drift from the code the way §2.3 once drifted from `SessionState`:
 

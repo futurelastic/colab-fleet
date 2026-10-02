@@ -30,8 +30,8 @@ import (
 	"sort"
 	"strings"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // Module delivers text into one session.
@@ -106,7 +106,7 @@ const (
 	SignalScreen     Signal = "screen"
 	// SignalModule: an external delivery module said the message was accepted
 	// (#185). The module reads the runtime's own record of the turn, so this is
-	// the same standard of evidence as SignalTranscript, but colab-fleet did not
+	// the same standard of evidence as SignalTranscript, but muster did not
 	// see the record itself and does not claim to.
 	SignalModule Signal = "module"
 )

@@ -15,7 +15,7 @@ import (
 // this package's other sentinel errors already give their callers.
 var errBracketPasteUnavailable = errors.New("tmux: bracketed paste is not available on this pane")
 
-// Terminal path v2 — colab-fleet round-1 research answered here (see the
+// Terminal path v2 — muster round-1 research answered here (see the
 // scratch research this prototype was built against; every item below is
 // keyed to that research's own D-numbering so a reviewer can trace fix to
 // defect without re-deriving it):
@@ -151,7 +151,7 @@ func (d *Driver) pasteBracketed(ctx context.Context, paneID, text string) error 
 		d.counters.incr(counterBracketPasteFlagOff)
 		return fmt.Errorf("%w: this pane's occupant has not asked the terminal for bracketed "+
 			"paste mode (#{bracket_paste_flag} reads 0) — delivering literal newlines un-bracketed "+
-			"would be read as Enter keystrokes mid-message (colab-fleet round-1 D2); refusing "+
+			"would be read as Enter keystrokes mid-message (muster round-1 D2); refusing "+
 			"rather than falling back to the CR-converting paste this change replaces", errBracketPasteUnavailable)
 	}
 

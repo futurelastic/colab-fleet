@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
+	"github.com/futurelastic/muster/internal/drivers/tmux"
 )
 
-// TestInboxResolverCounters_ReachDriverCounters is colab-fleet #163: the two
+// TestInboxResolverCounters_ReachDriverCounters is muster #163: the two
 // index counters the deploy notes tell an operator to watch must be readable
 // through the terminal driver's Counters — the map GET /v1/health serves —
 // once wired the way main.go wires them, zero included.

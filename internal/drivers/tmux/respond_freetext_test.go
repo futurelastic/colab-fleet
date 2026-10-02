@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // ftQuestion is one question of a fakeFreeText dialog.
@@ -17,7 +17,7 @@ type ftQuestion struct {
 }
 
 // fakeFreeText models the runtime's numbered question dialog with its
-// free-text row, as measured live for colab-fleet#206. Every behaviour below
+// free-text row, as measured live for muster#206. Every behaviour below
 // was seen on a real screen; the two that a naive model would get wrong are
 // the ones the driver's design rests on:
 //

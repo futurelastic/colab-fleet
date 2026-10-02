@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// colab-fleet #165: `marker` is on the session wire only when a marker was
+// muster #165: `marker` is on the session wire only when a marker was
 // recorded, and is a separate field from labels — a label keyed "marker" is
 // just a label.
 func TestSessionMarkerWireShape(t *testing.T) {

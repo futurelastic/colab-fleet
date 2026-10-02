@@ -1,9 +1,9 @@
 package tmux
 
-import fleet "github.com/godx-jp/colab-fleet"
+import fleet "github.com/futurelastic/muster"
 
 // runtimeSurfaceFor turns a create record into a fleet.RuntimeSurfaceRef —
-// colab-fleet #85. The record's own SurfaceSeen is the latch this driver
+// muster #85. The record's own SurfaceSeen is the latch this driver
 // commits to once corroborated (see List's row loop, where it is set): once
 // true it is never read back to false here, which is what makes this an
 // identity answer rather than a health one (state.controlChannel is the

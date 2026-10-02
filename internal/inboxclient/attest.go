@@ -9,7 +9,7 @@ import "strings"
 // its own, so it can only assert a class when an operator-supplied index
 // tells it which one the target runs in.
 //
-// # Why a sender must assert this at all (colab-fleet #148)
+// # Why a sender must assert this at all (muster #148)
 //
 // The receiving runtime's inbound policy defaults to MODE PARITY. Reduced to
 // the two facts that matter here: a message whose sender asserts a class is
@@ -76,7 +76,7 @@ const openLookalikes = "<" +
 // Contract, pinned by a test: Attest(text, class, name) returns ok exactly
 // when class.Valid() && BodyAttestable(text), for every name. That is what
 // lets a caller say WHICH half refused a send without Attest growing a second
-// return value (colab-fleet #150, which counts the two apart before anyone
+// return value (muster #150, which counts the two apart before anyone
 // decides whether this rule is worth widening). A widened rule changes this
 // function, and every count keyed on it follows automatically.
 func BodyAttestable(text string) bool {
@@ -116,7 +116,7 @@ func BodyAttestable(text string) bool {
 // #148 records running at a 100% delivery rate. Reporting delivered without
 // attesting is the bug; falling back is the fix.
 //
-// # The sender name (colab-fleet #158)
+// # The sender name (muster #158)
 //
 // name, when non-empty, is emitted as the sender-name attribute, which the
 // receiver shows in place of an anonymous "peer". It passes through SenderName
@@ -129,7 +129,7 @@ func BodyAttestable(text string) bool {
 // order, and its rebuild compares bytes, so the order is load-bearing.
 //
 // A reply address is deliberately NOT asserted: this service has no socket
-// bound in the receiver's own namespace to receive one over (colab-fleet
+// bound in the receiver's own namespace to receive one over (muster
 // #120), and advertising an address that cannot be honoured would be a second
 // lie in the same envelope.
 func Attest(text string, class ModeClass, name string) (string, bool) {

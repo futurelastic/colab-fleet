@@ -10,11 +10,11 @@ import (
 	"time"
 	"unicode"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// SyncTitle implements driver.TitleSyncer (colab-fleet #222).
+// SyncTitle implements driver.TitleSyncer (muster #222).
 //
 // # Why this exists, in one sentence
 //
@@ -50,7 +50,7 @@ import (
 // ordinary send's OWN text, extended here to a fact neither of those
 // functions reads: not "did this text arrive as a turn", but "does the
 // runtime's own title now read this name". A local_command entry
-// confirming the /rename command itself ran (colab-fleet #187) is weaker
+// confirming the /rename command itself ran (muster #187) is weaker
 // evidence — it says the runtime accepted the command, not that its title
 // moved — so it is reported as `pending`, not `synced`, when a
 // custom-title entry has not (yet) followed it. What is NOT measured
@@ -177,7 +177,7 @@ type titleScanResult struct {
 	title    string
 	sawTitle bool
 	// ran is true once a "command" kind entry matching sent was seen
-	// (colab-fleet #187's local_command / <command-name> confirmation) —
+	// (muster #187's local_command / <command-name> confirmation) —
 	// evidence the runtime accepted and ran the /rename, independent of
 	// whether its title has moved yet.
 	ran bool
@@ -187,7 +187,7 @@ type titleScanResult struct {
 // "/rename "+name delivery: the runtime's own custom-title entries (the
 // signal SyncTitle needs to report `synced`) and, as a weaker, secondary
 // signal, whether a local_command/<command-name> entry confirms the
-// command itself ran (colab-fleet #187) — evidence the command was
+// command itself ran (muster #187) — evidence the command was
 // accepted even when no custom-title has followed it yet, which SyncTitle
 // reports as `pending` rather than a bare, unexplained non-confirmation.
 //

@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/state"
 )
 
-// Tests for colab-fleet #179: a bounded record of sessions that ended.
+// Tests for muster #179: a bounded record of sessions that ended.
 // They reuse labels_test.go's labelDriver, which already models everything
 // needed here: create, list, close, rename, a recycled id, and a session
 // vanishing out from under the service.
@@ -100,7 +100,7 @@ func TestClosed_SurvivesRestartWithStartAndEnd(t *testing.T) {
 	}
 }
 
-// colab-fleet #235: a driver that captured a session's own exit before
+// muster #235: a driver that captured a session's own exit before
 // removing it is tombstoned with that exit's status and screen path, exact
 // like a close — never the generic "absent" a driver with no such visibility
 // would be left to report — and the screen's own content never reaches the
@@ -314,7 +314,7 @@ func TestClosed_PrematureCloseIsWithdrawn(t *testing.T) {
 	}
 }
 
-// colab-fleet #236: an exit's screen file follows the same retention as the
+// muster #236: an exit's screen file follows the same retention as the
 // tombstone that names it. Aging the tombstone out on a later write (list()
 // itself only filters a read — the comment on pruneLocked/list — so this
 // forces an actual prune by closing a second session once the clock has
@@ -382,7 +382,7 @@ func listMustNotContain(t *testing.T, srv *httptest.Server, id string) []fleet.C
 	return matches
 }
 
-// colab-fleet #236: a file left in exit-screens/ with no closed-session
+// muster #236: a file left in exit-screens/ with no closed-session
 // record naming it — a save that happened just before a crash prevented the
 // tombstone from ever being written, or a record pruned by an older build
 // that predates the file-aware prune — is removed at the next start-up.

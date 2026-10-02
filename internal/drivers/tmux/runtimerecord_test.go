@@ -149,7 +149,7 @@ func turnLine(ts string) string {
 	return `{"type":"system","subtype":"turn_duration","timestamp":"` + ts + `"}`
 }
 
-// colab-fleet #111: turnsSince counts turn_duration markers strictly after
+// muster #111: turnsSince counts turn_duration markers strictly after
 // `since`, ignoring anything at or before it.
 func TestTurnsSince_CountsOnlyMarkersAfterTheDelivery(t *testing.T) {
 	since := time.Date(2026, 8, 19, 13, 40, 0, 0, time.UTC)
@@ -224,7 +224,7 @@ func TestTurnsSince_MissingFileIsUnresolvable(t *testing.T) {
 	}
 }
 
-// colab-fleet #142: turnsSinceOffset is the incremental counterpart to
+// muster #142: turnsSinceOffset is the incremental counterpart to
 // turnsSince, used once a checkpoint (deliveryMark.Size) has already been
 // established by a prior successful count. Unlike turnsSince it needs no
 // honesty-window proof against a timestamp — `from` IS the boundary already

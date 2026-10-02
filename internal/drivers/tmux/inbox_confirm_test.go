@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/godx-jp/colab-fleet/internal/inboxclient"
+	"github.com/futurelastic/muster/internal/inboxclient"
 )
 
 // #184: what confirms an inbox delivery from the receiver's transcript, and —

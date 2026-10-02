@@ -6,7 +6,7 @@ type MachineInfo struct {
 	Self       bool        `json:"self"`
 	Status     SourceState `json:"status"`
 	ObservedAt Timestamp   `json:"observedAt"`
-	// Build identifies the code this machine is running — colab-fleet #121.
+	// Build identifies the code this machine is running — muster #121.
 	// For self it is always known (fleet.SelfBuild(), read once at startup).
 	// For a peer it is whatever the last successful probe learned; absent a
 	// probe yet, or a peer driver that cannot report one, this reads as the
@@ -15,14 +15,14 @@ type MachineInfo struct {
 	// compare equal to anything, including itself.
 	Build Build `json:"build"`
 	// MaxInputBytes is the effective limit this machine enforces on
-	// `prompt` (create) and `text` (input) — colab-fleet #130, the same
+	// `prompt` (create) and `text` (input) — muster #130, the same
 	// ask-do-not-infer move #121 made for Build above: a caller sizing a
 	// dispatch brief should be able to ask rather than discover the
 	// boundary by exceeding it, and that matters more once the value is
 	// machine-local and can differ across the fleet.
 	//
 	// For self this is always known and positive — every deployment has an
-	// effective limit, configured or defaulted (cmd/colab-fleetd/config.go,
+	// effective limit, configured or defaulted (cmd/muster/config.go,
 	// internal/service.Service.MaxInputBytes). For a peer it is whatever
 	// the last successful probe learned; absent a probe yet, or a peer
 	// driver that cannot report one, this reads as the zero value.
@@ -35,7 +35,7 @@ type MachineInfo struct {
 	MaxInputBytes int `json:"maxInputBytes,omitempty"`
 	// Peer is this service's own standing on that machine — whether it lists
 	// this service back and what it grants the credential this service
-	// presents there (colab-fleet #154). Federation is two hand-kept halves
+	// presents there (muster #154). Federation is two hand-kept halves
 	// of configuration, and before this the only way to learn they disagreed
 	// was a 403 at the moment of need.
 	//
@@ -45,7 +45,7 @@ type MachineInfo struct {
 }
 
 // PeerStanding is this service's registration on one machine, as that
-// machine itself reported it (colab-fleet #154).
+// machine itself reported it (muster #154).
 //
 // It is gathered on the peer probe that already learns build and
 // maxInputBytes, by asking the peer's whoami about the credential this

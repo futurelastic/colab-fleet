@@ -58,13 +58,13 @@ type ClosedSession struct {
 
 	// Exit is present only for ClosedByExit: what a driver captured about the
 	// session's own process exiting, in the same pass that removed the
-	// session (colab-fleet #235). Absent for every other ClosureKind.
+	// session (muster #235). Absent for every other ClosureKind.
 	Exit *SessionExit `json:"exit,omitempty"`
 }
 
 // SessionExit is what a driver captured about a session's own process
 // exiting on its own, before the driver removed the session that held it
-// (colab-fleet #235). Never guessed — present only when a driver capable of
+// (muster #235). Never guessed — present only when a driver capable of
 // it (an ExitReporter) actually observed the pane before it was gone.
 type SessionExit struct {
 	// Status is the pane's own process exit status, as the runtime reported
@@ -80,7 +80,7 @@ type SessionExit struct {
 	// the pane's last lines at exit — never the content itself. Pane text can
 	// hold anything the runtime printed, and putting it on the API is a new
 	// data-exposure surface this issue deliberately does not open (see the
-	// ruling on colab-fleet #235); an operator who needs it remotely reads
+	// ruling on muster #235); an operator who needs it remotely reads
 	// the file on that machine, or a future issue adds a route for it.
 	// Empty when nothing was captured (an unconfigured store, or the capture
 	// itself failed) — absent evidence, never an empty string standing in
@@ -101,7 +101,7 @@ const (
 	ClosedByAbsent ClosureKind = "absent"
 	// ClosedByExit: a driver capable of it (ExitReporter) captured the
 	// session's own process exit — status and last screen — before removing
-	// the session, and reported it in the same pass (colab-fleet #235).
+	// the session, and reported it in the same pass (muster #235).
 	// ClosedAt is exact, like ClosedByClose: it is the moment the driver
 	// captured the pane, not an upper bound inferred from a later listing.
 	ClosedByExit ClosureKind = "exit"

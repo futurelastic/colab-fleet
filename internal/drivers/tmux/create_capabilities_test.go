@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // A supervisor's sessions carry three things this API could not express, and a
@@ -60,7 +60,7 @@ func TestStagedEnvIsAppliedToTheSessionAndThenUnlinked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, envFile, "",
+	out, err := exec.Command(sh, "-c", envRecordScript, "muster", record, envFile, "",
 		"/bin/sh", "-c", `printf '%s' "$FLEET_TEST_APPLIED"`).CombinedOutput()
 	if err != nil {
 		t.Fatalf("wrapper failed: %v (%s)", err, out)
@@ -160,7 +160,7 @@ func TestResumeAndPermissionModeReachTheAgentArgv(t *testing.T) {
 // would otherwise mean "run the agent with arguments of my choosing" — most
 // pointedly, the very permission mode that is gated behind a second grant.
 //
-// colab-fleet #84: this guard used to silently drop the flag and let the
+// muster #84: this guard used to silently drop the flag and let the
 // create succeed, with the response echoing the pin back as if it had been
 // applied — a caller had no way to notice the substitution. Now the whole
 // create is refused before any argv is built, the same as an equally
@@ -209,7 +209,7 @@ func TestFlagShapedResumeIsRefusedRatherThanDropped(t *testing.T) {
 	}
 }
 
-// colab-fleet #224: the mirror of TestResumeAndPermissionModeReachTheAgentArgv
+// muster #224: the mirror of TestResumeAndPermissionModeReachTheAgentArgv
 // for a create that asks to START a conversation rather than continue one.
 func TestConversationIdReachesTheAgentArgv(t *testing.T) {
 	f := twoSessions()

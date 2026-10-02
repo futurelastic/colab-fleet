@@ -231,7 +231,7 @@ func TestSeedAllReportsAMissingRootWithoutFailingTheOthers(t *testing.T) {
 // A full SeedAll pass over a root that is itself a symlink once found
 // nothing under it at all: filepath.WalkDir opens its root argument with
 // os.Lstat, so a symlinked root arrives at its own callback as "not a
-// directory" and the walk never descends past it (colab-fleet #213).
+// directory" and the walk never descends past it (muster #213).
 // discoverIslands now resolves each configured root once, at construction,
 // and walks that resolved form, so a full pass finds what SeedPath's
 // per-directory entry point already could.

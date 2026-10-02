@@ -5,11 +5,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
-// colab-fleet #158: the machine in a sender label is stamped by the service,
+// muster #158: the machine in a sender label is stamped by the service,
 // never taken from the caller. These cases are the whole rule.
 func TestStampSender(t *testing.T) {
 	svc := New("entrybox")

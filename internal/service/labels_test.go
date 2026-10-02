@@ -15,14 +15,14 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/drivers/stub"
+	"github.com/futurelastic/muster/internal/state"
 )
 
 // labelDriver is the smallest driver that behaves like a substrate for
-// colab-fleet #153's purposes: sessions exist after Create, carry a
+// muster #153's purposes: sessions exist after Create, carry a
 // startedAt, appear in List, can be renamed, closed, or — out from under the
 // service — replaced by a new session under the same id.
 type labelDriver struct {
@@ -34,7 +34,7 @@ type labelDriver struct {
 
 	// pendingExits is exitVia's queue, drained by DrainExits — the fake's
 	// stand-in for what a real ExitReporter driver's reapExited captures
-	// (colab-fleet #235).
+	// (muster #235).
 	pendingExits []driver.CapturedExit
 }
 
@@ -116,7 +116,7 @@ func (d *labelDriver) vanish(id string) {
 	delete(d.sessions, id)
 }
 
-// exitVia simulates an ExitReporter driver (colab-fleet #235): removes the
+// exitVia simulates an ExitReporter driver (muster #235): removes the
 // session the way a real reapExited already killed it by the time anyone
 // asks, and queues its captured exit for the next DrainExits.
 func (d *labelDriver) exitVia(id string, status int, screenPath string) {
@@ -130,7 +130,7 @@ func (d *labelDriver) exitVia(id string, status int, screenPath string) {
 }
 
 // DrainExits implements driver.ExitReporter, so labelDriver can stand in for
-// one in tests (colab-fleet #235).
+// one in tests (muster #235).
 func (d *labelDriver) DrainExits() []driver.CapturedExit {
 	d.mu.Lock()
 	defer d.mu.Unlock()

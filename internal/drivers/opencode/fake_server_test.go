@@ -49,7 +49,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 	t.Helper()
 	f := &fakeServer{
 		t:        t,
-		username: "colab-fleet",
+		username: "muster",
 		password: "test-credential-do-not-log",
 		sessions: map[string]wireSession{},
 		statuses: statusMap{},

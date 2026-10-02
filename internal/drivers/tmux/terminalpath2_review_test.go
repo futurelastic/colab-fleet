@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // This file holds the regression tests for the second round of review
-// findings against terminal-path-v2 (colab-fleet round-1 D1-D7 prototype).
+// findings against terminal-path-v2 (muster round-1 D1-D7 prototype).
 // Each test names, in its own doc comment, the finding it reproduces and
 // proves fixed. See terminalpath2.go / terminalpath2_transcript.go /
 // terminalpath2_lock.go / inputguard.go for the fixes themselves.

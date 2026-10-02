@@ -7,7 +7,7 @@ import (
 )
 
 // This file reads the two things a question dialog paints that the rest of the
-// classifier had no notion of (colab-fleet#204): a preview pane drawn beside
+// classifier had no notion of (muster#204): a preview pane drawn beside
 // the option list, and the header row above the question — a tab bar, or a
 // single chip.
 //
@@ -369,17 +369,17 @@ func sgrHighlightAfter(params string, on bool) bool {
 // carry, because they are how THIS runtime takes an answer, not what is asked.
 type menuShape struct {
 	// unnumbered: the options carry no numbers, so a digit does nothing
-	// (colab-fleet#171).
+	// (muster#171).
 	unnumbered bool
 	// preview: the options are drawn beside a preview pane, and there a digit
-	// only MOVES the highlight — Enter is what commits it (colab-fleet#204).
+	// only MOVES the highlight — Enter is what commits it (muster#204).
 	preview bool
 	// tab is where the current question sits in a tabbed dialog.
 	tab tabPosition
 	// shortcuts is the key that answers each option, aligned with the options,
 	// for a prompt whose keys are not its options' positions: the feedback-draft
 	// card offers ["review","send","dismiss"] and answers them with 1, 2 and 0
-	// (colab-fleet#215). Nil for every menu, where a digit is the option's
+	// (muster#215). Nil for every menu, where a digit is the option's
 	// number.
 	shortcuts []string
 }

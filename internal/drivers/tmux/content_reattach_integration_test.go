@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // privateMux starts a multiplexer server of this test's own and puts two

@@ -28,7 +28,7 @@ func TestOutcome_RejectsUnknownValue(t *testing.T) {
 	}
 }
 
-// colab-fleet #86: a pending delivery must round-trip with Outcome absent —
+// muster #86: a pending delivery must round-trip with Outcome absent —
 // never asserting an outcome that has not resolved. WaitingOn is left
 // unclassified here on purpose: this test is about Outcome's own null
 // semantics, and an empty WaitingOn keeps the wire shape exactly what #86
@@ -58,7 +58,7 @@ func TestPromptDelivery_PendingRoundTrips(t *testing.T) {
 	}
 }
 
-// colab-fleet #126: WaitingOn round-trips alongside Evidence while a
+// muster #126: WaitingOn round-trips alongside Evidence while a
 // delivery is pending, and the wire carries it under its own name rather
 // than folded into evidence's prose.
 func TestPromptDelivery_WaitingOnRoundTrips(t *testing.T) {

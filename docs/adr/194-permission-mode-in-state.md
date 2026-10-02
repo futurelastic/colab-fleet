@@ -89,7 +89,7 @@ apart; and it is written **once, when the session is launched**, so it goes stal
 first press of the key this field exists to serve. It answers a different question — what
 posture a message must be attested against — and stays the source for that.
 
-### `colab-fleetd compat`: `F-MODE`
+### `muster compat`: `F-MODE`
 
 A candidate build whose indicator wording changes must not silently start reporting
 `unknown` in production, so the compat report gains `F-MODE`. Because two wordings cannot

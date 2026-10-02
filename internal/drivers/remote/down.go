@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// Peer down state (colab-fleet #237).
+// Peer down state (muster #237).
 //
 // # The defect this closes
 //

@@ -6,11 +6,11 @@ import (
 	"os"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/compat"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/compat"
 )
 
-// The rename probe and its check (colab-fleet #227, split from #223 item 4).
+// The rename probe and its check (muster #227, split from #223 item 4).
 //
 // #222 built SyncTitle, which brings the runtime's OWN title to a session's
 // new name by delivering "/rename <name>" the way a human would type it, and

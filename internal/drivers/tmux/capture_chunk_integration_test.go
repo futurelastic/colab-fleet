@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// TestLiveEnumerationSurvivesTheCommandLengthWall is colab-fleet#141's own
+// TestLiveEnumerationSurvivesTheCommandLengthWall is muster#141's own
 // reproduction, run against a REAL multiplexer server rather than a mock.
 //
 // # What #141 reported

@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // ProcessIdentity is one OS process, resolved live and never cached across a
-// call (colab-fleet #116). It is the (pid, start-time) analogue of the
+// call (muster #116). It is the (pid, start-time) analogue of the
 // (Pane, Created) pairing docs/adr/97-identity-in-record.md already uses for
 // the SESSION-NAME axis, and for the identical reason: a bare PID is a
 // number the kernel recycles, so PID alone cannot tell "the process this
@@ -48,7 +48,7 @@ var ErrProcessIdentityUnresolved = errors.New(
 
 // counterProcessIdentityUnresolved is #116's own coverage signal, the same
 // idiom counterIdentityContested already established for a different axis
-// of identity (tmux.go, colab-fleet #97): a rate, not a one-off log line,
+// of identity (tmux.go, muster #97): a rate, not a one-off log line,
 // because a coverage gap that appears once and is never checked again is
 // indistinguishable from one that never happened. Incremented from both
 // ResolveProcessIdentity (a single session a caller asked about) and
@@ -72,7 +72,7 @@ const psStartTimeLayout = "Mon Jan _2 15:04:05 2006"
 // psStartTimeLayout carries no zone field, so this parses "as if local" —
 // correct only for text genuinely produced by `ps` on THIS machine, in the
 // zone this process is currently running in. It is not a general-purpose
-// parser for "a start time from somewhere else": colab-fleet #146 originally
+// parser for "a start time from somewhere else": muster #146 originally
 // proposed reusing it to parse the inbox index's StartedAt field too, on the
 // theory that a plain field copy compared exactly needed no format
 // conversion or clock reasoning. #147 measured that reasoning wrong — the
@@ -80,7 +80,7 @@ const psStartTimeLayout = "Mon Jan _2 15:04:05 2006"
 // zone, so parsing its output with time.Local silently produced the wrong
 // instant on every call. The index now carries an RFC 3339 (zone-bearing)
 // timestamp instead and no longer calls this function; see
-// cmd/colab-fleetd/inboxresolver.go's inboxIndexEntry.StartedAt doc comment.
+// cmd/muster/inboxresolver.go's inboxIndexEntry.StartedAt doc comment.
 // Reach for this function only where the source text is actually `ps
 // -o lstart=` output (or an exact stand-in for it, as in this package's own
 // tests) — never for a value that may have crossed a process, a machine, or
@@ -89,7 +89,7 @@ func ParseProcessStartTime(s string) (time.Time, error) {
 	return time.ParseInLocation(psStartTimeLayout, s, time.Local)
 }
 
-// ResolveProcessIdentity answers colab-fleet #116's first requirement:
+// ResolveProcessIdentity answers muster #116's first requirement:
 // resolution from an authoritative source at send time, never a cached or
 // inferred map. Every call re-enumerates the multiplexer AND re-queries the
 // OS process table — nothing here is read from this driver's own memory of
@@ -142,7 +142,7 @@ func (d *Driver) resolveProcessIdentityRow(ctx context.Context, ref fleet.Sessio
 	return ProcessIdentity{}, paneRow{}, fmt.Errorf("%w: %q: no such session", ErrProcessIdentityUnresolved, ref.ID)
 }
 
-// VerifyProcessIdentity answers colab-fleet #116's second requirement: a
+// VerifyProcessIdentity answers muster #116's second requirement: a
 // verification step BEFORE the write, not after. want is a ProcessIdentity
 // ResolveProcessIdentity already returned; this re-queries the OS process
 // table for that exact PID right now and confirms the process still
@@ -177,7 +177,7 @@ func (d *Driver) VerifyProcessIdentity(ctx context.Context, want ProcessIdentity
 	return nil
 }
 
-// ProcessIdentityCoverage answers colab-fleet #116's fourth requirement: do
+// ProcessIdentityCoverage answers muster #116's fourth requirement: do
 // sessions this driver tracks always appear wherever the authoritative
 // process mapping lives? total is every live (non-dead) session this
 // enumeration found; unresolved names the ones among them
@@ -188,7 +188,7 @@ func (d *Driver) VerifyProcessIdentity(ctx context.Context, want ProcessIdentity
 //
 // This is a query, not a background job: nothing in this package schedules
 // it. A caller wanting a continuous signal runs it on an interval, the same
-// way cmd/colab-fleetd already schedules Driver.SeedTrustRoots; wiring that
+// way cmd/muster already schedules Driver.SeedTrustRoots; wiring that
 // schedule is left to whoever picks that up, deliberately, so this change
 // stays inside internal/drivers/tmux (see the ADR's "why no scheduling"
 // note).

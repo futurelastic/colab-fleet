@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// colab-fleet#156: the batched capture's TIME wall.
+// muster#156: the batched capture's TIME wall.
 //
 // Every test here runs on the REAL clock with a short declared deadline,
 // unlike newTestDriver's fixed clock. The behaviour under test is how
@@ -191,7 +191,7 @@ func TestCaptureChunkStuckIsRetriedOnceWithinCallBudget(t *testing.T) {
 // to run past the call's declared deadline.
 //
 // That last property used to be asserted as "List returned within the
-// deadline plus 150 ms", by wall clock (colab-fleet#186). It failed once
+// deadline plus 150 ms", by wall clock (muster#186). It failed once
 // during a full -race run on a loaded machine, then passed on the rerun and
 // 8 of 8 times in isolation. Measured on a quiet machine, List takes about
 // 400 ms (one chunk) and 510 ms (several) against that 750 ms bound, and its

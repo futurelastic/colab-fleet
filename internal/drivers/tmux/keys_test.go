@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // A dialog this driver's classifier does not recognise: no options it can
@@ -44,7 +44,7 @@ func digestOf(t *testing.T, d *Driver, id string) string {
 // composerDigestOf reads the composer-scope digest a caller sees when the
 // composer holds unsent text — the value GET publishes as ComposerDigest,
 // not ScreenDigest, and the one keys.go's composer-holds-text branch now
-// corroborates against (colab-fleet#127).
+// corroborates against (muster#127).
 func composerDigestOf(t *testing.T, d *Driver, id string) string {
 	t.Helper()
 	st, err := d.State(context.Background(), testCaller, fleet.SessionRef{Machine: "testbox", ID: id})
@@ -196,7 +196,7 @@ func TestKeysRefusesWhenTheComposerHoldsUnsentText(t *testing.T) {
 	f.captures["%1"] = fixtureUnsent
 	d := newTestDriver(f)
 	// composerDigestOf, not digestOf — this is exactly the value a real
-	// caller reads off GET while the composer holds text (colab-fleet#127:
+	// caller reads off GET while the composer holds text (muster#127:
 	// keys used to reject this and only accept the whole-screen digest).
 	want := composerDigestOf(t, d, "alpha💬")
 
@@ -214,7 +214,7 @@ func TestKeysRefusesWhenTheComposerHoldsUnsentText(t *testing.T) {
 	}
 }
 
-// colab-fleet#134: a composer taller than this driver's capture window has
+// muster#134: a composer taller than this driver's capture window has
 // no composer-scope digest to corroborate (composerText returns "" for it,
 // same as an absent composer) — so this falls into the SCREEN-scope digest
 // branch, same as TestKeysDeliversToAnUnrecognisedDialogAndConfirmsTheRedraw,
@@ -254,7 +254,7 @@ func TestKeysRefusesOnAClippedComposer(t *testing.T) {
 // are two different values whenever the composer holds text. A caller that
 // quotes the screen-scope digest back at a composer-holds-text session must
 // be refused for a corroboration mismatch that NAMES composerDigest — never
-// silently accepted, and never told to supply "screenDigest" (colab-fleet#127).
+// silently accepted, and never told to supply "screenDigest" (muster#127).
 func TestKeysNamesComposerDigestWhenComposerHoldsText(t *testing.T) {
 	f := dialogMux()
 	f.captures["%1"] = fixtureUnsent

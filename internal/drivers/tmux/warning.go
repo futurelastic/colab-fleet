@@ -3,10 +3,10 @@ package tmux
 import (
 	"strings"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// Reading the runtime's own footer notices off the pane (colab-fleet#230).
+// Reading the runtime's own footer notices off the pane (muster#230).
 //
 // # The detector IS #229's exclusion, run the other way round
 //

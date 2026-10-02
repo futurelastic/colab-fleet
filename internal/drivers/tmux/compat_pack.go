@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/godx-jp/colab-fleet/internal/compat"
+	"github.com/futurelastic/muster/internal/compat"
 )
 
 // compatPack is the directory `--pack` writes: the raw evidence each check

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/state"
 )
 
 func stateDriver(t *testing.T, f *fakeMux, dir string) *Driver {
@@ -52,7 +52,7 @@ func TestIdempotencyKeysSurviveARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// DeepEqual, not !=: colab-fleet #84/#85/#86 added pointer-typed fields
+	// DeepEqual, not !=: muster #84/#85/#86 added pointer-typed fields
 	// (Pins, RuntimeSurface, PromptDelivery) that are freshly allocated on
 	// every call even for identical content — a struct-identity != would
 	// spuriously fail on two independently-built Sessions describing the
@@ -145,7 +145,7 @@ func TestPendingAdoptionCorroboratesMoreThanTheName(t *testing.T) {
 	}
 }
 
-// colab-fleet #234: a replay whose recorded session has since ended must not
+// muster #234: a replay whose recorded session has since ended must not
 // come back as an ordinary 201 — that was indistinguishable from a live
 // create succeeding, so a caller checking only the status code never learned
 // its session was gone. Lucy's ruling (option a): 409, naming the ended

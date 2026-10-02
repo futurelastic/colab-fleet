@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
-	"github.com/godx-jp/colab-fleet/internal/inboxclient"
+	"github.com/futurelastic/muster/internal/drivers/tmux"
+	"github.com/futurelastic/muster/internal/inboxclient"
 )
 
 // referenceStartedAt is one fixed instant, in the shape ProcessIdentity.StartedAt
 // actually carries at runtime (ResolveProcessIdentity's ps-lstart parse, via
 // tmux.ParseProcessStartTime — see that function's own doc comment). Fixtures
 // below render the SAME instant as an inbox-index entry's StartedAt in RFC
-// 3339 (referenceStartedAtRFC3339), matching colab-fleet #147's fixed
+// 3339 (referenceStartedAtRFC3339), matching muster #147's fixed
 // contract: the identity side keeps parsing the process table exactly as it
 // always did; only the index side's wire format changed.
 var referenceStartedAt = mustParseStartTime("Wed Aug 26 10:15:23 2026")
@@ -37,7 +37,7 @@ func mustParseStartTime(s string) time.Time {
 }
 
 // TestFileInboxResolver_EntryPresent_ResolvesAddress proves the acceptance
-// criterion colab-fleet #122 states for the half that has an inbox: a
+// criterion muster #122 states for the half that has an inbox: a
 // target with an index entry resolves to the address and token that entry
 // names, with the caller told ok=true. #146: the entry's StartedAt now has
 // to match the identity passed in, and the token is read from the separate
@@ -82,7 +82,7 @@ func TestFileInboxResolver_DefaultsNetworkToUnix(t *testing.T) {
 	}
 }
 
-// TestFileInboxResolver_EntryAbsent_FallsBackCleanly proves colab-fleet
+// TestFileInboxResolver_EntryAbsent_FallsBackCleanly proves muster
 // #122's other acceptance half: a target with no index entry answers
 // ok=false, err=nil — capability-absent, not a refusal and not an error —
 // exactly the shape InboxResolver's own doc comment (inbox.go) requires so
@@ -106,7 +106,7 @@ func TestFileInboxResolver_EntryAbsent_FallsBackCleanly(t *testing.T) {
 }
 
 // TestFileInboxResolver_StartTimeMismatch_CapabilityAbsentNotRefusal proves
-// colab-fleet #146's core fix: an index row that names a start time other
+// muster #146's core fix: an index row that names a start time other
 // than the one just resolved describes a DIFFERENT run of this pid (the
 // process #146 filed against — the kernel recycled a pid the writer had not
 // caught up on). This must never be treated as the target refusing; it
@@ -142,7 +142,7 @@ func TestFileInboxResolver_StartTimeMismatch_CapabilityAbsentNotRefusal(t *testi
 	}
 }
 
-// TestFileInboxResolver_RFC3339CrossZoneMatch proves colab-fleet #147's
+// TestFileInboxResolver_RFC3339CrossZoneMatch proves muster #147's
 // actual fix: an index entry whose StartedAt is rendered in a DIFFERENT zone
 // than the one ProcessIdentity.StartedAt happens to carry must still match,
 // because both are now compared as real instants (RFC 3339 parses its own
@@ -179,7 +179,7 @@ func TestFileInboxResolver_RFC3339CrossZoneMatch(t *testing.T) {
 	}
 }
 
-// TestFileInboxResolver_TokenReadFreshFromItsOwnLocation proves colab-fleet
+// TestFileInboxResolver_TokenReadFreshFromItsOwnLocation proves muster
 // #146 ruling 1: the index entry's token field is a LOCATOR, and the
 // resolver reads whatever that locator currently names — never a value
 // baked into the index file at write time. Changing the token file's
@@ -295,7 +295,7 @@ func TestFileInboxResolver_UnparseableStartTime_ReportsError(t *testing.T) {
 	}
 }
 
-// TestFileInboxResolver_OldPsLayoutStartTime_ReportsError locks in colab-fleet
+// TestFileInboxResolver_OldPsLayoutStartTime_ReportsError locks in muster
 // #147's own stated goal for a writer that has not been updated yet: a
 // pre-#147 index entry — StartedAt in the ps-lstart textual form, no zone —
 // must now fail loudly (a parse error, folded into capability-absent at the
@@ -353,7 +353,7 @@ func writeIndexEntry(t *testing.T, dir string, pid int, body string) {
 
 // writeToken writes (or overwrites) a fixed-name token file inside dir and
 // returns its path — standing in for the separate, machine-local credential
-// source colab-fleet #146 ruling 1 asks the index to point at rather than
+// source muster #146 ruling 1 asks the index to point at rather than
 // copy.
 func writeToken(t *testing.T, dir, value string) string {
 	t.Helper()
@@ -364,7 +364,7 @@ func writeToken(t *testing.T, dir, value string) string {
 	return path
 }
 
-// TestFileInboxResolver_ModeClassReachesTheAddress is colab-fleet #148's
+// TestFileInboxResolver_ModeClassReachesTheAddress is muster #148's
 // resolver half: the permission-mode class an operator's index writer records
 // has to arrive on the address, because it is the one fact that decides
 // whether the inbox path can be used at all.

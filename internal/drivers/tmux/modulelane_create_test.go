@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient"
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient/modtest"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/delivery/modclient"
+	"github.com/futurelastic/muster/internal/delivery/modclient/modtest"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/state"
 )
 
 // #185, create: what a session is offered, what it launches with, and what the

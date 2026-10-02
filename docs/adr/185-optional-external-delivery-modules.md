@@ -30,7 +30,7 @@ Three things make that harder than "call another function":
 ### A module is a child process speaking JSON lines
 
 One executable per module in a modules directory, named by the module.
-`colab-fleetd` starts `<dir>/<name> serve` as a same-user child with a minimal
+`muster` starts `<dir>/<name> serve` as a same-user child with a minimal
 environment, exchanges newline-delimited JSON over its stdio, and treats every
 byte it returns as untrusted input: a line is capped at 4 MiB (an oversize line
 is drained, never buffered), unknown fields are ignored, and nothing a response
@@ -54,7 +54,7 @@ order of preference. Empty or unset means none: no child is started, no state
 file is written, no field appears, and behaviour is byte-for-byte #180. Set the
 same value in every machine's service environment for a fleet-wide setting, and
 override it in one machine's own for a per-machine one. `FLEET_MODULES_DIR`
-overrides the directory (default `<prefix>/libexec/colab-fleet/modules`, where
+overrides the directory (default `<prefix>/libexec/muster/modules`, where
 prefix is the parent of the daemon binary's directory after symlinks resolve —
 set it explicitly when the binary is reached through a symlink).
 `FLEET_DELIVERY_MODULE_ENV` lists the only environment names forwarded to the
@@ -217,7 +217,7 @@ that is already installed.
 
 ### What this does not do
 
-- **`claudeVersion` is not passed to `prepare-launch`.** The spec says colab-fleet
+- **`claudeVersion` is not passed to `prepare-launch`.** The spec says muster
   should: it resolved the binary. It has not: the login shell resolves it, after
   this service is out of the picture, and a wrong answer would make a module
   refuse a runtime it could have served. The module's own `PATH` is the better

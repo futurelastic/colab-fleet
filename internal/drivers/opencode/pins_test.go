@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// colab-fleet #84: unlike the tmux driver, this substrate's own create
+// muster #84: unlike the tmux driver, this substrate's own create
 // response names the agent it started with, so a requested agent is
 // genuinely observable rather than only assumed — and Session.Agent
 // reports that observed value, never an echo of the request.

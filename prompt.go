@@ -81,7 +81,7 @@ const (
 	// every root it seeds was named by an operator before any session
 	// existed to ask about it, and it refuses (rather than guesses) a
 	// directory that resolves outside every configured root. See
-	// internal/trustseed's package doc for the mechanism and colab-fleet
+	// internal/trustseed's package doc for the mechanism and muster
 	// issue #47 for where this line was drawn.
 	PromptFolderTrust PromptKind = "folder-trust"
 	// PromptExternalImports: "allow external CLAUDE.md file imports" — the
@@ -89,7 +89,7 @@ const (
 	// instruction files its working directory chain loads import a file from
 	// OUTSIDE that directory. It holds a new session exactly as folder trust
 	// does, before any bridge or conversation id exists, so a host cannot even
-	// link to the session (colab-fleet #211). It is answered per project, and
+	// link to the session (muster #211). It is answered per project, and
 	// the runtime's own default highlight is the DECLINE, so an answer must go
 	// by index, never by the highlight.
 	//
@@ -155,7 +155,7 @@ const (
 	// screen may well be this one.
 	PromptBypassAcceptance PromptKind = "bypass-permissions"
 	// PromptFeedbackReview: the runtime's own card offering a feedback draft
-	// the agent wrote ("1 to review · 2 to send · 0 to dismiss"), colab-fleet
+	// the agent wrote ("1 to review · 2 to send · 0 to dismiss"), muster
 	// #215.
 	//
 	// # A notice, reported only while it is in the way
@@ -197,7 +197,7 @@ const (
 // configuration file read at boot) and from PromptFolderTrust (which asks
 // about the working directory, not a file the caller pointed at
 // separately). It has stranded sessions on two machines, prompt undelivered,
-// looking to an operator exactly like a broken spawn (colab-fleet #128).
+// looking to an operator exactly like a broken spawn (muster #128).
 //
 // It is deliberately NOT one of the kinds above. Every kind above was added
 // from the runtime's own OPTION text, read off an installed build — see

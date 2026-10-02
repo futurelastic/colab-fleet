@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// The external-imports question (colab-fleet #211) is answered by the same
+// The external-imports question (muster #211) is answered by the same
 // mechanism as the folder-trust one, so these tests pin what is NEW about it:
 // three keys per project instead of one, judged independently, counted apart
 // from the trust key, and bound by the same scope guards and race rule.
@@ -375,7 +375,7 @@ func TestBothPathVariantsOfASymlinkedRootGetTheImportsKeys(t *testing.T) {
 	// Through SeedPath, the create-time entry point. (A full SeedAll pass over
 	// this same symlinked root is covered separately, by
 	// TestSeedAllFindsARepositoryUnderASymlinkedRoot in trustseed_test.go —
-	// colab-fleet #213.)
+	// muster #213.)
 	s := New(statePath, home, []string{link})
 	if err := s.SeedPath(filepath.Join(link, "one")); err != nil {
 		t.Fatal(err)
@@ -385,7 +385,7 @@ func TestBothPathVariantsOfASymlinkedRootGetTheImportsKeys(t *testing.T) {
 }
 
 // NewTrustOnly is the compat harness's way to make a directory the runtime
-// trusts but has not been told it may import from (colab-fleet #212). It has to
+// trusts but has not been told it may import from (muster #212). It has to
 // write exactly the trust key — not the imports pair, and not the counter that
 // says the imports question was answered — while keeping every guard the
 // standing seeder has, because the file it writes is the runtime's own.

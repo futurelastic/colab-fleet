@@ -54,7 +54,7 @@ guarantee:**
    cursor's column directly. A press that **does** move resets the latch, so
    the ordinary blank-based choice governs again once progress resumes.
 
-`composerCursorRowBlank` returning `composerClipped` (colab-fleet#134: this
+`composerCursorRowBlank` returning `composerClipped` (muster#134: this
 driver could not read the row at all) is treated the same as non-blank —
 default to `End`+`C-u` and let the latch correct course if that guess is
 wrong. "Assume nothing is there to kill" is the direction that reproduces
@@ -65,7 +65,7 @@ if a substrate is ever measured not to bind `End`, the field fix is swapping
 this one constant to `"C-e"`, not re-deriving the mechanism.
 
 `clearComposer`'s `got=="" → cleared` success branch additionally requires
-`gotScan == composerFound` (colab-fleet#134's own requirement, landed with
+`gotScan == composerFound` (muster#134's own requirement, landed with
 that issue and unaffected by this one) — a mid-pass capture that comes back
 `composerClipped` must never be read as "cleared" just because the *text*
 this driver could extract happens to be empty.

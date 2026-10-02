@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// colab-fleet #154: peer.<m>.grants reads the peer's own answer when online.
+// muster #154: peer.<m>.grants reads the peer's own answer when online.
 // The row id never changes; only its answer does.
 func TestDoctorPeerGrantsReadsThePeersAnswer(t *testing.T) {
 	cases := []struct {

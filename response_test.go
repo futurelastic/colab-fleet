@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// colab-fleet#176: the wire shape a peer receives. Response is forwarded
+// muster#176: the wire shape a peer receives. Response is forwarded
 // verbatim to a peer, so its encoding is the contract, not an implementation
 // detail.
 func TestResponseChoicesWireShape(t *testing.T) {
@@ -38,7 +38,7 @@ func TestResponseValidate(t *testing.T) {
 		{Choices: []int{2, 2}},
 		{Choices: []int{0}},
 		{Choices: []int{-1}},
-		// colab-fleet#206: an empty or blank answer is never sent, and text is
+		// muster#206: an empty or blank answer is never sent, and text is
 		// its own way of answering — not an addition to a choice or a cancel.
 		{Text: strp("")},
 		{Text: strp("  \t\n ")},
@@ -55,7 +55,7 @@ func TestResponseValidate(t *testing.T) {
 
 func strp(s string) *string { return &s }
 
-// colab-fleet#206: Text is a pointer so that an empty string is still a field
+// muster#206: Text is a pointer so that an empty string is still a field
 // when a peer-relaying driver marshals the body onward. With a plain string
 // and omitempty, {"text":""} would arrive at the peer as {} — "accept the
 // highlighted option" — which is the trap an empty Choices set is refused for.

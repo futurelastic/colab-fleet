@@ -6,9 +6,9 @@ import (
 )
 
 // IdentityAssertion states whether the identity a machine last asserted for a
-// session is the one the runtime still carries (colab-fleet #102).
+// session is the one the runtime still carries (muster #102).
 //
-// # Why this exists (colab-fleet #102, on the back of #96/#97)
+// # Why this exists (muster #102, on the back of #96/#97)
 //
 // #97 measured a rename that returned 202, read back correct for roughly half
 // an hour, then silently reverted — id, name and attach target all restored,
@@ -120,7 +120,7 @@ func IdentityHeld(asserted string, assertedAt Timestamp, evidence string) *Ident
 }
 
 // IdentityDrifted records that this read found the runtime carrying a
-// different identity from the one this machine last asserted — colab-fleet
+// different identity from the one this machine last asserted — muster
 // #97's defect, made machine-readable.
 func IdentityDrifted(asserted, carried string, assertedAt Timestamp, evidence string) *IdentityAssertion {
 	return &IdentityAssertion{

@@ -41,10 +41,10 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/delivery"
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/delivery"
+	"github.com/futurelastic/muster/internal/delivery/modclient"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // confirmSlice bounds one confirm call's module-side wait: shorter than the

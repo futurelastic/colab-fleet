@@ -1,5 +1,5 @@
 #!/bin/sh
-# Back up what a colab-fleetd deploy replaces, so it can be put back.
+# Back up what a muster deploy replaces, so it can be put back.
 #
 # WHY THIS EXISTS
 #
@@ -65,7 +65,7 @@ fi
 
 STAMP=$(run 'date -u +%Y%m%dT%H%M%SZ')
 LABEL=$(run 'hostname -s')
-DEST="$HOME/.local/state/colab-fleet-backups/${LABEL}-${STAMP}"
+DEST="$HOME/.local/state/muster-backups/${LABEL}-${STAMP}"
 
 echo "backup: target=${HOST} label=${LABEL} stamp=${STAMP}"
 
@@ -84,14 +84,14 @@ SUM_REMOTE=$(run "shasum -a 256 ${FLEET_BIN} | cut -d' ' -f1")
 SIZE_REMOTE=$(run "wc -c < ${FLEET_BIN} | tr -d ' '")
 
 mkdir -p "$DEST"
-fetch "${FLEET_BIN}" "${DEST}/colab-fleetd"
-SUM_LOCAL=$(shasum -a 256 "${DEST}/colab-fleetd" | cut -d' ' -f1)
+fetch "${FLEET_BIN}" "${DEST}/muster"
+SUM_LOCAL=$(shasum -a 256 "${DEST}/muster" | cut -d' ' -f1)
 
 [ "$SUM_REMOTE" = "$SUM_LOCAL" ] || {
 	echo "backup: checksum mismatch after copy — the backup is NOT trustworthy" >&2
 	echo "  on target: $SUM_REMOTE" >&2
 	echo "  copied:    $SUM_LOCAL" >&2
-	rm -f "${DEST}/colab-fleetd"
+	rm -f "${DEST}/muster"
 	exit 1
 }
 

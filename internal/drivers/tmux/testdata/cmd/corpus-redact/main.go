@@ -35,7 +35,7 @@ import (
 	"os"
 	"path/filepath"
 
-	tmux "github.com/godx-jp/colab-fleet/internal/drivers/tmux"
+	tmux "github.com/futurelastic/muster/internal/drivers/tmux"
 )
 
 func main() {

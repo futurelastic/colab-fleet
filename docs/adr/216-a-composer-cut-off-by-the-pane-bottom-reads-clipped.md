@@ -1,7 +1,7 @@
 # ADR 216 — A composer whose closing rule is cut off by the pane's bottom edge reads clipped, not absent
 
 **Status:** accepted (2026-09-26)
-**Issue:** colab-fleet #216 · builds on #134, #149, #169, #215
+**Issue:** muster #216 · builds on #134, #149, #169, #215
 
 ## Context
 

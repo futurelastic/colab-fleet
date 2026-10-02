@@ -76,11 +76,11 @@ import (
 	"sync"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/delivery"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/state"
-	"github.com/godx-jp/colab-fleet/internal/trustseed"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/delivery"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/state"
+	"github.com/futurelastic/muster/internal/trustseed"
 )
 
 const (
@@ -96,7 +96,7 @@ const (
 	// genuinely wedged multiplexer surfaces as unreachable in bounded time
 	// rather than never.
 	//
-	// Raised to 30000 for colab-fleet#129: Discard's clear loop is now
+	// Raised to 30000 for muster#129: Discard's clear loop is now
 	// content-derived (see clearPressMargin, maxClearPresses below) rather
 	// than clock-bound, and a composer sized like #129's own field case
 	// (~80 rows) legitimately needs on the order of maxClearPresses presses
@@ -117,7 +117,7 @@ const (
 
 	// captureChunkMaxArgs and captureChunkMaxBytes bound how many
 	// sessions' worth of display-message/capture-pane pairs go into ONE
-	// invocation of the batched enumeration (colab-fleet#141).
+	// invocation of the batched enumeration (muster#141).
 	//
 	// The multiplexer's own client-to-server command channel refuses a
 	// chained invocation outright once it gets big enough — not a timeout,
@@ -133,7 +133,7 @@ const (
 	// reached before the argc wall is. captureChunkMaxArgs sits ~10% under
 	// the measured 995-safe / 1007-fails boundary — deliberately not a huge
 	// margin, both because a fleet's realistic single-machine size can
-	// itself run into the 80s (colab-fleet#141's own follow-up: the SAME
+	// itself run into the 80s (muster#141's own follow-up: the SAME
 	// affected machine went clean carrying 81 sessions, just below this
 	// cliff, without needing to drop anywhere near a healthy peer's 22 — a
 	// third data point that lands almost exactly where this bisection put
@@ -152,7 +152,7 @@ const (
 	// model docs/internals.md measured (22 sessions, 18ms) is unchanged.
 	// Above it, enumerate() issues additional invocations rather than
 	// letting the whole batch come back empty and misclassifying every
-	// session in it as a driver malfunction, which is what colab-fleet#141
+	// session in it as a driver malfunction, which is what muster#141
 	// reported: 85 sessions (1020 args) past the wall, 22 sessions
 	// (264 args) nowhere near it.
 	captureChunkMaxArgs  = 900
@@ -167,7 +167,7 @@ const (
 	// least once (#87). Before any movement, "unchanged" is not yet
 	// evidence of anything — a pane that has simply not redrawn — so the
 	// loop still spends its whole content-derived press budget there (see
-	// clearPressMargin, maxClearPresses below; colab-fleet#129 replaced
+	// clearPressMargin, maxClearPresses below; muster#129 replaced
 	// what used to be a flat clock here). AFTER movement, an unchanged
 	// capture is a press that did nothing, and repeating it for the rest of
 	// the budget is not buying more evidence, it is more destructive
@@ -179,7 +179,7 @@ const (
 	// clearPressMargin is how many presses beyond composerVisualLines'
 	// count a clear pass is given before the composer having never moved at
 	// all counts as evidence rather than as "the pane has not repainted
-	// yet" (colab-fleet#129). composerVisualLines is a count of what is
+	// yet" (muster#129). composerVisualLines is a count of what is
 	// ON SCREEN right now, not a guarantee that C-u maps onto it one for
 	// one — this margin is the acknowledgment that the mapping is measured,
 	// not proven exact (see composerVisualLines' own doc comment), without
@@ -205,7 +205,7 @@ const (
 	maxClearPresses = 120
 
 	// composerLineEndKey positions the cursor at the end of the current row
-	// before clearComposer sends C-u (colab-fleet#138). C-u (unix-line-
+	// before clearComposer sends C-u (muster#138). C-u (unix-line-
 	// discard) kills from the cursor back to the start of the line — it is
 	// only guaranteed to remove the WHOLE row when the cursor is already
 	// sitting after all of that row's content, an assumption
@@ -216,7 +216,7 @@ const (
 	composerLineEndKey = "End"
 
 	// sweepMargin/maxSweepBackspaces/sweepBatchSize size clearComposerSweep
-	// (colab-fleet#136), the Force escape hatch reachable only once the
+	// (muster#136), the Force escape hatch reachable only once the
 	// ordinary row-budgeted pass has already been proven futile. The unit
 	// here is CHARACTERS, not rows — this mechanism presses Backspace one
 	// character at a time rather than clearing a structural row per press —
@@ -258,7 +258,7 @@ const (
 	// as gone rather than as a listing race. A single miss is not enough
 	// evidence on its own — "a pane can vanish between listing and capture"
 	// is already a documented, transient shape elsewhere in this file — so
-	// this asks for two in a row (colab-fleet #125's own bound: the session's
+	// this asks for two in a row (muster #125's own bound: the session's
 	// own lifetime, not a guessed duration) before giving up on delivery.
 	sessionGoneConfirmations = 2
 
@@ -397,7 +397,7 @@ type Driver struct {
 	inboxWindow time.Duration
 
 	// delivered remembers, per session, the most recent delivery THIS DRIVER
-	// made into that session's composer — the denominator colab-fleet #111's
+	// made into that session's composer — the denominator muster #111's
 	// `turns` is counted relative to. Written once, at the moment Send's own
 	// paste-buffer call succeeds (before Submit is even checked), so every
 	// downstream outcome of that delivery — queued, stranded, confirmed —
@@ -420,7 +420,7 @@ type Driver struct {
 	resumeIntents map[string]resumeIntentRecord
 
 	// conversationIntents is resumeIntents' mirror for the opposite request:
-	// the conversation id a create asked the runtime to START (colab-fleet
+	// the conversation id a create asked the runtime to START (muster
 	// #224), so a later List can tell whether the runtime's own record
 	// agrees with it. Same shape, same reasons, same corroboration. See
 	// conversationintent.go.
@@ -453,7 +453,7 @@ type Driver struct {
 	// make counting something contend with it for no reason.
 	counters counterSet
 
-	// exitedMu guards exitedPending — colab-fleet #235: what reapExited
+	// exitedMu guards exitedPending — muster #235: what reapExited
 	// captured about a session's own process exit, waiting for DrainExits to
 	// hand it to the service. Its own mutex, not d.mu, for the same reason
 	// counters has its own: nothing else here needs the rest of the driver's
@@ -489,14 +489,14 @@ type Driver struct {
 	trustSeed *trustseed.Seeder
 
 	// sessionEnv is this machine's declared identity for its sessions —
-	// colab-fleet issue #94. Nil/empty means unconfigured, the same
+	// muster issue #94. Nil/empty means unconfigured, the same
 	// off-by-default contract as credentialPath and trustSeed: a driver
 	// built for a test never merges configuration into a caller's env
 	// merely because it was constructed. See WithSessionEnv and
 	// sessionenv.go's provisionSessionEnv.
 	sessionEnv []SessionEnvEntry
 
-	// psBin and psRun are colab-fleet #116's own exec seam, deliberately
+	// psBin and psRun are muster #116's own exec seam, deliberately
 	// separate from bin/run rather than reusing them. Those name and run the
 	// multiplexer specifically (execFunc's own doc comment); psRun queries
 	// the OS process table for a PID this driver already resolved from the
@@ -506,7 +506,7 @@ type Driver struct {
 	psBin string
 	psRun execFunc
 
-	// inboxResolver and inboxDial are colab-fleet #119's own seam. Nil
+	// inboxResolver and inboxDial are muster #119's own seam. Nil
 	// means unconfigured — the same off-by-default contract as
 	// credentialPath and trustSeed: a driver built for a test never
 	// attempts an inbox delivery merely because it was constructed, and
@@ -516,7 +516,7 @@ type Driver struct {
 	inboxDial     inboxDialFunc
 
 	// counterSources are counts kept OUTSIDE this driver by something the
-	// composition root wired into it — colab-fleet #163's resolver index
+	// composition root wired into it — muster #163's resolver index
 	// counters are the first. Merged into Counters under their own names.
 	// Nil means none, the same off-by-default contract as every seam above.
 	// See WithCounterSource.
@@ -732,7 +732,7 @@ func WithTrustSeed(statePath, home string, roots []string) Option {
 }
 
 // WithSessionEnv declares this machine's identity for its sessions —
-// colab-fleet issue #94. entries is expected to have already passed
+// muster issue #94. entries is expected to have already passed
 // ValidateSessionEnv; this option does no validation of its own; the same
 // division main.go already keeps for TrustRoots (validated once at startup,
 // wired here without re-checking).
@@ -746,7 +746,7 @@ func WithSessionEnv(entries []SessionEnvEntry) Option {
 }
 
 // TrustSeedResult passes through internal/trustseed.Result so a caller
-// outside this package (cmd/colab-fleetd's startup-and-interval maintainer)
+// outside this package (cmd/muster's startup-and-interval maintainer)
 // never has to import internal/trustseed itself.
 type TrustSeedResult = trustseed.Result
 
@@ -761,7 +761,7 @@ func (d *Driver) SeedTrustRoots() (TrustSeedResult, error) {
 // withExec injects a fake multiplexer. Unexported: tests only.
 func withExec(f execFunc) Option { return func(d *Driver) { d.run = f } }
 
-// WithPSBinary sets the process-table query executable colab-fleet #116's
+// WithPSBinary sets the process-table query executable muster #116's
 // process-identity resolution shells out to. Default "/bin/ps" — an
 // absolute path, not a bare name, for the reason session-identity.md's
 // "Two traps this feature inherits" section documents for this driver's own
@@ -843,7 +843,7 @@ func runReal(ctx context.Context, name string, args ...string) ([]byte, error) {
 }
 
 // noServerRunning reports whether err is the multiplexer itself saying there
-// is no server to ask — as opposed to the invocation failing (colab-fleet#157).
+// is no server to ask — as opposed to the invocation failing (muster#157).
 //
 // Only a process that ran and exited counts: the stderr text is read from the
 // *exec.ExitError that Output() fills in, never from an error string, so a
@@ -991,7 +991,7 @@ func (d *Driver) Counters() map[string]int64 {
 }
 
 // WithCounterSource adds counts kept outside this driver to what Counters
-// reports — colab-fleet #163. The first caller is the composition root's
+// reports — muster #163. The first caller is the composition root's
 // inbox resolver: an InboxResolver is a bare function, so the counts it keeps
 // about the index it reads have no driver of their own to reach GET
 // /v1/health through, and the resolver only ever runs inside this driver's
@@ -1018,7 +1018,7 @@ func (d *Driver) bounded(ctx context.Context) (context.Context, context.CancelFu
 }
 
 // managedSessionOption is the tmux user option Create sets on every session
-// this driver starts (colab-fleet #236). reapDeadRows reads it back through
+// this driver starts (muster #236). reapDeadRows reads it back through
 // enumerate's format string to tell a session this service created from one
 // it merely happens to see on a shared multiplexer server — see Create's own
 // comment on that sharing. A user option is scoped by name alone; any value
@@ -1034,7 +1034,7 @@ type paneRow struct {
 	pid     int
 	created time.Time
 	dead    bool
-	// deadStatus is the pane's own process exit status (colab-fleet #235).
+	// deadStatus is the pane's own process exit status (muster #235).
 	// Meaningful only when dead is true — the runtime reports an empty/zero
 	// value for a live pane, which parses indistinguishably from a real
 	// status of 0, but nothing reads this field without checking dead first.
@@ -1044,7 +1044,7 @@ type paneRow struct {
 	// what a session is.
 	title string
 	// managed is true only for a session this driver's own Create set
-	// managedSessionOption on (colab-fleet #236). reapDeadRows reads this,
+	// managedSessionOption on (muster #236). reapDeadRows reads this,
 	// not dead alone, before acting — a pane can be dead AND belong to a
 	// session this driver never started, one it shares its multiplexer
 	// server with (Create's own comment on that sharing).
@@ -1065,13 +1065,13 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]paneCaptu
 	format := strings.Join([]string{
 		"#{session_name}", "#{pane_id}", "#{pane_current_path}",
 		"#{pane_pid}", "#{session_created}", "#{pane_dead}",
-		// colab-fleet #235: carried alongside pane_dead, in the SAME
+		// muster #235: carried alongside pane_dead, in the SAME
 		// invocation, rather than a second listing once a dead pane is
 		// found — driver.Driver.List's constant-spawn contract holds
 		// whether or not anything is dead this round.
 		"#{pane_dead_status}",
 		"#{pane_current_command}",
-		// colab-fleet #236: the marker Create sets on every session this
+		// muster #236: the marker Create sets on every session this
 		// driver starts (managedSessionOption). A pane option would not see
 		// it — the option is set at the session, not the pane — but a
 		// format expression follows tmux's own option inheritance
@@ -1091,14 +1091,14 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]paneCaptu
 	// call ~18ms; two calls total ~26ms for 22 sessions, still O(1) in
 	// session count and still 4x cheaper than the per-session loop.
 	//
-	// Timed (colab-fleet#156) because a capture failure line that cannot say
+	// Timed (muster#156) because a capture failure line that cannot say
 	// how much of the call's budget the LISTING already spent cannot tell "the
 	// capture was slow" from "the capture inherited almost nothing".
 	listStart := time.Now()
 	out, err := d.run(ctx, d.bin, args...)
 	listWall := time.Since(listStart)
 	if err != nil {
-		// colab-fleet#157: a machine whose multiplexer has no server is a
+		// muster#157: a machine whose multiplexer has no server is a
 		// machine with zero sessions — the normal resting state once its last
 		// session closes — and that is a complete answer, not a failed one.
 		// Reporting it unreachable turned every fleet-scope read incomplete
@@ -1138,7 +1138,7 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]paneCaptu
 	// capture is indistinguishable from an empty one. It looks like a
 	// working driver that cannot read screens.
 	//
-	// Chunking (colab-fleet#141) is why this is "per chunk" rather than "the
+	// Chunking (muster#141) is why this is "per chunk" rather than "the
 	// whole fleet, always" as an earlier version of this comment said: past
 	// captureChunkMaxArgs/captureChunkMaxBytes worth of chained commands, the
 	// multiplexer's OWN client-to-server channel refuses the invocation
@@ -1149,7 +1149,7 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]paneCaptu
 	// wall crossed by chunk 2 does not take chunk 1's already-captured
 	// screens down with it.
 	//
-	// Chunking bounds each invocation's SIZE; colab-fleet#156 is the other
+	// Chunking bounds each invocation's SIZE; muster#156 is the other
 	// wall, TIME. The whole call — listing, every chunk, and whatever the verb
 	// does afterwards — shares one declared deadline (bounded), so a single
 	// invocation that stalls used to spend all of it: the process was killed
@@ -1193,7 +1193,7 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]paneCaptu
 		// every OTHER chunk's already-good captures.
 		//
 		// The error is still not RETURNED — that contract is unchanged — but
-		// colab-fleet#141 was invisible in the log for its entire life: the
+		// muster#141 was invisible in the log for its entire life: the
 		// only reason it was ever noticed is that dozens of sessions' state
 		// timestamps stopped moving, and the only reason it was ever
 		// confirmed to have RECOVERED is the same timestamps starting to
@@ -1207,7 +1207,7 @@ func (d *Driver) enumerate(ctx context.Context) ([]paneRow, map[string]paneCaptu
 		// logging call that itself panics or blocks must never be how a
 		// caller learns this driver is unavailable.
 		//
-		// colab-fleet#156 widened that line: it now carries the invocation's
+		// muster#156 widened that line: it now carries the invocation's
 		// wall time against the slice it was given, how much of the call's
 		// budget was left, and how long the listing took. Without those, "the
 		// multiplexer was slow" and "the budget was too small" cannot be told
@@ -1283,7 +1283,7 @@ const (
 	// disconnected, a subscription closed). Nobody is waiting for the answer.
 	captureCallerCancelled = "caller-cancelled"
 	// captureBudgetExhausted: the call's whole declared deadline has run out.
-	// Before colab-fleet#156 every stall ended in this cause, because
+	// Before muster#156 every stall ended in this cause, because
 	// the capture ran under the call's full budget.
 	captureBudgetExhausted = "call-budget-exhausted"
 	// captureMultiplexerExit: the process exited on its own with an error —
@@ -1325,7 +1325,7 @@ func (d *Driver) captureChunk(ctx context.Context, chunkRows []indexedPaneRow, m
 		// from "do not overwrite me".
 		// The marker names the pane explicitly (-t) because it now expands a
 		// format: without a target, display-message reads the CURRENT pane,
-		// not the one about to be captured (colab-fleet#169).
+		// not the one about to be captured (muster#169).
 		capArgs = append(capArgs, "display-message", "-t", r.paneID, "-p",
 			mark+strconv.Itoa(r.index)+" "+paneHeightFormat, ";")
 		capArgs = append(capArgs, classifyCaptureArgs(r.paneID, d.captureLines)...)
@@ -1373,7 +1373,7 @@ func (d *Driver) captureChunk(ctx context.Context, chunkRows []indexedPaneRow, m
 // after the enumeration (Send's paste and submit, Discard's clear loop). So
 // no invocation ever gets more than half of what is left, and one stalled
 // invocation can no longer take the whole call's deadline with it
-// (colab-fleet#156).
+// (muster#156).
 //
 // At the default 30 s with one chunk and the retry unspent, the first
 // attempt gets 10 s. A healthy batched capture takes tens of milliseconds, so
@@ -1400,7 +1400,7 @@ const slowInvocationDivisor = 15
 // noteSlowInvocation logs and counts one multiplexer invocation that
 // succeeded but took longer than the slow line. Without this, the only wall
 // times ever recorded come from failures, and failures alone cannot say how
-// close healthy invocations run to the slice (colab-fleet#156).
+// close healthy invocations run to the slice (muster#156).
 // panes is 0 for an invocation that does not capture panes, such as the listing.
 func (d *Driver) noteSlowInvocation(what string, wall time.Duration, panes int) {
 	line := d.deadline / slowInvocationDivisor
@@ -1426,7 +1426,7 @@ type indexedPaneRow struct {
 
 // chunkPaneRows splits rows into groups small enough that the batched
 // display-message/capture-pane invocation each group becomes never crosses
-// the multiplexer's own command-length limits (colab-fleet#141; see
+// the multiplexer's own command-length limits (muster#141; see
 // captureChunkMaxArgs/captureChunkMaxBytes). A fleet under either cap comes
 // back as a single chunk, preserving the one-spawn cost this file's package
 // doc measured.
@@ -1446,7 +1446,7 @@ func chunkPaneRows(rows []paneRow) [][]indexedPaneRow {
 	// <marker+index+" #{pane_height}"> ";" "capture-pane" "-p" "-e" "-t"
 	// <paneID> "-S" <lines> — 13 args for the first row in a chunk (no
 	// leading ";"), 14 for every row after it. The pane id appears twice
-	// since colab-fleet#169 targets the marker too.
+	// since muster#169 targets the marker too.
 	const fixedArgs = 13  // without the leading separator
 	const fixedBytes = 80 // "display-message" "-t" "-p" " #{pane_height}" ";" "capture-pane" "-p" "-e" "-t" "-S" "-24" + separators, rounded up
 	for i, r := range rows {
@@ -1495,7 +1495,7 @@ func parseRows(out, sep string) ([]paneRow, error) {
 			dead:       f[5] == "1",
 			deadStatus: deadStatus,
 			title:      f[7],
-			// colab-fleet #236: an option that was never set reads back as
+			// muster #236: an option that was never set reads back as
 			// the empty string, same as any other unset tmux format
 			// variable — never "1" — so an unmanaged session's pane always
 			// parses to false here.
@@ -1515,7 +1515,7 @@ func splitCaptures(out, mark string) map[string]paneCapture {
 		if nl < 0 {
 			continue
 		}
-		// The marker line is "<index> <pane height>" (colab-fleet#169). A
+		// The marker line is "<index> <pane height>" (muster#169). A
 		// height that does not parse leaves 0, which reads every row as it
 		// always was rather than guessing a boundary.
 		header := strings.Fields(p[:nl])
@@ -1535,7 +1535,7 @@ func splitCaptures(out, mark string) map[string]paneCapture {
 
 // paneCapture is one pane's classify capture and the pane's height when it was
 // taken. The height is what tells the visible pane apart from the `-S -N`
-// history margin above it (colab-fleet#169); 0 means unknown.
+// history margin above it (muster#169); 0 means unknown.
 type paneCapture struct {
 	text   string
 	height int
@@ -1585,7 +1585,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		return fleet.NewCollection([]fleet.Session{}, []fleet.SourceStatus{src})
 	}
 
-	// colab-fleet #235: reap what this SAME enumeration already found dead,
+	// muster #235: reap what this SAME enumeration already found dead,
 	// using the screen it already captured — never a second listing or a
 	// second capture-pane call, which would cost every ordinary List an
 	// extra invocation (driver.Driver.List's constant-spawn contract) to
@@ -1612,7 +1612,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	}
 
 	// Loaded once and shared by noteSessionSet and identityDrift both
-	// (colab-fleet #96/#97), rather than reading the store twice per
+	// (muster #96/#97), rather than reading the store twice per
 	// listing. Nil when unconfigured — every reader downstream already
 	// treats a nil/empty map as "nothing asserted", the same honest default
 	// every other durable record in this driver uses.
@@ -1625,7 +1625,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	for _, nd := range drift {
 		driftBySession[nd.live.session] = nd
 	}
-	// colab-fleet #102: a second, independent index over the same prior
+	// muster #102: a second, independent index over the same prior
 	// records, for identityAssertionFor below. Not threaded through
 	// identityDrift itself — that function's output also drives
 	// reassertNames, and TestIdentityReassertStopsOnceContested /
@@ -1671,7 +1671,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 		// capture failed, which correctly leaves that session unkeyable rather
 		// than keyable against a screen nobody read.
 		st.ScreenDigest = digest
-		// colab-fleet #97: this read agreed with a rename that did not
+		// muster #97: this read agreed with a rename that did not
 		// hold. Say so in the read itself, not only in the repair
 		// attempted below (after the lock) — a caller reading THIS
 		// response must not see it agree silently the way #97's own
@@ -1694,13 +1694,13 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 			Attach:     d.attachHint(r.session),
 			State:      st,
 		}
-		// colab-fleet #102: the same fact the evidence sentence above
+		// muster #102: the same fact the evidence sentence above
 		// carries, machine-readable. Populated HERE — at response-build
 		// time, from what THIS read observed — not from reassertNames'
 		// repair below, which runs after this response is built and lands
 		// on the caller's NEXT poll, not this one.
 		s.IdentityAssertion = identityAssertionFor(r, priorRecords, assertedByRun)
-		// colab-fleet #165: the marker this run's create applied, from the
+		// muster #165: the marker this run's create applied, from the
 		// same prior records and matched the same way — so a rename, ours or
 		// a second actor's, leaves it on the session it describes.
 		s.Marker = markerFor(r, priorRecords, assertedByRun)
@@ -1756,7 +1756,7 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 	d.mu.Unlock()
 	d.noteStatuses(obs)
 
-	// colab-fleet #97: put back every name this driver asserted and the
+	// muster #97: put back every name this driver asserted and the
 	// runtime no longer carries — whether the rename never reached the
 	// runtime, or reached it and a second actor on the machine later undid
 	// it; either way the record, not the last read, is what this driver
@@ -2024,14 +2024,14 @@ func (d *Driver) List(ctx context.Context, req fleet.Request, filter driver.List
 }
 
 // maxNameReasserts bounds how many times reassertNames will put an asserted
-// name back after finding the runtime disagreeing with it (colab-fleet
+// name back after finding the runtime disagreeing with it (muster
 // #97). A repair already proven not to hold twice is not attempted a third
 // time — discardProvenFutile's rule (this file, the composer-clear case)
 // applied to identity: an unbounded loop against a second actor on the
 // machine that keeps reverting a name is a rename war, not a fix.
 const maxNameReasserts = 2
 
-// Counter names for identity repair (colab-fleet #96/#97) — see counterSet's
+// Counter names for identity repair (muster #96/#97) — see counterSet's
 // own doc comment on why these are a registry entry rather than a new field.
 const (
 	// counterIdentityReasserted counts every time List successfully put an
@@ -2046,7 +2046,7 @@ const (
 	counterIdentityContested = "identity.contested"
 )
 
-// reassertNames puts back every name in drift — colab-fleet #97: a rename
+// reassertNames puts back every name in drift — muster #97: a rename
 // this driver recorded and the runtime no longer carries, whether because
 // it never reached the runtime or reached it and was later undone by a
 // second actor on the machine. Called from List, after its own
@@ -2275,7 +2275,7 @@ func (d *Driver) send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		return d.observeEarly(delivery.Refused, fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}), nil
 	}
 
-	// colab-fleet #112: ResumeIfStranded asks to finish the delivery already
+	// muster #112: ResumeIfStranded asks to finish the delivery already
 	// sitting in the composer; ReplaceIfStranded asks to throw it away and
 	// deliver this call's text instead. Both at once is a contradiction, not
 	// an ambiguity to resolve by picking one silently — refused before
@@ -2336,7 +2336,7 @@ func (d *Driver) send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		return receipt, nil
 	}
 
-	// colab-fleet #158: on the terminal path the text carries the sender label
+	// muster #158: on the terminal path the text carries the sender label
 	// as its first line. Everything below — the stranded-delivery record
 	// included — sees the labelled text, so a resume must repeat the same `from`
 	// as well as the same text. Computed here, after the #53 guard has judged
@@ -2344,7 +2344,7 @@ func (d *Driver) send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// off the first line and past the guard.
 	labelled := paneLabelled(text, opts.From)
 
-	// colab-fleet #119: capability-detected inbox path over a target session's
+	// muster #119: capability-detected inbox path over a target session's
 	// own inbox, tried before anything below touches the pane. inboxEligible
 	// excludes every shape (!Submit, ResumeIfStranded, ReplaceIfStranded, a
 	// forced terminal route) that names a pane-composer concept the inbox has
@@ -2467,7 +2467,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// outcome — §2.4 exists for input that would corrupt a session, and text
 	// delivered into a runtime that is not listening strands exactly that way.
 	if ready, blocked := d.awaitReceptive(ctx, target.paneID); !ready {
-		// colab-fleet#215: the runtime's feedback-draft card over a composer this
+		// muster#215: the runtime's feedback-draft card over a composer this
 		// driver cannot read as a whole is the one screen here that is neither a
 		// startup nor a dialog, and both wordings below were wrong about it — one
 		// blamed startup, the other named a menu. Named first, from a fresh read.
@@ -2482,7 +2482,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 					"drive the menu rather than be received as input (§2.4)",
 			}, nil
 		}
-		// colab-fleet #64: no composer painted is one fact with (at least) two
+		// muster #64: no composer painted is one fact with (at least) two
 		// causes, and the old wording asserted one of them as if it were
 		// established — "still starting or is not listening" — when the
 		// actual observation is only "no composer". A runtime showing a
@@ -2548,7 +2548,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 
 	pending, composerScanResult := composerText(screenNow)
 	if composerScanResult == composerClipped {
-		// colab-fleet#216: a composer cut off by the bottom of the pane reads
+		// muster#216: a composer cut off by the bottom of the pane reads
 		// clipped, where it read absent before and was refused by the readiness
 		// gate above with the card named. The card is still the better answer
 		// when it is what cut the composer off.
@@ -2556,7 +2556,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			d.counters.incr(counterFeedbackCardRefusedSend)
 			return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
 		}
-		// colab-fleet#134: this driver's own capture ended above the
+		// muster#134: this driver's own capture ended above the
 		// composer's opening fence, so it cannot confirm the composer is
 		// empty before delivering. Fail closed, the same direction §2.4
 		// already takes for a composer it CAN read and finds busy — the
@@ -2571,7 +2571,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 				clippedComposerRemedy,
 		}, nil
 	}
-	// colab-fleet#215, #217: with the runtime's feedback-draft card on screen — in
+	// muster#215, #217: with the runtime's feedback-draft card on screen — in
 	// any of its states — or its question about turning drafts off, a composer
 	// holding a single digit is read as the notice's own shortcut: the text would
 	// open the review, ask to send (or, on the confirmation, send) the draft, or
@@ -2684,7 +2684,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			// down. Empty-digest here is a fact about what this driver could
 			// observe, not permission to skip corroboration — it is the same
 			// distinction composerAbsent vs. composerClipped already draws
-			// elsewhere in this package (colab-fleet#134): "found nothing"
+			// elsewhere in this package (muster#134): "found nothing"
 			// and "could not tell" are different findings, and only the
 			// first licenses treating the gap as harmless.
 			curDigest := composerTextDigest(pending)
@@ -2864,7 +2864,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			}, nil
 		}
 
-		// colab-fleet #112: the resume branch just above only ever fires for
+		// muster #112: the resume branch just above only ever fires for
 		// an EXACT match (strandedMatches) with ResumeIfStranded set. Every
 		// other shape used to fall straight through to one refusal claiming
 		// "text a human typed" — even when this driver's OWN record said
@@ -2922,7 +2922,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			}
 		} else if opts.ReplaceIfStranded || opts.ResumeIfStranded {
 			// No live record for this composer. The draft rule (#180): clear
-			// it and deliver this call's text (colab-fleet #135's door) only
+			// it and deliver this call's text (muster #135's door) only
 			// on proof the text there is this driver's own — a tombstone of
 			// a lapsed record — or the caller's expect digest matching it
 			// now. Before #180, replaceIfStranded alone was taken as proof
@@ -3012,13 +3012,13 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 		return fleet.DeliveryReceipt{}, err
 	}
 
-	// colab-fleet #111: this is the single write site for a delivery mark —
+	// muster #111: this is the single write site for a delivery mark —
 	// the moment "a delivery was made into this composer" becomes true.
 	// Every outcome below (queued unsubmitted, stranded-unknown, confirmed)
 	// shares this one mark, and a resume completing an EARLIER delivery
 	// never reaches this line at all, so `turns` never resets under it.
 	//
-	// colab-fleet #222: EXCEPT a session-management command (/rename, /rc,
+	// muster #222: EXCEPT a session-management command (/rename, /rc,
 	// /remote-control). Those produce no agent turn at all, so marking
 	// `turns` for one would read as "a delivery was made and nothing has
 	// completed since" — the false work-lost signal #111 exists to
@@ -3375,7 +3375,7 @@ func (d *Driver) Close(ctx context.Context, req fleet.Request, ref fleet.Session
 //
 // # Force is the exit from the cycle discardProvenFutile used to dead-end at
 //
-// colab-fleet#136: before this, a residue the ordinary pass had already
+// muster#136: before this, a residue the ordinary pass had already
 // proven futile left exactly one documented remedy — DELETE the session.
 // Disproportionate: a session carries a conversation, a bridge, in-flight
 // work, and (for a caller that binds them) a claim and a worktree, none of
@@ -3421,7 +3421,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 
 	sc := captures[live.paneID].screen()
 	pending, scan := composerText(sc)
-	// colab-fleet#215, moved ahead of the clipped refusal by #216: the feedback-
+	// muster#215, moved ahead of the clipped refusal by #216: the feedback-
 	// draft card over a composer this driver could not read as a whole. A
 	// composer cut off by the bottom of the pane now reads clipped where it read
 	// absent, so the card would otherwise be met by the generic refusal, whose
@@ -3434,7 +3434,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 			reason, _ := feedbackCardRefusal(sc)
 			return fleet.Ack{}, fmt.Errorf("%w: discard: %s", ErrAmbiguousTarget, reason)
 		}
-		// colab-fleet#217: the feedback panel replaces the composer outright, so
+		// muster#217: the feedback panel replaces the composer outright, so
 		// "already clear" would be a claim about a composer that is not on screen.
 		// Asked here, ahead of the clipped refusal, whatever scan says: a panel
 		// reads absent today, and a screen that read it clipped would otherwise be
@@ -3446,12 +3446,12 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		}
 	}
 	if scan == composerClipped {
-		// colab-fleet#134: this driver's capture ended above the composer's
+		// muster#134: this driver's capture ended above the composer's
 		// opening fence. Claiming "already clear" here is #134's own false
 		// negative one function over — this driver has not seen enough of
 		// the composer to say that honestly, so it must not.
 		//
-		// colab-fleet#149: and nothing below this point may be tried in its
+		// muster#149: and nothing below this point may be tried in its
 		// place — no wider capture, no flag, no caller say-so. None of them is
 		// evidence about the rows this driver cannot see; see
 		// docs/adr/149-a-clipped-composer-has-no-in-driver-proof.md. The
@@ -3528,7 +3528,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		if !opts.Force {
 			return fleet.Ack{}, d.withRestartNote(ref.ID, discardProvenFutile(attempts))
 		}
-		// colab-fleet#136: Force is the escape hatch discardProvenFutile's
+		// muster#136: Force is the escape hatch discardProvenFutile's
 		// own refusal now names, reached only because attempts>0 — the
 		// ordinary pass HAS already been tried and found futile against
 		// this exact residue. expectDigest was already corroborated above,
@@ -3563,7 +3563,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 
 // clearComposer walks a composer's unsent text backward with repeated C-u
 // presses until it empties or the pass proves futile — the mechanism both
-// Discard and colab-fleet #112's replace-stranded path need, extracted here
+// Discard and muster #112's replace-stranded path need, extracted here
 // so the two callers cannot drift apart on #87's stall/futility semantics.
 // Discard is the ORIGINAL of this code.
 //
@@ -3580,7 +3580,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // chosen correctly — see the #132 section below for why the choice matters
 // from the first iteration, not just later ones.
 //
-// # Why a press count now, not colab-fleet#129's retired promptClearWindow
+// # Why a press count now, not muster#129's retired promptClearWindow
 //
 // C-u clears the line the cursor sits on: readline's unix-line-discard,
 // killing from the cursor back to the start of the CURRENT line, not the
@@ -3605,7 +3605,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // is actually measured in, capped at maxClearPresses so the pass still
 // terminates for content with no natural size limit (see that constant).
 //
-// # C-u alone cannot cross a real newline — colab-fleet#132
+// # C-u alone cannot cross a real newline — muster#132
 //
 // unix-line-discard kills back to the start of the CURRENT line and stops
 // there; it was never defined to reach past a line boundary. A payload
@@ -3651,7 +3651,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // budget is necessarily exhausted, exactly as before; only what counts as
 // movement, and which key gets pressed, have changed.
 //
-// # Row blankness is a PROXY for "anything behind the cursor" — colab-fleet#138
+// # Row blankness is a PROXY for "anything behind the cursor" — muster#138
 //
 // composerCursorRowBlank's own doc comment names its assumption directly:
 // the cursor is assumed to sit at the END of the composer's bottom row. C-u
@@ -3691,7 +3691,7 @@ func (d *Driver) Discard(ctx context.Context, req fleet.Request, ref fleet.Sessi
 //     latch, so the ordinary blank-based choice governs again once
 //     progress resumes.
 //
-// A composerClipped current row (colab-fleet#134: this driver could not
+// A composerClipped current row (muster#134: this driver could not
 // read the row at all) is treated the same as non-blank — default to
 // End+C-u and let the latch correct course if that guess is wrong, because
 // "assume nothing is there to kill" is the direction that reproduces #134's
@@ -3729,7 +3729,7 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 	curRows, _ := composerVisualLines(sc)
 	curBlank, curBlankScan := composerCursorRowBlank(sc)
 	stall := 0
-	// altShape (colab-fleet#138): flips to true the moment a press produces
+	// altShape (muster#138): flips to true the moment a press produces
 	// no movement, forcing the OPPOSITE key shape on the next iteration
 	// instead of repeating the one that just proved itself a no-op — see
 	// this function's own doc comment, "The no-movement latch". Reset to
@@ -3762,7 +3762,7 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 			return left, moved, false, runErr
 		}
 		if next, ok := d.captureForClassify(ctx, paneID); ok {
-			// composerFound is required alongside got=="" (colab-fleet#134):
+			// composerFound is required alongside got=="" (muster#134):
 			// a mid-pass capture that comes back composerClipped or
 			// composerAbsent must not be read as "cleared" just because the
 			// TEXT this driver could extract happens to be empty — both
@@ -3820,7 +3820,7 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 	return left, moved, false, nil
 }
 
-// clearComposerSweep is colab-fleet#136's escape hatch: a character-
+// clearComposerSweep is muster#136's escape hatch: a character-
 // budgeted Backspace sweep, reachable only through Discard's opts.Force
 // once the ordinary row-budgeted pass (clearComposer, above) has already
 // been proven futile against this EXACT residue (discardProvenFutile's own
@@ -3851,7 +3851,7 @@ func (d *Driver) clearComposer(ctx context.Context, paneID, id, cwd, pending str
 // comment). This presses keys unconditionally and trusts that
 // corroboration already happened; it does not repeat it.
 //
-// # Sizing — characters, not rows (colab-fleet#129's argument, one level finer)
+// # Sizing — characters, not rows (muster#129's argument, one level finer)
 //
 // The budget is len([]rune(pending)) + sweepMargin backspaces, capped at
 // maxSweepBackspaces: this mechanism spends one press per CHARACTER, not
@@ -3924,7 +3924,7 @@ func (d *Driver) clearComposerSweep(ctx context.Context, paneID, id, pending str
 
 // discardComposerClipped reports that this driver cannot corroborate — or
 // safely claim as clear — a composer taller than its own capture window
-// (colab-fleet#134): composerText returned composerClipped, not
+// (muster#134): composerText returned composerClipped, not
 // composerFound or composerAbsent, so Discard has no text to diff against
 // expectDigest and no honest way to report "already clear". Claiming
 // success here would be #134's own false negative arriving through Discard
@@ -3947,7 +3947,7 @@ func (d *Driver) clearComposerSweep(ctx context.Context, paneID, id, pending str
 // It used to end "wait for the composer to shrink into the capture window …
 // and retry". On an unattended session with a retrying caller that condition
 // never arrives, so the advice sent callers into a loop that could not end
-// (colab-fleet#149). The message now says what is actually true: retrying
+// (muster#149). The message now says what is actually true: retrying
 // changes nothing, and the exit is outside this driver.
 func discardComposerClipped(s screen) error {
 	return fmt.Errorf(
@@ -3959,7 +3959,7 @@ func discardComposerClipped(s screen) error {
 
 // clippedComposerRemedy is the one next-step sentence every clipped-composer
 // refusal carries — discard, send and keys alike — so the three cannot drift
-// into promising different ways out (colab-fleet#149).
+// into promising different ways out (muster#149).
 //
 // It deliberately names no API call as the fix. There is no request shape
 // that proves the unseen rows hold nothing worth keeping (ADR 149 walks the
@@ -3969,9 +3969,9 @@ func discardComposerClipped(s screen) error {
 const clippedComposerRemedy = "Retrying does not change this: the same call, " +
 	"with any expect or force, gets this same refusal while the composer stays " +
 	"taller than the capture window, reaches above the visible pane (rows above " +
-	"it are scrollback, colab-fleet#169) or is cut off by the pane's bottom edge " +
-	"(colab-fleet#216), and nothing this driver can read proves " +
-	"the unseen rows hold nothing worth keeping (colab-fleet#149). The way out " +
+	"it are scrollback, muster#169) or is cut off by the pane's bottom edge " +
+	"(muster#216), and nothing this driver can read proves " +
+	"the unseen rows hold nothing worth keeping (muster#149). The way out " +
 	"is a person reading or clearing the composer at the pane itself, or, for a " +
 	"composer cut off at the bottom, a pane tall enough to draw it"
 
@@ -4054,7 +4054,7 @@ func discardIncomplete(before, after string) error {
 // branch cannot: this is not the first pass against this residue, it is at
 // least the second, and the prior pass already spent a full, content-sized
 // press budget (clearComposer's expectedLines+clearPressMargin, capped at
-// maxClearPresses — colab-fleet#129) pressing its clear keys (C-u, and
+// maxClearPresses — muster#129) pressing its clear keys (C-u, and
 // Backspace wherever #132 finds a blank row) against it without moving it
 // at all (#87).
 //
@@ -4069,7 +4069,7 @@ func discardIncomplete(before, after string) error {
 // to decide whether to retry sees a different answer here, not a repeat of
 // the first one.
 //
-// # colab-fleet#136: this used to dead-end at destroying the session
+// # muster#136: this used to dead-end at destroying the session
 //
 // `keys` refuses outright while the composer holds text (see keys.go), and
 // this file's own history already measured Escape as not helping here
@@ -4124,7 +4124,7 @@ func discardProvenFutile(attempts int) error {
 //
 // # Returns RenameAck, not Ack — and never sets its own Title
 //
-// This method reports only the id half (colab-fleet #222): whether the
+// This method reports only the id half (muster #222): whether the
 // multiplexer-level rename happened. RenameAck.Title is always left nil
 // here; the service calls SyncTitle (titlesync.go) separately, AFTER this
 // returns and after it has announced session.renamed, and fills Title in
@@ -4144,7 +4144,7 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 		return fleet.RenameAck{Accepted: true}, nil
 	}
 
-	// colab-fleet #223: refuse a name the multiplexer would silently mangle
+	// muster #223: refuse a name the multiplexer would silently mangle
 	// (naming.go's sanitizeName — e.g. '.' -> '-', a leading '-' dropped),
 	// rather than rename to it and announce an id that is not the
 	// multiplexer's real one. This is the same principle as the collision
@@ -4212,7 +4212,7 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 		}
 	}
 
-	// colab-fleet #222: alias the composer-serialisation lock BEFORE the
+	// muster #222: alias the composer-serialisation lock BEFORE the
 	// multiplexer rename runs, so a title-sync delivery this service is
 	// about to make against the NEW id (SyncTitle, moments from now) shares
 	// the identical mutex with anything already in flight against the OLD
@@ -4222,7 +4222,7 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 	// lock: a busy composer must not turn a rename into a failure.
 	d.aliasComposerLock(ref.ID, to)
 
-	// colab-fleet #222: prime the conversation memo under the OLD name,
+	// muster #222: prime the conversation memo under the OLD name,
 	// before it stops matching anything. Name-and-date derivation
 	// (conversation.go) matches the transcript whose FIRST custom-title is
 	// still ref.ID at this exact moment; the memo it populates is keyed on
@@ -4253,7 +4253,7 @@ func (d *Driver) Rename(ctx context.Context, req fleet.Request, ref fleet.Sessio
 	}
 	d.mu.Unlock()
 
-	// colab-fleet #97: write the durable half. The multiplexer call above
+	// muster #97: write the durable half. The multiplexer call above
 	// just demonstrated the rename reaches the runtime — that has never
 	// been in question — but nothing until now recorded that this driver
 	// EXPECTS the session to be named `to`, so nothing has ever put it back
@@ -4305,12 +4305,12 @@ func (d *Driver) killCorroborated(ctx context.Context, ref fleet.SessionRef) (fl
 //
 // The marker check is load-bearing, not defensive: Create's own comment on
 // remain-on-exit says this driver's multiplexer server may host sessions
-// other tools started, and colab-fleet #236 found this func acting on every
+// other tools started, and muster #236 found this func acting on every
 // dead pane it saw regardless of origin — an operator (or another tool) that
 // sets remain-on-exit on its own session, for its own reasons, had this
 // driver kill it, capture its screen, and report an exit it never owned, the
 // moment that session's process happened to exit. A dead pane with no marker
-// is left exactly as it was before colab-fleet #235 ever shipped: not killed,
+// is left exactly as it was before muster #235 ever shipped: not killed,
 // not captured, not reported — this func has no opinion about it at all.
 //
 // The screen this SAME enumeration already captured for it (classifyCaptureArgs'
@@ -4364,7 +4364,7 @@ func (d *Driver) reapDeadRows(ctx context.Context, rows []paneRow, captures map[
 }
 
 // saveExitScreen writes a dying pane's last captured screen to a capped,
-// private file in this driver's own state directory (colab-fleet #235).
+// private file in this driver's own state directory (muster #235).
 // Never served over HTTP — pane text can hold anything the runtime printed,
 // and putting it on the API is a new data-exposure surface the issue's
 // ruling deliberately did not open; only the returned path goes on the
@@ -4388,7 +4388,7 @@ func (d *Driver) saveExitScreen(session string, c paneCapture) string {
 	return path
 }
 
-// notePendingExit queues a captured exit for the next DrainExits (colab-fleet
+// notePendingExit queues a captured exit for the next DrainExits (muster
 // #235). Its own mutex, not d.mu — see exitedMu's doc comment on the Driver
 // struct.
 func (d *Driver) notePendingExit(id string, e fleet.SessionExit) {
@@ -4397,7 +4397,7 @@ func (d *Driver) notePendingExit(id string, e fleet.SessionExit) {
 	d.exitedMu.Unlock()
 }
 
-// DrainExits implements driver.ExitReporter (colab-fleet #235): every exit
+// DrainExits implements driver.ExitReporter (muster #235): every exit
 // captured since the last drain, forgotten the moment it is returned so
 // nothing is ever reported twice.
 func (d *Driver) DrainExits() []driver.CapturedExit {
@@ -4452,7 +4452,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// before doing anything (§10, see idempotency.go).
 	if ref, rec, found := d.idem.lookup(key); found {
 		if rec.Phase == idemComplete {
-			// colab-fleet #234: a completed key's session can have ended since
+			// muster #234: a completed key's session can have ended since
 			// it was recorded — the process exited, someone killed it from a
 			// terminal — and returning it here unconditionally answered with
 			// the same 201-shaped session a live create gets, with nothing to
@@ -4533,7 +4533,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if contextFile != "" && !filepath.IsAbs(contextFile) {
 		return fleet.Session{}, fmt.Errorf("create: contextRef must be absolute, got %q", contextFile)
 	}
-	// colab-fleet issue #94: fold this machine's declared identity into the
+	// muster issue #94: fold this machine's declared identity into the
 	// caller's env BEFORE any of the validation below, so a configured value
 	// is checked by the same bound as a caller's own (see sessionenv.go's
 	// readSessionEnvFile) and a bareExec driver refuses a configured value
@@ -4586,7 +4586,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 			"create: resume %q would be read as a flag by the agent, not as a conversation id",
 			spec.Resume)
 	}
-	// colab-fleet #224: conversationId asks for a NEW conversation, resume
+	// muster #224: conversationId asks for a NEW conversation, resume
 	// asks to continue one — sending both answers the same question two
 	// incompatible ways. Checked again here even though handleCreateSession
 	// already refuses this combination before any driver is reached (§10 of
@@ -4632,7 +4632,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 			}
 		}
 	}
-	// colab-fleet #84: Agent/Model/Effort get the same guard Resume already has,
+	// muster #84: Agent/Model/Effort get the same guard Resume already has,
 	// four lines above. Before this, a value beginning with "-" silently failed
 	// safeArgvValue inside claudeCodeCommand, the flag was never appended, and
 	// the create response still echoed the REQUESTED value back — telling a
@@ -4737,7 +4737,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		// and a file of values must not outlive the session it was staged for.
 		go d.sweepStagedEnv(envPath)
 	}
-	// colab-fleet #235: keep this session's pane around after its own process
+	// muster #235: keep this session's pane around after its own process
 	// exits, so reapExited (below, called from List) can capture why before
 	// removing it. Without this, a pane and whatever it could have said about
 	// its own exit vanish together the instant the process dies, and the
@@ -4751,7 +4751,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if _, err := d.run(ctx, d.bin, "set-option", "-t", name, "remain-on-exit", "on"); err != nil {
 		log.Printf("tmux: create %q: could not enable remain-on-exit, its own exit will not be captured: %v", name, err)
 	}
-	// colab-fleet #236: mark this session as one this driver started, in a
+	// muster #236: mark this session as one this driver started, in a
 	// SEPARATE invocation for the same reason remain-on-exit above is
 	// separate from new-session — chaining either into a single call would
 	// fail the whole create over a rejected option, which is worse than the
@@ -4794,7 +4794,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// body built below and the first 200 body are computed from one fact,
 	// never two that can drift apart.
 	d.noteCreateRecord(name, string(spec.Cwd), spec)
-	// colab-fleet #96/#97: recorded now too, for the same "before there is
+	// muster #96/#97: recorded now too, for the same "before there is
 	// any way to tell what became of it" reason as the create record just
 	// above — the marker fact #96 needs, and the identity #97's List/
 	// reassertNames will have something to put back if the runtime ever
@@ -4810,14 +4810,14 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	// it to do: work to deliver once the session is ready, or a consent to spend
 	// on a question standing in front of it. A create carrying ONLY a consent —
 	// no prompt, no trustCwd — used to skip it, so its 201 came back and the
-	// question stayed on screen (colab-fleet #211). It returns as soon as the
+	// question stayed on screen (muster #211). It returns as soon as the
 	// composer is ready, so a consent with no question to meet costs one poll.
 	if spec.Prompt != "" || spec.TrustCwd || len(spec.Consents) > 0 {
 		go d.settleNewSession(req, ref, built)
 	}
 	rec, found := d.createRecordFor(name, string(spec.Cwd))
 	pins, surface, prompt := sessionFactsFor(rec, found, name)
-	// colab-fleet #102: the identity this call just asserted, read back from
+	// muster #102: the identity this call just asserted, read back from
 	// the same durable record noteAssertedName just wrote above — honestly
 	// unresolved, since nothing has read this session back yet and this
 	// cannot claim the runtime carries it (that claim is List's to make, on
@@ -5046,14 +5046,14 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	before, shape := parsePromptShape(screenNow)
 	unnumbered := shape.unnumbered
 	if before == nil {
-		// colab-fleet#215: the feedback-draft card over a composer row that holds
+		// muster#215: the feedback-draft card over a composer row that holds
 		// text is not a prompt (a digit would be appended to that text), and the
 		// two refusals below would call it "not waiting on a prompt" or claim
 		// there is no composer. Name it.
 		if reason, isCard := feedbackNoticeRefusal(screenNow); isCard {
 			return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: reason}, nil
 		}
-		// colab-fleet #64: this refusal fires whenever the screen has no
+		// muster #64: this refusal fires whenever the screen has no
 		// structured prompt this driver recognises — which is right and
 		// common (nothing is being asked) but was worded as though that
 		// were the only possibility. A full-screen interface with no
@@ -5065,7 +5065,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		// something ordinary (idle, or a human mid-message), definitely
 		// not blocked on an unrecognised full-screen prompt, since that
 		// shape has no composer of its own to paint. A composerClipped
-		// screen counts as present too (colab-fleet#134) — this driver's
+		// screen counts as present too (muster#134) — this driver's
 		// capture not reaching the top of the composer is still positive
 		// evidence a composer is painted there at all, which is the only
 		// thing this check needs.
@@ -5105,13 +5105,13 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		}, nil
 	}
 
-	// colab-fleet#176: a multi-select question is answered with a set, and
+	// muster#176: a multi-select question is answered with a set, and
 	// only a multi-select question is. Everything here is decided from the
 	// screen already read, before any key is sent.
 	if err := resp.Validate(); err != nil {
 		return fleet.DeliveryReceipt{Outcome: fleet.OutcomeRefused, Reason: err.Error()}, nil
 	}
-	// colab-fleet#215: the runtime's feedback-draft card is answered by its own
+	// muster#215: the runtime's feedback-draft card is answered by its own
 	// keys, not by an option's number, and refuses most of what a menu accepts.
 	// Everything about it is decided in one place.
 	if shape.shortcuts != nil {
@@ -5129,7 +5129,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 				"recognised as one (prompt.multiSelect is not set); answer it with choice",
 		}, nil
 	case len(resp.Choices) > 0 || (resp.Text != nil && boxes > 0):
-		// colab-fleet#206: on a multi-select question the free-text row is one
+		// muster#206: on a multi-select question the free-text row is one
 		// of the rows the boxes' own walk passes, so text rides the same path
 		// — with or without boxes to tick alongside it.
 		return d.answerMultiSelect(ctx, target, before, boxes, resp)
@@ -5148,14 +5148,14 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 		}, nil
 	}
 
-	// colab-fleet#206: an answer in the caller's own words, through the
+	// muster#206: an answer in the caller's own words, through the
 	// free-text row. A multi-select question took it above; what reaches here
 	// is a single-select one.
 	if resp.Text != nil {
 		return d.answerFreeText(ctx, target, before, resp)
 	}
 
-	// colab-fleet#204: a question drawn beside a preview pane takes its
+	// muster#204: a question drawn beside a preview pane takes its
 	// answer in two keys, not one — a digit only moves the highlight there —
 	// and the two must not be sent together. See answerPreview. Cancel is one
 	// key on every layout and stays on the path below.
@@ -5178,7 +5178,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	//
 	// # A choice is the digit ALONE — the confirm is a fallback, not a pair
 	//
-	// colab-fleet#168. This branch used to send the digit and C-m together,
+	// muster#168. This branch used to send the digit and C-m together,
 	// on the belief that the C-m either confirmed the digit or landed
 	// harmlessly. Measured live on the runtime, a digit alone already commits
 	// the answer on every numbered menu tried: a tabbed question of a
@@ -5201,7 +5201,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 	//
 	// # A menu with no numbers is walked to, then confirmed
 	//
-	// colab-fleet#171, measured on the runtime's unnumbered folder-trust
+	// muster#171, measured on the runtime's unnumbered folder-trust
 	// menu: a digit changed nothing (the screen stayed byte-identical), Down
 	// moved the highlight, Space changed nothing, and C-m confirmed the
 	// highlighted row. So there the choice is delivered as arrow presses,
@@ -5306,7 +5306,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // So a prompt this routine may not answer is now a reason to keep waiting, not
 // a reason to stop.
 //
-// # colab-fleet #125: bounded by the session's own lifetime, not a guessed duration
+// # muster #125: bounded by the session's own lifetime, not a guessed duration
 //
 // This used to give up after a fixed 90s window, on the theory that a session
 // still not ready by then had probably lost its chance. #125 measured the cost
@@ -5325,7 +5325,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // mistaken for a closed session). "The session's own lifetime" is the bound;
 // nothing here waits longer than the thing it is waiting on.
 //
-// # colab-fleet #125: an answer to WHY, available DURING the wait
+// # muster #125: an answer to WHY, available DURING the wait
 //
 // A design that merely retries harder while staying silent trades one
 // invisible failure for another — a session that quietly did nothing becomes a
@@ -5338,7 +5338,7 @@ func (d *Driver) Respond(ctx context.Context, req fleet.Request, ref fleet.Sessi
 // terminal-outcome guarantee (never `null`, always a real value once delivery
 // is abandoned) is unchanged and sits alongside it, not instead of it.
 //
-// # colab-fleet #126: that reason is now a class too, not only prose
+// # muster #126: that reason is now a class too, not only prose
 //
 // The prose above is exactly what a human reads; it is not something a caller
 // can branch on. promptReadiness's readinessCheck.waitingOn carries the SAME
@@ -5591,7 +5591,7 @@ var consentableKinds = map[fleet.PromptKind][]string{
 	// isolates the affirmative — and a rewording that puts "allow" in both rows
 	// is the ambiguity affirmativeOption already refuses to guess through.
 	// Answered by index: this question's highlight defaults to the decline
-	// (colab-fleet #211).
+	// (muster #211).
 	fleet.PromptExternalImports: {"allow", "external", "imports"},
 	// PromptBypassAcceptance is consentable but has NO entry here, because its
 	// affirmative option is the generic "Yes, I accept" and this table is
@@ -5735,7 +5735,7 @@ type readinessCheck struct {
 	// parsed (§2.3) — the same discipline every other Evidence field in this
 	// package holds itself to.
 	reason string
-	// waitingOn (colab-fleet #126) is the machine-readable class for reason,
+	// waitingOn (muster #126) is the machine-readable class for reason,
 	// computed by the SAME branch that produces the prose so the two can
 	// never disagree — settleNewSession passes it straight through to
 	// notePromptPending. Empty on `ready` (nothing to wait on any more) and
@@ -5776,7 +5776,7 @@ func (d *Driver) promptReadiness(ctx context.Context, id string) readinessCheck 
 		}
 		text, scan := composerText(sc)
 		if scan == composerClipped {
-			// colab-fleet#134: a composer is painted, but taller than this
+			// muster#134: a composer is painted, but taller than this
 			// driver's capture window — this driver cannot confirm it is
 			// empty, so it must not report ready. Fail closed the same
 			// direction WaitingUnsentInput already means: something may be
@@ -6151,7 +6151,7 @@ type strandedRecord struct {
 	Cwd  string    `json:"cwd"`
 	At   time.Time `json:"at"`
 
-	// ComposerDigest (colab-fleet #112) fingerprints the composer's own
+	// ComposerDigest (muster #112) fingerprints the composer's own
 	// content at the moment this record was made — screenDigest of the SAME
 	// text composerText() would read back, not of Text itself, because a
 	// multi-line paste renders as a collapsed marker rather than the literal
@@ -6163,7 +6163,7 @@ type strandedRecord struct {
 	// nothing has been typed there since this driver made this record. A
 	// mismatch — or an empty digest, from a record made before this field
 	// existed — degrades to the honest refusal naming `discard`, never a
-	// guess. Empty on a record from before colab-fleet #112.
+	// guess. Empty on a record from before muster #112.
 	ComposerDigest string `json:"composerDigest,omitempty"`
 
 	// TranscriptPath/TranscriptOffset (#180 review fix): the
@@ -6281,7 +6281,7 @@ func (d *Driver) noteStrandedLanding(id, cwd, text, composerDigest string, src t
 // one exists — the same corroboration and retention discipline
 // strandedMatches applies (§5.4: id + cwd, not id alone; strandedRetention),
 // without requiring the text to match. strandedMatches itself is kept
-// exactly as it was for the resume path (colab-fleet #112's plan: reuse the
+// exactly as it was for the resume path (muster #112's plan: reuse the
 // existing exact-match call there rather than re-deriving its equality from
 // this accessor); this is for the three cases the resume path does not
 // cover — same text without ResumeIfStranded, different text, and (from the
@@ -6312,7 +6312,7 @@ func (d *Driver) currentComposerDigest(ctx context.Context, paneID string) strin
 	// composerClipped degrades to "" here exactly like composerAbsent
 	// already did: this is documented as an honest degrade a caller already
 	// treats the same as an absent ComposerDigest elsewhere (see this
-	// function's own doc comment) — colab-fleet#134 does not change that,
+	// function's own doc comment) — muster#134 does not change that,
 	// because a caller with no digest to quote already falls back to the
 	// screen-scope corroboration keys.go uses instead.
 	pending, scan := composerText(sc)
@@ -6322,7 +6322,7 @@ func (d *Driver) currentComposerDigest(ctx context.Context, paneID string) strin
 	return composerTextDigest(pending)
 }
 
-// tryReplaceStranded is colab-fleet #112's opt-in door out of the busy-
+// tryReplaceStranded is muster #112's opt-in door out of the busy-
 // composer refusal: clear a composer this driver's own record says IT
 // stranded, then let the caller's ORIGINAL Send fall through to deliver
 // different text in its place.
@@ -6330,7 +6330,7 @@ func (d *Driver) currentComposerDigest(ctx context.Context, paneID string) strin
 // Safety rests entirely on record.ComposerDigest matching the composer's
 // CURRENT content (pending, already read by the caller before this is
 // called) — proof that nothing has been typed there since this driver made
-// the record. A record with no digest (predates colab-fleet #112) or a
+// the record. A record with no digest (predates muster #112) or a
 // digest that no longer matches is degraded to an honest refusal naming
 // `discard`, never guessed past; see driver.SendOptions.ReplaceIfStranded
 // for why this can never be inferred from anything less.
@@ -6344,9 +6344,9 @@ func (d *Driver) currentComposerDigest(ctx context.Context, paneID string) strin
 // expectedLines is composerVisualLines' count for the same screen pending
 // was read from — the caller already has that screen, see clearComposer's
 // own doc comment for why this is what a press budget is sized to now
-// (colab-fleet#129). sc is that SAME screen, passed through so clearComposer
+// (muster#129). sc is that SAME screen, passed through so clearComposer
 // can tell whether the row it is about to press against is blank
-// (colab-fleet#132) — see clearComposer's own doc comment for why.
+// (muster#132) — see clearComposer's own doc comment for why.
 func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, target *paneRow, record strandedRecord, pending string, expectedLines int, sc screen) (receipt fleet.DeliveryReceipt, cleared bool, err error) {
 	digest := composerTextDigest(pending)
 
@@ -6392,7 +6392,7 @@ func (d *Driver) tryReplaceStranded(ctx context.Context, ref fleet.SessionRef, t
 	return fleet.DeliveryReceipt{}, true, nil
 }
 
-// tryClearUnrecordedComposer is colab-fleet #135's door out of the §2.4
+// tryClearUnrecordedComposer is muster #135's door out of the §2.4
 // refusal for the shape tryReplaceStranded does not cover: a composer
 // holding text this driver has NO stranded record of at all — the ordinary
 // reason resumeIfStranded/replaceIfStranded land here in the first place
@@ -6508,7 +6508,7 @@ func (d *Driver) forgetStranded(id string) {
 
 // rekeySessionState moves this driver's per-id memory of a session from an
 // OLD id to a NEW one after Rename's multiplexer-level rename has already
-// succeeded — colab-fleet #223, the same principle d.observed (Rename, above)
+// succeeded — muster #223, the same principle d.observed (Rename, above)
 // and d.mods.rekey (#185) already apply, extended to the four records #223
 // found were left behind: a stranded delivery, its tombstones, the #184
 // cross-path ledger, and the delivery mark #111's `turns` is counted from.
@@ -6698,7 +6698,7 @@ func (d *Driver) loadStranded() {
 
 // deliveryMark is what noteDelivery persists: the moment of this driver's
 // most recent delivery into one session's composer, and a memo of the last
-// turn count successfully computed from it (colab-fleet #111).
+// turn count successfully computed from it (muster #111).
 type deliveryMark struct {
 	// Cwd corroborates the same way every other durable record here does
 	// (§5.4) — an id alone is recyclable.
@@ -6922,7 +6922,7 @@ func (d *Driver) digestSinceLocked(id, digest string, now time.Time) time.Time {
 //
 // This is the exact "restored" fact stampSinceLocked already computes for a
 // State/List read's Evidence line (see that function, immediately below):
-// colab-fleet #124's own field report quoted that evidence verbatim —
+// muster #124's own field report quoted that evidence verbatim —
 // "unchanged for 49m0s (age carried from before this service restarted)".
 // What #124 found missing is that Discard's OWN failure messages
 // (discardIncomplete, discardProvenFutile) never carried this same fact, so
@@ -6958,7 +6958,7 @@ func (d *Driver) restoredWaitingInputSince(id string) (time.Time, bool) {
 // prose, so an operator who has already seen that phrase on a State() read
 // recognizes it immediately here.
 //
-// Factored out of what used to be withRestartNote's own body so colab-fleet
+// Factored out of what used to be withRestartNote's own body so muster
 // #131 can reuse the fact on Send's OutcomeUnknown receipts (see
 // withRestartNoteReason) without also carrying Discard's remedy clause below
 // — that clause is specific to a stuck composer C-u cannot move; Send's own
@@ -6995,7 +6995,7 @@ func (d *Driver) withRestartNote(id string, err error) error {
 }
 
 // withRestartNoteReason appends restartNote's fact to reason when it applies
-// to id, and returns reason unchanged otherwise. colab-fleet #131: the same
+// to id, and returns reason unchanged otherwise. muster #131: the same
 // correlation Discard's 409s carry via withRestartNote, reused on Send's own
 // OutcomeUnknown receipts — a caller retrying a swallowed submit or an
 // unconfirmed paste should not have to cross-reference a separate State()
@@ -7056,7 +7056,7 @@ func (d *Driver) persistedRecord(id string) (sessionRecord, bool) {
 
 // walkHighlight moves an unnumbered menu's highlight from its current row to
 // choice with arrow keys, and reports whether a fresh read shows it there
-// (colab-fleet#171). It never confirms anything itself.
+// (muster#171). It never confirms anything itself.
 //
 // Arrival is read, not assumed from the key count: a press the menu swallows
 // leaves the highlight short of the chosen row, and confirming then would
@@ -7066,7 +7066,7 @@ func (d *Driver) persistedRecord(id string) (sessionRecord, bool) {
 // itself was replaced mid-walk.
 //
 // The arrows go in ONE send-keys call, and that was measured, not assumed
-// (colab-fleet#205): the runtime's unnumbered trust menu and a numbered
+// (muster#205): the runtime's unnumbered trust menu and a numbered
 // picker of eight rows applied every press of a burst of up to seven. A burst
 // does lose presses elsewhere — beside a preview pane (#204), and on a list
 // whose first press moves focus to another control — so this is not a rule
@@ -7154,7 +7154,7 @@ func (d *Driver) awaitPrompt(ctx context.Context, paneID string, judge func(*fle
 //
 // The dialog's tab bar used to ride inside the question text, so ticking the
 // first box flipped this question's own tab from ☐ to ☒ and the comparison had
-// to set that aside. Question no longer carries the header (colab-fleet#204),
+// to set that aside. Question no longer carries the header (muster#204),
 // so there is nothing to set aside: the header is part of the nonce instead.
 func sameMultiSelectQuestion(a, b *fleet.SessionPrompt) bool {
 	return sameMultiSelectQuestionAround(a, b, 0)
@@ -7163,7 +7163,7 @@ func sameMultiSelectQuestion(a, b *fleet.SessionPrompt) bool {
 // sameMultiSelectQuestionAround is sameMultiSelectQuestion with option skip
 // (1-based; 0 sets none aside) left out of the comparison. It exists for the
 // one row whose label the caller changes on purpose: the free-text row, whose
-// label becomes the text typed into it (colab-fleet#206).
+// label becomes the text typed into it (muster#206).
 func sameMultiSelectQuestionAround(a, b *fleet.SessionPrompt, skip int) bool {
 	if a == nil || b == nil || !b.MultiSelect || len(a.Options) != len(b.Options) {
 		return false
@@ -7182,7 +7182,7 @@ func sameMultiSelectQuestionAround(a, b *fleet.SessionPrompt, skip int) bool {
 }
 
 // answerMultiSelect answers a multi-select question with a set
-// (colab-fleet#176): it flips exactly the boxes whose tick differs from the
+// (muster#176): it flips exactly the boxes whose tick differs from the
 // set, then moves the dialog on ONE step — to the next question, or to the
 // review screen #159 recognises — and stops there. It never confirms the
 // review screen; that is the caller's own choice on its own nonce.
@@ -7230,7 +7230,7 @@ func (d *Driver) answerMultiSelect(ctx context.Context, target *paneRow, before 
 			Reason:  "this question has more checkboxes than one digit can reach",
 		}, nil
 	}
-	// colab-fleet#206: the caller's own words, typed into the free-text row
+	// muster#206: the caller's own words, typed into the free-text row
 	// that sits directly under the boxes. Decided from the screen already
 	// read, before any key is sent, like every other refusal here.
 	var text string
@@ -7491,7 +7491,7 @@ func (d *Driver) promptCleared(ctx context.Context, paneID, was string) bool {
 
 // feedbackCardRefusalFor reads a pane afresh and names the runtime's
 // feedback-draft card as the reason a delivery cannot proceed, when that is what
-// the pane shows (colab-fleet#215). Fail-open on an unreadable pane: the caller
+// the pane shows (muster#215). Fail-open on an unreadable pane: the caller
 // keeps whatever wording it already had.
 func (d *Driver) feedbackCardRefusalFor(ctx context.Context, paneID string) (string, bool) {
 	sc, ok := d.captureForClassify(ctx, paneID)
@@ -7537,7 +7537,7 @@ func (d *Driver) receptive(ctx context.Context, paneID string) (ready, blocked b
 	if _, b := selectionPrompt(sc); b {
 		return false, true
 	}
-	// composerClipped counts as receptive too (colab-fleet#134): a painted
+	// composerClipped counts as receptive too (muster#134): a painted
 	// composer this driver could not read in full is still a painted
 	// composer — the runtime is up and taking input, which is all this
 	// gate decides. What it does NOT decide is whether that composer is
@@ -7582,7 +7582,7 @@ func (d *Driver) confirmSubmitted(ctx context.Context, paneID string, key pasteK
 	deadline := start.Add(submitConfirmWindow)
 	for {
 		if sc, ok := d.captureForClassify(ctx, paneID); ok {
-			// composerClipped must NOT confirm here (colab-fleet#134):
+			// composerClipped must NOT confirm here (muster#134):
 			// unlike composerFound with text=="", a clipped screen carries
 			// no assurance the composer is actually empty — it is simply
 			// unreadable in full. Only an explicit composerFound-and-empty
@@ -7667,7 +7667,7 @@ func classifyCaptureArgs(paneID string, lines int) []string {
 
 func (d *Driver) captureForClassify(ctx context.Context, paneID string) (screen, bool) {
 	// The pane height rides in the same invocation, AFTER the capture, as a
-	// marker-prefixed last line (colab-fleet#169). After, so the capture
+	// marker-prefixed last line (muster#169). After, so the capture
 	// argv still begins with capture-pane; marker-prefixed, so a pane whose
 	// own last row happens to be a bare number is never read as a height.
 	mark := d.nonce() + "H"

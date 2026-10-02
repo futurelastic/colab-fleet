@@ -3,10 +3,10 @@ package tmux
 import (
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// colab-fleet#230: the ENOSPC footer notice #229 taught spinner() to ignore
+// muster#230: the ENOSPC footer notice #229 taught spinner() to ignore
 // is exactly the line this field exists to surface — the same shape test,
 // aimed at the region #229 carved out rather than discarding it.
 func TestWarningsOfFindsTheENOSPCFooterNotice(t *testing.T) {

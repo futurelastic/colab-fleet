@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/delivery"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/delivery"
 )
 
 // Terminal path v2, item c / D6: "screen-based confirmation is the weak
@@ -197,7 +197,7 @@ func transcriptTurnMatches(recordedText, sent string) bool {
 	// unconditionally: it now requires sent to carry no newline either — a
 	// bare "[Pasted text #7]" is Claude Code's own summary for a paste with
 	// nothing further to say about line count, which is what a single-line
-	// paste's own marker looks like (colab-fleet round-1 background); it is
+	// paste's own marker looks like (muster round-1 background); it is
 	// not a wildcard for "however many lines a completely unrelated send
 	// happened to have".
 	if lines, ok := parsePastedTextMarker(recordedText); ok {
@@ -627,7 +627,7 @@ type processSessionRecord struct {
 	// `ps` by this driver), so it is exactly the case ParseProcessStartTime's
 	// own doc comment names and warns against: "never for a value that may
 	// have crossed a process, a machine, or a serialization boundary" —
-	// colab-fleet #147 already found this same mistake once, for a
+	// muster #147 already found this same mistake once, for a
 	// different field. Round-1 measured it directly for THIS field too: a
 	// pid file's own procStart reads "Thu Sep 24 07:38:57 2026" for the same
 	// process whose `ps -o lstart=` (parsed as local time, correctly) reads
@@ -703,7 +703,7 @@ var linuxBootTime = func() (time.Time, error) {
 // processSessionRecordBytes returns the raw bytes of one process-sessions file,
 // or false when this driver has no such root configured or the file cannot be
 // read. It is the ONE place that maps a pid to that file, so a caller that needs
-// more of the record than the four fields parsed below (colab-fleetd compat
+// more of the record than the four fields parsed below (muster compat
 // checks the record's whole shape, #183) reads the same bytes rather than
 // building a second reader that could disagree about where the file is.
 func (d *Driver) processSessionRecordBytes(pid int) ([]byte, bool) {

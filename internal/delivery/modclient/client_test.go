@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient"
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient/modtest"
+	"github.com/futurelastic/muster/internal/delivery/modclient"
+	"github.com/futurelastic/muster/internal/delivery/modclient/modtest"
 )
 
 func bg() context.Context { return context.Background() }

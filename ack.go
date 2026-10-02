@@ -22,7 +22,7 @@ type Ack struct {
 	Accepted bool `json:"accepted"`
 }
 
-// RenameAck is rename()'s own response (colab-fleet #222), not the bare Ack
+// RenameAck is rename()'s own response (muster #222), not the bare Ack
 // above. The reason is that rename's id half is NOT intent-only the way
 // Ack's doctrine requires: by the time a driver's Rename returns, the
 // multiplexer-level id change has already happened or it has not — unlike

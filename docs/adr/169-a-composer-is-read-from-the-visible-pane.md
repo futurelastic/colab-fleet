@@ -1,7 +1,7 @@
 # ADR 169 — A composer is read from the visible pane, not from the history margin
 
 **Status:** accepted (2026-09-14)
-**Issue:** colab-fleet #169 · builds on #134, #149
+**Issue:** muster #169 · builds on #134, #149
 
 ## Context
 

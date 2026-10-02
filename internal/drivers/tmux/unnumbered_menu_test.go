@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // keyedScreen is a pane model that redraws under send-keys: fakeDialog for a
@@ -18,7 +18,7 @@ type keyedScreen interface {
 }
 
 // fixtureTrustMenuUnnumbered is the folder-trust question as measured through
-// the service for colab-fleet#171, on a session created in a directory the
+// the service for muster#171, on a session created in a directory the
 // runtime had never seen. Verbatim apart from the directory line. Note the
 // order (the decline first) and that no row carries a number.
 const fixtureTrustMenuUnnumbered = `
@@ -58,7 +58,7 @@ type fakeMenu struct {
 }
 
 // pressBurst is how the fake mux hands over several keys sent in one
-// send-keys call. The real unnumbered menu applied every one (colab-fleet#205),
+// send-keys call. The real unnumbered menu applied every one (muster#205),
 // so by default so does this; burstKeepsLast is the layout that does not (beside
 // a preview pane, #204) — a shape no unnumbered menu has been measured to have,
 // kept so the read-back that guards the walk is tested against it.
@@ -276,7 +276,7 @@ func TestRespondConfirmsNothingWhenTheHighlightDoesNotArrive(t *testing.T) {
 	}
 }
 
-// colab-fleet#205: the walk sends its arrows in one call. If a menu kept only
+// muster#205: the walk sends its arrows in one call. If a menu kept only
 // one key of them, the highlight would stop short of the row chosen — and the
 // confirm that follows would accept THAT row. The read-back is what stops it:
 // a partial walk is `unknown`, the menu is still up, and no confirm was sent.

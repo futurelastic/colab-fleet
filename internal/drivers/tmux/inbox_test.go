@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/inboxclient"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/inboxclient"
 )
 
 // newInboxTestDriver mirrors newProcessIdentityTestDriver (processidentity_test.go)
@@ -85,7 +85,7 @@ func closeBeforeReading(server net.Conn) {
 }
 
 // TestCapabilities_DeliversToInbox_ReflectsWhetherAResolverIsConfigured is
-// colab-fleet #122's own acceptance surface: an operator must be able to
+// muster #122's own acceptance surface: an operator must be able to
 // tell whether #119's path is wired without inferring it from a receipt's
 // wording. This proves the declared capability actually tracks the one
 // thing that decides sendViaInbox's first branch — d.inboxResolver == nil —
@@ -422,7 +422,7 @@ func TestSend_InboxNoSuchSession_FallsThroughToTheSamePaneRefusal(t *testing.T) 
 	assertInboxExit(t, d, counterInboxFallbackIdentityUnresolved, 0, 0)
 }
 
-// TestSend_InboxWithoutModeClass_FallsBackToPane is colab-fleet #148's own
+// TestSend_InboxWithoutModeClass_FallsBackToPane is muster #148's own
 // regression test, and the one that actually proves the bug fixed.
 //
 // Before this change the resolver's address carried no permission-mode class,
@@ -535,7 +535,7 @@ func TestSend_InboxAttestedEnvelopeReachesTheWire(t *testing.T) {
 	}
 }
 
-// colab-fleet #158: the sender label must reach the wire INSIDE the envelope —
+// muster #158: the sender label must reach the wire INSIDE the envelope —
 // as the sender-name attribute, with a relayOfHuman declaration as the body's
 // first line — and the send must still be attested and delivered.
 func TestSend_InboxCarriesTheSenderLabel(t *testing.T) {
@@ -563,7 +563,7 @@ func TestSend_InboxCarriesTheSenderLabel(t *testing.T) {
 	}
 }
 
-// colab-fleet #158: the terminal path has no envelope, so the same label goes
+// muster #158: the terminal path has no envelope, so the same label goes
 // on as the first line of the pasted text.
 func TestSend_PaneFallbackCarriesTheSenderLabelAsFirstLine(t *testing.T) {
 	f := twoSessions()
@@ -608,7 +608,7 @@ func TestPaneLabelled_NilFromIsIdentity(t *testing.T) {
 	}
 }
 
-// colab-fleet #158: the label is added AFTER the #53 guard has judged the
+// muster #158: the label is added AFTER the #53 guard has judged the
 // caller's own text. Prefixing first would push a runtime-syntax line off the
 // first line and past the guard — a label must never be a way around it.
 func TestSend_SenderLabelDoesNotDefuseTheRuntimeSyntaxGuard(t *testing.T) {

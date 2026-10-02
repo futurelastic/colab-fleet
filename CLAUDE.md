@@ -1,4 +1,4 @@
-# CLAUDE.md — colab-fleet
+# CLAUDE.md — muster
 
 A machine-local service that owns session agents across a fleet, and the peer
 federation that makes two of them look like one. Go, standard library only.
@@ -26,7 +26,7 @@ This repo follows the [colab-handbook](https://github.com/godx-jp/colab-handbook
   sessions taking the same issue.
 - **Secret guard:** `.githooks/pre-commit` runs only in a clone that ran
   `.githooks/install.sh` — the setting is per clone, and a commit says nothing
-  when it is off (#201). `go run ./cmd/colab-fleetd doctor --offline` from a
+  when it is off (#201). `go run ./cmd/muster doctor --offline` from a
   clone prints a `hooks.pre-commit` row; `warn` means commits there are not
   scanned. Check it before your first commit in a clone you have not used.
 - **Gate:** `scripts/gate.sh` — `gofmt -l .`, `go build ./...`, `go vet ./...`,

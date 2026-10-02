@@ -1,4 +1,4 @@
-// Package inboxclient speaks the wire protocol colab-fleet #115 measured
+// Package inboxclient speaks the wire protocol muster #115 measured
 // empirically against a target session's own inbox — a small, undocumented,
 // third-party surface (see that issue): newline-delimited JSON, an auth line
 // carrying a per-session token, then a message line carrying the text as a
@@ -32,7 +32,7 @@ import (
 	"time"
 )
 
-// Outcome is the closed set of receipts colab-fleet #115 originally observed
+// Outcome is the closed set of receipts muster #115 originally observed
 // the inbox return, transcribed verbatim. #117's ruling requires a caller to
 // surface these honestly rather than flatten them into whatever vocabulary
 // it had before this package existed — see fleet.Outcome's own #119

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
 // #184: the service's half of routing — everything that depends on WHO is
@@ -326,8 +326,8 @@ func TestSendInput_CallerSetClaimsNeverMakeAHumanRelay(t *testing.T) {
 // person unlabelled at all. #196 (ruled on #195, option 2) did NOT change this
 // request-time behaviour; it removed what made it dangerous. The header can only
 // ever pick the terminal path here, because such a machine cannot turn the inbox
-// route on: colab-fleetd refuses to start with FLEET_INBOX_INDEX and no table
-// (cmd/colab-fleetd/inboxgate.go, pinned by TestRequireTableForInbox), so a
+// route on: muster refuses to start with FLEET_INBOX_INDEX and no table
+// (cmd/muster/inboxgate.go, pinned by TestRequireTableForInbox), so a
 // person's message is never diverted into a peer message, whether it carried the
 // header or not. If this test starts failing because the headers stopped being
 // honoured, that is a different decision from #196's and it strands unlabelled

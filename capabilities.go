@@ -80,7 +80,7 @@ type DriverCapabilities struct {
 	//
 	// Mirrors ObservesState in shape, not in kind. `keys` is the one
 	// operation §5.1 asks every operation not to be — it delivers a literal
-	// keystroke, not a question — and colab-fleet issue #59 ruled that the
+	// keystroke, not a question — and muster issue #59 ruled that the
 	// honest fix is not to hide the mechanism but to make every driver
 	// declare it. A driver over a runtime with no screen to capture reports
 	// false and answers driver.ErrUnsupported (§5.6) rather than emulate a
@@ -103,7 +103,7 @@ type DriverCapabilities struct {
 	// and become permanently incapable in a caller's cache (§4.3, D3).
 	ObservesControlChannel bool `json:"observesControlChannel"`
 	// ObservesPermissionMode reports whether the driver can read the session's
-	// current permission mode (SessionState.PermissionMode, colab-fleet #194).
+	// current permission mode (SessionState.PermissionMode, muster #194).
 	//
 	// It exists so an absent PermissionMode is answerable rather than
 	// ambiguous: without it, "this driver never looks" and "it looked and a
@@ -117,7 +117,7 @@ type DriverCapabilities struct {
 	ObservesPermissionMode bool `json:"observesPermissionMode"`
 	// ReportsRuntimeSurface reports whether this driver can say anything
 	// about a session's runtime-operated surface (Session.RuntimeSurface,
-	// colab-fleet #85).
+	// muster #85).
 	//
 	// It exists so a nil RuntimeSurface is answerable rather than
 	// ambiguous. Without it, "this runtime operates no such surface",
@@ -134,7 +134,7 @@ type DriverCapabilities struct {
 	// SupportsResume reports whether sessions survive a service restart.
 	SupportsResume bool `json:"supportsResume"`
 	// DeliversToInbox reports whether this driver has an inbox delivery
-	// path wired and reachable for at least some targets (colab-fleet
+	// path wired and reachable for at least some targets (muster
 	// #119, #122) — never whether any one call will actually take it,
 	// which stays capability-detected per target regardless of this flag.
 	//

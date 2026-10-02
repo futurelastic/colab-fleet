@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 func TestObserveRecordsOutcomeClassAndSignal(t *testing.T) {

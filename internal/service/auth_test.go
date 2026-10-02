@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
 func principalSrv(t *testing.T, ps []Principal) *httptest.Server {
@@ -95,7 +95,7 @@ func TestReadRequiresItsOwnGrant(t *testing.T) {
 		{http.MethodGet, "/v1/events"},
 		// A fleet-scoped read reaching a peer must be refused on `read`
 		// alone here too — this is deliberately NOT testing whether it
-		// should ALSO need `relay` (colab-fleet #81, undecided on purpose).
+		// should ALSO need `relay` (muster #81, undecided on purpose).
 		{http.MethodGet, "/v1/machines/otherbox/sessions/s1"},
 	}
 	for _, r := range reads {

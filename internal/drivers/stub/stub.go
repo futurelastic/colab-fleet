@@ -12,8 +12,8 @@ package stub
 import (
 	"context"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // defaultDeadlineMs is used when Driver.DeadlineMs is left at its zero
@@ -52,7 +52,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	return fleet.Session{}, driver.ErrUnsupported
 }
 
-// Neither ResumeIfStranded nor ReplaceIfStranded (colab-fleet #112) is
+// Neither ResumeIfStranded nor ReplaceIfStranded (muster #112) is
 // applicable here: this driver supports no operation at all, so there is
 // never a stranded delivery of its own to resume or replace.
 func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text string, opts driver.SendOptions) (fleet.DeliveryReceipt, error) {

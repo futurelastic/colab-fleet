@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// colab-fleet #201: the pre-commit secret guard is per-clone git config, and
+// muster #201: the pre-commit secret guard is per-clone git config, and
 // nothing said so when it was missing. These tests run REAL git against
 // repositories built in a temp directory — the row's whole claim is about what
 // git would do, so a fake git would test nothing — and install the guard with
@@ -53,10 +53,10 @@ func newClone(t *testing.T) string {
 	t.Helper()
 	isolateGit(t)
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "cmd", "colab-fleetd"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "cmd", "muster"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "cmd", "colab-fleetd", "main.go"), []byte("package main\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "cmd", "muster", "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(dir, ".githooks"), 0o755); err != nil {
@@ -142,7 +142,7 @@ func TestHooksRowPassesAfterTheRepositorysOwnInstaller(t *testing.T) {
 	dir := newClone(t)
 	install(t, dir)
 	wantRow(t, hookRow(t, dir, true), statusPass, "git runs this repository's pre-commit hook")
-	wantRow(t, hookRow(t, filepath.Join(dir, "cmd", "colab-fleetd"), true), statusPass, "git runs this repository's pre-commit hook")
+	wantRow(t, hookRow(t, filepath.Join(dir, "cmd", "muster"), true), statusPass, "git runs this repository's pre-commit hook")
 }
 
 // A session works in a linked worktree, not in the clone's own checkout. The

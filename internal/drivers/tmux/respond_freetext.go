@@ -7,11 +7,11 @@ import (
 	"strconv"
 	"strings"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // answerFreeText answers a single-select question in the caller's own words
-// (colab-fleet#206): it puts the highlight on the runtime's free-text row,
+// (muster#206): it puts the highlight on the runtime's free-text row,
 // types the text into it, reads the row back, and only then confirms. A
 // multi-select question takes the same text through answerMultiSelect, which
 // owns the boxes around it.

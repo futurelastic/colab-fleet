@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// colab-fleet #189: principals.human-relay names the configuration gap #184
+// muster #189: principals.human-relay names the configuration gap #184
 // leaves behind — an inbox index, a principal table, and nobody holding
 // human-relay. Every case here is a shape the row must answer differently.
 

@@ -9,7 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // This file holds everything that reads a terminal screen and guesses what
@@ -94,7 +94,7 @@ const (
 	unanchoredQuestionRows = 3
 	// maxQuestionRows bounds a question whose start IS known — the dialog's
 	// header was found, so every row between it and the options is the
-	// question (colab-fleet#220). The screen bounds it already, but a pane an
+	// question (muster#220). The screen bounds it already, but a pane an
 	// agent writes to can be as tall as the agent likes, and this text is
 	// reported to every reader of the session's state, digested into its nonce
 	// and quoted in refusals. A longer question keeps the rows nearest the
@@ -142,14 +142,14 @@ type screen struct {
 	// above it came from the `-S -N` history margin: frozen scrollback, which
 	// a runtime redrawing its composer in place cannot update, and which on a
 	// runtime using the alternate screen predates that screen altogether
-	// (colab-fleet#169). Zero means the pane height was not known when the
+	// (muster#169). Zero means the pane height was not known when the
 	// capture was taken, and every row is treated as it always was.
 	visibleTop int
 	// blankBelow is how many blank rows the capture ended with, dropped from
 	// lines above. capture-pane pads to the pane's height, so a capture whose
 	// last non-blank row is ALSO its last row (blankBelow 0) has that row on the
 	// pane's bottom edge: nothing more can be drawn below it because there is
-	// no row below it (colab-fleet#216). A screen with blank rows under its
+	// no row below it (muster#216). A screen with blank rows under its
 	// last content is a different fact — the runtime had room and painted
 	// nothing there — and is never read as a row cut off by the pane.
 	blankBelow int
@@ -361,7 +361,7 @@ func isRule(line string) bool {
 // composerScan is composerSpan's three-valued verdict. A caller must never
 // collapse composerClipped into either of the other two: only composerFound
 // and composerAbsent license any inference about what the composer holds
-// (colab-fleet#134).
+// (muster#134).
 type composerScan int
 
 const (
@@ -379,7 +379,7 @@ const (
 	// ended above wherever this composer's opening fence and/or ❯-marked
 	// row actually are. This is a statement about what this driver could
 	// read, not about the session: a composer may be sitting there, taller
-	// than captureForClassify's window (colab-fleet#134's field case: ~80
+	// than captureForClassify's window (muster#134's field case: ~80
 	// on-screen rows against a ~24-row scrollback margin). Callers must
 	// treat this as "cannot tell", never as "empty" and never as "found
 	// holding nothing" — see composerText's own contract.
@@ -403,7 +403,7 @@ func composerSpan(s screen) (prompt, last int, scan composerScan) {
 	// The pane's bottom edge cutting the composer's closing rule off. Asked
 	// first, because the walk below cannot answer it: it takes the LAST rule on
 	// screen for the closing fence, and here that rule is the OPENING one, so it
-	// walks up out of the composer into whatever sits above it (colab-fleet#216).
+	// walks up out of the composer into whatever sits above it (muster#216).
 	if bottomCutComposer(s) {
 		return 0, 0, composerClipped
 	}
@@ -419,7 +419,7 @@ func composerSpan(s screen) (prompt, last int, scan composerScan) {
 	if last <= 0 {
 		// No rule at all, or a rule sitting in the very first row with
 		// nothing above it to be a composer's interior. Not classified as
-		// clipped (colab-fleet#134 draws that line at the two walks below,
+		// clipped (muster#134 draws that line at the two walks below,
 		// which at least have a rule to walk up FROM) — a screen with no
 		// rule in view at all is the ordinary "not the TUI" shape most
 		// captures are, and treating every one of those as clipped would
@@ -444,7 +444,7 @@ func composerSpan(s screen) (prompt, last int, scan composerScan) {
 		// (which would have meant composerAbsent, above — this driver
 		// looked and found no composer between the two rules) or a ❯-marked
 		// row. Those are different findings: this one never got to look,
-		// because the capture ended first. colab-fleet#134's own fixture is
+		// because the capture ended first. muster#134's own fixture is
 		// exactly this shape — a tall composer's tail, no opening fence and
 		// no prompt row anywhere in the captured lines.
 		return 0, 0, composerClipped
@@ -491,7 +491,7 @@ func composerSpan(s screen) (prompt, last int, scan composerScan) {
 		}
 		return 0, 0, composerAbsent
 	}
-	// A composer is only read from the VISIBLE pane (colab-fleet#169). When
+	// A composer is only read from the VISIBLE pane (muster#169). When
 	// its opening fence sits in the history margin above the pane, the rows
 	// that settled "this is a fenced composer" are scrollback. They may be an
 	// older frame of this composer, or on an alternate-screen runtime,
@@ -509,7 +509,7 @@ func composerSpan(s screen) (prompt, last int, scan composerScan) {
 
 // bottomCutComposer reports whether the screen ends on a composer's opening
 // rule and its prompt row, with the pane's bottom edge where the closing rule
-// and the mode row would be (colab-fleet#216): a ❯ row that is the LAST row of
+// and the mode row would be (muster#216): a ❯ row that is the LAST row of
 // the pane, opened by a rule, with no rule below it because there is no row
 // below it.
 //
@@ -560,7 +560,7 @@ func bottomCutComposer(s screen) bool {
 // need opposite words. A composer taller than the capture window is one whose
 // top is out of reach; one cut off by the pane's bottom edge has its top in
 // plain view and is missing its bottom, and a caller told the first about the
-// second would look for a paste that is not there (colab-fleet#216).
+// second would look for a paste that is not there (muster#216).
 func composerClippedCause(s screen) string {
 	if bottomCutComposer(s) {
 		return "is cut off by the bottom edge of the pane (its opening rule and prompt row are " +
@@ -589,7 +589,7 @@ func clippedOnlyAboveVisiblePane(s screen) bool {
 
 // composerText returns the text a human has typed into the input box but
 // not submitted, and one of three verdicts about whether a composer is
-// there to hold it (colab-fleet#134).
+// there to hold it (muster#134).
 //
 // # The contract every caller must honour
 //
@@ -637,7 +637,7 @@ func composerText(s screen) (string, composerScan) {
 // composerVisualLines reports how many rows a composer's fenced box
 // occupies on screen right now — prompt through last-1, one row for its
 // first line plus one per continuation row below it — which is exactly how
-// many C-u presses a clear pass should expect to need (colab-fleet#129):
+// many C-u presses a clear pass should expect to need (muster#129):
 // C-u (unix-line-discard) empties the ONE row the cursor sits on and leaves
 // every row above it standing, and it is the on-screen row that matters,
 // not the underlying logical line.
@@ -653,7 +653,7 @@ func composerText(s screen) (string, composerScan) {
 // to recover from a capture even in principle.
 //
 // That this is the right quantity, not merely the available one, has a real
-// field measurement behind it: colab-fleet#32 recorded a composer holding
+// field measurement behind it: muster#32 recorded a composer holding
 // 209 characters — continuous typed text, no line break the human put there
 // — that rendered as four on-screen rows and needed four C-u presses to
 // empty, corrupting on the third when the un-repeated fix of the day only
@@ -681,7 +681,7 @@ func composerVisualLines(s screen) (int, composerScan) {
 
 // composerCursorRowBlank reports whether the composer's BOTTOM content row —
 // the row directly above the closing rule, where typing (and so the cursor)
-// is assumed to sit — is empty right now (colab-fleet#132).
+// is assumed to sit — is empty right now (muster#132).
 //
 // # Why this has to be checked at all
 //
@@ -714,7 +714,7 @@ func composerVisualLines(s screen) (int, composerScan) {
 // scan is composerFound only in the cases composerSpan itself locates a
 // composer in full; otherwise blank is meaningless and the caller gets the
 // same composerAbsent/composerClipped split composerText does — a clipped
-// composer's cursor row is exactly as unreadable as its text (colab-fleet
+// composer's cursor row is exactly as unreadable as its text (muster
 // #134), which #138's clearComposer must treat as "cannot assume blank",
 // never as "assume blank". A composer that has shrunk to (or never had more
 // than) its own ❯-marked line reports blank=false, never true: that line
@@ -749,7 +749,7 @@ func awaitingSelection(s screen) bool {
 // which is the failure mode a sibling project named explicitly: "chasing them
 // individually means a new matcher every time the CLI adds a screen". A menu
 // that paints no numbers at all is recognised by its shape instead — see
-// unnumberedMenu (colab-fleet#171).
+// unnumberedMenu (muster#171).
 func parsePrompt(s screen) *fleet.SessionPrompt {
 	p, _ := parsePromptMenu(s)
 	return p
@@ -758,7 +758,7 @@ func parsePrompt(s screen) *fleet.SessionPrompt {
 // parsePromptMenu is parsePrompt plus the one fact about a menu's shape that
 // ANSWERING it depends on: whether its options carry numbers.
 //
-// colab-fleet#171 measured the difference on the runtime. On a numbered menu
+// muster#171 measured the difference on the runtime. On a numbered menu
 // a digit commits the answer (#168). On the unnumbered folder-trust menu a
 // digit does nothing at all — the screen stayed byte-identical — and only
 // arrow keys move the highlight, which Enter then confirms. A caller's
@@ -774,11 +774,11 @@ func parsePromptMenu(s screen) (*fleet.SessionPrompt, bool) {
 // parsePromptShape is parsePromptMenu with every fact about the menu's shape
 // that answering it depends on (see menuShape), not only whether its options
 // carry numbers. A menu drawn beside a preview pane is the second such fact
-// (colab-fleet#204): its options are read from the list column alone, and a
+// (muster#204): its options are read from the list column alone, and a
 // caller has to know a pane is there because a digit does not commit on it.
 //
 // A menu is read first. When there is none, the runtime's feedback-draft card
-// is the other thing this reads (colab-fleet#215): a notice, not a menu, so it
+// is the other thing this reads (muster#215): a notice, not a menu, so it
 // has no numbered options and no highlight, and it is a prompt only while it is
 // what stands between a caller and the composer — see feedbackCard.answerable.
 func parsePromptShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
@@ -815,7 +815,7 @@ func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 	}
 
 	// A preview pane is read first, because it decides both where the window
-	// starts and what a row means (colab-fleet#204). It can be taller than the
+	// starts and what a row means (muster#204). It can be taller than the
 	// window — the runtime clamps one to 24 content lines, which with its
 	// borders and the dialog's chrome is more rows than promptScanDepth — and
 	// then option 1, on the pane's top row, falls out of it and a session
@@ -854,11 +854,11 @@ func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 	// than "is this really a menu", because on an ACTUAL selection menu
 	// composerSpan itself already reads composerAbsent (composerSpan's own
 	// doc comment: the fenced-composer shape a menu occupies that SAME
-	// visual position instead of, per colab-fleet#58's original finding) —
+	// visual position instead of, per muster#58's original finding) —
 	// masking only ever removes rows a real composer owns, never a real
 	// menu's.
 	promptRow, lastRow, composerScan := composerSpan(s)
-	// Not while a preview pane is on screen (colab-fleet#204). A pane's bottom
+	// Not while a preview pane is on screen (muster#204). A pane's bottom
 	// border is a rule to composerSpan, so a highlighted option BELOW a short
 	// pane sits between two "rules" and reads as a fenced composer — and
 	// masking it made the last option, and the highlight, vanish. A composer
@@ -931,7 +931,7 @@ func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 		if len(p.Options) == 0 && (isDialogTabBar(line) || (wasRule && isDialogChip(line))) {
 			// The dialog's header. Everything above it is the transcript the
 			// dialog was drawn under, and the header itself is not the
-			// question, so neither belongs in Question (colab-fleet#204: it
+			// question, so neither belongs in Question (muster#204: it
 			// read "…tail of the agent's prose ← ☐ Layout ☐ Theme ✔ Submit →
 			// Which layout do you prefer?"). The header is not lost: it is
 			// part of the nonce, below.
@@ -969,7 +969,7 @@ func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 	if len(p.Options) == 0 && footer {
 		// No numbered option anywhere in the window, but a runtime footer
 		// is. That is the one situation an unnumbered menu can be in, and
-		// the footer is what licenses looking for one (colab-fleet#171).
+		// the footer is what licenses looking for one (muster#171).
 		if menu := unnumberedMenu(s.lines[from:]); menu != nil {
 			menu.Nonce = promptNonce(menu)
 			return menu, menuShape{unnumbered: true}
@@ -986,7 +986,7 @@ func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 	// dialog was drawn under: the last couple are the ask, everything above is
 	// not. With the header found, the loop above dropped everything before it, so
 	// every row between the header and the options IS the question, and a bound
-	// of three only cut a wrapped one off at the front (colab-fleet#220). It is
+	// of three only cut a wrapped one off at the front (muster#220). It is
 	// kept whole, up to maxQuestionRows — and then from the options' side.
 	//
 	// Either way the question is a function of the screen, not of the history the
@@ -1020,7 +1020,7 @@ func parseMenuShape(s screen) (p *fleet.SessionPrompt, shape menuShape) {
 }
 
 // questionRail is the rule the runtime draws down the left edge of a question
-// too long for one row (colab-fleet#219): every row of the wrapped question is
+// too long for one row (muster#219): every row of the wrapped question is
 // painted `│ <text>`, and a row between paragraphs is the rail alone.
 const questionRail = "│"
 
@@ -1034,7 +1034,7 @@ func questionRow(line string) string {
 
 // dialogTop returns the row a menu is read from: from, the top of the fixed
 // window, unless that window starts inside the dialog, and then the row under
-// the dialog's opening rule (colab-fleet#219).
+// the dialog's opening rule (muster#219).
 //
 // A dialog is as tall as its question and its option descriptions make it — a
 // question that wraps over several rows, a description under every option —
@@ -1082,7 +1082,7 @@ func dialogTop(lines []string, from int) int {
 }
 
 // The checkbox glyphs a multi-select question paints in front of each option
-// label (colab-fleet#176), measured live on one runtime build: a clear box and
+// label (muster#176), measured live on one runtime build: a clear box and
 // a ticked one. They stay in the option text — that text is what the nonce
 // digests, so a changed tick is a changed prompt, which is exactly what makes
 // an answer to a stale tick state refusable.
@@ -1148,7 +1148,7 @@ func freeTextRow(p *fleet.SessionPrompt) int {
 
 // freeTextOffered decides SessionPrompt.FreeText: whether a driver has the
 // measured key sequence for answering this prompt through its free-text row
-// (colab-fleet#206).
+// (muster#206).
 //
 // Every condition is required, and each one names a layout the sequence was
 // NOT measured on — the answer to those is "not offered", never a guess:
@@ -1188,7 +1188,7 @@ func freeTextOffered(p *fleet.SessionPrompt, shape menuShape) bool {
 // isDialogTabBar recognises the tab row above a question in the runtime's
 // question dialog: `←  ☐ <header>  ✔ Submit  →`, one `☐`/`☒` per question.
 // Measured on a single-question multi-select dialog and a two-question one
-// (colab-fleet#176); the same row #168 modelled for tabbed dialogs.
+// (muster#176); the same row #168 modelled for tabbed dialogs.
 func isDialogTabBar(line string) bool {
 	return strings.HasPrefix(line, "←") && strings.HasSuffix(line, "→") &&
 		strings.Contains(line, "✔ Submit")
@@ -1198,7 +1198,7 @@ func isDialogTabBar(line string) bool {
 // question's own checkboxes — the options a Response.Choices may name — or 0
 // when the prompt is not recognised as multi-select at all.
 //
-// # What was measured (colab-fleet#176, one runtime build, live)
+// # What was measured (muster#176, one runtime build, live)
 //
 //	←  ☒ Fruit  ✔ Submit  →
 //	Which fruits do you like?
@@ -1259,7 +1259,7 @@ func promptTicks(p *fleet.SessionPrompt, boxes int) []bool {
 }
 
 // unnumberedMenu recognises a select menu whose options carry no numbers
-// (colab-fleet#171). Measured on the runtime's folder-trust question in a
+// (muster#171). Measured on the runtime's folder-trust question in a
 // directory it had never seen:
 //
 //	Security guide
@@ -1513,7 +1513,7 @@ func usageLimit(s screen) (resetHint string, blocked bool) {
 			break
 		}
 	}
-	// colab-fleet#215: a feedback-draft card sits between the agent's output and
+	// muster#215: a feedback-draft card sits between the agent's output and
 	// the composer, and its rows are the agent's own draft — prose about whatever
 	// went wrong, which can carry the very words this reads as a runtime notice.
 	// The live region ends above the card.
@@ -1651,7 +1651,7 @@ func lastTurnFailed(s screen) (*fleet.TurnEnd, bool) {
 			break
 		}
 	}
-	// colab-fleet#215: a feedback-draft card sits between the agent's output and
+	// muster#215: a feedback-draft card sits between the agent's output and
 	// the composer, and its rows are the agent's own draft — prose about whatever
 	// went wrong, which can carry the very words this reads as a runtime notice.
 	// The live region ends above the card.
@@ -1721,7 +1721,7 @@ func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
 	if p == nil || len(p.Options) == 0 {
 		return ""
 	}
-	// A kind the parser established from STRUCTURE stands (colab-fleet#215): the
+	// A kind the parser established from STRUCTURE stands (muster#215): the
 	// feedback-draft card is recognised by its box and its key row, not by its
 	// options, whose words ("review", "send", "dismiss") are ordinary and would
 	// match anything. Nothing below runs on option text alone for this kind.
@@ -1731,7 +1731,7 @@ func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
 	lower := make([]string, 0, len(p.Options))
 	for _, o := range p.Options {
 		// A multi-select question paints a checkbox in front of every label,
-		// the free-text row's included (colab-fleet#176). Stripped here so
+		// the free-text row's included (muster#176). Stripped here so
 		// the agent-question guard below still sees "type something" at the
 		// start of that row — with the box left on, the guard missed, and an
 		// agent's checkbox option reading "allow this" could be labelled a
@@ -1774,7 +1774,7 @@ func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
 		// an accept and a decline of the same thing, and a screen that carries
 		// only one of them is a screen this rule has not been measured on. It
 		// fails to empty rather than to a kind a consent would then answer
-		// (colab-fleet #211).
+		// (muster #211).
 		return fleet.PromptExternalImports
 	case hasOption("don't ask again"), hasOption("allow this"):
 		return fleet.PromptToolPermission
@@ -1794,7 +1794,7 @@ func classifyPromptKind(p *fleet.SessionPrompt) fleet.PromptKind {
 	//
 	// (The last pair was added when the second boot question, about a directory's
 	// instruction files importing a file from outside it, was measured on a
-	// session that never got past it — colab-fleet #211. Unlike the rows above
+	// session that never got past it — muster #211. Unlike the rows above
 	// it IS classified, because both of its options carry its identifying words.)
 	//
 	// (Read from one installed build; this repository's README pins the span
@@ -1838,7 +1838,7 @@ func promptNonce(p *fleet.SessionPrompt) string {
 //
 // The header used to reach the nonce by accident: it sat inside Question, so
 // answering one tab flipped its ☐ to ☒ and the next tab's nonce differed even
-// when two tabs asked the same thing (colab-fleet#168's gotcha). Question no
+// when two tabs asked the same thing (muster#168's gotcha). Question no
 // longer carries it (#204), so it goes in on purpose — and with the current
 // tab, which the plain text cannot show: two tabs with the same question, the
 // same options and neither answered read alike, and an answer meant for one
@@ -1885,7 +1885,7 @@ func selectionPrompt(s screen) (string, bool) {
 func spinner(s screen) (running bool, found bool) {
 	// Never scan below the composer's own closing rule, when one is found.
 	//
-	// colab-fleet#229: a footer NOTICE the runtime paints under the composer
+	// muster#229: a footer NOTICE the runtime paints under the composer
 	// — "⚠ Transcript writes are failing (disk full — ENOSPC) · recent
 	// messages may …" — has exactly the shape statusLine matches: a single
 	// non-ASCII symbol, a space, a capitalised word, and (because the
@@ -2062,7 +2062,7 @@ func classifyPaneRemembering(raw string, captured, alive, young bool, prior pane
 
 // classifyCaptureRemembering is classifyPaneRemembering for a capture that
 // carries its pane height, so the composer is read from the visible pane only
-// (colab-fleet#169). The digest stays a digest of the whole capture: it
+// (muster#169). The digest stays a digest of the whole capture: it
 // fingerprints what was read, and the pane boundary changes nothing about that.
 func classifyCaptureRemembering(c paneCapture, captured, alive, young bool, prior paneMemory, now time.Time) (fleet.SessionState, string) {
 	raw := c.text
@@ -2223,7 +2223,7 @@ func resolveAmbiguity(st fleet.SessionState, amb ambiguity, prior paneMemory, di
 	}
 	age := stable.Round(time.Second).String()
 	// Both branches below MUTATE the candidate st and return it, rather than
-	// building a fresh SessionState the way this code used to (colab-fleet
+	// building a fresh SessionState the way this code used to (muster
 	// #76). InferredState only ever set Status, Confidence, Evidence and
 	// Since — every other field the candidate carried (ControlChannel, most
 	// concretely: measured landing a real corpus case, a session's genuinely
@@ -2341,7 +2341,7 @@ func classifyAgedDetail(raw string, alive, young bool) (st fleet.SessionState, a
 }
 
 // classifyAgedDetailVisible is classifyAgedDetail with the capture's pane
-// height, 0 when unknown (colab-fleet#169; see screen.visibleTop).
+// height, 0 when unknown (muster#169; see screen.visibleTop).
 func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (st fleet.SessionState, amb ambiguity) {
 	if !alive {
 		// §8: dead is terminal. This is the one status this driver can
@@ -2371,7 +2371,7 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 	// session, an idle one and one blocked on a prompt alike, and a branch added
 	// later that returned around it would make the field read as "not observed"
 	// exactly when a client cycling toward a mode most needs an answer.
-	// Warnings (colab-fleet#230) is stamped in this same deferred block for
+	// Warnings (muster#230) is stamped in this same deferred block for
 	// the identical reason ControlChannel and PermissionMode are: a footer
 	// notice is true of a working session, an idle one, and one blocked on a
 	// prompt alike, and a branch added later that returned around this would
@@ -2401,7 +2401,7 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 			st.Prompt.Kind = classifyPromptKind(st.Prompt)
 		}
 		if st.Prompt != nil && st.Prompt.Kind == fleet.PromptFeedbackReview {
-			// colab-fleet#215: the card is not a menu awaiting a keypress in the
+			// muster#215: the card is not a menu awaiting a keypress in the
 			// sense every other prompt is, and saying so would be the wrong
 			// thing to hand a person. Name what it is and why it is reported.
 			st.Evidence = "the runtime is showing its feedback-draft card over the composer, which " +
@@ -2453,9 +2453,9 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 		return st, ambNone
 	}
 
-	// colab-fleet#215: the feedback-draft card over a composer this driver cannot
+	// muster#215: the feedback-draft card over a composer this driver cannot
 	// read as a whole, and not the answerable key row: text on its ❯ row that a
-	// key would be appended to, or (colab-fleet#217) one of the card's other
+	// key would be appended to, or (muster#217) one of the card's other
 	// states — the send confirmation, the in-flight line, the send error — whose
 	// wrapped text takes rows the key row does not, so that even the ❯ row is
 	// off the bottom. None is a prompt (a person answers them at the terminal),
@@ -2466,7 +2466,7 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 		return fleet.UnknownState(fleet.ConfidenceInferred, c.evidence()), ambNone
 	}
 
-	// colab-fleet#217: the runtime's feedback panel replaces the composer. The
+	// muster#217: the runtime's feedback panel replaces the composer. The
 	// spinner line above it still reads as a finished turn, and the branch below
 	// would call the screen idle with an empty composer that is not there.
 	if _, ok := liveFeedbackPanel(s); ok {
@@ -2480,7 +2480,7 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 	// hazard (§2.4), not a state.
 	pending, composerScanResult := composerText(s)
 	hasComposer := composerScanResult == composerFound
-	// clipped (colab-fleet#134): a composer is structurally there, this
+	// clipped (muster#134): a composer is structurally there, this
 	// driver just could not read it in full. Handled as its own branch
 	// below, ahead of every case that would otherwise assert "composer
 	// empty" from hasComposer being false — clipped must never be read as
@@ -2503,7 +2503,7 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 		return held, ambNone
 
 	case foundSpinner && !running && clipped:
-		// colab-fleet#134: the turn finished, but this driver's own capture
+		// muster#134: the turn finished, but this driver's own capture
 		// ended above the composer's opening fence — it genuinely cannot
 		// tell whether a human left unsent text sitting there. The
 		// composer-empty branch just below must not fire for this screen:
@@ -2513,7 +2513,7 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 			"turn finished; composer "+composerClippedCause(s)+", cannot confirm it is empty"), ambNone
 
 	case foundSpinner && !running && !hasComposer:
-		// colab-fleet#216: the turn finished and no composer was found. The
+		// muster#216: the turn finished and no composer was found. The
 		// branch below says "composer empty", which is a claim about a composer
 		// and this screen has none this driver read — it used to fall through to
 		// it, so a screen the send gate refuses ("no composer has been painted")
@@ -2591,7 +2591,7 @@ func classifyAgedDetailVisible(raw string, paneHeight int, alive, young bool) (s
 			return fleet.InferredState(fleet.StatusStarting,
 				"no TUI composer yet; session is young enough to still be starting", nil), ambNone
 		}
-		// colab-fleet #64: "pane may not be running the expected runtime" names
+		// muster #64: "pane may not be running the expected runtime" names
 		// only one of the two situations this shape actually covers, and picks
 		// the one that makes the pane sound broken. The other, measured
 		// directly: the runtime takes the whole screen for a full-screen

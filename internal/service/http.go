@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/delivery"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/inboxclient"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/delivery"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/inboxclient"
 )
 
 // Config wires the pieces an HTTP server needs beyond the Service itself.
@@ -109,7 +109,7 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 // what Config.Principals implements below, once a deployment configures
 // more than one peer identity to distinguish — this function only
 // authenticates and resolves; mutating and reading are what consult a
-// resolved principal's grants (colab-fleet #80 found this comment had
+// resolved principal's grants (muster #80 found this comment had
 // drifted from the code it sits above: the "future work" it once was had
 // already landed for the mutating verbs by the time this was written, and
 // only the read half was still true).
@@ -208,7 +208,7 @@ func mutating(svc *Service, cfg Config, next http.HandlerFunc) http.HandlerFunc 
 
 // reading gates every read route behind Config.Principals' read grant (§6)
 // — the read-side counterpart mutating already provides for every mutating
-// verb (colab-fleet #80). Before this existed, grantForVerb's own GrantRead
+// verb (muster #80). Before this existed, grantForVerb's own GrantRead
 // answer for a GET was computed by nothing and consulted by nothing:
 // withAuth resolved a principal and asked no further question, so any
 // authenticated principal — a janitor scoped to one narrow mutating grant,
@@ -221,7 +221,7 @@ func mutating(svc *Service, cfg Config, next http.HandlerFunc) http.HandlerFunc 
 //
 // Deliberately NOT mutating()'s relay-target upgrade: a fleet-scoped read,
 // or one explicitly naming a peer machine, needs only GrantRead here,
-// regardless of target. Ruled, not defaulted into (colab-fleet #81): a
+// regardless of target. Ruled, not defaulted into (muster #81): a
 // relayed mutation changes state on a machine the caller is not talking to,
 // while a relayed read does not, so requiring GrantRelay for both would
 // treat reaching and changing as one act. The symmetric rule — folding
@@ -341,7 +341,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // setResolutionHeaders makes resolveSessionDriver's choice visible on the
-// wire (colab-fleet issue #60 guardrail 2) — set once, right after a
+// wire (muster issue #60 guardrail 2) — set once, right after a
 // resolution succeeds, so it is present whether the operation that follows
 // eventually succeeds or fails. §5.7 forbids a caller who named its runtime
 // and a caller who got the machine's configured default rendering alike;
@@ -449,19 +449,19 @@ func handleHealth(svc *Service) http.HandlerFunc {
 			// vintages, and nothing could previously tell them apart.
 			"build": svc.build,
 			// This machine's effective limit on `prompt` (create) and
-			// `text` (input) — colab-fleet #130, the ask-do-not-infer
+			// `text` (input) — muster #130, the ask-do-not-infer
 			// move #121 already made for build above. It is what
 			// GET /v1/machines' per-entry maxInputBytes for self reports,
 			// and what internal/drivers/remote's peerHealth reads to learn
 			// a PEER's own value the same way it already learns build.
 			"maxInputBytes": svc.MaxInputBytes(),
 			// The bounds this machine enforces on session labels
-			// (colab-fleet #153). Its presence is also how a relaying peer
+			// (muster #153). Its presence is also how a relaying peer
 			// learns this service carries labels at all, so a labelled
 			// create is refused there rather than silently stripped here.
 			"labels": fleet.SelfLabelLimits(),
 			// Whether this service's create endpoint understands
-			// conversationId (colab-fleet #224) — the same reason `labels`
+			// conversationId (muster #224) — the same reason `labels`
 			// is reported one line up: this is a wire-protocol fact, learned
 			// by internal/drivers/remote's peerHealth the same way it learns
 			// build and labels, so a create carrying the field is refused
@@ -494,7 +494,7 @@ func handleHealth(svc *Service) http.HandlerFunc {
 func handleMachines(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// ?verify=1 re-probes every peer first, instead of answering from
-		// the cached cycle (colab-fleet #154). Still only read.
+		// the cached cycle (muster #154). Still only read.
 		if r.URL.Query().Get("verify") == "1" {
 			svc.RefreshPeers(r.Context(), parseDeadline(r))
 		}
@@ -561,7 +561,7 @@ func handleListSessions(svc *Service) http.HandlerFunc {
 	}
 }
 
-// handleListClosedSessions answers GET /v1/sessions/closed (colab-fleet
+// handleListClosedSessions answers GET /v1/sessions/closed (muster
 // #179): the records this service keeps of sessions that ended, for a bounded
 // retention period. `since` (RFC 3339) keeps records that closed at or after
 // it; `scope` has the live list's meaning.
@@ -595,7 +595,7 @@ func handleListClosedSessions(svc *Service) http.HandlerFunc {
 }
 
 // parseLabelFilter reads repeated `label=key:value` parameters into the AND
-// set GET /v1/sessions filters on (colab-fleet #153). The split is on the
+// set GET /v1/sessions filters on (muster #153). The split is on the
 // first separator, which keys may not contain. Naming one key twice is
 // refused rather than answered with a list that can never match anything.
 func parseLabelFilter(raw []string) (map[string]string, *fleet.Error) {
@@ -846,7 +846,7 @@ type createSessionBody struct {
 	Consents       []fleet.PromptKind `json:"consents"`
 
 	// ConversationId asks the runtime to start a NEW conversation under a
-	// caller-chosen UUID (colab-fleet #224) — mutually exclusive with Resume,
+	// caller-chosen UUID (muster #224) — mutually exclusive with Resume,
 	// which continues one. See fleet.SessionSpec.ConversationId.
 	ConversationId string `json:"conversationId"`
 
@@ -856,7 +856,7 @@ type createSessionBody struct {
 	McpConfig []fleet.AbsolutePath `json:"mcpConfig"`
 
 	// Labels are stored by the service against the created session
-	// (colab-fleet #153). Only create is needed to send them, as for name
+	// (muster #153). Only create is needed to send them, as for name
 	// and marker: they describe the session, they grant it nothing.
 	Labels map[string]string `json:"labels"`
 }
@@ -886,9 +886,9 @@ func createNeedsSend(body createSessionBody) string {
 }
 
 // defaultMaxInputBytes bounds `prompt` on create and `text` on input
-// (colab-fleet #114) when no machine-local override is configured
-// (Service.MaxInputBytes, cmd/colab-fleetd/config.go's `maxInputBytes`,
-// colab-fleet #130). A caller that pastes something long into either field
+// (muster #114) when no machine-local override is configured
+// (Service.MaxInputBytes, cmd/muster/config.go's `maxInputBytes`,
+// muster #130). A caller that pastes something long into either field
 // reaches the composer and then never submits — the session sits at zero
 // turns holding unsent text with no way forward but resumeIfStranded
 // (identical text only) or destroying the session (#110, #112). Rejecting
@@ -971,7 +971,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error() + " (#153)", Machine: machine})
 			return
 		}
-		// colab-fleet #224: checked here, before any driver is resolved —
+		// muster #224: checked here, before any driver is resolved —
 		// same placement as rejectOverLength and ValidateLabels above, and
 		// for the same reason stated on rejectOverLength: a relayed create is
 		// pre-checked against these two rules before the call ever crosses to
@@ -1083,7 +1083,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			return
 		}
 
-		// colab-fleet #84/#85/#86: the driver builds the response now — it is
+		// muster #84/#85/#86: the driver builds the response now — it is
 		// the only party that knows what a create actually did — so this
 		// handler no longer synthesizes a Session from the caller's own
 		// request. Two fields still need a fallback here, both for reasons
@@ -1116,7 +1116,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 		if sess.State.Status == "" {
 			sess.State, _ = d.State(ctx, requestFrom(r), sess.SessionRef)
 		}
-		// Labels (colab-fleet #153). A local session's are this service's to
+		// Labels (muster #153). A local session's are this service's to
 		// store; a relayed create's are the peer's, and arrive on its answer.
 		if via != resolvedPeer {
 			svc.history.created(resolvedRuntime, sess)
@@ -1246,7 +1246,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			// and could not confirm. It never submits text the service did not
 			// place there — see driver.SendOptions.
 			ResumeIfStranded bool `json:"resumeIfStranded,omitempty"`
-			// ReplaceIfStranded (colab-fleet #112) clears a composer this
+			// ReplaceIfStranded (muster #112) clears a composer this
 			// service's own record shows it stranded, and delivers THIS
 			// call's DIFFERENT text in its place — see driver.SendOptions.
 			// Easy to forget forwarding, the same way #33 already warned
@@ -1257,7 +1257,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			// prepared to have cleared or submitted — the draft rule's
 			// caller-supplied proof. See driver.SendOptions.
 			Expect string `json:"expect,omitempty"`
-			// From (colab-fleet #158) labels the message with who it says
+			// From (muster #158) labels the message with who it says
 			// it comes from. Its Machine is replaced by stampSender below,
 			// never passed through.
 			From *fleet.MessageFrom `json:"from,omitempty"`
@@ -1474,7 +1474,7 @@ func (svc *Service) labelledSender(r *http.Request, from *fleet.MessageFrom) *fl
 	return &out
 }
 
-// stampSender applies colab-fleet #158's one rule about a sender's machine:
+// stampSender applies muster #158's one rule about a sender's machine:
 // the service stamps it, the caller never supplies it.
 //
 // The machine is where the request ENTERED the fleet. For a direct request
@@ -1537,7 +1537,7 @@ func handleRespond(svc *Service) http.HandlerFunc {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error()})
 			return
 		}
-		// colab-fleet#206: a free-text answer is typed into a field of the same
+		// muster#206: a free-text answer is typed into a field of the same
 		// runtime input reads, so it is bounded by the same limit and for the
 		// same reason (#114) — at this boundary, for a local and a relayed
 		// request alike, before a driver is asked to type it.
@@ -1633,7 +1633,7 @@ func handleDiscard(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		// colab-fleet#136: force is the escape hatch past a proven-futile
+		// muster#136: force is the escape hatch past a proven-futile
 		// ordinary pass. It is its own query parameter, deliberately not
 		// folded into expect — expect keeps meaning exactly what it always
 		// has (the digest the caller last saw), and force is a SEPARATE
@@ -1663,7 +1663,7 @@ func handleRename(svc *Service) http.HandlerFunc {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "malformed JSON body", Machine: machine})
 			return
 		}
-		// Trimmed ONCE, here, and used everywhere below (colab-fleet #222 review
+		// Trimmed ONCE, here, and used everywhere below (muster #222 review
 		// fix): before this, publishRename/labels.rekey/history.renamed read the
 		// UNTRIMMED body.Name while tmux's own Rename renamed to the trimmed one
 		// (tmux.go strips it independently), so a name with incidental leading or
@@ -1697,17 +1697,17 @@ func handleRename(svc *Service) http.HandlerFunc {
 		// id go quiet and a stranger appear — indistinguishable from a session
 		// dying and another being created, which is exactly the wrong reading.
 		//
-		// This is the accept-time half only (RenameAccepted). colab-fleet #103:
+		// This is the accept-time half only (RenameAccepted). muster #103:
 		// a rename that reverts still needs a later, honest word on the stream
 		// about it, which publishRename's own corroboration watch supplies —
 		// see rename_corroboration.go.
 		//
-		// Deliberately BEFORE the title-sync step below (colab-fleet #222): the
+		// Deliberately BEFORE the title-sync step below (muster #222): the
 		// id-change announcement must stay exactly as timely as it was before
 		// that step existed — nothing about bringing the runtime's title along
 		// is allowed to delay a subscriber learning the id itself already moved.
 		svc.publishRename(machine, id, name, req.Expect.StartedAt)
-		// Labels follow the session to its new id (colab-fleet #153), and the
+		// Labels follow the session to its new id (muster #153), and the
 		// title half is synced on the runtime, on a LOCAL driver only — via ==
 		// resolvedPeer means d is a remote driver, and the peer machine's own
 		// service already ran both of these against its own state; running them
@@ -1725,7 +1725,7 @@ func handleRename(svc *Service) http.HandlerFunc {
 }
 
 // handleLabels changes a session's labels after it exists (POST …/labels,
-// colab-fleet #153): merge semantics, and a null value deletes its key.
+// muster #153): merge semantics, and a null value deletes its key.
 //
 // It corroborates against startedAt the way rename does, for the same
 // reason: labelling the wrong session succeeds silently and binds a stranger

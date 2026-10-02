@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// colab-fleet #102: "not yet corroborated" and "no identity ever asserted"
+// muster #102: "not yet corroborated" and "no identity ever asserted"
 // must round-trip as distinguishable values — the field being absent from
 // Session's JSON is the latter; a present IdentityAssertion with Drifted nil
 // is the former. Collapsing them would read an adopted/foreign session as

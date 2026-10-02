@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // Reading the runtime's own record of a REFUSAL, rather than the screen it
@@ -162,7 +162,7 @@ type apiErrorRecordEntry struct {
 // that.
 //
 // torn is true whenever the file was larger than this window and the read
-// therefore started mid-file — colab-fleet #111's turnsSince is the first
+// therefore started mid-file — muster #111's turnsSince is the first
 // caller that needs this itself (its own honesty rule depends on knowing
 // whether the window could possibly have reached back far enough); every
 // other caller here answers "what does the MOST RECENT entry say" and does
@@ -262,7 +262,7 @@ func (f apiErrorFact) resetHintText() string {
 
 // turnRecordEntry is the subset of one JSONL line turnsSince decodes: just
 // enough to recognise a turn-boundary marker and its timestamp, nothing
-// about what the turn said or produced (colab-fleet #111). The runtime
+// about what the turn said or produced (muster #111). The runtime
 // writes this entry unasked, as an ordinary structural marker between
 // turns — never something an agent authors — which is the provenance
 // docs/adr/111-turns-is-a-liveness-fact-not-a-result-channel.md rests the
@@ -337,7 +337,7 @@ func turnsSince(path string, since time.Time) (count int, ok bool) {
 // large the gap has grown — which is exactly what turnsSince's own
 // window-honesty rule (correctly, by its own contract) cannot promise once
 // the tail window no longer reaches back to the ORIGINAL delivery mark
-// (colab-fleet #142: a single long turn is large enough to do this between
+// (muster #142: a single long turn is large enough to do this between
 // polls).
 //
 // ok is false only when the record cannot be opened/stat'd, or the file is
@@ -379,7 +379,7 @@ func turnsSinceOffset(path string, from int64) (count int, ok bool) {
 	return count, true
 }
 
-// turnsFor answers colab-fleet #111's liveness fact for one session, given
+// turnsFor answers muster #111's liveness fact for one session, given
 // its already-resolved conversation record — List resolves that in its own
 // pending-conversation pass before this runs; State's own call site resolves
 // it itself, the same split upgradeLastTurnFromRecord already uses between
@@ -415,7 +415,7 @@ func (d *Driver) turnsFor(id, cwd string, conv *fleet.ConversationRef) *int {
 	if statErr == nil && mark.Size > 0 && info.Size() > mark.Size {
 		// A checkpoint already exists: count only what landed after it.
 		// This needs no window-honesty proof against `mark.At` — `mark.Size`
-		// is itself the already-vouched-for boundary (colab-fleet #142).
+		// is itself the already-vouched-for boundary (muster #142).
 		added, addedOK := turnsSinceOffset(path, mark.Size)
 		if addedOK {
 			n := mark.Count + added

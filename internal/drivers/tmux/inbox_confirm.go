@@ -1,6 +1,6 @@
 package tmux
 
-// This file is colab-fleet #184's answer to the question the inbox path could
+// This file is muster #184's answer to the question the inbox path could
 // never answer before: did the receiver actually take the message?
 //
 // An inbox write has no reply channel (#120), so a clean write only ever proved

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/compat"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/compat"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // # Probes and checks
@@ -221,7 +221,7 @@ type compatEvidence struct {
 	// a contaminated composer is worse than none.
 	dirty string
 	// rename is what driving one programmatic rename of session A showed
-	// (colab-fleet #227). It runs last, after every send, because it changes
+	// (muster #227). It runs last, after every send, because it changes
 	// session A's own id.
 	rename compatRename
 }

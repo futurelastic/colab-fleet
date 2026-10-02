@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
 // keySender is a driver that can press a key, so the route can be exercised
@@ -219,7 +219,7 @@ func TestKeys_IsItsOwnGrantAndNotImpliedBySend(t *testing.T) {
 	}
 }
 
-// colab-fleet #68: a fresh deployment refuses every keypress until an
+// muster #68: a fresh deployment refuses every keypress until an
 // operator explicitly grants `keys` — expected, since every grant defaults
 // to denied, but the refusal used to say only what was missing, not that
 // missing it is the normal state of an unconfigured principal. Measured

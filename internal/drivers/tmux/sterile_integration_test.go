@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // The decisive check for the login-shell wrap, and the reason the obvious

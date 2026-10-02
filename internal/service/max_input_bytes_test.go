@@ -9,13 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
 // --- Service.SetMaxInputBytes / MaxInputBytes -----------------------------
 
-// TestMaxInputBytes_DefaultsWithoutConfiguration is colab-fleet #130's core
+// TestMaxInputBytes_DefaultsWithoutConfiguration is muster #130's core
 // acceptance criterion: an unconfigured deployment behaves exactly as
 // before this setting existed.
 func TestMaxInputBytes_DefaultsWithoutConfiguration(t *testing.T) {

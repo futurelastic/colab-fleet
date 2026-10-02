@@ -15,13 +15,13 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
-	"github.com/godx-jp/colab-fleet/internal/service"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/drivers/stub"
+	"github.com/futurelastic/muster/internal/service"
 )
 
-// Session labels across a federation hop (colab-fleet #153). The rules under
+// Session labels across a federation hop (muster #153). The rules under
 // test are all about the MIXED-VERSION case: a peer on a build that predates
 // labels must never silently drop them on a create, never have its unfiltered
 // answer counted as a filter's matches, and never have its missing route read

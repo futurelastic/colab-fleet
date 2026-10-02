@@ -35,7 +35,7 @@ func TestRouteOfFallsBackWhenUnmatched(t *testing.T) {
 	}
 }
 
-// colab-fleet#105: input and respond both require GrantSend, so before this
+// muster#105: input and respond both require GrantSend, so before this
 // fix the audit line for each read verb=send and nothing else — identical,
 // whatever route was actually hit. This is the fix's own oracle: two
 // requests sharing a grant must not share a route in the log.

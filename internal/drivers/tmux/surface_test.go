@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
-// colab-fleet #85: a session can be reachable on a surface the runtime
+// muster #85: a session can be reachable on a surface the runtime
 // operates, and nothing said so or said where. These tests exercise the fix
 // through the real driver path — surface_test.go in the root package
 // already covers the fleet.RuntimeSurfaceRef type's own round-trip and

@@ -55,7 +55,7 @@ type Build struct {
 	// tag, "v0.1.0-2-g3ce7e27" for two commits past it. It answers "is this
 	// at least release X?", which Revision cannot — a sha is not ordered,
 	// and deciding whether one commit follows a tag takes a checkout a
-	// client on another machine does not have (colab-fleet #161).
+	// client on another machine does not have (muster #161).
 	//
 	// Always serialized, never omitted: null means "not stamped", the same
 	// three-value discipline as Known. The toolchain does not record tags,
@@ -72,7 +72,7 @@ type Build struct {
 
 // version is set at link time by scripts/deploy.sh:
 //
-//	go build -ldflags "-X github.com/godx-jp/colab-fleet.version=$(git describe --tags)"
+//	go build -ldflags "-X github.com/futurelastic/muster.version=$(git describe --tags)"
 //
 // Empty in every other build, which SelfBuild reports as unstamped.
 var version string

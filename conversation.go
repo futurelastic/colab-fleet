@@ -101,7 +101,7 @@ const (
 
 	// ConversationCaptured means the driver observed the identifier as the
 	// session was created, with nothing to match — first produced by a
-	// create carrying SessionSpec.ConversationId (colab-fleet #224): the
+	// create carrying SessionSpec.ConversationId (muster #224): the
 	// driver told the runtime which id to start under, so there is nothing
 	// to derive and no title to match against.
 	ConversationCaptured ConversationSource = "captured"
@@ -158,7 +158,7 @@ func UnresolvedConversation(evidence string) *ConversationRef {
 // internal/drivers/tmux already requires of every conversation id it reads
 // back out of a runtime's own store (#180 L5). Checked here, in the fleet
 // package every driver already imports, so "not a UUID" is refused at the API
-// boundary (colab-fleet #224) before the value ever reaches a driver that
+// boundary (muster #224) before the value ever reaches a driver that
 // would pass it straight to a runtime's command line.
 func ValidateConversationId(id string) error {
 	if !uuidShaped(id) {

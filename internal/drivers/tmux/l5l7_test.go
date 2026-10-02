@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // #180 L5: the runtime's per-process record supplies a session id that

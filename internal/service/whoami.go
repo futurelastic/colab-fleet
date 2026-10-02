@@ -4,10 +4,10 @@ import (
 	"crypto/subtle"
 	"net/http"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// handleWhoAmI answers GET /v1/whoami (colab-fleet #106): what the presented
+// handleWhoAmI answers GET /v1/whoami (muster #106): what the presented
 // credential is authorized to do, on the machine named.
 //
 // # Why this route carries no grant of its own
@@ -18,7 +18,7 @@ import (
 // anything). This route deliberately skips the second gate — it sits behind
 // withAuth alone.
 //
-// The reason is the sub-question colab-fleet #106 raised rather than
+// The reason is the sub-question muster #106 raised rather than
 // answered: a principal holding NO grants at all still needs to be able to
 // learn that it holds none. Gating this route on GrantRead would make it
 // unusable by exactly the caller most likely to need it — the one every
@@ -36,7 +36,7 @@ import (
 //
 // A relayed mutation needs a grant on the machine receiving the call AND a
 // different grant on the machine that performs it (session-abstraction.md
-// §7.7, colab-fleet #82's dispatch-reply convention, colab-fleet #68's
+// §7.7, muster #82's dispatch-reply convention, muster #68's
 // federated-keypress precedent). This route can answer the first directly —
 // it has just resolved that credential's own table to serve THIS request.
 // It cannot answer the second the same way: unlike DriverCapabilities, which
@@ -48,7 +48,7 @@ import (
 // nothing confirmed, read as "go ask that machine directly," never as this
 // service's own observation. Reusing that provenance shape rather than
 // inventing a second one for the same "nobody has told me anything" fact is
-// deliberate — colab-fleet #82 already made this argument once for
+// deliberate — muster #82 already made this argument once for
 // capabilities, and a grant table nobody here has ever seen is the identical
 // case.
 func handleWhoAmI(svc *Service, cfg Config) http.HandlerFunc {
@@ -70,7 +70,7 @@ func handleWhoAmI(svc *Service, cfg Config) http.HandlerFunc {
 		}
 
 		// ?peer= is how a SERVICE probing this machine asks whether it is
-		// listed here (colab-fleet #154). The roster is this machine's
+		// listed here (muster #154). The roster is this machine's
 		// configuration, so only a credential holding read gets an answer;
 		// everyone else reads null, never false.
 		var listsYou *bool
@@ -94,7 +94,7 @@ func handleWhoAmI(svc *Service, cfg Config) http.HandlerFunc {
 //
 // One function rather than two copies, so a grant reported here can never
 // drift from a grant actually enforced by mutating()/reading() — the same
-// lesson colab-fleet #80 recorded about a duplicated grant list inside the
+// lesson muster #80 recorded about a duplicated grant list inside the
 // config loader, applied to a second duplicate this route could otherwise
 // have grown.
 func grantsForRequest(cfg Config, r *http.Request) []string {
@@ -123,7 +123,7 @@ func callerHoldsRead(r *http.Request) bool {
 
 // grantsForToken is what this machine's own authorization model grants a
 // given credential — the self item's grantsToMe on GET /v1/machines
-// (colab-fleet #154), evaluated for the credential this service presents to
+// (muster #154), evaluated for the credential this service presents to
 // its peers. Same one-definition rule as grantsForRequest: a credential that
 // matches nothing holds nothing.
 func grantsForToken(cfg Config, token string) []string {

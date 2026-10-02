@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // fakePreviewDialog models the runtime's question dialog with a preview pane
-// as measured live for colab-fleet#204, and not as the numbered menus without
+// as measured live for muster#204, and not as the numbered menus without
 // one behave:
 //
 //   - a digit MOVES the highlight (and the pane) and commits nothing — the tab
@@ -151,7 +151,7 @@ func previewNonce(t *testing.T, f *fakeMux) string {
 	return p.Nonce
 }
 
-// colab-fleet#204. The model has to reproduce the measured failure for the
+// muster#204. The model has to reproduce the measured failure for the
 // tests below to prove anything: the old key shape — the digit and Enter in one
 // send-keys — must record the default, exactly as the live run did.
 func TestFakePreviewDialogReproducesTheMeasuredBurst(t *testing.T) {

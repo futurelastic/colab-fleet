@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
 // whoami issues GET /v1/whoami and decodes the report. t.Fatal on transport

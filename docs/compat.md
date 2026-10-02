@@ -1,6 +1,6 @@
-# `colab-fleetd compat` — does this runtime build still behave the way this service assumes?
+# `muster compat` — does this runtime build still behave the way this service assumes?
 
-`colab-fleetd compat` runs this service's assumptions about the agent runtime
+`muster compat` runs this service's assumptions about the agent runtime
 against **one candidate binary** and prints a versioned report. It exists to be
 run *before* a fleet takes a new runtime build, not after something has already
 quietly stopped working.
@@ -27,7 +27,7 @@ its business.
 ## Usage
 
 ```
-colab-fleetd compat --claude <absolute path to a claude binary>
+muster compat --claude <absolute path to a claude binary>
                     [--json] [--pack <dir>] [--only <id[,id…]>] [--timeout <duration>]
 ```
 

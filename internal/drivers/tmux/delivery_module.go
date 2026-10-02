@@ -3,9 +3,9 @@ package tmux
 import (
 	"context"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/delivery"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/delivery"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // builtinModuleName is the built-in module's name, and so the middle of every

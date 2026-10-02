@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // testEpoch is an arbitrary fixed instant: classifyPaneRemembering needs a clock

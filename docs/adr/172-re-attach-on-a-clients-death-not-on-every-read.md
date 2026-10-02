@@ -1,7 +1,7 @@
 # ADR 172 — Re-attach a content client on its death, not on every read
 
 **Status:** accepted (2026-09-20)
-**Issue:** colab-fleet #172 · builds on #170, #167
+**Issue:** muster #172 · builds on #170, #167
 
 ## Context
 

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient"
+	"github.com/futurelastic/muster/internal/delivery/modclient"
 )
 
 // The integration code is written against this surface. These declarations are

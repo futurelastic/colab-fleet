@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // This file is the replay harness §8 of issue #8 asked for: every case

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // Identifying a conversation from the runtime's own per-process record (#182).

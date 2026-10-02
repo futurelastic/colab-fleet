@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // Remembering what a create asked the runtime to START as a new conversation
-// (colab-fleet #224) — the mirror of resumeintent.go's own note, for the
+// (muster #224) — the mirror of resumeintent.go's own note, for the
 // mirror question: resumeIntents lets a later List say whether a REQUESTED
 // RESUME was honoured; this lets one say whether a REQUESTED ID was.
 //

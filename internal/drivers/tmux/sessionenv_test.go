@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // --- ValidateSessionEnv: a typo is a message an operator reads once -------
@@ -63,7 +63,7 @@ func TestValidateSessionEnvCatchesEachShapeAtStartup(t *testing.T) {
 	}
 }
 
-// --- provisionSessionEnv: the precedence table from colab-fleet issue #94 -
+// --- provisionSessionEnv: the precedence table from muster issue #94 -
 
 // A required entry the caller never mentioned is filled in from
 // configuration — the whole point of the feature.
@@ -449,7 +449,7 @@ func TestASessionEnvProvisionedValueReachesTheProcessThroughTheRealWrapper(t *te
 	}
 
 	record := filepath.Join(dir, "rec")
-	out, err := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, envPath, "",
+	out, err := exec.Command(sh, "-c", envRecordScript, "muster", record, envPath, "",
 		"/bin/sh", "-c", `printf '%s' "$FLEET_TEST_IDENTITY"`).CombinedOutput()
 	if err != nil {
 		t.Fatalf("wrapper failed: %v (%s)", err, out)

@@ -3,7 +3,7 @@ package tmux
 import (
 	"strings"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // Reading the runtime's permission-mode indicator off the pane (#194).
@@ -41,7 +41,7 @@ import (
 // cycle)` hint and the trailing `← for agents` are decoration the runtime moves
 // freely — the hint even appears and disappears with the mode (default has none
 // and shows `? for shortcuts` instead). The wording is what names the mode, and
-// it is the one part `colab-fleetd compat` checks a candidate build still has.
+// it is the one part `muster compat` checks a candidate build still has.
 //
 // # Why only below the closing fence, and why that is the safety property
 //

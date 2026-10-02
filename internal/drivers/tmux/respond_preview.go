@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strconv"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // answerPreview answers a question whose options are drawn beside a preview
-// pane (colab-fleet#204). It moves the highlight onto the chosen option, reads
+// pane (muster#204). It moves the highlight onto the chosen option, reads
 // the screen to prove the highlight is there, and only then presses Enter.
 //
 // # What was measured (one runtime build, live, disposable session)

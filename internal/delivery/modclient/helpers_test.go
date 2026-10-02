@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient"
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient/modtest"
+	"github.com/futurelastic/muster/internal/delivery/modclient"
+	"github.com/futurelastic/muster/internal/delivery/modclient/modtest"
 )
 
 // waitFor polls cond until it is true or d passes. The tests never sleep for a

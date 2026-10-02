@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient"
+	"github.com/futurelastic/muster/internal/delivery/modclient"
 )
 
 // repeat is an io.Reader of n copies of b that holds none of them in memory.

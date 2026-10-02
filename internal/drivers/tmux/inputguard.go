@@ -158,7 +158,7 @@ var sessionSlashCommands = map[string]bool{
 // command like `/rename` produces no agent turn, so marking `turns` for it
 // would read as "a delivery was made and nothing has completed since" —
 // exactly the false work-lost signal #111 exists to prevent — the moment
-// colab-fleet #222 made a `/rename` delivery a guaranteed side effect of
+// muster #222 made a `/rename` delivery a guaranteed side effect of
 // every API rename rather than a rare, deliberate `/input` call.
 func isSessionCommand(text string) bool {
 	trimmed := strings.TrimLeftFunc(text, runtimeTrimCutset)

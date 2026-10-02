@@ -81,7 +81,7 @@ func (d *Driver) preempted(id string) bool {
 // aliasComposerLock makes `to` share the SAME composer-serialisation mutex
 // `from` already has — creating one for `from` if it does not exist yet —
 // so an operation still addressed to the OLD id and a delivery this
-// service is about to make against the NEW id (colab-fleet #222's
+// service is about to make against the NEW id (muster #222's
 // title-sync, run immediately after a rename) contend on the identical
 // lock rather than two independent ones. Both ids name the same underlying
 // pane at the moment this is called from Rename, and this table is keyed

@@ -19,11 +19,11 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient"
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient/modtest"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/delivery/modclient"
+	"github.com/futurelastic/muster/internal/delivery/modclient/modtest"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/state"
 )
 
 const (
@@ -192,7 +192,7 @@ func (r *modRig) waitLive(id string) {
 }
 
 // waitAllLive waits for every listed session's lane to read live, under one
-// deadline scaled to how many are attaching at once (colab-fleet#221).
+// deadline scaled to how many are attaching at once (muster#221).
 // TestModuleSend_ManySessionsConcurrent attaches n lanes together, and they
 // contend for the same locks the attach path holds — waiting on them one at
 // a time with waitLive's fixed per-lane budget still bounds each lane to that

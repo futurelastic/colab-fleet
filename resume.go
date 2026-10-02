@@ -7,7 +7,7 @@ import (
 
 // ResumeOutcome states whether a session's creation asked the runtime to
 // resume a conversation and, once that can be told, whether it actually did
-// (colab-fleet #72).
+// (muster #72).
 //
 // # Why this exists
 //

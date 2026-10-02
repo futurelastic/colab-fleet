@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// colab-fleet #196 (ruled on #195, option 2): the inbox route is not available
+// muster #196 (ruled on #195, option 2): the inbox route is not available
 // without a principal table. requireTableForInbox is the ONE definition — main
 // refuses to start on it and doctor fails on it — so this table is what pins the
 // rule for both.

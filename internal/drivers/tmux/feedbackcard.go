@@ -7,10 +7,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// The runtime's feedback-draft card (colab-fleet #215).
+// The runtime's feedback-draft card (muster #215).
 //
 // When the agent drafts product feedback, the runtime paints a bordered card
 // directly above the composer:
@@ -62,7 +62,7 @@ import (
 // live composer's fence. A transcript that prints the same words is indented under
 // its own output and is nowhere near the fence.
 //
-// # The box has five texts, and only the first is a prompt (colab-fleet #217)
+// # The box has five texts, and only the first is a prompt (muster #217)
 //
 // The status row is the one thing that changes as the card is answered, and each
 // of its states was measured on a real pane: the key row above; the send
@@ -121,7 +121,7 @@ const (
 // feedbackFooter is the key row's exact text with no queued suffix.
 const feedbackFooter = "1 to review · 2 to send · 0 to dismiss"
 
-// The card's other states, each measured on a real pane (colab-fleet #217).
+// The card's other states, each measured on a real pane (muster #217).
 // Every one is the runtime's own text end to end, so each is matched exactly;
 // the draft's words, which are the agent's, are never part of one.
 const (
@@ -816,7 +816,7 @@ func loneDigit(text string) bool {
 
 // feedbackEscapeNote says what Escape does on a screen showing one of the
 // runtime's feedback notices, for the receipt of a key that was sent: "" when
-// none is on screen. Measured on a real pane (colab-fleet #217): with the
+// none is on screen. Measured on a real pane (muster #217): with the
 // composer empty Escape dismisses the card and only the card — the draft stays
 // queued, its file and the footer's count unchanged, and /feedback still lists
 // it — and is sometimes followed by the question about turning drafts off.

@@ -113,7 +113,7 @@ the terminal write can never blend a pending reason into a resolved one.
   rate says sessions are dying before their initial prompt lands, a
   different signal from an ordinary delivery strand and worth telling apart
   from it (same reasoning #104 gives for splitting confirm signals).
-- Not addressed here: a `colab-fleetd` process restart while a
+- Not addressed here: a `muster` process restart while a
   `settleNewSession` goroutine is mid-poll still loses that goroutine — this
   was already true of the 90s-bounded design (a restart inside the window
   killed it identically) and remains a real gap in both, not a regression

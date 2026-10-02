@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/godx-jp/colab-fleet/internal/delivery"
+	"github.com/futurelastic/muster/internal/delivery"
 )
 
 // ParseModuleList splits a comma-separated module list (the value of the
@@ -33,7 +33,7 @@ func ParseModuleList(s string) (valid []string, invalid []string) {
 }
 
 // DefaultModulesDir is where modules live when the operator does not say:
-// <prefix>/libexec/colab-fleet/modules, where prefix is the parent of the
+// <prefix>/libexec/muster/modules, where prefix is the parent of the
 // directory holding the (symlink-resolved) executable — an installation under
 // <prefix>/bin finds its helpers under <prefix>/libexec, the usual layout.
 //
@@ -51,7 +51,7 @@ func DefaultModulesDir(exePath string) string {
 		resolved = filepath.Clean(exePath)
 	}
 	prefix := filepath.Dir(filepath.Dir(resolved))
-	return filepath.Join(prefix, "libexec", "colab-fleet", "modules")
+	return filepath.Join(prefix, "libexec", "muster", "modules")
 }
 
 // Found is a module executable that passed discovery.

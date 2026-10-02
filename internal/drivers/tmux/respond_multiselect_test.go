@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // fixtureMultiSelectTicked is a single-question multi-select dialog as captured
-// live for colab-fleet#176 (one runtime build), with options 1 and 3 ticked
+// live for muster#176 (one runtime build), with options 1 and 3 ticked
 // and the highlight on option 1. Verbatim from the question's rule down,
 // apart from the transcript above it.
 const fixtureMultiSelectTicked = `  transcript line
@@ -172,7 +172,7 @@ func TestCheckboxGlyphDoesNotHideTheAgentQuestionGuard(t *testing.T) {
 }
 
 // fakeMultiSelect models the multi-select dialog as measured live for
-// colab-fleet#176:
+// muster#176:
 //
 //   - a digit on a checkbox flips it; the highlight does not move and the
 //     dialog does not advance;
@@ -195,10 +195,10 @@ type fakeMultiSelect struct {
 	swallow  map[string]int
 	answered []string
 	typed    string // what reached the free-text field
-	// noPaste models a paste the runtime drops (colab-fleet#206).
+	// noPaste models a paste the runtime drops (muster#206).
 	noPaste bool
 	// question, when set, is the question drawn the way the runtime draws one
-	// too long for a row (colab-fleet#219): a block, one `│ ` rail row per entry.
+	// too long for a row (muster#219): a block, one `│ ` rail row per entry.
 	// Unset, it is the one-row question the earlier tests were measured on.
 	question []string
 }
@@ -207,7 +207,7 @@ func newFakeMultiSelect(labels ...string) *fakeMultiSelect {
 	return &fakeMultiSelect{labels: labels, ticks: make([]bool, len(labels)), sel: 1, swallow: map[string]int{}}
 }
 
-// paste is a bracketed paste. Measured live (colab-fleet#206): with the
+// paste is a bracketed paste. Measured live (muster#206): with the
 // highlight on the free-text row the row's label BECOMES the text and the row
 // ticks itself; anywhere else a paste has no field to land in.
 func (g *fakeMultiSelect) paste(text string) {

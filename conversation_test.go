@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // The distinction this whole type exists for: "nobody looked" and "we looked

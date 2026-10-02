@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 const peerToken = "the-token-the-peer-accepts"
@@ -45,7 +45,7 @@ type capture struct {
 func peerServing(t *testing.T, status int, payload any, rec *capture) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// colab-fleet #67: a driver whose capabilities are unseen now
+		// muster #67: a driver whose capabilities are unseen now
 		// opportunistically probes them (noteSuccessfulContact) off the back
 		// of ANY successful call, in its own goroutine, concurrently with
 		// whatever the test does next. That probe hits this same server at
@@ -342,7 +342,7 @@ func TestSendForwardsResumeIfStranded(t *testing.T) {
 	}
 }
 
-// colab-fleet #112: ReplaceIfStranded is exactly the same #33 trap one field
+// muster #112: ReplaceIfStranded is exactly the same #33 trap one field
 // over — this driver's Send body is hand-built, so a caller setting the
 // flag on driver.SendOptions has no effect at all unless this test's own
 // assertion holds.
@@ -506,7 +506,7 @@ func TestSendReceiptPathPassesThroughFromAPeer(t *testing.T) {
 	}
 }
 
-// colab-fleet #158: From is the third field Send's hand-built body has to be
+// muster #158: From is the third field Send's hand-built body has to be
 // told about (#33, #112). Machine must travel with it: this hop is the only
 // place it is on the wire, carrying the entering machine's own stamp.
 func TestSendForwardsFrom(t *testing.T) {
@@ -785,7 +785,7 @@ func TestRefreshCapabilitiesAdoptsWhatThePeerReports(t *testing.T) {
 	}
 }
 
-// TestRefreshCapabilitiesAdoptsPeerMaxInputBytes is colab-fleet #130's
+// TestRefreshCapabilitiesAdoptsPeerMaxInputBytes is muster #130's
 // analog of the build-identity probe (#121): the peer's own effective
 // input-length limit is learned on the same /v1/health round trip as its
 // build, and MaxInputBytes() (driver.MaxInputBytesReporter) reports it
@@ -821,7 +821,7 @@ func TestRefreshCapabilitiesAdoptsPeerMaxInputBytes(t *testing.T) {
 	}
 }
 
-// colab-fleet #67, ask #1 ("the safety half"): a cached `observed` describes
+// muster #67, ask #1 ("the safety half"): a cached `observed` describes
 // the peer as it was the moment it answered. Measured directly — a peer
 // upgraded seconds after being probed kept reading `observed` and wrong for
 // as long as the observing process happened to run, which under a
@@ -862,7 +862,7 @@ func TestObservedCapabilityDegradesToAssumedPastStaleness(t *testing.T) {
 	}
 }
 
-// colab-fleet #67, ask #4 (the sharpened one, replacing a time-based
+// muster #67, ask #4 (the sharpened one, replacing a time-based
 // schedule): "probe on first successful contact, not only at startup."
 // Measured directly — a peer restarted, its capabilities never populated,
 // and a full round of successful relayed traffic (create, keypress, two
@@ -950,7 +950,7 @@ func TestCloseForwardsTheCallersExpectation(t *testing.T) {
 	}
 }
 
-// colab-fleet#136: force is a real capability expansion (a stronger, more
+// muster#136: force is a real capability expansion (a stronger, more
 // destructive clear mechanism) and it is easy for it to work on a local
 // driver while silently vanishing at the federation boundary — the exact
 // class of drift this repo elsewhere builds single-source-of-truth argv
@@ -966,7 +966,7 @@ func TestDiscardForwardsForceOnTheWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(rec.query, "force=true") {
-		t.Fatalf("query = %q, must forward force=true (colab-fleet#136) — dropping it here "+
+		t.Fatalf("query = %q, must forward force=true (muster#136) — dropping it here "+
 			"makes the escape hatch work locally and die across the federation boundary", rec.query)
 	}
 	if !strings.Contains(rec.query, "expect=the-digest") {

@@ -9,7 +9,7 @@
 `GrantRelay` whenever a mutation's target machine is not the one the caller
 talked to — reaching another machine to change its state is treated as its
 own privilege, separate from being allowed to make that change at all
-(colab-fleet #68's federated-keypress finding is the same shape: a proxied
+(muster #68's federated-keypress finding is the same shape: a proxied
 mutation needs both the local verb grant and `relay`).
 
 Closing #80 added `reading()`, the read-side counterpart that finally checks

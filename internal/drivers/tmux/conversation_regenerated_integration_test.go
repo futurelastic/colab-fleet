@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // TestLiveConversationFollowsANewConversationStartedInTheSameProcess is #203's

@@ -1,7 +1,7 @@
 # ADR 187 — A slash command the runtime runs itself is confirmed by its `local_command` entries
 
 **Status:** accepted (2026-09-25)
-**Issue:** colab-fleet #187 · builds on #180 (M3, slash-command confirmation)
+**Issue:** muster #187 · builds on #180 (M3, slash-command confirmation)
 
 ## Context
 
@@ -76,7 +76,7 @@ build, and the name and arguments are already structured.
 - The measured case moves from the full window to roughly the runtime's own write
   latency. The tests that pin it fail against the old code, and the send test takes
   the whole 4 s there.
-- **The shape is not checked by `colab-fleetd compat`.** That is by the
+- **The shape is not checked by `muster compat`.** That is by the
   maintainers' ruling (`docs/compat.md`, *Not checked*: local-command entries), not
   an oversight here. The cost of the shape changing is the slow path again, never
   a wrong answer: a candidate that no longer parses is silence, and the screen

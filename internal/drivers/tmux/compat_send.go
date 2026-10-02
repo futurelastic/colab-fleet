@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/compat"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/compat"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // The send probes: five model turns on the trusted session, each through the

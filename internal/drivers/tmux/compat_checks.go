@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/compat"
-	"github.com/godx-jp/colab-fleet/internal/trustseed"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/compat"
+	"github.com/futurelastic/muster/internal/trustseed"
 )
 
 // The evaluators. Each reads what a probe recorded and says what it means; none

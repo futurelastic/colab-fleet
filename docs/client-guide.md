@@ -1,4 +1,4 @@
-# Client guide — using colab-fleet from your own program
+# Client guide — using muster from your own program
 
 For someone **writing a client**: a supervisor, a dashboard, a CLI, a script.
 
@@ -15,7 +15,7 @@ replaced.
 ## 1. The mental model, in one picture
 
 ```
-your program ──HTTP──▶ colab-fleetd on YOUR machine ──HTTP──▶ colab-fleetd on another machine
+your program ──HTTP──▶ muster on YOUR machine ──HTTP──▶ muster on another machine
                                                     ──HTTP──▶ ... and another
 ```
 
@@ -51,12 +51,12 @@ borrowing it is how a read-only client quietly acquires the ability to destroy
 sessions. Ask the operator to run:
 
 ```sh
-colab-fleetd principal add my-supervisor --grants=read
+muster principal add my-supervisor --grants=read
 # → token written to …/my-supervisor.token (0600)
 ```
 
 It mints the credential, validates the grants before writing, and leaves the
-running service untouched until it is reloaded. `colab-fleetd principal list`
+running service untouched until it is reloaded. `muster principal list`
 shows who holds what, without printing anyone's token.
 
 Grants are per verb, so you can be given exactly what you need:
@@ -475,14 +475,14 @@ the endpoint refuses rather than let you trade it away by accident.
 ### Changing a session's permission mode
 
 On an idle composer the runtime cycles its permission mode on Shift+Tab, and
-`BTab` is how you press it (colab-fleet #188). Read this before you build a mode
+`BTab` is how you press it (muster #188). Read this before you build a mode
 dropdown on it:
 
 - **It is one press, not "go to mode X".** `POST …/keys` with `{"key":"BTab"}`
   presses once, and the receipt never says which mode the session is in
   afterwards. `submitted` means the screen changed under the key; `unknown` means
   it did not (the press was swallowed, or there was nothing to cycle). The mode is
-  in `state.permissionMode` (colab-fleet #194): one of `default`, `acceptEdits`,
+  in `state.permissionMode` (muster #194): one of `default`, `acceptEdits`,
   `plan`, `auto`, `bypass`, or `unknown`. A control that must land on a named mode
   presses, reads that field, and repeats — re-reading `state` for a fresh
   `screenDigest` before **each** press, the same one-key-per-request rule as
@@ -543,7 +543,7 @@ rather than sending as soon as `create` returns.
 
 **Exception: a session you just created with a `prompt`.** That advice is for a
 session you did not create — for one you did, `idle` is not the signal to wait
-for, and reading it as one is exactly the mistake colab-fleet #86 measured: a
+for, and reading it as one is exactly the mistake muster #86 measured: a
 session created with a `prompt`, polled ~12s later, read `idle` with
 `"interface painted, composer empty, no turn yet"` — the correct classification
 for "nothing was ever sent", and indistinguishable from "the create-time prompt
@@ -628,7 +628,7 @@ rid of a line is not a trade anyone should make either way.
 not the ordinary "unchanged, first pass" 409, a distinct message saying a
 prior full clear pass already left it unmoved — retry the SAME call with
 `&force=true` added** (`POST …/discard?expect=<the same composerDigest>&force=true`),
-colab-fleet#136. This reaches for a stronger, character-budgeted clear
+muster#136. This reaches for a stronger, character-budgeted clear
 mechanism past whatever defeated the ordinary pass. It is not a looser
 corroboration path — `expect` is still required and still checked exactly as
 before, `force` only changes what happens once that check has already passed
@@ -645,12 +645,12 @@ somebody else's work. Afterwards, **the id you hold is stale**: use the new one,
 and if you are subscribed, re-key on `session.renamed` rather than concluding
 the old id died.
 
-Read the `202` body's `title` field (colab-fleet#222) if you ever reconcile a
+Read the `202` body's `title` field (muster#222) if you ever reconcile a
 session's name against anything the runtime itself reports — its own title is
 brought along automatically, but honestly: `"pending"`/`"failed"` mean it has
 not (yet), and re-`POST`ing the identical `name` retries just that half. Do
 not build your own reconciler that trusts the runtime's title over this API's
-`to` without reading this field first — that is exactly the loop colab-fleet#222
+`to` without reading this field first — that is exactly the loop muster#222
 closed.
 
 **`DELETE` should carry `?startedAt=`** from the session you read. Ids are
@@ -715,7 +715,7 @@ so rather than silently substituting a default — check `supportsPin` in
 mistaken for a flag is refused outright at creation** (`invalid`, naming the
 field) rather than silently dropped; a value that reaches the runtime intact
 can still be defaulted or ignored there, which is what the response's `agent`
-and `model` top-level fields, plus `pins`, are for (colab-fleet #84). Read the
+and `model` top-level fields, plus `pins`, are for (muster #84). Read the
 top-level `agent`/`model` as the APPLIED values — what the driver actually
 observed, empty when it does not know — never as an echo of what you asked
 for; the request lives in `pins.<field>.requested`, and whether it was
@@ -731,7 +731,7 @@ directory, and nothing afterwards can detect it. Same key + same body returns
 the original session; same key + different body is a `409`.
 
 **Same key + same body, but that session has since ended, is also a `409`**
-(colab-fleet #234) — not the plain `201` it used to be. Before this fix, a
+(muster #234) — not the plain `201` it used to be. Before this fix, a
 replay of a key whose session had already died came back with the identical
 shape a live create returns, so a client that only checked the status code had
 no way to learn its session was gone. Now the body carries `reason:
@@ -769,7 +769,7 @@ outright rather than accepted and left to strand — see api-http.md §3.1 and
 §3.2), and even under that cap it still travels through the same composer
 keystrokes `input` does. Measured on live fleet operation: a roughly
 1800-byte brief stranded in a composer and the prompt was simply lost
-(colab-fleet #128). None of that fragility is a property this API needs you
+(muster #128). None of that fragility is a property this API needs you
 to accept — `contextRef` (below) hands the runtime a PATH instead, and a
 caller with more than a short instruction to give should write it to a file
 and pass only a one-line pointer here: "read `.claude/briefs/issue-N.md` and
@@ -785,7 +785,7 @@ on it.** It carries the same outcome vocabulary `send`'s own receipt does
 currently return `submitted` on either path; api.md's known-gaps section
 tracks it), but resolves after the 201:
 `outcome: null` means delivery has not resolved yet, and — this is the part
-colab-fleet #86 exists to say plainly — **that is not the same fact as "no
+muster #86 exists to say plainly — **that is not the same fact as "no
 prompt was sent."** A session polled moments after this create may well read
 `idle` with "composer empty, no turn yet"; that is the correct classification
 for a session with nothing sent, and it looks identical to one whose prompt
@@ -796,7 +796,7 @@ same busy-composer rule §7 already describes, but by the time you notice,
 you have already sent the same instruction twice as far as anyone watching
 the transcript can tell.
 
-**While `outcome` is `null`, `promptDelivery.waitingOn` (colab-fleet #126)
+**While `outcome` is `null`, `promptDelivery.waitingOn` (muster #126)
 tells you WHY without parsing `evidence`.** `prompt` means a dialog is up —
 `state.prompt` on the same session names the question; `unsent-input` means
 something is already sitting in the composer; `starting` means the runtime
@@ -940,7 +940,7 @@ second variable invented out of your value).
 `supportsResume` in `/v1/runtimes`, which reports whether sessions survive a
 service restart — same word, different question.
 
-**`conversationId`** (colab-fleet #224) starts a NEW conversation under a UUID
+**`conversationId`** (muster #224) starts a NEW conversation under a UUID
 *you* choose, instead of one the driver derives afterward — so the `201`
 already carries `conversation` (`known: true, source: "captured"`) and you
 never have to poll `GET .../sessions/{id}` waiting for the runtime's own
@@ -1054,7 +1054,7 @@ Everything above this line is a complete control plane for putting an agent
 to work on another machine: create it there, drive it, answer whatever it
 gets stuck on, follow up, tear it down. None of it gets you back what the
 agent *produced*. **There is no endpoint for that, on purpose**
-(session-abstraction.md §5.8, colab-fleet #82) — nothing here returns a
+(session-abstraction.md §5.8, muster #82) — nothing here returns a
 session's screen text, transcript, or other content the session itself
 wrote, for the same reason `screenDigest` is a fingerprint and never the
 pane it was taken from.
@@ -1067,13 +1067,13 @@ fits in a prompt.
 
 **It needs two grants, at two different machines, discovered in the wrong
 order if you only read the refusal you hit first** — the same shape as a
-federated keypress (§3, `keys`; colab-fleet #68), applied to `input` instead:
+federated keypress (§3, `keys`; muster #68), applied to `input` instead:
 the machine that will receive the reply (yours) needs `send` for the
 worker's principal; the machine relaying the reply there (the worker's) needs
 `relay`. Fixing the first refusal does not fix the call — the second refusal
 naming `relay` is the other half of the same requirement, not a new bug.
 
-`GET /v1/whoami` (§3, colab-fleet #106) narrows this from two blind attempts
+`GET /v1/whoami` (§3, muster #106) narrows this from two blind attempts
 to one: the worker can confirm its own `relay` grant on its own machine
 directly instead of discovering it by refusal. It cannot confirm the far
 side the same way — `GET /v1/whoami?machine=<yours>` from the worker's
@@ -1083,7 +1083,7 @@ to be confirmed on your machine itself (your own `whoami`, or read the
 principal table there directly) or discovered by the attempt.
 
 What a machine CAN report about the far side is its **own** standing there
-(colab-fleet #154): each `GET /v1/machines` item carries `peer` —
+(muster #154): each `GET /v1/machines` item carries `peer` —
 `listsMeBack` and `grantsToMe` for the credential that machine itself presents
 to the peer, which is the credential every relayed call from it rides on. It
 answers "is the relay path between these two machines configured at all",
@@ -1104,7 +1104,7 @@ acting on it as an instruction.
 relayed reply logs `verb=send route=POST /v1/machines/{machine}/sessions/{id}/input`
 with the worker as actor and its machine as relay — the same route a human
 operator typing into your session would produce, apart from the actor's
-name (colab-fleet#105 added `route` so `input` and `respond` at least stop
+name (muster#105 added `route` so `input` and `respond` at least stop
 sharing one line under `verb=send`; it does not, and was not meant to,
 separate a delivered reply from an ordinary follow-up, since both are the
 same route). If you need to tell "my operator sent this" apart from "a
@@ -1365,7 +1365,7 @@ they answer different questions and none of them substitutes for another:
 | question | field | answers |
 |---|---|---|
 | a human's terminal, on that session's own machine | `attach` (above) | local argv, or absent if the driver has none |
-| a surface the RUNTIME operates, reachable from elsewhere | `runtimeSurface` | an opaque address on a named `kind`, or `known: false`/`null` (colab-fleet #85) |
+| a surface the RUNTIME operates, reachable from elsewhere | `runtimeSurface` | an opaque address on a named `kind`, or `known: false`/`null` (muster #85) |
 | is that runtime surface healthy right now | `state.controlChannel` | `failed`/`reconnecting`/`active`/absent |
 
 `runtimeSurface` is an **identity**, not a health check: once `known: true`,

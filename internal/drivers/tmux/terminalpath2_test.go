@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // --- sanitizeForBracketedPaste -----------------------------------------
@@ -119,7 +119,7 @@ func TestComposerRegionMatchExactAfterWhitespaceAndComposingFormDifferences(t *t
 
 // TestComposerRegionMatchSuffixWhenScrolled models Claude Code's own INNER
 // composer scroll (distinct from composerClipped's tmux-history-margin
-// scroll, colab-fleet#169): the fence is fully visible, composerText reports
+// scroll, muster#169): the fence is fully visible, composerText reports
 // composerFound, but only the TAIL of a very long single paste is on screen.
 func TestComposerRegionMatchSuffixWhenScrolled(t *testing.T) {
 	full := strings.Repeat("word ", 200) + "the last words visible after scrolling"

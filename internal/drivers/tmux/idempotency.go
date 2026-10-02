@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/state"
 )
 
 // Durable idempotency (§10, defect D5).
@@ -159,7 +159,7 @@ func (s *idemStore) saveLocked() error {
 }
 
 // sessionLive reports whether id currently names a live session on this
-// machine — colab-fleet #234's mirror of the question resolvePending asks for
+// machine — muster #234's mirror of the question resolvePending asks for
 // a PENDING record: did a COMPLETED create's session survive to be replayed
 // against? A non-nil error means the listing itself failed, not that the
 // session is absent (§5.7) — the caller must not treat the two alike.

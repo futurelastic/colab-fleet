@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 func isUnsupported(err error) bool {

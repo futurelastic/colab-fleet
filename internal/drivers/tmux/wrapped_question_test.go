@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// colab-fleet#219: a multi-select question tall enough to outgrow the window
+// muster#219: a multi-select question tall enough to outgrow the window
 // the classifier reads (promptScanDepth rows from the bottom) was reported
 // without multiSelect — and a wrapped question kept its `│` rail in the text.
 //
@@ -206,7 +206,7 @@ func TestQuestionRowSetsAsideTheRailAndOnlyTheRail(t *testing.T) {
 	}
 }
 
-// colab-fleet#219, end to end through respond: the tall dialog answers to
+// muster#219, end to end through respond: the tall dialog answers to
 // `choices` like the one-row question of #176 — every flip read back, one Right,
 // and a stop on the review screen.
 func TestChoicesOnAWrappedQuestionTallerThanTheWindow(t *testing.T) {
@@ -242,7 +242,7 @@ func TestChoicesOnAWrappedQuestionTallerThanTheWindow(t *testing.T) {
 	}
 }
 
-// colab-fleet#219, live: a real multiplexer, its real capture, and the driver's
+// muster#219, live: a real multiplexer, its real capture, and the driver's
 // own State and Respond against a synthetic dialog whose wrapped question puts
 // the tab bar beyond the window. Gated like the other live tests here
 // (FLEET_TMUX_INTEGRATION=1); the pane runs testdata/multiselect_tui.py, not the
@@ -285,7 +285,7 @@ func TestLiveWrappedMultiSelectIsReadAndAnswered(t *testing.T) {
 	if strings.Contains(prompt.Question, "│") {
 		t.Errorf("question keeps the rail: %q", prompt.Question)
 	}
-	// colab-fleet#220: the whole wrapped question reaches the reader — all ten
+	// muster#220: the whole wrapped question reaches the reader — all ten
 	// rows the dialog draws, not the last three of them.
 	var wantRows []string
 	for i := 1; i <= 10; i++ {

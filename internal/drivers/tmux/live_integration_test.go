@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/state"
 )
 
 // Live tests for #180 against a PRIVATE multiplexer server (its own socket),
@@ -156,14 +156,14 @@ func TestLiveMarkerInHistoryMarginIsNotCredited(t *testing.T) {
 	}
 }
 
-// colab-fleet #235's own oracle, live: a session whose command exits
+// muster #235's own oracle, live: a session whose command exits
 // non-zero after printing a line gets an exact ClosedByExit-shaped capture —
 // status and screen — instead of the generic "absent" a later listing would
 // otherwise be left to infer, and no leftover multiplexer session survives
 // it. Drives the multiplexer directly, like the other live tests in this
 // file, and sets remain-on-exit AND managedSessionOption by hand the same
 // way Create does for a session it starts itself (see Create's own comments
-// on both options) — colab-fleet #236 made the marker load-bearing here:
+// on both options) — muster #236 made the marker load-bearing here:
 // without it this session reads as one this driver never started, and
 // reapDeadRows leaves it alone.
 func TestLiveExitIsCapturedBeforeThePaneIsGone(t *testing.T) {

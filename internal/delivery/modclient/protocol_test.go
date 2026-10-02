@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/godx-jp/colab-fleet/internal/delivery/modclient"
+	"github.com/futurelastic/muster/internal/delivery/modclient"
 )
 
 const goodHello = `{"event":"hello","module":"m","protocol":1,"version":"1.2.3",` +

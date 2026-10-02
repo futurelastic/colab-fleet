@@ -69,7 +69,7 @@ So neither where a session's inbox socket lives, nor where its credential
 comes from, is knowledge this file can hold — not as a hardcoded path, not
 as a documented naming convention, not even as a private helper only this
 package calls. `InboxResolver` is the seam that knowledge crosses: the
-composition root (`cmd/colab-fleetd`) supplies a real implementation built
+composition root (`cmd/muster`) supplies a real implementation built
 from machine-local configuration this repository never commits, the same
 shape `WithTrustSeed`'s roots and `FLEET_PEERS`'s addresses already use. A
 `Driver` built with no resolver — every existing test, and any consumer
@@ -150,14 +150,14 @@ already names as the reason the pane path stays a fallback.
 
 - A composition root that wants #119's behavior live wires
   `WithInboxResolver` with a real implementation reading machine-local
-  configuration; nothing in `cmd/colab-fleetd` does this yet as of this
+  configuration; nothing in `cmd/muster` does this yet as of this
   change (out of scope for #119's own issue, which asked for the delivery
   change itself, not composition-root wiring).
 
-  **Addendum, colab-fleet #122:** that gap was not hypothetical — it shipped
+  **Addendum, muster #122:** that gap was not hypothetical — it shipped
   and deployed exactly as described, and stayed unreachable because nothing
   outside this file's own tests ever called `WithInboxResolver`. #122 closed
-  it with `cmd/colab-fleetd/inboxresolver.go`: a resolver reading one JSON
+  it with `cmd/muster/inboxresolver.go`: a resolver reading one JSON
   file per pid from an operator-supplied directory (`FLEET_INBOX_INDEX`),
   and `DriverCapabilities.deliversToInbox` (`capabilities.go`, surfaced on
   `GET /v1/runtimes`) so an operator can confirm the wiring is live without
@@ -173,7 +173,7 @@ already names as the reason the pane path stays a fallback.
   `input` example are both updated to state the five new values and why
   they are not folded into the existing four.
 
-  **Addendum, colab-fleet #144:** #143 found that neither half of this ADR's
+  **Addendum, muster #144:** #143 found that neither half of this ADR's
   own path had ever been exercised against anything real — `internal/
   inboxclient`'s framing was wrong on both request lines (its own doc
   comment already disclosed the field names were "this package's choice,

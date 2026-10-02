@@ -4,7 +4,7 @@ import "testing"
 
 // A stamp is only reported when it reads as a describe of a release tag.
 // Everything else is unstamped: a value a floor comparison cannot parse is
-// worse than none, because it looks like an answer (colab-fleet #161).
+// worse than none, because it looks like an answer (muster #161).
 func TestStampedVersion(t *testing.T) {
 	for _, tc := range []struct {
 		raw  string

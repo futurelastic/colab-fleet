@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // state.permissionMode crosses a peer relay untouched (#194). A client reaches a

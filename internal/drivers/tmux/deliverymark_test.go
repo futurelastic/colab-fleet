@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/state"
 )
 
-// colab-fleet #111: the delivery mark itself — the denominator `turns` is
+// muster #111: the delivery mark itself — the denominator `turns` is
 // counted relative to, written once at the moment Send's own paste
 // succeeds, independent of whatever record-reading machinery later counts
 // against it (covered separately in runtimerecord_test.go and

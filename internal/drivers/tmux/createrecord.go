@@ -3,10 +3,10 @@ package tmux
 import (
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// Remembering what a create asked for and what became of it (colab-fleet
+// Remembering what a create asked for and what became of it (muster
 // #84, #85, #86), so a later listing — and the create response itself — can
 // report what was APPLIED rather than only what was REQUESTED.
 //
@@ -75,7 +75,7 @@ type createRecord struct {
 	PromptOutcome  string `json:"promptOutcome,omitempty"`
 	PromptEvidence string `json:"promptEvidence,omitempty"`
 
-	// PromptWaitingOn (colab-fleet #126) is the machine-readable class
+	// PromptWaitingOn (muster #126) is the machine-readable class
 	// alongside PromptEvidence's prose, written by the SAME call
 	// (notePromptPending) that writes the evidence, so the two answers to
 	// "why is this prompt still pending" cannot disagree. Same two-era rule
@@ -163,7 +163,7 @@ func (d *Driver) notePromptDelivered(id string, outcome fleet.Outcome, evidence 
 }
 
 // notePromptPending updates the LIVE reason a still-undelivered prompt has
-// not landed yet (colab-fleet #125) — called from settleNewSession's poll
+// not landed yet (muster #125) — called from settleNewSession's poll
 // loop every time that reason changes, never when delivery has resolved.
 // waitingOn is #126's machine-readable class for the same wait evidence
 // describes, computed by the same caller from the same observation; empty is
@@ -291,7 +291,7 @@ func promptDeliveryFor(rec createRecord) *fleet.PromptDelivery {
 // whether the runtime is honouring a pin it was asked to apply. Not one
 // shared sentence: agent and effort have no on-screen trace at all, while
 // model is the one case worth a sharper note, because the footer's model
-// name LOOKS like it should answer this and does not (colab-fleet #84's own
+// name LOOKS like it should answer this and does not (muster #84's own
 // caution against the unsound inference — the same discipline #65 already
 // declined for a different field).
 var pinUnresolvedEvidence = map[string]string{

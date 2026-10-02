@@ -5,7 +5,7 @@ import (
 	"unicode"
 )
 
-// This file is generated-by-hand (colab-fleet: terminal path v2, item 2b).
+// This file is generated-by-hand (muster: terminal path v2, item 2b).
 //
 // # Why this exists instead of an import
 //
@@ -20,11 +20,11 @@ import (
 // The correct general answer is Unicode's own NFC algorithm, which lives in
 // golang.org/x/text/unicode/norm — not the standard library, and this
 // repository's own convention (see the top-level CLAUDE.md router table:
-// "colab-fleet ... Go, no deps") is to take none. This file is the
+// "muster ... Go, no deps") is to take none. This file is the
 // alternative that convention leaves open: a table generated MECHANICALLY
 // (not typed from memory — see the generator comment below) from Go's own
 // stdlib unicode.Decompose-equivalent knowledge, covering exactly the
-// characters colab-fleet's own round-1 research measured in the fixtures
+// characters muster's own round-1 research measured in the fixtures
 // this change answers (uni-vi-nfc-*/uni-vi-nfd-* — Vietnamese text sent
 // through the terminal path), plus the general Latin-1/Latin Extended-A
 // diacritics that share the same combining marks.
@@ -641,7 +641,7 @@ func composeNFCLite(s string) string {
 // Whitespace is stripped, not merely collapsed, because the differences this
 // comparison must not trip over are not confined to interior runs of spaces:
 // composerText already joins a wrapped continuation row onto the previous
-// one with a single space the source text never had (colab-fleet's own
+// one with a single space the source text never had (muster's own
 // classify.go), the driver's wake key appends one trailing space after the
 // text it submits, and Claude Code's own word-wrap (D1 in the round-1
 // research this change answers) breaks a long line at a space and drops it,

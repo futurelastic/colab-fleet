@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// The runtime's second boot question about a directory (colab-fleet #211): the
+// The runtime's second boot question about a directory (muster #211): the
 // instruction files its working directory loads import a file from outside it.
 
 // fixtureExternalImportsMenu is that question as captured from the installed

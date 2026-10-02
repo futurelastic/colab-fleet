@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // The environment a created session receives, and the record of it.
@@ -159,7 +159,7 @@ const envRecordScript = `if [ -n "$2" ]; then
 fi
 { printf '%s\n' "$PATH"; env -0 | tr -d '\n' | tr '\0' '\n' | sed 's/=.*//' | sort; } > "$1" 2>/dev/null || true
 if [ -n "$3" ]; then
-  cd -- "$3" || { printf 'colab-fleet: cannot enter the working directory %s\n' "$3" >&2; exit 1; }
+  cd -- "$3" || { printf 'muster: cannot enter the working directory %s\n' "$3" >&2; exit 1; }
 fi
 shift 3
 exec "$@"`
@@ -174,7 +174,7 @@ exec "$@"`
 // "no explicit cd", which only a direct test of the script uses; Create always
 // passes one, because Create refuses a spec without a cwd.
 func loginWrap(shell, recordPath, envPath, cwd string, argv []string) []string {
-	wrapped := []string{shell, "-lic", envRecordScript, "colab-fleet", recordPath, envPath, cwd}
+	wrapped := []string{shell, "-lic", envRecordScript, "muster", recordPath, envPath, cwd}
 	return append(wrapped, argv...)
 }
 

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // ErrUnsupported is returned by a Driver method whose capability it lacks
@@ -68,7 +68,7 @@ type SendOptions struct {
 	// looks the same to a screen reader as a finished one.
 	//
 	// The draft rule (#180): with no live record for this composer, a driver
-	// clears it and delivers THIS call's text (colab-fleet #135's door) only
+	// clears it and delivers THIS call's text (muster #135's door) only
 	// when it can still prove the text is its own — a record it kept after
 	// the live one lapsed (a tombstone: the same text, or the same digest) —
 	// or when the caller passes the composer's current digest in
@@ -76,7 +76,7 @@ type SendOptions struct {
 	// it refuses and the text stays: it may be a person's draft.
 	ResumeIfStranded bool
 
-	// ReplaceIfStranded (colab-fleet #112) clears a composer holding a
+	// ReplaceIfStranded (muster #112) clears a composer holding a
 	// delivery this driver made and could not confirm, then delivers THIS
 	// call's text in its place — the door out for a caller that wants
 	// DIFFERENT text, not to finish the stranded one. ResumeIfStranded only
@@ -123,7 +123,7 @@ type SendOptions struct {
 	// refuses one from anyone else.
 	HumanRelay bool
 
-	// From (colab-fleet #158) is who the message says it comes from. Nil
+	// From (muster #158) is who the message says it comes from. Nil
 	// means unlabelled, exactly as before #158. By the time a driver sees
 	// it, Machine has already been stamped by the service (see
 	// fleet.MessageFrom); a driver forwards or renders it and never fills
@@ -210,7 +210,7 @@ func WithDeclaration(from *fleet.MessageFrom, text string) string {
 // DiscardOptions controls how far Discard is allowed to go past its
 // ordinary row-budgeted clear pass (driver.Driver.Discard).
 type DiscardOptions struct {
-	// Force (colab-fleet #136) authorises a stronger clear mechanism once
+	// Force (muster #136) authorises a stronger clear mechanism once
 	// the ordinary pass has already been proven futile against this EXACT
 	// residue (the same futility record discardProvenFutile's refusal
 	// already reads) — the escape hatch that refusal used to say did not
@@ -237,7 +237,7 @@ type ListFilter struct {
 	Agent     fleet.AgentId
 	CwdPrefix string
 
-	// Labels keeps only sessions carrying every pair (colab-fleet #153).
+	// Labels keeps only sessions carrying every pair (muster #153).
 	// Local drivers ignore it: labels are stored by the service, not by the
 	// driver, so the service applies this itself. The remote driver forwards
 	// it so a peer narrows its own answer.
@@ -251,7 +251,7 @@ func (f ListFilter) IsZero() bool {
 }
 
 // ClosedLister is an OPTIONAL capability: a driver fronting a PEER that can
-// read that peer's own closed-session records (colab-fleet #179). Local
+// read that peer's own closed-session records (muster #179). Local
 // drivers never implement it — the records are kept by the service, not by a
 // runtime. A peer driver without it is reported as a source that cannot
 // answer, never as a peer with nothing closed.
@@ -260,7 +260,7 @@ type ClosedLister interface {
 }
 
 // LabelRelayer is an OPTIONAL capability: a driver fronting a PEER that can
-// forward a label write to it (POST …/labels, colab-fleet #153). Local
+// forward a label write to it (POST …/labels, muster #153). Local
 // drivers never implement it — a local session's labels are the service's
 // own to store. A peer driver without it answers unsupported.
 type LabelRelayer interface {
@@ -269,7 +269,7 @@ type LabelRelayer interface {
 
 // CapturedExit is one session's own process exit, captured by an
 // ExitReporter driver in the same pass that removed the session from its
-// runtime (colab-fleet #235). ID is the driver's own session id; the caller
+// runtime (muster #235). ID is the driver's own session id; the caller
 // already knows which runtime it asked.
 type CapturedExit struct {
 	ID   string
@@ -278,7 +278,7 @@ type CapturedExit struct {
 
 // ExitReporter is an OPTIONAL capability: a LOCAL driver that can capture
 // what a session's own process reported when it exited on its own, before
-// the driver removed the session that held it (colab-fleet #235). Peer
+// the driver removed the session that held it (muster #235). Peer
 // drivers never implement it — a peer reports its own exits through its own
 // ClosedSession records, read via ClosedLister above, not through this.
 //
@@ -372,7 +372,7 @@ type EventStream interface {
 // than substitute — see internal/drivers/remote.
 //
 // Driver implements the §3 operations for one runtime on one machine (§4).
-// A driver whose implementation is an HTTP client to a peer colab-fleet
+// A driver whose implementation is an HTTP client to a peer muster
 // (§4.2, "the remote driver") satisfies this exact same interface — that
 // is the entire federation design: if Driver cannot express "a session on
 // another machine," Driver is wrong.
@@ -418,7 +418,7 @@ type Driver interface {
 	// optional") — a repeat key within the retention window must return
 	// the existing Session rather than creating a second session.
 	//
-	// # Why this returns fleet.Session, not fleet.SessionRef (colab-fleet
+	// # Why this returns fleet.Session, not fleet.SessionRef (muster
 	// # #84, #85, #86)
 	//
 	// The driver is the only party in this service that knows what a create
@@ -480,7 +480,7 @@ type Driver interface {
 	// Discarding an already-empty composer succeeds. A caller retrying after a
 	// timeout must not be told it failed for having previously worked.
 	//
-	// opts.Force (colab-fleet #136) is the escape hatch once the ordinary
+	// opts.Force (muster #136) is the escape hatch once the ordinary
 	// pass has already been proven futile against this EXACT residue: a
 	// caller with a corroborated digest, past what a budgeted clear pass
 	// could reach, asking for the composer back without destroying the
@@ -501,7 +501,7 @@ type Driver interface {
 	// filtering by id can re-key.
 	//
 	// Returns fleet.RenameAck, not the bare fleet.Ack every other
-	// intent-only operation returns (colab-fleet #222) — Rename's id half is
+	// intent-only operation returns (muster #222) — Rename's id half is
 	// not intent-only: it has already happened, or it has not, by the time
 	// this returns. This method reports ONLY that id half; a driver leaves
 	// RenameAck.Title nil (the service fills it in — see TitleSyncer below,
@@ -586,7 +586,7 @@ type KeySender interface {
 	Keys(ctx context.Context, req fleet.Request, ref fleet.SessionRef, key fleet.KeyName, expectDigest string) (fleet.DeliveryReceipt, error)
 }
 
-// TitleSyncer is an OPTIONAL capability (colab-fleet #222): a driver whose
+// TitleSyncer is an OPTIONAL capability (muster #222): a driver whose
 // runtime keeps its own idea of a session's title, apart from the id
 // Rename changes, and that can bring that title to a new name.
 //
@@ -641,7 +641,7 @@ type CounterReporter interface {
 //
 // A driver that does not implement this interface must read as an unknown
 // build (fleet.Build{}, Known: false) to its caller, never as a zero value
-// that looks like a plausible answer — colab-fleet #121, and the same
+// that looks like a plausible answer — muster #121, and the same
 // discipline fleet.Build's own doc comment states for §5.7.
 type BuildReporter interface {
 	Build() fleet.Build
@@ -650,7 +650,7 @@ type BuildReporter interface {
 // PeerDownReporter is another OPTIONAL capability, same shape as
 // BuildReporter: a driver fronting a PEER machine that remembers its own
 // recent failures and can say, from memory and without a network call, that
-// the peer has stopped answering (colab-fleet #237).
+// the peer has stopped answering (muster #237).
 //
 // Optional for the same reason BuildReporter is: a LOCAL driver has no
 // transport to fail. The service reads it where it would otherwise dial a
@@ -669,7 +669,7 @@ type PeerDownReporter interface {
 // MaxInputBytesReporter is another OPTIONAL capability, same shape as
 // BuildReporter: a driver fronting a PEER machine that has learned, by
 // probing that peer's own /v1/health, the effective limit that peer
-// enforces on `prompt` (create) and `text` (input) — colab-fleet #130.
+// enforces on `prompt` (create) and `text` (input) — muster #130.
 //
 // Optional for the same reason BuildReporter is: a LOCAL driver's limit is
 // this service's own (Service.MaxInputBytes, already known without a
@@ -689,7 +689,7 @@ type MaxInputBytesReporter interface {
 // PeerStandingReporter is another OPTIONAL capability, same shape again: a
 // driver fronting a PEER reports this service's own standing there — whether
 // that peer lists this service back and what it grants the credential this
-// service presents (colab-fleet #154), learned on the same probe as Build.
+// service presents (muster #154), learned on the same probe as Build.
 // A driver without it reads as fleet.AssumedPeerStanding().
 type PeerStandingReporter interface {
 	PeerStanding() fleet.PeerStanding

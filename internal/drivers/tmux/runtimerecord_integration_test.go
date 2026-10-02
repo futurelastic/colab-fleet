@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/state"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/state"
 )
 
 // End-to-end coverage for #56: the driver-level upgrade from the runtime's
@@ -84,7 +84,7 @@ func serverErrorEntry(id string, at time.Time) map[string]any {
 }
 
 // turnDurationEntry is the runtime's own, unasked, structural turn-boundary
-// marker — colab-fleet #111's whole provenance argument rests on this being
+// marker — muster #111's whole provenance argument rests on this being
 // a DIFFERENT kind of entry from every one of the api-error/clean-turn
 // entries above: none of them carries anything the agent chose to say.
 func turnDurationEntry(id string, at time.Time) map[string]any {
@@ -563,7 +563,7 @@ func TestTurnsAbsentWhenThisDriverNeverDelivered(t *testing.T) {
 	}
 }
 
-// colab-fleet #142: once a checkpoint has been latched by a prior successful
+// muster #142: once a checkpoint has been latched by a prior successful
 // count, a later read must not need to re-prove the window reaches all the
 // way back to the ORIGINAL delivery mark — only back to that checkpoint. A
 // single long turn is exactly the case that broke the old timestamp-anchored

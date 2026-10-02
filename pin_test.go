@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// colab-fleet #84: an unresolved pin must round-trip with Honoured, Source
+// muster #84: an unresolved pin must round-trip with Honoured, Source
 // and Applied all absent — never asserting a fate this driver has not
 // established.
 func TestPinResult_UnresolvedRoundTrips(t *testing.T) {

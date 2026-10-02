@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
-// colab-fleet #84: a pin that reaches the argv intact — never a value this
+// muster #84: a pin that reaches the argv intact — never a value this
 // driver would refuse — must be reported unresolved rather than echoed as
 // applied. TestFlagShapedPinIsRefusedRatherThanDropped (create_capabilities_test.go)
 // covers the detectable, refused half; these cover the other half.
@@ -39,7 +39,7 @@ func TestCreate_PinsReportUnresolvedNotEchoed(t *testing.T) {
 	// The defect this closes: Session.Model must not echo the request.
 	if sess.Model != "" {
 		t.Errorf("Session.Model = %q, want empty — this driver never observes the applied "+
-			"model, so echoing the request is exactly colab-fleet #84's fabricated answer", sess.Model)
+			"model, so echoing the request is exactly muster #84's fabricated answer", sess.Model)
 	}
 	// Agent/Effort were never requested — must not manufacture entries.
 	if sess.Pins.Agent != nil || sess.Pins.Effort != nil {

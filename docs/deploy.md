@@ -63,34 +63,34 @@ back code and rolling back data are different decisions and are not spelled
 the same way here.
 
 **A verified deploy is not yet a usable one, for `keys` specifically
-(colab-fleet #68).** `deliversRawKeys: true` on a runtime is a statement about
+(muster #68).** `deliversRawKeys: true` on a runtime is a statement about
 what the driver can do, not about who may ask it to — the `keys` grant is
 separate, denied by default, and nothing above grants it. A fresh deployment
-that never ran `colab-fleetd principal add ... --grants=...,keys` will verify
+that never ran `muster principal add ... --grants=...,keys` will verify
 clean and then refuse every keypress with `401 ... does not hold the keys
 grant`, which reads like a permissions bug rather than the setup step it
 actually is. Across a peer relay it is two grants, on two machines: `keys` at
 the far end that runs the key, `relay` at the near end that forwards the
 request there — see api-http.md §3 for why fixing the first refusal does not
-fix the call. `colab-fleetd doctor --principal=<name>` names the near half as
+fix the call. `muster doctor --principal=<name>` names the near half as
 rows `principals.supervisor` and `principals.relay`; the far half is that
 peer's own `doctor` run.
 
 **A verified deploy is not yet a usable inbox delivery path either
-(colab-fleet #122).** `deliversToInbox: true` on `GET /v1/runtimes` is
+(muster #122).** `deliversToInbox: true` on `GET /v1/runtimes` is
 contingent on `FLEET_INBOX_INDEX` being set on that machine — a deploy that
 verifies clean but never sets that variable runs with #119's resolver nil,
 and every delivery keeps falling through to the pane path exactly as #122
 found it doing in production. Setting it is an operator step this script
 does not perform and cannot: the directory it names, and what populates it,
-are machine-local facts this repository never commits (`cmd/colab-fleetd`'s
+are machine-local facts this repository never commits (`cmd/muster`'s
 own doc comment names the variable; it does not name a value). Check
 `deliversToInbox` after any deploy you expect this path to be live on,
-rather than assuming a clean verify implies it — `colab-fleetd doctor` reports
+rather than assuming a clean verify implies it — `muster doctor` reports
 it as row `inbox.index`, run under the service's own environment.
 
 **And `deliversToInbox: true` is still not a usable path unless the index
-carries a permission-mode class (colab-fleet #148).** Each index entry now has
+carries a permission-mode class (muster #148).** Each index entry now has
 an optional `mode_class` naming the class its target session RUNS IN. Without
 it a send cannot be attested and falls back to the terminal path — silently,
 and while the flag still reads true. Until whatever populates that directory
@@ -109,13 +109,13 @@ Two things to check on a deploy you expect this path to be live on:
   written" and "the fix did not take" are otherwise indistinguishable from
   outside.
 
-`colab-fleetd doctor` counts both from the index itself, as row
+`muster doctor` counts both from the index itself, as row
 `inbox.mode-class`: entries attestable, entries without a class, entries with
 an unrecognised one. That is one reading of the index on disk; the counters
 are what the running service actually met.
 
 **The resolver's index counters are read from `GET /v1/health`
-(colab-fleet #163),** under the terminal runtime's entry in `counters`, and
+(muster #163),** under the terminal runtime's entry in `counters`, and
 only on a machine with `FLEET_INBOX_INDEX` set — absent there means the
 resolver is not wired, `0` means wired and not yet hit:
 
@@ -133,7 +133,7 @@ index, not exits of the send path, so they are named apart from `inbox.*` and
 are not part of the ADR-150 sum below.
 
 **Whether the body rule is worth widening is read from `GET /v1/health`
-(colab-fleet #150).** The terminal runtime's entry under `counters` carries one
+(muster #150).** The terminal runtime's entry under `counters` carries one
 `inbox.*` counter per exit of the inbox send path; the full list, and how they
 sum, is in `docs/adr/150-count-inbox-fallbacks-before-widening.md`. The number
 that decision needs is `inbox.attest_body_lookalike / inbox.attest_checked`,
@@ -142,7 +142,7 @@ The counters are in memory: a reading covers only the window since that
 machine's `startedAt`. `inbox.fallback_no_mode_class` is the same class rollout
 seen per send rather than per index entry.
 
-**Turning the inbox route on (colab-fleet #184) — what has to be true first, in
+**Turning the inbox route on (muster #184) — what has to be true first, in
 this order.** Since #184 a send with no `route` is `auto`: anyone who does not
 hold the `human-relay` grant goes through the inbox whenever the session can take
 it. On a machine whose index emits no class that is nobody, so shipping this
@@ -152,11 +152,11 @@ the inbox is the operator step that follows, and it has an order:
 
 0. **A machine with no principal table needs one before this build (#196).**
    The inbox route is not available without a table: with `FLEET_INBOX_INDEX`
-   set and `FLEET_CONFIG` unset, `colab-fleetd` **refuses to start**, naming the
+   set and `FLEET_CONFIG` unset, `muster` **refuses to start**, naming the
    table. The reason is the one step 1 turns on — who relays a person's messages
    has to be a grant the table holds, and a single-token machine has nothing
    but a header any bearer of the token can set to say so. **Before you install
-   this build on a machine that sets `FLEET_INBOX_INDEX`, run `colab-fleetd
+   this build on a machine that sets `FLEET_INBOX_INDEX`, run `muster
    doctor` there, under the service's own environment: row
    `principals.human-relay` reads `fail` on exactly the machines that would
    refuse to start.** Then either write a table
@@ -170,7 +170,7 @@ the inbox is the operator step that follows, and it has an order:
    ordinary sender: once the inbox is live its messages arrive as **peer
    messages**, which the receiving runtime treats as not coming from the user and
    which cannot grant escalation — measured, a receiver refused an operator's
-   approval for exactly this reason. `colab-fleetd doctor` runs offline and does
+   approval for exactly this reason. `muster doctor` runs offline and does
    not read the running service's counters or its callers, so it cannot see who
    actually relays a person's messages — but it can see the configuration that
    makes the failure possible: row `principals.human-relay` warns when
@@ -226,7 +226,7 @@ prompted it covered no receiver running with permission prompts bypassed, which
 is the case the gate exists for.
 
 **One check this script — and `doctor` — cannot perform: whether the sender
-label actually renders (colab-fleet #158).** `/input`'s optional `from` object
+label actually renders (muster #158).** `/input`'s optional `from` object
 reaches the receiving side either as the envelope's sender-name attribute
 (inbox path) or as a first line on the pane (terminal path) — proven
 byte-identical against a transcription of the receiver's grammar, never
@@ -285,13 +285,13 @@ changes.
 `REMOTE_PATH`, `FLEET_RESTART` and `FLEET_HEALTH_URL` are not defaulted, on
 purpose — see the script header for why. Set all three, or the script tells
 you loudly what it could not do on your behalf. `REMOTE_PATH` joined the other
-two after colab-fleet issue #66: a default here is exactly the operational
+two after muster issue #66: a default here is exactly the operational
 fact this script otherwise refuses to guess, and guessing it wrong produced a
 deploy that looked FAILED while every step had actually succeeded — see the
 trap below.
 
 Four more variables tune verification itself, all optional and all defaulted
-to the prior behaviour (colab-fleet #93 — see the trap below for why they
+to the prior behaviour (muster #93 — see the trap below for why they
 exist):
 
 - `FLEET_VERIFY_TIMEOUT` — seconds to poll the health URL before giving up.
@@ -302,9 +302,9 @@ exist):
 - `FLEET_HEALTH_TOKEN_FILE` — a path, read on the host via `cat`.
 
 One of the last two is **required** whenever `FLEET_HEALTH_URL` is set
-(colab-fleet #108) — see the trap below for why there is no longer a
+(muster #108) — see the trap below for why there is no longer a
 hardcoded fallback. If your convention is a token file at
-`~/.config/colab-fleet/token`, set `FLEET_HEALTH_TOKEN_FILE` to that path
+`~/.config/muster/token`, set `FLEET_HEALTH_TOKEN_FILE` to that path
 explicitly; it is no longer assumed on your behalf.
 
 ### Optional delivery modules (#185)
@@ -322,7 +322,7 @@ this step does not run at all and a deploy is what it always was.
   one warning line naming its position and never its source.
 - `FLEET_MODULES_DIR` — where the modules are installed on the host. Default: the
   parent of the directory `REMOTE_PATH` lives in, plus
-  `libexec/colab-fleet/modules` — the place the daemon looks. If you set it here,
+  `libexec/muster/modules` — the place the daemon looks. If you set it here,
   set the same value in the service's own environment.
 
 The module is built for the target's `GOOS`/`GOARCH`, uploaded beside its final
@@ -339,7 +339,7 @@ scripts/fleet-backup.sh HOST     # captures a peer's binary + state, over ssh
 scripts/fleet-backup.sh local    # captures this machine's own
 ```
 
-Four variables are required, no defaults (colab-fleet #123 — the same
+Four variables are required, no defaults (muster #123 — the same
 discipline as `deploy.sh`, for the same reason): `FLEET_BIN` (the installed
 binary path on the target), `FLEET_STATE_DIR` (the state directory on the
 target), `FLEET_HEALTH_URL` (curled ON THE TARGET), and one of
@@ -370,11 +370,11 @@ procedure" above for why.
 Each of these cost real time before it earned a place here.
 
 **A deploy can succeed at every step and still verify as FAILED — for two
-different reasons that read almost identically (colab-fleet #66).**
+different reasons that read almost identically (muster #66).**
 
 The first is an install path the service manager does not exec. `REMOTE_PATH`
-used to default to `~/bin/colab-fleetd`; on both machines here the service
-definition execs `~/.local/bin/colab-fleetd`. The script wrote a correct,
+used to default to `~/bin/muster`; on both machines here the service
+definition execs `~/.local/bin/muster`. The script wrote a correct,
 freshly-stamped binary to a path nothing runs, restarted the service, and the
 service dutifully kept running what it has always run. Verification then
 correctly reported a mismatch — but its wording named `FLEET_RESTART`, the one
@@ -393,7 +393,7 @@ this case, so a wrong URL says *what answered* instead of pointing at whichever
 step ran most recently.
 
 **Two more deploys succeeded at every step and still verified as FAILED, for
-two more reasons neither of the above covers (colab-fleet #93).**
+two more reasons neither of the above covers (muster #93).**
 
 The first is startup that is not instant. Verification used to probe once and
 declare the service dead if that single probe found nothing. Startup does real
@@ -428,9 +428,9 @@ hardcoded path. Colab-fleet #108, below, is what closed that gap.
 
 **A deploy can succeed at every step, verification can reach the service and
 authenticate cleanly, and the deploy can STILL report FAILED — because the
-credential that authenticated was never going to be accepted (colab-fleet
+credential that authenticated was never going to be accepted (muster
 #108).** The hardcoded fallback the previous paragraph describes
-(`~/.config/colab-fleet/token`, read on the host) is correct for a
+(`~/.config/muster/token`, read on the host) is correct for a
 single-token deployment, where that file conventionally holds the same value
 as the service's own token. It is silently wrong for a deployment configured
 with a principal table: that value is never one of the table's principals,
@@ -455,7 +455,7 @@ which only inspects tracked files, so it still passed — but the build it let
 through was already stamped `modified: true`, because Go's own VCS stamp
 (`cmd/go/internal/vcs`) computes dirtiness from plain `git status --porcelain`,
 which flags untracked files too. The two checks disagreed, and the gate's
-answer was the wrong one to trust (colab-fleet #139). Two per-issue worktree
+answer was the wrong one to trust (muster #139). Two per-issue worktree
 checkouts and this repo's own `.claude/plans/`, `.claude/briefs/` reproduced
 the same gap later, at repo root.
 
@@ -506,7 +506,7 @@ machine's.
 **Run this script from the primary checkout, never a linked worktree.** Go's
 own VCS build stamp was measured embedding the *primary checkout's* HEAD, not
 a linked worktree's own, when built from inside one — reproduced twice,
-including after `go clean -cache` (colab-fleet #140). Plain `git rev-parse
+including after `go clean -cache` (muster #140). Plain `git rev-parse
 HEAD`, which the script uses for the revision it compares against, gets the
 right answer from a worktree; Go's detector does not. The script now refuses
 to build from a linked worktree by default (`ALLOW_WORKTREE_BUILD=1`

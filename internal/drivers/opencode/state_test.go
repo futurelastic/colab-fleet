@@ -3,7 +3,7 @@ package opencode
 import (
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // classify is the heart of #55's mapping ruling: present ⇒ busy/retry

@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/godx-jp/colab-fleet/internal/service"
+	"github.com/futurelastic/muster/internal/service"
 )
 
 // Enrolment: giving a client a principal without hand-editing JSON.
@@ -53,8 +53,8 @@ import (
 
 func usageEnrol() string {
 	return strings.Join([]string{
-		"usage: colab-fleetd principal add <name> --grants=read[,send,...] [--config PATH] [--token-file PATH]",
-		"       colab-fleetd principal list [--config PATH]",
+		"usage: muster principal add <name> --grants=read[,send,...] [--config PATH] [--token-file PATH]",
+		"       muster principal list [--config PATH]",
 		"",
 		"grants: " + strings.Join(grantNames(), " · "),
 		"",
@@ -72,7 +72,7 @@ func grantNames() []string {
 	return out
 }
 
-// runPrincipal handles `colab-fleetd principal ...` and reports whether it
+// runPrincipal handles `muster principal ...` and reports whether it
 // consumed the invocation.
 func runPrincipal(args []string) (handled bool, err error) {
 	if len(args) == 0 || args[0] != "principal" {

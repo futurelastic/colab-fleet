@@ -8,7 +8,7 @@
 `scripts/deploy.sh` verifies a deploy by curling a health URL on the target
 host and comparing the reported revision to the one just built. Until now,
 when neither `FLEET_HEALTH_TOKEN` nor `FLEET_HEALTH_TOKEN_FILE` was set, it
-fell back to reading `~/.config/colab-fleet/token` on the host.
+fell back to reading `~/.config/muster/token` on the host.
 
 That fallback is correct for a single-token deployment, where the file
 conventionally holds the same value the service itself checks incoming

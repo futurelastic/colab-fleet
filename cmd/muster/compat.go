@@ -10,12 +10,12 @@ import (
 	"syscall"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/compat"
-	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/compat"
+	"github.com/futurelastic/muster/internal/drivers/tmux"
 )
 
-// colab-fleetd compat (colab-fleet #183): checks a candidate build of the agent
+// muster compat (muster #183): checks a candidate build of the agent
 // runtime against this service's assumptions and prints a versioned report.
 // The contract — report, catalogue, exit codes — is docs/compat.md and
 // internal/compat; the checks themselves live beside the driver code they
@@ -31,7 +31,7 @@ var runCompatFn = tmux.RunCompat
 
 func usageCompat() string {
 	return strings.Join([]string{
-		"usage: colab-fleetd compat --claude <absolute path to a claude binary> [--json]",
+		"usage: muster compat --claude <absolute path to a claude binary> [--json]",
 		"                           [--pack <dir>] [--only <id[,id…]>] [--timeout <duration>]",
 		"",
 		"Checks a CANDIDATE build of the agent runtime against the assumptions this service",
@@ -53,7 +53,7 @@ func usageCompat() string {
 	}, "\n")
 }
 
-// runCompat handles `colab-fleetd compat ...` and reports whether it consumed
+// runCompat handles `muster compat ...` and reports whether it consumed
 // the invocation, and the exit code to use when it did.
 func runCompat(args []string, getenv func(string) string, stdout, stderr io.Writer) (handled bool, code int) {
 	if len(args) == 0 || args[0] != "compat" {
@@ -64,7 +64,7 @@ func runCompat(args []string, getenv func(string) string, stdout, stderr io.Writ
 	// with "could not certify" rather than a stack trace and an ambiguous code.
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Fprintf(stderr, "colab-fleetd compat: internal error: %v\n", r)
+			fmt.Fprintf(stderr, "muster compat: internal error: %v\n", r)
 			handled, code = true, 2
 		}
 	}()
@@ -73,7 +73,7 @@ func runCompat(args []string, getenv func(string) string, stdout, stderr io.Writ
 	asJSON := false
 
 	bad := func(format string, a ...any) (bool, int) {
-		fmt.Fprintf(stderr, "colab-fleetd compat: "+format+"\n\n%s\n", append(a, usageCompat())...)
+		fmt.Fprintf(stderr, "muster compat: "+format+"\n\n%s\n", append(a, usageCompat())...)
 		return true, 2
 	}
 	rest := args[1:]
@@ -151,7 +151,7 @@ func runCompat(args []string, getenv func(string) string, stdout, stderr io.Writ
 	// they are, and put the logger back afterwards for the tests that share it.
 	oldFlags, oldPrefix := log.Flags(), log.Prefix()
 	log.SetFlags(0)
-	log.SetPrefix("colab-fleetd compat: ")
+	log.SetPrefix("muster compat: ")
 	defer func() { log.SetFlags(oldFlags); log.SetPrefix(oldPrefix) }()
 
 	// SIGINT, SIGTERM and SIGHUP cancel the run; the harness's teardown runs
@@ -175,7 +175,7 @@ func runCompat(args []string, getenv func(string) string, stdout, stderr io.Writ
 		}
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "colab-fleetd compat: %v\n", err)
+		fmt.Fprintf(stderr, "muster compat: %v\n", err)
 		return true, 2
 	}
 	return true, rep.ExitCode()

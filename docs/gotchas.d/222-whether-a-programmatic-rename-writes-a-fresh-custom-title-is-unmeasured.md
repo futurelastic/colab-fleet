@@ -7,7 +7,7 @@ built on #227 (split from #223 item 4)
 WHY nobody had ever looked and what "unmeasured" used to mean; it is not a
 substitute for running the check against the candidate a reader actually
 cares about. A runtime release can change this from one build to the next,
-the same way it can change any of the other things `colab-fleetd compat`
+the same way it can change any of the other things `muster compat`
 exists to catch (see `docs/compat.md`).
 
 ## What is NOT known
@@ -48,7 +48,7 @@ the exact two calls and order the service makes — and keeps reading the
 transcript for `compatRenameWait` (30s), far past `SyncTitle`'s own four-second
 `submitConfirmWindow`, specifically so a runtime that is merely SLOW to write
 the custom-title is not reported the same as one that never does. Run
-`colab-fleetd compat --claude <candidate> --only H-RENAME` (or a full run) to
+`muster compat --claude <candidate> --only H-RENAME` (or a full run) to
 get the answer for a given build; its `detail` names the latency when a
 custom-title did follow, or says plainly that it did not within that window.
 

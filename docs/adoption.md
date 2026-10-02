@@ -71,7 +71,7 @@ deliberately. The failure mode is silent.
 API rather than a demonstration of it: this service can hand you a session on
 another machine long before it can hand you back what that session
 produced.** Nothing here stores or returns a session's own output
-(session-abstraction.md §5.8, colab-fleet #82) — again, correctly, and again
+(session-abstraction.md §5.8, muster #82) — again, correctly, and again
 a consequence the adoption plan must answer rather than a defect to file.
 The available answers are the same shape as above and equally outside this
 repository: put a reply address in the dispatch brief and have the worker

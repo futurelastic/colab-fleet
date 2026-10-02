@@ -79,7 +79,7 @@ session, or `maxNameReasserts` is already spent — is a fact about the
 exists, not a fact about what this read observed. Folding it into a field
 that describes an observation would report a future action as a present fact,
 the same category of error `Session.Agent`/`.Model` are documented to avoid
-(colab-fleet #84). It is also not stable: a name taken by another session
+(muster #84). It is also not stable: a name taken by another session
 becomes free the moment that session closes. The operational need is met
 elsewhere — the existing `identity.contested` counter, and evidence prose
 naming how many times a repair was already attempted. A field added to this

@@ -13,12 +13,12 @@ const (
 	// a quiet mutation. Without the event, a rename is indistinguishable from
 	// a disappearance, and that is the one thing it must not be mistaken for.
 	//
-	// One rename produces more than one of these (colab-fleet #103): an
+	// One rename produces more than one of these (muster #103): an
 	// accept-time event, always, and a later follow-up once this service has
 	// something to say about whether it held — see SessionRenamed.Corroboration.
 	EventSessionRenamed EventKind = "session.renamed"
 	// EventSessionLabels carries a session's labels after they changed
-	// (colab-fleet #153) — at create when it carried any, and after every
+	// (muster #153) — at create when it carried any, and after every
 	// POST …/labels. The payload is the WHOLE map, not the patch, so a
 	// subscriber that missed an earlier one still converges.
 	//
@@ -99,7 +99,7 @@ type SessionStatePayload struct {
 	State SessionState `json:"state"`
 }
 
-// SessionLabelsPayload is session.labels' payload (colab-fleet #153): the
+// SessionLabelsPayload is session.labels' payload (muster #153): the
 // session, when it started (so a subscriber can tell a recycled id apart,
 // §5.4), and its complete label map after the change.
 type SessionLabelsPayload struct {

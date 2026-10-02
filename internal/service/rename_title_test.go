@@ -7,11 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
-// titleSyncingDriver adds driver.TitleSyncer to labelDriver (colab-fleet
+// titleSyncingDriver adds driver.TitleSyncer to labelDriver (muster
 // #222), so handleRename's own orchestration — Rename first, THEN SyncTitle,
 // targeting the NEW id — can be exercised without a real substrate.
 type titleSyncingDriver struct {
@@ -96,7 +96,7 @@ func (d *peerRenameDriver) Rename(ctx context.Context, req fleet.Request, ref fl
 	return d.ack, nil
 }
 
-// TestHandleRename_PeerTitleIsPassedThroughVerbatim: colab-fleet#222's own
+// TestHandleRename_PeerTitleIsPassedThroughVerbatim: muster#222's own
 // rule — a peer-routed rename never runs this machine's syncTitle a second
 // time; whatever fleet.RenameAck.Title the peer already decided is forwarded
 // as-is, absent included.

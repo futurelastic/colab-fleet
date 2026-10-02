@@ -9,13 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
 // idDriver is stub.Driver plus a controllable State() and a working
 // Create() — the smallest fake that can play every existence-first
-// scenario colab-fleet issue #60 needs proven: a driver that
+// scenario muster issue #60 needs proven: a driver that
 // affirmatively HAS an id, one that affirmatively never had it (the
 // ordinary zero value), and one whose read of a specific id fails for a
 // reason that is NOT "never had it".
@@ -355,7 +355,7 @@ func TestCreate_AmbiguousWithNoDefaultIsRefused(t *testing.T) {
 // --- federation: the default never crosses to a peer ------------------------
 
 // TestResolveSessionDriver_PeerNeverSeesLocalDefault is the FEDERATION
-// requirement from colab-fleet issue #60: a proxied request never reaches
+// requirement from muster issue #60: a proxied request never reaches
 // this machine's default at all, so the same bare id addressed on a peer
 // cannot mean something different depending on which machine answered it.
 func TestResolveSessionDriver_PeerNeverSeesLocalDefault(t *testing.T) {

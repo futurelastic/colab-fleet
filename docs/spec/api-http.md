@@ -110,7 +110,7 @@ GET /v1/whoami[?machine=<id>][&peer=<id>]
 ```
 
 **`/v1/whoami` reports the presented credential's own grants, and nothing
-about any other principal** (colab-fleet #106, session-abstraction.md §7.7).
+about any other principal** (muster #106, session-abstraction.md §7.7).
 Unlike every other read route, it does not require the `read` grant — see §5
 — because a principal holding no grants at all is exactly the caller who
 needs it most. `machine` defaults to this service's own id; naming a peer
@@ -122,7 +122,7 @@ granted a credential (unlike a peer's driver capabilities, which are probed
 and cached), so a peer's real answer must be read from that machine directly.
 
 **`peer=<id>` is how a service asks a machine whether it is listed there**
-(colab-fleet #154). When the report is about this machine and the credential
+(muster #154). When the report is about this machine and the credential
 holds `read`, `listsYou` is `true` or `false` — whether `<id>` is in this
 machine's own peer roster. Otherwise it is `null`: nothing asked, a report
 about another machine, or a credential without `read`, because the roster is
@@ -134,9 +134,9 @@ acceptable because the answer is a report and grants nothing.
 Clients **must** consult `/v1/runtimes` before relying on a capability, and
 degrade rather than assume. A driver never emulates (§5.6).
 
-**`deliversToInbox` is how an operator confirms colab-fleet #119's inbox
+**`deliversToInbox` is how an operator confirms muster #119's inbox
 delivery path is actually live on a machine, without inferring it from a
-delivery receipt's wording** (colab-fleet #122). `false` means every send on
+delivery receipt's wording** (muster #122). `false` means every send on
 that runtime falls through to the pane path unconditionally; `true` means a
 resolver is configured, and *some* targets may take the inbox path — which
 ones is still decided per call and is not this field's job to say. A merged-
@@ -145,7 +145,7 @@ never adopted #119 at all — the honest answer, since from a caller's side
 those two states behave identically.
 
 ⚠️ **`true` is a statement about wiring, never a prediction about a given
-send, and colab-fleet #148 widened that gap deliberately.** A send now also
+send, and muster #148 widened that gap deliberately.** A send now also
 needs the target's permission-mode class, supplied per target by the same
 machine-local index the address comes from; without it the send cannot be
 attested and falls back to the terminal path. So a machine whose index writer
@@ -168,7 +168,7 @@ comparing builds **must** treat an unstamped or `modified` build as
 the only comparison that means anything, and the failure this field exists to
 catch is precisely a confident conclusion drawn from an absent measurement.
 
-**`build.version` answers a different question than `revision`** (colab-fleet
+**`build.version` answers a different question than `revision`** (muster
 #161): not "is this exact commit running?" but "is this at least release X?".
 It is `git describe --tags` at the built commit, stamped at link time — the
 toolchain records no tag, so it cannot be derived at runtime. A service
@@ -179,7 +179,7 @@ A client enforcing a floor **must** treat `null` or an absent field as
 a trailing `-N-g<sha>` means N commits after it. `version` never participates
 in build equality.
 
-**`/v1/machines` carries the same `build` object per entry** (colab-fleet
+**`/v1/machines` carries the same `build` object per entry** (muster
 #121) — self is always known (read once at startup), a peer is whatever the
 last successful probe learned. This is the answer to "is a merged guard live
 here": compare `revision` against the commit that added the guard, or two
@@ -191,7 +191,7 @@ means "not yet observed", the same meaning `assumed` carries elsewhere on
 this page, not "running old code."
 
 **`maxInputBytes` is this machine's effective limit on `prompt` (create) and
-`text` (input)** (colab-fleet #130) — the same ask-do-not-infer move #121
+`text` (input)** (muster #130) — the same ask-do-not-infer move #121
 made for `build`, applied to the length cap §3.3 documents below: a caller
 sizing a dispatch brief can ask rather than discover the boundary by
 exceeding it. It matters more once the value is machine-local (§3.3 again)
@@ -204,7 +204,7 @@ no separate `known` flag — a real effective limit is never zero, so the
 zero value is unambiguous on its own as "not yet observed."
 
 **`peer` on each `/v1/machines` item is this service's own standing on that
-machine** (colab-fleet #154) — the one credential a service holds that a peer
+machine** (muster #154) — the one credential a service holds that a peer
 knows, its own, and whether that peer's roster lists it back. Federation is
 two hand-kept halves of configuration, and before this their disagreement was
 discoverable only by a 403 at the moment of need.
@@ -246,7 +246,7 @@ peer before answering instead of using the cached cycle; concurrent verifies
 are serialized, so a caller holding only `read` cannot multiply probes.
 
 **`labels` on `/v1/health` is the bounds this machine enforces on session
-labels** (colab-fleet #153; §3.3's `labels`), and its presence is how a
+labels** (muster #153; §3.3's `labels`), and its presence is how a
 relaying service learns that a peer stores labels at all. A service relaying a
 create that carries labels **must** refuse it `unsupported`, before sending
 anything, to a peer whose health omits this field: that peer would decode the
@@ -277,7 +277,7 @@ service **adopts** that record rather than synthesizing a fresh one (§13.2) —
 peer that answers promptly while reporting itself `degraded` must not be
 relayed as `ok`.
 
-**`label=key:value` keeps only sessions carrying that pair** (colab-fleet
+**`label=key:value` keeps only sessions carrying that pair** (muster
 #153). Repeatable, and every pair must match; exact on key and value; the split
 is on the first `:`, which a key may not contain. A pair with no `:`, an invalid
 key, or one key named twice with different values is `400 invalid` — the last
@@ -325,7 +325,7 @@ GET /v1/sessions/closed?scope=fleet|local&since=<RFC3339>
 ```
 
 A service keeps **one record per local session that ended**, for a configured
-retention period, across restarts (colab-fleet #179). It is deliberately not a
+retention period, across restarts (muster #179). It is deliberately not a
 persisted event window: the record carries only the metadata the live record
 already carried as last seen (`machine`, `id`, `name`, `runtime`, `cwd`,
 `startedAt`, and `conversation` when it was known), never content, plus
@@ -442,7 +442,7 @@ that gets retried produces two agents writing to the same working directory,
 and the caller cannot detect it afterwards.
 
 **A replay whose recorded session has since ended is `409`, not the ordinary
-`201` (colab-fleet #234).** Before this, a same-key-same-body replay answered
+`201` (muster #234).** Before this, a same-key-same-body replay answered
 201 with the dead session's own id — the identical shape a live create
 returns — so a caller checking only the status code could not tell "your
 session is running" from "your session died earlier and this key produced
@@ -458,11 +458,11 @@ asking the same already-answered question again.
 
 **`prompt` is capped by this machine's effective limit** — 1024 bytes by
 default, and a machine setting rather than a compiled-in constant since
-colab-fleet #130 (see `maxInputBytes` in §3.1 for how to read it without
+muster #130 (see `maxInputBytes` in §3.1 for how to read it without
 triggering it). Over that, the create is rejected outright — `invalid`
 (400) naming the limit and the caller's actual size — instead of being
 accepted and left to strand in the composer with no delivery receipt to
-explain why (colab-fleet #114, #110, #112: the creation path measurably
+explain why (muster #114, #110, #112: the creation path measurably
 strands even shorter prompts than `input` does). 1024 is a conservative
 default, not the bisected true failure boundary, which #114 leaves as open
 work; #130 argues the mechanism behind that boundary may be startup timing
@@ -474,7 +474,7 @@ only a short pointer here — the same workaround #112 already adopted ad
 hoc.
 
 **The driver that served the create builds this response, not the service
-layer relaying the caller's own request back at it** (colab-fleet #84, #85,
+layer relaying the caller's own request back at it** (muster #84, #85,
 #86) — `agent`/`model` on it are what the runtime is actually using, when the
 driver can tell, never an echo of what was requested; the requested values
 live in `pins` alongside whether they were honoured. The three paragraphs
@@ -484,12 +484,12 @@ for was applied.
 
 **A 201 for a `resume` create is not proof the resume was honoured** — a
 concurrent burst can have the runtime silently start a fresh conversation
-instead, with no refusal and no degraded status (colab-fleet #72). Poll the
+instead, with no refusal and no degraded status (muster #72). Poll the
 session afterward and read `resumeOutcome` (§2.10) once its `conversation`
 resolves; do not infer success from the create response alone.
 
 **A 201 for a `conversationId` create is the opposite case: `conversation`
-already resolves on the create response itself** (colab-fleet #224),
+already resolves on the create response itself** (muster #224),
 `known: true` with `source: "captured"` (§2.9) — this service told the runtime
 which id to start under, so there is nothing to poll for. `conversationId` and
 `resume` answer the same question two incompatible ways and are refused
@@ -505,7 +505,7 @@ other.
 the pin was applied** — a value this driver cannot pass through safely is
 refused outright (`invalid`, naming the field), but a value that *reaches*
 the runtime intact can still be defaulted or ignored there with nothing
-reported back except by reading `pins` (colab-fleet #84).
+reported back except by reading `pins` (muster #84).
 
 **A 201 for a create that requested remote control is not proof a
 runtime-hosted surface exists yet** — the runtime registers it, if it does at
@@ -513,20 +513,20 @@ all, asynchronously after the process starts, so `runtimeSurface` (§2.13) is
 legitimately `known: null` on the create response and may take a read or two
 to resolve. `known: false` is different and final: the create opted out
 (`remoteControl: false`), or the runtime declined, and a caller polling for
-one may stop (colab-fleet #85).
+one may stop (muster #85).
 
 **A 201 for a create that carried a `prompt` is not a delivery receipt for
 it** — the prompt is sent after the process starts, so the 201 is written
 before delivery can be known. Read `promptDelivery` (session-abstraction.md
 §2.11): `outcome: null` means still in flight, and is never evidence the
 prompt was lost — a session polled moments later reading `idle` with
-"composer empty, no turn yet" looked identical, before colab-fleet #111, to
-one that never had a prompt at all (colab-fleet #86). Read `state.turns`
+"composer empty, no turn yet" looked identical, before muster #111, to
+one that never had a prompt at all (muster #86). Read `state.turns`
 alongside it now: `turns: 0` is what a session that never took a turn looks
 like, and a nonzero count is proof of the opposite — the prompt was received
 and at least one turn against it has already completed. Do not re-send
 through `input` while `promptDelivery` still holds. While it does,
-`waitingOn` (colab-fleet #126) is the machine-readable class for `evidence` —
+`waitingOn` (muster #126) is the machine-readable class for `evidence` —
 `prompt`, `unsent-input`, or `starting` — so a caller can branch on WHY
 without parsing the prose; absent means this driver has not classified this
 particular wait.
@@ -536,7 +536,7 @@ carries it.** Nothing has read the session back yet, so `identityAssertion`
 (§2.14) legitimately reads `drifted: null` on the create response — the same
 "asserted, not yet corroborated" state a rename can also produce, and the
 one whose absence a prose-only sentence used to leave undetectable
-(colab-fleet #97, #102).
+(muster #97, #102).
 
 **`runtime` on the response is the runtime that actually served this
 create** — not an echo of the request body's own `runtime`, which is
@@ -553,7 +553,7 @@ reaches a command line (§5.3).
 sessions already live, or append `marker`. A marker is carried, never
 stacked, whatever alphabet it is drawn from — a name that already ends in
 the one sent keeps the one it has, so a caller resuming an already-marked
-name may send the same `marker` again without growing it (colab-fleet #88).
+name may send the same `marker` again without growing it (muster #88).
 **Read the returned `id`** — it is
 the resolved string, and it is what every later call must address. A caller
 that assumes the name it sent is the id it got will address the wrong session
@@ -614,7 +614,7 @@ service restart — a different question with an unfortunately similar name. A
 resumed session commonly meets the resume chooser; see `consents` for why that
 one is yours to answer.
 
-**`conversationId` starts a NEW one under a caller-chosen id** (colab-fleet
+**`conversationId` starts a NEW one under a caller-chosen id** (muster
 #224) — `resume`'s mirror, and mutually exclusive with it. Must be
 UUID-shaped, and refused `invalid` if it already names a conversation this
 machine has on record for the same `cwd`: starting a second conversation under
@@ -731,7 +731,7 @@ without a record store into a finding about somebody's session.
 `resumeOutcome` (§2.10) is present only when this session's `create` set
 `resume`, and says whether that was actually honoured — never assume it from
 a create that merely returned 201, because a resume can be silently ignored
-under load and the create still succeeds on a fresh conversation (colab-fleet
+under load and the create still succeeds on a fresh conversation (muster
 #72). Absent means no resume was requested; `honoured` absent (with
 `evidence`) means the session's own `conversation` has not resolved yet, not
 a "no"; `honoured: true`/`false` is the verdict once it has.
@@ -739,7 +739,7 @@ a "no"; `honoured: true`/`false` is the verdict once it has.
 `identityAssertion` (§2.14) says what identity **this machine** last asserted
 for the session, and whether the runtime still carries it — machine-readable,
 where before this fact only reached a caller as prose inside `state.evidence`
-(colab-fleet #97, #102). Absent means this machine asserted no identity for
+(muster #97, #102). Absent means this machine asserted no identity for
 this session at all (adopted or foreign); `drifted` absent means an identity
 was asserted but not yet corroborated against a live read; `drifted: false`
 means the runtime carries it as of this read; `drifted: true` carries
@@ -749,7 +749,7 @@ attempts one, lands on the *next* read, not this one — a single
 
 `marker` (session-abstraction.md §2.1) is the marker the session's `create`
 applied — sent as `marker` and ending the resolved name — so a caller groups
-sessions by type without a suffix test on `name` (colab-fleet #165). It is
+sessions by type without a suffix test on `name` (muster #165). It is
 read-only: no route writes it, and `POST …/labels` cannot touch it, because it
 is not a label. A rename keeps it. It travels through a peer relay like every
 other field on the session. Absent means this machine holds no such record,
@@ -763,7 +763,7 @@ POST /v1/machines/{machine}/sessions/{id}/input
   "route": "auto" | "terminal" | "inbox" | "<module>" }
 ```
 
-**`route` (colab-fleet #184) is optional and chooses the delivery path.**
+**`route` (muster #184) is optional and chooses the delivery path.**
 Absent, `""` and `"auto"` mean the same thing, so a caller that sends nothing
 new behaves as it always did. A value outside the closed set is `invalid` (400)
 naming every accepted value, before any driver is resolved. The set is
@@ -815,7 +815,7 @@ no module enabled the set, and the message, are exactly what they were.
 - **`route` travels through a peer relay** as `""` for auto and as itself
   otherwise. A peer built before #184 answers an explicit `"inbox"` with its own
   `invalid`; the caller gets that answer, never a downgrade.
-- **A module route (colab-fleet #185) follows the terminal's authority rules,
+- **A module route (muster #185) follows the terminal's authority rules,
   not the inbox's**, because a module delivers the user's own turn. A caller that
   is not a human relay must carry a label that prints, as for `route:
   "terminal"`; `submit: false`, `resumeIfStranded` or `replaceIfStranded` is
@@ -831,7 +831,7 @@ no module enabled the set, and the message, are exactly what they were.
   relay, so a relayed one arrives at the owner as an explicit `terminal` and
   stays on the built-in path there; the human can still name the module.
 
-**`from` (colab-fleet #158) is optional and labels the message with its
+**`from` (muster #158) is optional and labels the message with its
 sender.** Absent means the service labels the message itself for any caller that
 is not a human relay (`route`, above, #184) and leaves it unlabelled for one that
 is — before #184 absent meant unlabelled for everyone. The
@@ -877,7 +877,7 @@ its own record says that text is what it delivered there; text it did not place
 is never submitted. Send the same text: this finishes one delivery rather than
 starting another.
 
-**`replaceIfStranded` (colab-fleet #112) is the door out when the caller wants
+**`replaceIfStranded` (muster #112) is the door out when the caller wants
 DIFFERENT text instead of finishing the old delivery.** `resumeIfStranded`
 only ever completes the delivery already sitting in the composer — a caller
 that wants to send something else has no use for it, and until #112 had no
@@ -921,7 +921,7 @@ have cleared. Otherwise it refuses and the text stays. Concretely:
 - A record that lapsed (after `strandedRetention`, 30 minutes) or was
   replaced by a newer strand is kept longer as proof only: when the composer
   still holds exactly that text, either flag clears it and delivers this
-  call's text — colab-fleet #135's case.
+  call's text — muster #135's case.
 - For any other composer text, either flag needs `expect`; with a matching
   `expect` the service clears exactly that content and delivers this call's
   text. A non-matching `expect` refuses — the composer changed after it was
@@ -950,7 +950,7 @@ POST /v1/machines/{machine}/sessions/{id}/discard?expect=<composerDigest>&starte
   opening fence is above the visible pane — its content could not be read in
   full from rows the driver can trust, so neither "already clear" nor a
   corroborated clear is honest; retrying with any `expect` or `force` gets the
-  same refusal (colab-fleet #149, #169)
+  same refusal (muster #149, #169)
 ```
 
 Removes unsent composer text without submitting it. `expect` is
@@ -961,7 +961,7 @@ text**: this deletes somebody's typing, and a caller that has not seen the
 current text has no business removing it. An already-empty composer returns
 202, so a retry after a timeout is safe.
 
-`force=true` (colab-fleet #136) authorises a stronger clear mechanism, but
+`force=true` (muster #136) authorises a stronger clear mechanism, but
 **only** once a prior call has already been refused as proven-futile against
 this exact residue (see below) — it has no effect on a first attempt, and a
 driver may ignore it entirely before that point. It never relaxes `expect`:
@@ -987,7 +987,7 @@ outcomes share that 409, and need three different next steps:
   on the SAME call shape (same `?expect=`, still required — force does not
   relax corroboration, only what happens once it has already passed), the
   driver reaches for a stronger, character-budgeted clear mechanism past
-  whatever structural key choice defeated the ordinary pass (colab-fleet
+  whatever structural key choice defeated the ordinary pass (muster
   #136). `DELETE /v1/machines/{machine}/sessions/{id}` still works — closing
   a session always clears its composer along with everything else — but it
   is no longer the *documented* remedy for a stuck composer alone: a session
@@ -999,13 +999,13 @@ outcomes share that 409, and need three different next steps:
   blind. The message carries the residue's current digest, so the caller's
   next legal call needs no extra re-read to learn it.
 
-A composer taller than the driver's capture window (colab-fleet #134) is
+A composer taller than the driver's capture window (muster #134) is
 refused before any key is pressed — and so is one whose opening fence sits
 above the visible pane, because the rows above it are scrollback, not the live
-screen (colab-fleet #169; ADR `169-a-composer-is-read-from-the-visible-pane`).
+screen (muster #169; ADR `169-a-composer-is-read-from-the-visible-pane`).
 So is one whose closing rule is cut off by the pane's bottom edge — its opening
 rule and prompt row are the last rows shown, as when a tall notice above the
-composer leaves a short pane no room below it (colab-fleet #216; ADR
+composer leaves a short pane no room below it (muster #216; ADR
 `216-a-composer-cut-off-by-the-pane-bottom-reads-clipped`). None of these refusals resolves by
 retrying: no `expect`, no `force` and no wider read changes it, because nothing
 the driver can read proves the rows it cannot see hold nothing worth keeping
@@ -1034,7 +1034,7 @@ reason `DELETE` wants it: acting on the wrong session here succeeds *silently*
 and leaves it wearing somebody else's name.
 
 **`name` is refused, not silently cleaned, when a driver's own substrate would
-hold a different string than the one asked for** (colab-fleet#223) — a tmux
+hold a different string than the one asked for** (muster#223) — a tmux
 driver refuses a name it would have to mangle (a `.` tmux itself turns into
 `_`, a leading `-` an argv parser downstream would read as a flag, `:`, the
 multiplexer's own target separator) rather than rename to the mangled form and
@@ -1054,7 +1054,7 @@ fires more than once per rename** — §4's event-plane section covers what the
 worth doing before treating a rename as durable.
 
 **The `202` body's `title` field is a SEPARATE fact from `session.renamed`**
-(colab-fleet#222): on a runtime that keeps its own idea of a title apart from
+(muster#222): on a runtime that keeps its own idea of a title apart from
 the id — the transcript a title-reconciling client would otherwise trust more
 than this API — whether that title was brought to the new name too, in the
 closed vocabulary `synced` / `pending` / `failed` / `not_applicable`
@@ -1087,7 +1087,7 @@ POST /v1/machines/{machine}/sessions/{id}/labels?startedAt=&runtime=
 → 400 if the merged result exceeds the bounds, or a key is invalid
 ```
 
-**Labels change by merge** (colab-fleet #153): a key with a string value is set,
+**Labels change by merge** (muster #153): a key with a string value is set,
 a key with `null` is deleted, a key not named is left alone. The bounds apply to
 the **merged result**, so a patch that deletes keys can bring a full map back
 under them; a refused write changes nothing. Send `?startedAt=` for rename's
@@ -1122,7 +1122,7 @@ runtime existed to register.
 
 **Omitted with more than one local runtime registered** resolves
 existence-first, THEN a configured default as tiebreak
-(session-abstraction.md §7.1a, colab-fleet issue #60):
+(session-abstraction.md §7.1a, muster issue #60):
 
 - a nonempty `id` (every endpoint but `create`) is checked against every
   registered runtime's own record of what it has ever had. Exactly one
@@ -1160,7 +1160,7 @@ there is no local runtime id to report and the configured default plays no
 part in it.
 
 > Origin: session-abstraction.md Appendix A, F1; the default-runtime
-> tiebreak and its headers: colab-fleet issue #60.
+> tiebreak and its headers: muster issue #60.
 
 ```
 POST /v1/machines/{machine}/sessions/{id}/input?runtime=
@@ -1172,7 +1172,7 @@ POST /v1/machines/{machine}/sessions/{id}/input?runtime=
                       "module"?: "<name>" } }
 ```
 
-**`delivery.route` (colab-fleet #184) names the path that made the receipt.** It
+**`delivery.route` (muster #184) names the path that made the receipt.** It
 is `inbox` for anything the inbox path decided — a delivery, an `unknown`, or a
 refusal an explicit `route: "inbox"` earned — and `terminal` for everything the
 terminal module produced. It is **absent** when the receipt names no path: a
@@ -1183,7 +1183,7 @@ does not recognise is read as absent: the outcome is the part that matters. It
 is a `DeliveryReceipt` field (session-abstraction.md §2.4) and travels through a
 peer relay untouched.
 
-**`delivery.route: "module"` (colab-fleet #185) says an optional external
+**`delivery.route: "module"` (muster #185) says an optional external
 delivery module carried the send, and `delivery.module` names which.** It is
 present exactly when the route is `module`. A module that confirmed the runtime
 accepted the message answers `queued` — the same bar as the terminal's
@@ -1196,7 +1196,7 @@ to the same session is answered with the same `unknown`, exactly as for the
 inbox. A receipt naming `module` with no module name reads as absent.
 
 **A driver that delivers over a target session's own inbox instead of the
-terminal surface (colab-fleet #119) can additionally answer `delivered` |
+terminal surface (muster #119) can additionally answer `delivered` |
 `held` | `denied` | `expired` | `dropped`** — session-abstraction.md §2.4 has
 the full vocabulary and why those five are not folded into the four above.
 Since #184 which path a send takes is also the caller's to ask for (`route`,
@@ -1204,7 +1204,7 @@ above); when it does not, the service chooses per sender and per target, and
 `delivery.route` says what happened.
 
 ⚠️ **Of those five, only `delivered` is reachable, and since #184 it is a
-statement about the receiver rather than about a socket** (colab-fleet #120,
+statement about the receiver rather than about a socket** (muster #120,
 #148). The receiving runtime's status frame is routed to a reply address that
 must be a socket bound in the receiver's own namespace, which this service does
 not have — so a sender reads nothing back from the inbox itself, and `held` is
@@ -1231,7 +1231,7 @@ the receiver's own transcript**, the same evidence the terminal path uses:
   is the fallback #148 recorded running at a 100% delivery rate.
 
 **`text` is capped by the same effective limit `prompt` carries on create**
-(colab-fleet #114, #130). Over that, the call is rejected outright —
+(muster #114, #130). Over that, the call is rejected outright —
 `invalid` (400) naming the limit and the caller's actual size — before any
 driver is even resolved, rather than reaching the composer and stranding
 there with no exit but `resumeIfStranded` or destroying the session. Chunk
@@ -1255,7 +1255,7 @@ driver decided.
 A refusal here may also describe the **text**, not the session: a driver may
 refuse caller text its own runtime would read as something other than a
 message, before looking at session state at all — session-abstraction.md §3,
-colab-fleet issue #53. That refusal happens whether or not the addressed
+muster issue #53. That refusal happens whether or not the addressed
 session exists, and it is never a candidate for `resumeIfStranded`: the text
 never reached a composer to strand.
 
@@ -1319,7 +1319,7 @@ moves when a channel drops.
 
 `state.controlChannel.reason` — when present — is why a `failed` channel
 failed, in the runtime's own words, sourced from its own durable record
-rather than from a screen (colab-fleet #69): `{"state":"failed","reason":"Remote
+rather than from a screen (muster #69): `{"state":"failed","reason":"Remote
 Control disconnected — this session was ended or archived from another
 device or app (code 4090)"}`. It carries a close code when the runtime put
 one in the sentence, but classifies nothing — no field here says whether a
@@ -1329,7 +1329,7 @@ record, no readable one, or no matching entry can explain why — the same
 §5.7 discipline `controlChannel` itself already applies one field up.
 
 `state.permissionMode` — when present — is the permission mode the runtime shows
-the session to be in (colab-fleet #194): one of `default`, `acceptEdits`, `plan`,
+the session to be in (muster #194): one of `default`, `acceptEdits`, `plan`,
 `auto`, `bypass`, or `unknown`. It is what makes `BTab` (§3.3, `keys`) usable for
 a control that must land on a NAMED mode: press, read this, stop when it matches.
 `bypass` is the word `permissionMode` takes at create time, so a session created
@@ -1354,7 +1354,7 @@ permission-mode class (#148) is deliberately not a source: it has two values
 prompting modes apart nor follow a press of `BTab`.
 
 `state.warnings` — when present — lists footer notices the driver read below
-the composer's closing fence (colab-fleet #230), the same region
+the composer's closing fence (muster #230), the same region
 `controlChannel` and `permissionMode` are read from: `[{"kind":
 "transcript-unreliable","text":"Transcript writes are failing (disk full —
 ENOSPC) · recent messages may …"}]`. It exists for the same reason those two
@@ -1418,13 +1418,13 @@ one.
 `state.prompt.multiSelect` — when true — says the prompt is a multi-select
 question: its leading options are checkboxes, painted as `[ ] Label` /
 `[✔] Label` in `options` on the one runtime measured, and answering it means
-sending a SET (colab-fleet issue #176). A `choice` there would only flip one
+sending a SET (muster issue #176). A `choice` there would only flip one
 box, so a driver refuses `choice` on a checkbox row, and refuses accepting the
 highlighted row, rather than report a flipped box as an answer. The rows after
 the checkboxes (free text, chat) still take `choice` as before. Absent means
 not recognised as multi-select (§5.7), never "known single-select".
 
-A multi-select question is recognised whatever its height (colab-fleet issue
+A multi-select question is recognised whatever its height (muster issue
 #219): a question that wraps over many rows, or options with long descriptions,
 can make the dialog taller than the window a driver reads, and it is then read from
 the dialog's opening rule. `question` is the question's own words — the rule the
@@ -1454,7 +1454,7 @@ end state, so boxes already flipped are not flipped twice.
 
 `state.prompt.freeText` — when true — says the question offers the runtime's
 free-text row (`Type something`) and that a driver can answer through it
-(colab-fleet issue #206). The row is still one of `options`, at its own index, so
+(muster issue #206). The row is still one of `options`, at its own index, so
 the numbering a caller already relies on does not move; it is not one of the
 agent's choices, and a client drawing the options as a list should draw it as an
 input. Answer it with `{"text": "...", "nonce": "..."}`: the driver puts the
@@ -1476,7 +1476,7 @@ peer-relaying driver marshals the body onward — a plain string with `omitempty
 would arrive as `{}` — and an empty or blank text is a `400`: confirming the
 runtime's free-text field while it is EMPTY declines the whole dialog, every
 question in it, so an empty answer must never reach a driver. `text` is held to
-the byte limit `input` is (`maxInputBytes`, colab-fleet issue #114) at the same
+the byte limit `input` is (`maxInputBytes`, muster issue #114) at the same
 boundary, for a local and a relayed request alike, and is put through the same
 control-byte sanitiser; a leading `!` or `/` is not refused, because the answer
 field — unlike the composer — was measured to take both as plain text.
@@ -1490,7 +1490,7 @@ its placeholder: a person's text, or an earlier attempt's, is not typed over. A
 row) or `cancel` answers it.
 
 A question whose options carry a preview is drawn with the option list and a
-box side by side, and `state.prompt` reads the LIST only (colab-fleet issue
+box side by side, and `state.prompt` reads the LIST only (muster issue
 #204): `options` are the labels — a label that wraps across rows is one string —
 and never the box's rows beside them, and `question` is the question, not the
 dialog's tab bar and not the prose printed above the dialog. `nonce` follows the
@@ -1545,7 +1545,7 @@ Delivers ONE raw key event to a session's screen. It exists for the full-screen
 dialogs a driver does not recognise — navigated with arrow keys, confirmed with
 a bare Enter — which `respond` cannot answer and `input` must never learn to.
 It also carries one key that is not a dialog key at all: `BTab`, which cycles the
-runtime's permission mode from an idle composer (below, and colab-fleet #188).
+runtime's permission mode from an idle composer (below, and muster #188).
 
 **It is not a flag on `respond`.** `respond` refuses whenever the driver sees no
 prompt, and that refusal is the whole of its safety: a keypress delivered to a
@@ -1578,7 +1578,7 @@ a message never becomes a keystroke; and every control key — `C-c` is
 confirmation a blind keypress cannot offer. An endpoint accepting arbitrary key
 names would quietly become a second, unreviewed way to do everything else here.
 
-**`BTab` changes what the session may do (colab-fleet #188).** On an idle
+**`BTab` changes what the session may do (muster #188).** On an idle
 composer the runtime cycles its permission mode on Shift+Tab (default, accept
 edits, plan, auto…), and for most of those modes that is the only way to reach
 them: a client with no terminal in front of it can move a live session between
@@ -1600,7 +1600,7 @@ What `BTab` promises, and what it does not:
 - It is **not a mode setter.** One request is one press. `submitted` means the
   screen changed under the key — not that the mode changed, and not which mode
   the session is now in, and this route never claims to know it. A client that
-  wants a named mode reads `state.permissionMode` (above; colab-fleet #194) after
+  wants a named mode reads `state.permissionMode` (above; muster #194) after
   each press and repeats, re-reading `state` for a fresh `screenDigest` between
   presses — and stops on `unknown` or on a mode it did not expect, since the
   runtime's cycle skips modes a build does not offer and a press cannot be counted.
@@ -1634,7 +1634,7 @@ the honest price of three corroborated keypresses.
   and its `nonce`, never on a screen the read still reports without one. Two
   endpoints classifying one screen differently leave a caller with no verified
   move — `respond` has no nonce to quote, `keys` refuses — so a driver must
-  decide both from one classification (colab-fleet #159).
+  decide both from one classification (muster #159).
 
 **`submitted` means the screen changed under the key.** A key a dialog swallows
 leaves the session exactly as stuck as before, so an unchanged screen is
@@ -1649,7 +1649,7 @@ by a recognised prompt and this deliberately is not, so an operator may permit
 one and withhold the other — and, since `BTab` (above), `keys` is also the grant
 that can escalate a session. Absent means denied, so no existing principal gains
 it by upgrading — which means a fresh deployment cannot press a key until an
-operator explicitly grants it, on purpose, not as an oversight (colab-fleet
+operator explicitly grants it, on purpose, not as an oversight (muster
 #68). `deliversRawKeys: true` on a runtime is a statement about the DRIVER;
 whether any caller may reach it is a separate, orthogonal fact this grant
 alone controls, and a capability that reads as present while every caller is
@@ -1720,7 +1720,7 @@ resumption needs no client code. The server honours that header when no
 | `session.state` | ref + `SessionState` — fired on any **material** change, not only a change of `status` |
 | `session.closed` | ref + final state |
 | `session.renamed` | `{ "machine", "from", "to", "startedAt"?, "corroboration" }` — a session's **id** changed (session-abstraction.md §3's `rename`); a subscriber filtering by id must re-key on `to` or it silently stops matching a session that is still alive |
-| `session.labels` | `{ "ref", "startedAt"?, "labels" }` — a session's labels changed, or a create carried some; `labels` is the **whole** map after the change, never the patch (colab-fleet #153). A driver's own `session.created` can be observed before a create's labels are stored and carry `{}`; this event is the guarantee |
+| `session.labels` | `{ "ref", "startedAt"?, "labels" }` — a session's labels changed, or a create carried some; `labels` is the **whole** map after the change, never the patch (muster #153). A driver's own `session.created` can be observed before a create's labels are stored and carry `{}`; this event is the guarantee |
 | `source.status` | a machine's reachability changed |
 | `machine.quota` | `{ "machine", "blocked": bool, "quota"? }` — this machine's **account** started or stopped refusing work |
 | `machine.account` | `{ "machine", "generation" }` — this machine's local **credential material** changed |
@@ -1747,7 +1747,7 @@ driver re-stamping when it first observed a status, not the session doing
 something different. So a mirror's `evidence` is as fresh as the last material
 change; re-read the session when you want the current prose.
 
-**`session.renamed` fires more than once for the same rename** (colab-fleet
+**`session.renamed` fires more than once for the same rename** (muster
 #103). The first is always `"corroboration": "accepted"`, published the
 instant `POST …/rename` returns `202` — the same fact this event always
 carried, named honestly now as provisional rather than left to be read as a
@@ -1902,13 +1902,13 @@ ordering is wrong rather than handing you a cursor that would skip.
   and `label` are granted per peer and default to denied. That default is deliberate
   and applies to a fresh deployment as much as an established one — no grant is
   implied by anything else, including a runtime advertising the capability the
-  grant gates (§3, `keys`; colab-fleet #68).
-- **`keys` is the grant that can escalate a session (colab-fleet #188).** The
+  grant gates (§3, `keys`; muster #68).
+- **`keys` is the grant that can escalate a session (muster #188).** The
   key vocabulary includes `BTab`, which cycles the runtime's permission mode
   (§3, `keys`), so any principal holding `keys` can move any session it can reach
   into a looser mode. It was ruled to stay under `keys` rather than take a grant
   of its own; a reader deciding whom to grant `keys` is deciding that.
-- **`human-relay` is not a verb; it is a statement about the caller** (colab-fleet
+- **`human-relay` is not a verb; it is a statement about the caller** (muster
   #180, #184). A principal holding it is a human-facing relay: what it sends is a
   person's own message, so `route: auto` carries it through the terminal,
   unlabelled, arriving as the user's own turn, and it may send a leading `/`.
@@ -1920,7 +1920,7 @@ ordering is wrong rather than handing you a cursor that would skip.
   grant that lets a message skip the label.
 - Each caller presents its own credential and holds per-verb grants (§6).
 - **`GET /v1/whoami` is the one read exempt from needing the `read` grant
-  itself** (§3.1, session-abstraction.md §7.7, colab-fleet #106). It reports
+  itself** (§3.1, session-abstraction.md §7.7, muster #106). It reports
   only the presented credential's own grants, never another principal's, so
   the risk `read` gates elsewhere — reading someone else's data — does not
   apply; and gating it on `read` would make it unusable by the principal who
@@ -1946,7 +1946,7 @@ ordering is wrong rather than handing you a cursor that would skip.
   the most precise separation and was not rejected on its merits; it costs a
   new grant in the model plus a migration for every existing principal, which
   is not worth buying against a distinction nothing has yet been harmed by
-  (colab-fleet #81).
+  (muster #81).
 - Every remote-originated mutation is logged: actor, verb, target, outcome.
 
 ## 6. What this API deliberately lacks
@@ -1958,7 +1958,7 @@ a second supervisor.
 
 No endpoint returns a session's screen text, transcript, or other content the
 session itself produced, and none stores a result on a session's behalf
-(session-abstraction.md §5.8, colab-fleet #82). This is a different kind of
+(session-abstraction.md §5.8, muster #82). This is a different kind of
 absence from the paragraph above — not a domain this service doesn't
 understand, but a data class it declines to carry regardless of domain. A
 dispatched agent's answer is delivered by the agent, to a reply address the

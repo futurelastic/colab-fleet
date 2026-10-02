@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/drivers/stub"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/drivers/stub"
 )
 
 const testToken = "test-token"
@@ -77,7 +77,7 @@ func TestHealth_OK(t *testing.T) {
 	}
 }
 
-// colab-fleet #224: a peer's own /v1/health is how internal/drivers/remote
+// muster #224: a peer's own /v1/health is how internal/drivers/remote
 // learns whether it may forward conversationId without it being silently
 // dropped (requireConversationId) — the same protocol-level signal `labels`
 // already is one field up.
@@ -235,7 +235,7 @@ func TestCreateSession_MissingIdempotencyKeyIs400(t *testing.T) {
 	}
 }
 
-// colab-fleet #114: an over-long prompt must be rejected outright, not
+// muster #114: an over-long prompt must be rejected outright, not
 // accepted and left to strand in the composer.
 func TestCreateSession_OverLongPromptIs400(t *testing.T) {
 	_, srv := newTestServer(t)
@@ -264,7 +264,7 @@ func TestCreateSession_OverLongPromptIs400(t *testing.T) {
 	}
 }
 
-// colab-fleet #224: conversationId and resume answer the same question —
+// muster #224: conversationId and resume answer the same question —
 // which conversation this session's is — in two incompatible ways, so
 // sending both is refused before any driver is even resolved.
 func TestCreateSession_ConversationIdAndResumeIs400(t *testing.T) {
@@ -292,7 +292,7 @@ func TestCreateSession_ConversationIdAndResumeIs400(t *testing.T) {
 	}
 }
 
-// colab-fleet #224: a conversationId that is not UUID-shaped is refused at
+// muster #224: a conversationId that is not UUID-shaped is refused at
 // the boundary, before it can ever reach a driver that would pass it straight
 // to a runtime's command line.
 func TestCreateSession_MalformedConversationIdIs400(t *testing.T) {
@@ -472,7 +472,7 @@ func TestSendInput_RefusalIsNotAnHTTPError(t *testing.T) {
 	t.Skip("no driver in this skeleton can produce a refused DeliveryReceipt; see comment")
 }
 
-// colab-fleet #114: an over-long `text` must be rejected outright, before
+// muster #114: an over-long `text` must be rejected outright, before
 // any driver is even resolved — this needs no driver support to prove,
 // unlike TestSendInput_RefusalIsNotAnHTTPError just above.
 func TestSendInput_OverLongTextIs400(t *testing.T) {
@@ -678,7 +678,7 @@ func TestRuntimesIncludesPeersAndMarksUnconfirmedOnes(t *testing.T) {
 	}
 }
 
-// TestMachinesIncludesSelfBuild proves colab-fleet #121's acceptance test:
+// TestMachinesIncludesSelfBuild proves muster #121's acceptance test:
 // a caller can read what code this service itself is running from the same
 // listing it already polls for peer status, without sending anything that
 // would exercise a guard it wants to confirm is live.
@@ -729,7 +729,7 @@ func (p *peerBuildDriver) Build() fleet.Build { return p.build }
 
 var _ driver.BuildReporter = (*peerBuildDriver)(nil)
 
-// TestMachinesIncludesPeerBuildWhenDriverReportsIt proves colab-fleet #121's
+// TestMachinesIncludesPeerBuildWhenDriverReportsIt proves muster #121's
 // core ask: skew between two peers is visible in the same read that already
 // tells a caller each peer's status, not just in this service's own
 // /v1/health.
@@ -792,7 +792,7 @@ func TestMachinesReportsUnknownBuildForAPeerThatNeverAnswered(t *testing.T) {
 }
 
 // peerCapsDriver is a peer whose Capabilities() and Runtime() are scripted
-// directly, so ListRuntimes's fallback-row decision (colab-fleet #67) can be
+// directly, so ListRuntimes's fallback-row decision (muster #67) can be
 // exercised without standing up a real remote.Driver and HTTP peer.
 type peerCapsDriver struct {
 	stub.Driver
@@ -803,7 +803,7 @@ type peerCapsDriver struct {
 func (p *peerCapsDriver) Capabilities() fleet.DriverCapabilities { return p.caps }
 func (p *peerCapsDriver) Runtime() fleet.RuntimeId               { return p.runtime }
 
-// colab-fleet #67: the fallback row for a peer nobody has heard from —
+// muster #67: the fallback row for a peer nobody has heard from —
 // `source: assumed`, no runtime learned yet — used to be reported anyway
 // under an empty runtime id, which is the one option that misleads a client
 // keying its capability table by (machine, runtime): it reads as a runtime

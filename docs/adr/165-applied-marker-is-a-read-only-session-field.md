@@ -1,7 +1,7 @@
 # ADR 165 — The applied marker is a read-only field on the session, not a label
 
 **Status:** accepted (2026-09-14)
-**Issue:** colab-fleet #165 · builds on #153, #96, #90
+**Issue:** muster #165 · builds on #153, #96, #90
 
 ## Context
 

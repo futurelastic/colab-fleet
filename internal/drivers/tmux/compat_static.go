@@ -17,10 +17,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/godx-jp/colab-fleet/internal/compat"
+	"github.com/futurelastic/muster/internal/compat"
 )
 
-// This file is the part of `colab-fleetd compat` that needs no session: who
+// This file is the part of `muster compat` that needs no session: who
 // the candidate is, and which of the runtime's own words it still contains.
 
 // compatVersionTimeout bounds `<candidate> --version`.
@@ -241,7 +241,7 @@ var compatStaticMarkers = map[string][]string{
 	"F-MODE": {"accept edits on", "plan mode on", "auto mode on"},
 	// parseFeedbackStatus, feedbackQuestionRow and the panel's title:
 	// the runtime's feedback-draft card in the states a person answers at the
-	// terminal (colab-fleet#217). The key row's own words are composed at
+	// terminal (muster#217). The key row's own words are composed at
 	// runtime ("1", " to ", "review") and are not searchable; the rest are
 	// whole literals, each measured present in a known-good build. No probe can
 	// make an agent draft feedback, so this is wording only.

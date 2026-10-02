@@ -280,7 +280,7 @@ outcome of each:
    a person's message unlabelled at all (#195). #195 ruled for the other way to
    reach the same invariant — **turning on the inbox route requires a principal
    table** — and #196 built it: with `FLEET_INBOX_INDEX` set and no
-   `FLEET_CONFIG`, `colab-fleetd` refuses to start with a message naming the
+   `FLEET_CONFIG`, `muster` refuses to start with a message naming the
    table, and `doctor`'s `principals.human-relay` row fails for the same shape
    (both read one function, `requireTableForInbox`, so they cannot disagree). The
    exception is **closed in the sense that mattered**: a machine with no table

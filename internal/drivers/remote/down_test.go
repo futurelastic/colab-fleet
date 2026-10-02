@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
-	"github.com/godx-jp/colab-fleet/internal/service"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
+	"github.com/futurelastic/muster/internal/service"
 )
 
-// Tests for colab-fleet #237: a peer that has stopped answering is remembered,
+// Tests for muster #237: a peer that has stopped answering is remembered,
 // so a read stops waiting out the full bound on it.
 
 // gatedPeer answers 200 health/list bodies while up is true and hangs while it

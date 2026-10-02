@@ -17,7 +17,7 @@ import (
 // running it (SessionSpec.RemoteControl), and measured on a live fleet it
 // really is: the runtime registers the session on its own surface, unasked,
 // moments after the process starts. Nothing in any response said so, and
-// nothing said how to reach it (colab-fleet #85).
+// nothing said how to reach it (muster #85).
 //
 // The two neighbouring fields answer different questions and must not be
 // made to answer this one:
@@ -113,7 +113,7 @@ type RuntimeSurfaceRef struct {
 	// prose. That identifier must never be promoted into Target while
 	// Known is not true: a value the service supplied and a value the
 	// runtime confirmed are different facts, and reporting the first as
-	// the second is colab-fleet #84 arriving in a second field.
+	// the second is muster #84 arriving in a second field.
 	Evidence string `json:"evidence"`
 }
 

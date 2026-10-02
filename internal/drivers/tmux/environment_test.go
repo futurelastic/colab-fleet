@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // The record must never contain a VALUE.
@@ -26,7 +26,7 @@ func TestEnvironmentRecordNeverContainsAValue(t *testing.T) {
 	record := filepath.Join(dir, "rec")
 
 	const secret = "s3cr3t-value-that-must-not-appear"
-	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, "", "", "/bin/echo", "ran")
+	cmd := exec.Command(sh, "-c", envRecordScript, "muster", record, "", "", "/bin/echo", "ran")
 	cmd.Env = append(os.Environ(), "FLEET_TEST_TOKEN="+secret)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("wrapper failed: %v (%s)", err, out)
@@ -69,7 +69,7 @@ func TestEnvironmentRecordDoesNotInventNamesFromMultilineValues(t *testing.T) {
 	dir := t.TempDir()
 	record := filepath.Join(dir, "rec")
 
-	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", record, "", "", "/bin/echo", "ran")
+	cmd := exec.Command(sh, "-c", envRecordScript, "muster", record, "", "", "/bin/echo", "ran")
 	cmd.Env = append(os.Environ(), "FLEET_TEST_MULTI=first\nPHANTOM=injected\nlast")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("wrapper failed: %v (%s)", err, out)
@@ -93,7 +93,7 @@ func TestSessionStartsEvenWhenTheRecordCannotBeWritten(t *testing.T) {
 	sh := shellForTest(t)
 	unwritable := filepath.Join(t.TempDir(), "no-such-dir", "rec")
 
-	cmd := exec.Command(sh, "-c", envRecordScript, "colab-fleet", unwritable, "", "", "/bin/echo", "AGENT-RAN")
+	cmd := exec.Command(sh, "-c", envRecordScript, "muster", unwritable, "", "", "/bin/echo", "AGENT-RAN")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the agent did not run when the record was unwritable: %v (%s)", err, out)
@@ -136,7 +136,7 @@ func TestWrapperEntersTheRequestedDirectoryFromADeadInheritedOne(t *testing.T) {
 		}
 		outer := `cd -- "$1" && rmdir -- "$1" && shift && exec "$@"`
 		cmd := exec.Command(sh, "-c", outer, "outer", dead,
-			sh, "-c", envRecordScript, "colab-fleet", "", "", cwdArg,
+			sh, "-c", envRecordScript, "muster", "", "", cwdArg,
 			"/bin/pwd", "-P")
 		// stdout only: a shell starting in a dead directory complains about it
 		// on stderr (getcwd failures) — which is the reproduction showing
@@ -170,7 +170,7 @@ func TestWrapperRefusesToRunTheAgentOutsideTheRequestedDirectory(t *testing.T) {
 	sh := shellForTest(t)
 	missing := filepath.Join(t.TempDir(), "no-such-dir")
 
-	out, err := exec.Command(sh, "-c", envRecordScript, "colab-fleet", "", "", missing,
+	out, err := exec.Command(sh, "-c", envRecordScript, "muster", "", "", missing,
 		"/bin/echo", "AGENT-RAN").CombinedOutput()
 	if err == nil {
 		t.Fatalf("the wrapper exited 0 for a directory that does not exist (%s)", out)

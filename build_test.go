@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	fleet "github.com/godx-jp/colab-fleet"
+	fleet "github.com/futurelastic/muster"
 )
 
 // The predicate exists to raise a skew warning, so every case that cannot be
@@ -110,7 +110,7 @@ func TestSelfBuildNeverClaimsAnEmptyRevision(t *testing.T) {
 // A plain `go build` — and `go test`, which links the same way — carries no
 // link-time stamp, so the release version must read as unstamped: explicitly
 // null on the wire, never omitted and never a fabricated "v0.0.0" that a
-// version floor would compare against on no evidence (colab-fleet #161).
+// version floor would compare against on no evidence (muster #161).
 func TestSelfBuildVersionIsNullWhenUnstamped(t *testing.T) {
 	b := fleet.SelfBuild()
 	if b.Version != nil {

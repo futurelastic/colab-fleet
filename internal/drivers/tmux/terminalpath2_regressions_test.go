@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // This file holds the fixes for round 3's findings — live A/B testing
@@ -33,7 +33,7 @@ import (
 // Before the fix (raw screenDigest(pending)), the narrow-render digest and
 // the wide-render digest disagree — this test failed with OutcomeRefused
 // naming a digest mismatch, and no consumer implements the replaceIfStranded
-// escape the refusal named (colab-fleet's own #112/#135 deadlock class).
+// escape the refusal named (muster's own #112/#135 deadlock class).
 func TestRV_ResumeSurvivesAPaneResizeBetweenStrandAndResume(t *testing.T) {
 	f := twoSessions()
 	d := newTestDriver(f)

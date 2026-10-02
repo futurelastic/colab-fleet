@@ -70,7 +70,7 @@ func TestApplyMarker(t *testing.T) {
 	}
 }
 
-// colab-fleet #96: once a session record answers the question, applyMarker
+// muster #96: once a session record answers the question, applyMarker
 // stops guessing from the string — including in the exact case the old
 // heuristic could not tell apart, a marker drawn from the same alphabet as
 // the name body that coincidentally matches the name's own trailing

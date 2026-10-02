@@ -17,7 +17,7 @@ import (
 
 // Availability is what a Probe-style check reports about the local
 // opencode install, established WITHOUT starting a server and WITHOUT
-// committing to any working directory — colab-fleet issue #55's third
+// committing to any working directory — muster issue #55's third
 // deliverable: "absent install is a first-class answer, not a startup
 // crash."
 type Availability struct {
@@ -129,7 +129,7 @@ func buildServeCmd(bin, workdir string, port int, username, password string) *ex
 // credential, execs `opencode serve`, and waits for the server to answer
 // before returning. A failure at any step returns an error rather than
 // panicking or calling log.Fatal — this package has no opinion on whether
-// the absence of opencode should be fatal to its caller, and colab-fleetd
+// the absence of opencode should be fatal to its caller, and muster
 // (the only caller today) chooses "log and continue without this
 // runtime", precisely so one optional third-party binary being missing
 // never takes the whole fleet daemon down.

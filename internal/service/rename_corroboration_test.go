@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/driver"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/driver"
 )
 
 // recvRenamed reads the next event off ch, failing the test if it is not a
@@ -34,7 +34,7 @@ func assertNoEventWithin(t *testing.T, ch <-chan fleet.Event, d time.Duration) {
 	}
 }
 
-// colab-fleet #103: a rename that nothing ever disturbs must be told, once,
+// muster #103: a rename that nothing ever disturbs must be told, once,
 // that it held — not left as a permanent "accepted" that a subscriber has to
 // take on faith.
 func TestRenameCorroboratesWhenWindowElapsesCleanly(t *testing.T) {

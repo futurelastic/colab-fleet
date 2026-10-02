@@ -8,7 +8,7 @@ A freshly built daemon was run with `-h`, meaning to read its usage. It
 had no usage flag then: an argument that was neither `doctor` nor a principal
 subcommand was ignored and the service started. (#177 fixed that part: `-h`
 now prints usage, and any other unknown argument is refused with exit 2
-before any startup work. A bare invocation still starts the service, so the
+before any startup work. (Since the rename to muster the service starts only as `muster serve`; a bare `muster` is refused, and only the legacy `colab-fleetd` name still starts bare.) The
 rule below still stands.) The shell it ran in was an
 operator's shell, which exports the installed service's `FLEET_*`
 settings, so it came up as that service, with the same configuration file,
@@ -37,7 +37,7 @@ chmod +x ./tmux-probe
 env -i HOME="$HOME" PATH="$PATH" USER="$USER" \
   FLEET_TOKEN=test FLEET_ADDR=127.0.0.1:<spare port> FLEET_MACHINE=testbox \
   FLEET_STATE_DIR=<scratch dir> FLEET_TMUX_BIN=./tmux-probe FLEET_ALLOW_MUTATIONS=1 \
-  ./colab-fleetd
+  ./muster
 ```
 
 A private socket plus a wrapper binary is how this service sees only the

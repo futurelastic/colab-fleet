@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	fleet "github.com/godx-jp/colab-fleet"
-	"github.com/godx-jp/colab-fleet/internal/drivers/tmux"
-	"github.com/godx-jp/colab-fleet/internal/service"
+	fleet "github.com/futurelastic/muster"
+	"github.com/futurelastic/muster/internal/drivers/tmux"
+	"github.com/futurelastic/muster/internal/service"
 )
 
 // fileConfig is the on-disk form of what a fleet member needs to know about
@@ -54,7 +54,7 @@ type fileConfig struct {
 	TrustRoots []string `json:"trustRoots,omitempty"`
 
 	// DefaultRuntime is which local runtime resolves a bare session id when
-	// more than one is registered on this machine (colab-fleet issue #60, ⚖
+	// more than one is registered on this machine (muster issue #60, ⚖
 	// ruling). It must name a runtime this instance actually registers —
 	// checked at startup (main.go, service.Service.SetDefaultRuntime), not
 	// on the first request that needs it, so a typo here is a message an
@@ -74,7 +74,7 @@ type fileConfig struct {
 	DefaultRuntime string `json:"defaultRuntime,omitempty"`
 
 	// SessionEnv declares an identity this machine's sessions carry —
-	// colab-fleet issue #94. Each entry names a variable, a fromFile path
+	// muster issue #94. Each entry names a variable, a fromFile path
 	// this machine reads FRESH ON EVERY CREATE (never cached at daemon
 	// start — see internal/drivers/tmux.SessionEnvEntry's doc comment for
 	// why that split is the entire feature), a required flag, and an
@@ -96,7 +96,7 @@ type fileConfig struct {
 	} `json:"sessionEnv,omitempty"`
 
 	// MaxInputBytes overrides this machine's limit on `prompt` (create) and
-	// `text` (input) — colab-fleet #130. Absent or zero means the shipped
+	// `text` (input) — muster #130. Absent or zero means the shipped
 	// default applies unchanged (internal/service/http.go's
 	// defaultMaxInputBytes) — the same "absent means the older behaviour"
 	// rule DefaultRuntime documents above, and required by #130 itself: an
@@ -115,7 +115,7 @@ type fileConfig struct {
 	MaxInputBytes int `json:"maxInputBytes,omitempty"`
 
 	// ClosedRetentionDays is how long this machine keeps its record of each
-	// session that ended (colab-fleet #179, GET /v1/sessions/closed). Absent
+	// session that ended (muster #179, GET /v1/sessions/closed). Absent
 	// or zero means the shipped default (service.DefaultClosedRetention, 14
 	// days). Config-file-only and per machine, like the settings above:
 	// records live in this machine's state directory and are read from it.
@@ -195,7 +195,7 @@ func (c *fileConfig) peerFor(machine fleet.MachineId) (url, token string, ok boo
 }
 
 // selfCredential returns the token this machine has assigned its OWN system
-// identity in the principal table, if the table names one (colab-fleet #98).
+// identity in the principal table, if the table names one (muster #98).
 //
 // internal/service.Service.peerRequest already builds this exact name —
 // "system:" + self — for every long-lived peer subscription; nothing here

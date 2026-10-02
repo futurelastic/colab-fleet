@@ -1,5 +1,5 @@
 // Package probe holds standalone, self-contained experiments run for a
-// spike (colab-fleet #118) and kept as reproducible evidence rather than
+// spike (muster #118) and kept as reproducible evidence rather than
 // prose alone. Nothing here talks to any real session or any real
 // runtime-owned directory — see the package doc comment below for why.
 package probe
@@ -28,7 +28,7 @@ import (
 // only writable by one OS user, containing one file per address, named
 // after a numeric identifier that need not correspond to anything alive.
 //
-// Interactive finding this test generalizes (colab-fleet #118): binding a
+// Interactive finding this test generalizes (muster #118): binding a
 // new unix-domain-socket file inside such a directory, under a name that
 // does not correspond to any real running process, succeeded with zero
 // privilege beyond ordinary same-user filesystem access — no companion
@@ -42,7 +42,7 @@ func TestNonOwnerProcessCanCreateEndpointInSharedDirectory(t *testing.T) {
 	// This is itself consistent with what the real namespace shows: it
 	// lives at a short, fixed path rather than under a per-process/per-run
 	// temp directory, for exactly this reason.
-	dir, err := os.MkdirTemp("/tmp", "colab-fleet-probe-118-")
+	dir, err := os.MkdirTemp("/tmp", "muster-probe-118-")
 	if err != nil {
 		t.Fatalf("could not create a short-path sandbox dir under /tmp: %v", err)
 	}
