@@ -29,6 +29,11 @@ order of this page and the order of its output are the same.
 
 ## The procedure
 
+0. **Or skip the build.** Every GitHub Release carries prebuilt binaries and a
+   `SHA256SUMS` file (the README's *Install* section has the commands). Verify
+   the download, `chmod +x` it, and continue at step 2 with that file as the
+   binary — it is already stamped, and `--version` prints the release tag.
+
 1. **Build with the version-control stamp, and choose where the binary
    lives.** Build from a clean checkout — a binary built from a modified tree
    has no identity (`deploy.md` step 1). Pick an absolute install path and

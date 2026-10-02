@@ -206,7 +206,7 @@
 //	                                  #183). Reports only; never installs,
 //	                                  pins or promotes a build.
 //	muster serve                      start the service
-//	muster --version                  print the build and exit 0
+//	muster --version                  print the release tag (when stamped) and the build, exit 0
 //	muster -h | --help          print usage and exit 0
 //
 // Any other argument is a usage error (exit 2) and starts nothing
@@ -1029,7 +1029,14 @@ func runUsage(args []string, stdout, stderr io.Writer) (handled bool, code int) 
 		return true, 0
 	case "--version", "version":
 		b := fleet.SelfBuild()
-		fmt.Fprintf(stdout, "muster %s (%s)\n", b.Short(), b.Go)
+		// The release tag leads when the build was stamped with one: it is
+		// the only part of this line a downloader can compare against the
+		// name a release binary was published under (#241).
+		if b.Version != nil {
+			fmt.Fprintf(stdout, "muster %s (%s, %s)\n", *b.Version, b.Short(), b.Go)
+		} else {
+			fmt.Fprintf(stdout, "muster %s (%s)\n", b.Short(), b.Go)
+		}
 		return true, 0
 	}
 	fmt.Fprintf(stderr, "muster: unknown argument %q — nothing was started\n%s\n", args[0], usageTop())

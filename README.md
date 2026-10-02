@@ -186,9 +186,33 @@ with an actor, not an address.
 
 ---
 
+## Install
+
+Each [GitHub Release](https://github.com/futurelastic/muster/releases) carries
+a static binary for darwin/arm64, darwin/amd64, linux/amd64 and linux/arm64,
+plus a `SHA256SUMS` file. Download the one for your machine and the sums, verify,
+and run it:
+
+```sh
+VERSION=v0.1.0   # the release you want
+OS=linux ARCH=amd64   # darwin|linux, amd64|arm64
+BASE=https://github.com/futurelastic/muster/releases/download/$VERSION
+curl -fsSLO $BASE/muster-$VERSION-$OS-$ARCH
+curl -fsSLO $BASE/SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing   # sha256sum -c ... on Linux
+chmod +x muster-$VERSION-$OS-$ARCH
+./muster-$VERSION-$OS-$ARCH --version          # muster <VERSION> (...)
+```
+
+Put it somewhere permanent (`install -m 0755 muster-$VERSION-$OS-$ARCH
+/usr/local/bin/muster`), configure it with the `FLEET_*` environment the
+[Quickstart](#quickstart) shows, and start it with `muster serve`. A service
+that survives a reboot is [`docs/install.md`](docs/install.md). Build from
+source only to hack on it.
+
 ## Quickstart
 
-Go 1.26 or newer. No dependencies.
+Building from source: Go 1.26 or newer. No dependencies.
 
 ```sh
 go build ./... && go test ./...

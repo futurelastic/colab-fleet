@@ -1,0 +1,96 @@
+name: Release binaries
+
+# Builds muster for darwin/arm64, darwin/amd64, linux/amd64 and linux/arm64,
+# writes SHA256SUMS, and attaches all five files to the GitHub Release for a
+# tag (#241). Distribution is GitHub Release binaries only.
+#
+# TWO ENTRY POINTS, ONE JOB
+#
+#   workflow_call      for a release workflow to call from the SAME run that
+#                      creates the tag/release. This is the reason the build is
+#                      a reusable workflow and not `on: release` or
+#                      `on: push: tags`: a tag or release created with
+#                      GITHUB_TOKEN does not trigger other workflows, so a
+#                      listener on either would never fire for an automated
+#                      release. No such release workflow exists yet; when one
+#                      does, it `uses:` this file after creating the release.
+#   workflow_dispatch  build an existing tag by hand — also how a tag that was
+#                      cut before this workflow existed is backfilled.
+#
+# The tag's source is checked out separately from the tooling, so a tag that
+# predates scripts/build-release.sh can still be built (the script builds the
+# directory it is run in, not the one it lives in).
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing tag to build and attach to (e.g. v0.2.0)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and attach to (e.g. v0.2.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    name: Build and attach binaries
+    runs-on: ubuntu-latest
+    env:
+      # Passed through env, never interpolated into a script: an input is
+      # caller-controlled text.
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check the tag shape
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::'$TAG' is not a release tag (want v<digit>...)"; exit 1 ;;
+          esac
+
+      # The build script, from the ref that started this run.
+      - uses: actions/checkout@v4
+        with:
+          path: tooling
+
+      # The source being released: the tag, with its history so `git describe`
+      # can see the tag it is checked out at.
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          path: src
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+
+      - name: Build
+        working-directory: src
+        run: ../tooling/scripts/build-release.sh "$RUNNER_TEMP/dist" "$TAG"
+
+      - name: Verify what was built
+        working-directory: ${{ runner.temp }}/dist
+        run: |
+          sha256sum -c SHA256SUMS
+          ./muster-"$TAG"-linux-amd64 --version | tee /dev/stderr | grep -qF "muster $TAG "
+
+      - name: Attach to the release
+        working-directory: ${{ runner.temp }}/dist
+        run: |
+          # The tag must already have a release; create one only when it has
+          # none, so a hand-written release's notes are never replaced.
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$TAG" --notes "Binaries for $TAG."
+          fi
+          # --clobber: re-running replaces the assets instead of failing on
+          # the name that is already there.
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            muster-"$TAG"-* SHA256SUMS
