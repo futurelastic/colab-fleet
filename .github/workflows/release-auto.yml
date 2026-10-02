@@ -46,9 +46,11 @@ concurrency:
 permissions: {}
 
 env:
-  # The handbook release whose colab CLI makes the release decisions. Moving it
-  # is a deliberate act. Needs #443 (a candidate always names trunk's head).
-  HANDBOOK_REF: "v1.12.0-rc.8"
+  # The handbook branch whose colab CLI makes the release decisions: `next`, its
+  # newest-candidate channel (operator ruling 2026-10-02, #251). It moves, so a
+  # run may pick up a newer CLI; the job needs #433 (npm) and #443 (a candidate
+  # always names trunk's head), both on `next`.
+  HANDBOOK_REF: "next"
   HANDBOOK_REPO: "https://github.com/futurelastic/colab-handbook.git"
 
 jobs:

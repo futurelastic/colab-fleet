@@ -34,3 +34,8 @@ release:
   # No manifest carries a version (npm/**/package.json hold 0.0.0): the tag is the version and
   # scripts/assemble-npm.mjs stamps it at publish time.
   version-source: tag
+  # Route choice (#251): `public-tool`, not `rapid-app`. Their policy is identical today
+  # (automatic candidate per green trunk head, 3d test period, automatic final), but the
+  # handbook permits the npm publish on `public-tool` alone, and npm is how this repo ships.
+  # `deploy: none` stays: a merge reaches the fleet machines through the fleet updater
+  # following trunk (not a tag), and no workflow, script or LaunchAgent acts on an `-rc` tag.
