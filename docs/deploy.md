@@ -313,20 +313,41 @@ Two more variables, both optional; when `FLEET_MODULE_SOURCES` is unset or empty
 this step does not run at all and a deploy is what it always was.
 
 - `FLEET_MODULE_SOURCES` — space-separated `name=source` entries, one per
-  optional delivery module to install beside the daemon. A source is a Go package
-  path with a version (`<package>@<version>`), fetched and built with **this
-  user's own access**, or an absolute directory holding a `main` package. A source
-  this user cannot fetch installs **nothing and says nothing**: a machine with only
-  the built-in module is a supported state, not a deploy problem, and a failed
-  fetch never removes a module an earlier deploy installed. A malformed entry gets
-  one warning line naming its position and never its source.
+  optional delivery module to install beside the daemon. **Install it through
+  npx** — one install surface, the same as every other tool: the source is
+  `npx:<spec>`, where `<spec>` is anything `npx` accepts (`@scope/pkg@version`, or
+  `github:<owner>/<repo>#<tag>` for a private package). The fetch runs
+  `npx --yes <spec> install-module --dir <stage>/<name>` with **this user's own
+  access** (npm and git credentials, netrc, ssh config); the module's launcher owns
+  fetching and verifying its binary, and muster knows nothing about any particular
+  module. Two older forms still work for one more release, as the fallback: a Go
+  package path with a version (`<package>@<version>`), or an absolute directory
+  holding a `main` package, each built here with the Go toolchain. A source this
+  user cannot fetch installs **nothing and says nothing**: a machine with only the
+  built-in module is a supported state, not a deploy problem, and a failed fetch
+  never removes a module an earlier deploy installed. A malformed entry gets one
+  warning line naming its position and never its source.
 - `FLEET_MODULES_DIR` — where the modules are installed on the host. Default: the
   parent of the directory `REMOTE_PATH` lives in, plus
   `libexec/muster/modules` — the place the daemon looks. If you set it here,
   set the same value in the service's own environment.
 
-The module is built for the target's `GOOS`/`GOARCH`, uploaded beside its final
-name and renamed into place, as the daemon binary is. The daemon lists its
+A launcher is called as `install-module --dir <dir>` where `<dir>` is an empty
+private directory whose last element is the module's name; it must leave one
+executable file of that name in it, built for the target (`GOOS`/`GOARCH` are in
+its environment, set to the target's) and exit non-zero on any failure. Anything
+else it writes there is ignored.
+
+An npx module is also asked to prove it runs before it is enabled. After the
+upload, **on the host**, muster starts `<module> serve`, sends one `health`
+request and requires the hello line and an `ok` answer; a module that fails is
+removed from the host again, one warning line names it (never its source), the
+module an earlier deploy installed stays as it was, and the deploy carries on. The
+request is bounded to a few seconds (`FLEET_MODULE_HEALTH_GRACE`, default 5) plus
+a 30 s kill when `timeout` exists on the host.
+
+The module is built (or fetched) for the target's `GOOS`/`GOARCH`, uploaded beside
+its final name and renamed into place, as the daemon binary is. The daemon lists its
 modules directory at startup, so the restart step is what makes a newly installed
 module visible; it also needs `FLEET_DELIVERY_MODULES` naming the module in the
 service's environment (`install.md`). Nothing here enables a module on any

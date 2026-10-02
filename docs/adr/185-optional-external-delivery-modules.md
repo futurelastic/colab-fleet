@@ -207,9 +207,12 @@ it; a session that was never offered one is not a fallback.
 An optional module is **installed only when the installing user can fetch it**;
 otherwise nothing is installed and nothing is said. `scripts/fetch-module.sh`
 takes a name, a source and an output path, always exits 0, prints nothing, and
-leaves the output absent on any failure. A source is a Go package path with a
+leaves the output absent on any failure. A source is an npx package spec
+(`npx:<spec>`; the launcher fetches and verifies the binary — #246, the one
+install surface) or, as the fallback for one release, a Go package path with a
 version, built with the installing user's own credentials — which is exactly the
-access test — or an absolute directory holding a main package. `deploy.sh` runs
+access test — or an absolute directory holding a main package. An npx module
+must also answer `health` on the host before it is enabled. `deploy.sh` runs
 it for each `name=source` in `FLEET_MODULE_SOURCES` between install and restart,
 and installs the result beside the daemon with the same atomic rename it uses for
 the binary. A failed fetch never fails the deploy and never removes a module

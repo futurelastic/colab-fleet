@@ -40,9 +40,30 @@
 #                                 written to, the current directory.
 #   /absolute/directory           a directory holding a Go main package
 #                                 (`go build .` inside it).
+#   npx:<spec>                    anything `npx` accepts as a package spec
+#                                 (@scope/pkg@version, github:owner/repo#tag).
+#                                 muster #246: npx is the one install surface, so
+#                                 a module installs the way every tool does. Runs
+#                                 `npx --yes <spec> install-module --dir <dir>`
+#                                 with the CALLER's own credentials; the module's
+#                                 launcher owns fetching and verifying its binary
+#                                 (see "THE NPX CONTRACT" below).
 #   anything else                 skipped. A relative path is deliberately not a
 #                                 form: what it names depends on the caller's
 #                                 working directory.
+#
+# The two Go forms are the fallback for one release; npx is the way forward.
+#
+# THE NPX CONTRACT
+#
+#   npx --yes <spec> install-module --dir <stage>/<NAME>
+#
+# <stage>/<NAME> is a private, empty directory this script made; its last path
+# element is the module's name. The launcher must leave one executable regular
+# file named NAME inside it, built for the platform in the GOOS / GOARCH
+# environment variables when they are set (the deploy sets them to the TARGET's)
+# and for its own platform otherwise. Anything else it writes there is ignored.
+# A non-zero exit, or no such file, is a skip - exactly like a failed Go build.
 #
 # NAME must be 1-32 characters of a-z, 0-9 and '-', starting with a letter, and
 # not one of the names the service reserves (auto, terminal, inbox, module);
@@ -151,6 +172,23 @@ build_pkg() {
 	)
 }
 
+# An npx package spec. The spec is passed as ONE argument and never evaluated,
+# but it is also never allowed to look like an option, and the character set is
+# the one npm specs and github: specs really use.
+build_npx() {
+	spec=${SOURCE#npx:}
+	[ -n "$spec" ] || return 1
+	case "$spec" in
+	-* | *[!$LOWER$UPPER$DIGITS._~/@+:#-]*) return 1 ;;
+	esac
+	command -v npx >/dev/null 2>&1 || return 1
+	NPX_DIR="$STAGE/$NAME"
+	mkdir "$NPX_DIR" || return 1
+	npx --yes "$spec" install-module --dir "$NPX_DIR" || return 1
+	[ -f "$NPX_DIR/$NAME" ] && [ ! -L "$NPX_DIR/$NAME" ] || return 1
+	cp "$NPX_DIR/$NAME" "$BIN"
+}
+
 # An absolute directory holding a Go main package.
 build_dir() {
 	[ -d "$SOURCE" ] || return 1
@@ -176,12 +214,21 @@ fetch() {
 	OUT_DIR=$(dirname -- "$OUT") || return 1
 	[ -d "$OUT_DIR" ] || return 1
 
-	command -v go >/dev/null 2>&1 || return 1
-	: "${GOOS:=$(go env GOOS)}" "${GOARCH:=$(go env GOARCH)}"
-	[ -n "$GOOS" ] && [ -n "$GOARCH" ] || return 1
-	export GOOS GOARCH
 	: "${GIT_TERMINAL_PROMPT:=0}"
 	export GIT_TERMINAL_PROMPT
+
+	# The Go forms need the toolchain, and settle GOOS/GOARCH from it; the npx
+	# form needs neither (its launcher settles the platform itself, from these
+	# variables when the caller set them).
+	case "$SOURCE" in
+	npx:*) ;;
+	*)
+		command -v go >/dev/null 2>&1 || return 1
+		: "${GOOS:=$(go env GOOS)}" "${GOARCH:=$(go env GOARCH)}"
+		[ -n "$GOOS" ] && [ -n "$GOARCH" ] || return 1
+		export GOOS GOARCH
+		;;
+	esac
 
 	# Scratch space beside OUT, so the final mv is a same-filesystem rename
 	# (atomic). A directory rather than a file: `go build -o` refuses to
@@ -190,6 +237,7 @@ fetch() {
 	BIN="$STAGE/module"
 
 	case "$SOURCE" in
+	npx:*) build_npx || return 1 ;;
 	/*) build_dir || return 1 ;;
 	*@*) build_pkg || return 1 ;;
 	*) return 1 ;;
