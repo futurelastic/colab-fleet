@@ -1,7 +1,8 @@
 #!/bin/sh
 # Cross-compile muster for every supported platform and write a SHA256SUMS
-# file beside the binaries. This is the build half of a GitHub Release (#241);
-# .github/workflows/release-binaries.yml calls it and attaches the output.
+# file beside the binaries. This is the build half of the npm release (#241,
+# #243); .github/workflows/release-npm.yml calls it and hands the output to the
+# job that assembles and publishes the npm packages (scripts/assemble-npm.mjs).
 #
 # USAGE
 #

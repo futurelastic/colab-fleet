@@ -188,27 +188,27 @@ with an actor, not an address.
 
 ## Install
 
-Each [GitHub Release](https://github.com/futurelastic/muster/releases) carries
-a static binary for darwin/arm64, darwin/amd64, linux/amd64 and linux/arm64,
-plus a `SHA256SUMS` file. Download the one for your machine and the sums, verify,
-and run it:
+Published to npm; one install surface. Needs Node 18 or newer to *launch* the
+service — the service itself is a static Go binary and needs nothing else.
 
 ```sh
-VERSION=v0.1.0   # the release you want
-OS=linux ARCH=amd64   # darwin|linux, amd64|arm64
-BASE=https://github.com/futurelastic/muster/releases/download/$VERSION
-curl -fsSLO $BASE/muster-$VERSION-$OS-$ARCH
-curl -fsSLO $BASE/SHA256SUMS
-shasum -a 256 -c SHA256SUMS --ignore-missing   # sha256sum -c ... on Linux
-chmod +x muster-$VERSION-$OS-$ARCH
-./muster-$VERSION-$OS-$ARCH --version          # muster <VERSION> (...)
+npx @futurelastic/muster serve        # run it once, nothing installed
+npm i -g @futurelastic/muster         # or install the `muster` command
+muster --version                      # muster <version> (...)
 ```
 
-Put it somewhere permanent (`install -m 0755 muster-$VERSION-$OS-$ARCH
-/usr/local/bin/muster`), configure it with the `FLEET_*` environment the
-[Quickstart](#quickstart) shows, and start it with `muster serve`. A service
-that survives a reboot is [`docs/install.md`](docs/install.md). Build from
-source only to hack on it.
+`@futurelastic/muster` is a small launcher. npm installs exactly one of the
+platform packages beside it (`@futurelastic/muster-darwin-arm64`, `-darwin-x64`,
+`-linux-x64`, `-linux-arm64`) and the launcher runs that binary. Nothing is
+downloaded at install time, so `--ignore-scripts` and an offline mirror both
+work. Every release is published with npm provenance, and the launcher refuses
+a platform package whose version differs from its own. Release candidates
+publish under the `next` dist-tag (`npx @futurelastic/muster@next`); `latest`
+only ever moves to a final release.
+
+Configure it with the `FLEET_*` environment the [Quickstart](#quickstart) shows
+and start it with `muster serve`. A service that survives a reboot is
+[`docs/install.md`](docs/install.md). Build from source only to hack on it.
 
 ## Quickstart
 

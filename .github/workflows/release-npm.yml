@@ -1,0 +1,210 @@
+name: Release npm
+
+# Publishes muster to public npm (#243) as a launcher plus one package per
+# platform. npx is the one install surface: nothing is attached to a GitHub
+# Release, and nothing is downloaded at install time.
+#
+#   @futurelastic/muster                  the launcher (`bin: muster`); carries no binary
+#   @futurelastic/muster-darwin-arm64     one binary each; `os`/`cpu` make npm install
+#   @futurelastic/muster-darwin-x64       only the one that matches the machine
+#   @futurelastic/muster-linux-x64
+#   @futurelastic/muster-linux-arm64
+#
+# All five carry the SAME version, the release tag without its "v". The
+# launcher pins the platform packages to that exact version and refuses to run
+# a mismatched one. Platform packages are published first, the launcher last.
+#
+# TWO ENTRY POINTS, ONE PIPELINE
+#
+#   workflow_call      for a release workflow to call from the SAME run that
+#                      creates the tag. This is the reason this is a reusable
+#                      workflow and not `on: push: tags` / `on: release`: a tag
+#                      created with GITHUB_TOKEN does not trigger other
+#                      workflows, so a listener would never fire for an
+#                      automated release. No such release workflow exists yet;
+#                      when one does, it `uses:` this file after tagging.
+#   workflow_dispatch  publish (or dry-run) an existing tag by hand — also how
+#                      a tag cut before this workflow existed is backfilled.
+#
+# TRUSTED PUBLISHING (OIDC) ONLY. No npm token is stored, read or accepted, and
+# the job refuses to run if one is in its environment. One-time setup on
+# npmjs.com, for EACH of the five packages: Settings -> Trusted publishing ->
+# GitHub Actions, this repository, workflow file name = the file that STARTS the
+# run. For a manual dispatch that is `release-npm.yml`; once a release workflow
+# calls this one it is THAT file's name (npm checks the caller, not the called
+# workflow).
+#
+# GITHUB-HOSTED, ALWAYS. npm trusted publishing does not support self-hosted
+# runners. The repo is public, so this costs nothing.
+#
+# IT NEVER MOVES GIT. It checks the tag out, stamps versions into the assembled
+# copies under the runner's temp dir, and publishes. Nothing is committed,
+# pushed or tagged. A version already on npm is skipped, so re-running a failed
+# run finishes the publish instead of failing on the package that already went.
+#
+# DRY RUN. `dry_run: true` builds, assembles, runs the packaging tests and
+# `npm publish --dry-run` on every package. It needs no npm identity and
+# publishes nothing, so it is how a change to this file is proven.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing tag to build and publish (e.g. v0.2.0)
+        required: true
+        type: string
+      dry_run:
+        description: Build and `npm publish --dry-run`; publish nothing
+        required: false
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish (e.g. v0.2.0)
+        required: true
+        type: string
+      dry_run:
+        description: Build and `npm publish --dry-run`; publish nothing
+        required: false
+        type: boolean
+        default: true
+
+permissions: {}
+
+jobs:
+  binaries:
+    name: Cross-compile
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Passed through env, never interpolated into a script: an input is
+      # caller-controlled text.
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Check the tag shape
+        run: |
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::'$TAG' is not a release tag (want vMAJOR.MINOR.PATCH[-prerelease])"; exit 1 ;;
+          esac
+
+      # The build script, from the ref that started this run.
+      - uses: actions/checkout@v4
+        with:
+          path: tooling
+          persist-credentials: false
+
+      # The source being released: the tag, with its history so `git describe`
+      # can see the tag it is checked out at.
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          path: src
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+
+      - name: Build
+        working-directory: src
+        run: ../tooling/scripts/build-release.sh "$RUNNER_TEMP/dist" "$TAG"
+
+      - name: Verify what was built
+        working-directory: ${{ runner.temp }}/dist
+        run: |
+          sha256sum -c SHA256SUMS
+          ./muster-"$TAG"-linux-amd64 --version | tee /dev/stderr | grep -qF "muster $TAG "
+
+      # Workflow artifacts, not release assets: the only consumer is the npm
+      # job below.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muster-binaries
+          path: ${{ runner.temp }}/dist/muster-*
+          if-no-files-found: error
+          retention-days: 7
+
+  npm:
+    name: Publish to npm (trusted publishing)
+    needs: binaries
+    runs-on: ubuntu-latest # NEVER self-hosted: npm trusted publishing does not support it.
+    permissions:
+      contents: read # read the repository's visibility
+      id-token: write # the OIDC token npm exchanges for a one-time publish credential
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Refuse a private repository, and any npm token
+        run: |
+          set -uo pipefail
+          # Visibility from the API, never assumed: unknown is refused like private.
+          PRIVATE="$(gh api "repos/$REPO" --jq '.private' 2> /dev/null || echo unknown)"
+          if [ "$PRIVATE" != "false" ]; then
+            echo "::error::$REPO is private (or its visibility could not be read: $PRIVATE) — a private repository never publishes to public npm."
+            exit 1
+          fi
+          if [ -n "${NODE_AUTH_TOKEN:-}${NPM_TOKEN:-}" ]; then
+            echo "::error::an npm token is set in this job's environment — this workflow publishes through trusted publishing (OIDC) only and never with a token. Remove it."
+            exit 1
+          fi
+
+      # The assembly script and the packaging tests, from the ref that started
+      # this run — not the tag, so a tag cut before they existed can be published.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false # nothing here pushes
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24 # no registry-url: that writes an .npmrc expecting a token
+
+      - name: npm new enough for trusted publishing (>= 11.5.1)
+        run: |
+          set -euo pipefail
+          if ! node -e 'const [a,b,c]=process.argv[1].split(".").map(Number);process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)' "$(npm --version)"; then
+            npm install --global npm@11
+          fi
+          npm --version
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: muster-binaries
+          path: ${{ runner.temp }}/dist
+
+      - name: Check the binaries, assemble the packages, test the packaging
+        run: |
+          set -euo pipefail
+          chmod +x "$RUNNER_TEMP"/dist/muster-*
+          # The one check a downloader can make: the binary names the tag it is published under.
+          "$RUNNER_TEMP/dist/muster-$TAG-linux-amd64" --version | grep -qF "muster $TAG "
+          node scripts/assemble-npm.mjs "$RUNNER_TEMP/dist" "$TAG" "$RUNNER_TEMP/pkgs"
+          node --test npm/test/npm.test.mjs
+
+      - name: Publish (platform packages first, launcher last)
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          case "$VERSION" in
+            *-*) DIST=next ;;   # a release candidate never moves `latest`
+            *)   DIST=latest ;;
+          esac
+          while read -r dir; do
+            NAME="@futurelastic/$dir"
+            if [ "$DRY_RUN" = "true" ]; then
+              (cd "$RUNNER_TEMP/pkgs/$dir" && npm publish --dry-run --tag "$DIST" --access public --ignore-scripts)
+              echo "DRY RUN: $NAME@$VERSION would be published (dist-tag $DIST)" | tee -a "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if npm view "$NAME@$VERSION" version > /dev/null 2>&1; then
+              echo "$NAME@$VERSION is already on npm — skipping" | tee -a "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            (cd "$RUNNER_TEMP/pkgs/$dir" && npm publish --tag "$DIST" --provenance --access public --ignore-scripts)
+            echo "Published $NAME@$VERSION to npm (dist-tag $DIST)" | tee -a "$GITHUB_STEP_SUMMARY"
+          done < "$RUNNER_TEMP/pkgs/PUBLISH_ORDER"

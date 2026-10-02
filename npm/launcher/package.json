@@ -1,0 +1,14 @@
+{
+  "name": "@futurelastic/muster",
+  "version": "0.0.0",
+  "description": "muster — a machine-local service that owns session agents across a fleet. Launcher: runs the prebuilt binary for this platform.",
+  "license": "MIT",
+  "homepage": "https://github.com/futurelastic/muster#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/futurelastic/muster.git" },
+  "bugs": { "url": "https://github.com/futurelastic/muster/issues" },
+  "bin": { "muster": "bin/muster.js" },
+  "files": ["bin/muster.js", "README.md", "LICENSE"],
+  "optionalDependencies": {},
+  "publishConfig": { "access": "public", "provenance": true },
+  "engines": { "node": ">=18" }
+}

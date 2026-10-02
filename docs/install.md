@@ -29,10 +29,20 @@ order of this page and the order of its output are the same.
 
 ## The procedure
 
-0. **Or skip the build.** Every GitHub Release carries prebuilt binaries and a
-   `SHA256SUMS` file (the README's *Install* section has the commands). Verify
-   the download, `chmod +x` it, and continue at step 2 with that file as the
-   binary — it is already stamped, and `--version` prints the release tag.
+0. **Or skip the build.** `npm i -g @futurelastic/muster` installs a prebuilt,
+   already-stamped binary for this platform (the README's *Install* section has
+   the details). `command -v muster` is the *launcher*, a Node script — not
+   something to copy or to point a service unit at. The binary itself is in the
+   platform package beside it; copy that to a fixed path, so an npm upgrade can
+   never change what the unit executes:
+
+   ```sh
+   BIN=$(node -p "require.resolve('@futurelastic/muster-' + process.platform + '-' + process.arch + '/package.json', { paths: [require('fs').realpathSync('$(command -v muster)')] }).replace('package.json', 'bin/muster')")
+   install -m 0755 "$BIN" /usr/local/bin/muster
+   muster --version      # prints the release
+   ```
+
+   Then continue at step 2 with `/usr/local/bin/muster` as the binary.
 
 1. **Build with the version-control stamp, and choose where the binary
    lives.** Build from a clean checkout — a binary built from a modified tree
