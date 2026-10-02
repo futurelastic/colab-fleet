@@ -85,6 +85,15 @@ var retryableAttachReasons = map[string]bool{
 	"socket-missing":         true,
 }
 
+const (
+	// attachRefusedClass is the module error code for an attach it will not
+	// take: the lane is bound to a different process than the one offered.
+	attachRefusedClass = "refused"
+	// laneReasonReplaced is the reason a lane is marked gone when its agent
+	// process was replaced behind it.
+	laneReasonReplaced = "agent process replaced"
+)
+
 // ModulesConfig configures the external delivery modules of one driver.
 type ModulesConfig struct {
 	// Enabled is every module name the operator enabled, in order of
@@ -884,10 +893,28 @@ func (h *moduleHost) applyAttach(id, module string, gen uint64, pid int, res mod
 	if c == nil || c.Generation() != gen {
 		return
 	}
-	if pid != 0 {
+	// PID is the process the lane is bound to, so it moves only when an attach
+	// takes (or when nothing was ever recorded). A refused attach against a
+	// different pid must not overwrite it: that is the only record that the
+	// process behind the lane has changed.
+	replaced := err != nil && pid != 0 && rec.PID != 0 && pid != rec.PID &&
+		moduleErrorClass(err) == attachRefusedClass
+	if pid != 0 && (rec.PID == 0 || (err == nil && res.Live)) {
 		rec.PID = pid
 	}
 	switch {
+	case replaced:
+		// The agent process was replaced outside this service. The module
+		// bound the lane to the old one and will refuse this process every
+		// time, so retrying is noise that hides real attach failures. The lane
+		// is marked gone (never retried by the background pass) with the
+		// reason on the session's delivery field; a create or resume through
+		// the service takes a fresh lane and closes this one module-side.
+		h.count(module, "attach_replaced")
+		h.logf("tmux: delivery module %s: lane of session %s refused a replaced agent process; not retrying", module, id)
+		rec.Live = false
+		rec.State = laneStateGone
+		rec.Reason = laneReasonReplaced
 	case err != nil:
 		rec.Live = false
 		rec.Reason = "attach failed: " + moduleErrorClass(err)

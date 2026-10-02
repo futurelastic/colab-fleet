@@ -349,3 +349,72 @@ func TestModuleLifecycle_SlowAttachDoesNotDelayAnotherLanesSend(t *testing.T) {
 	g.release()
 	r.waitLive(slow.ID)
 }
+
+// #248: a lane bound to one agent process, whose session now runs a different
+// one (replaced outside this service), is refused by the module on every
+// attach. After the one refusal the lane is marked gone with a reason on the
+// session's delivery field and the background pass stops retrying it.
+func TestModuleLifecycle_ReplacedProcessStopsRetrying(t *testing.T) {
+	r, id := liveRig(t, modtest.Behaviour{})
+	rec, _ := r.record(id)
+	if rec.PID == 0 {
+		t.Fatal("setup: the lane was never bound to a process")
+	}
+	// The module now refuses any attach, as it does for a process it did not bind.
+	r.fake.SetHandler(func(req modtest.Request) (any, *modtest.WireError, time.Duration) {
+		if req.Op == "attach" {
+			return nil, &modtest.WireError{Code: "refused", Message: "lane bound to another process"}, 0
+		}
+		return nil, nil, 0
+	})
+	// Same session name, new process.
+	r.mux.dropSession(id)
+	r.mux.addSession(fakeSession{name: id, paneID: "%900", cwd: "/work/lane1", pid: rec.PID + 1000, created: 1785600003, title: "2_1_220"}, idleFixtureFor(id))
+	r.d.mods.degrade(id, "the process behind it changed", false)
+
+	before := r.fake.CountOp("attach")
+	r.d.mods.lanePass()
+	if n := r.fake.CountOp("attach") - before; n != 1 {
+		t.Fatalf("first pass made %d attach calls, want 1", n)
+	}
+	got, _ := r.record(id)
+	if got.State != laneStateGone || got.Live || got.Reason != laneReasonReplaced {
+		t.Fatalf("lane after the refusal = state %q live %v reason %q", got.State, got.Live, got.Reason)
+	}
+	if got.PID != rec.PID {
+		t.Errorf("the lane's bound pid moved from %d to %d", rec.PID, got.PID)
+	}
+	if v := r.view(id); v == nil || v.ClientConnected || !strings.Contains(v.Evidence, laneReasonReplaced) {
+		t.Errorf("state read does not carry the reason: %+v", v)
+	}
+	for i := 0; i < 3; i++ {
+		r.d.mods.lanePass()
+	}
+	if n := r.fake.CountOp("attach") - before; n != 1 {
+		t.Errorf("the lane was retried: %d attach calls in total, want 1", n)
+	}
+	if n := r.modCounter("attach_replaced"); n != 1 {
+		t.Errorf("attach_replaced = %d, want 1", n)
+	}
+}
+
+// A refusal with the same process the lane was bound to is NOT a replacement:
+// it keeps the ordinary failure path and the lane stays retryable.
+func TestModuleLifecycle_RefusedSameProcessIsNotReplaced(t *testing.T) {
+	r, id := liveRig(t, modtest.Behaviour{})
+	r.fake.SetHandler(func(req modtest.Request) (any, *modtest.WireError, time.Duration) {
+		if req.Op == "attach" {
+			return nil, &modtest.WireError{Code: "refused", Message: "no"}, 0
+		}
+		return nil, nil, 0
+	})
+	r.d.mods.degrade(id, "test", false)
+	r.d.mods.lanePass()
+	got, _ := r.record(id)
+	if got.State == laneStateGone || got.Reason == laneReasonReplaced {
+		t.Errorf("a refusal for the unchanged process marked the lane replaced: %+v", got)
+	}
+	if !strings.HasPrefix(got.Reason, "attach failed") {
+		t.Errorf("reason = %q, want the ordinary attach failure", got.Reason)
+	}
+}
