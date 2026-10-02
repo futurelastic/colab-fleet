@@ -1,0 +1,13 @@
+{
+  "name": "@futurelastic/muster-@PLATFORM@",
+  "version": "0.0.0",
+  "description": "muster binary for @PLATFORM@. Installed by @futurelastic/muster; not meant to be used directly.",
+  "license": "MIT",
+  "homepage": "https://github.com/futurelastic/muster#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/futurelastic/muster.git" },
+  "bugs": { "url": "https://github.com/futurelastic/muster/issues" },
+  "os": ["@OS@"],
+  "cpu": ["@CPU@"],
+  "files": ["bin/muster", "README.md", "LICENSE"],
+  "publishConfig": { "access": "public", "provenance": true }
+}
