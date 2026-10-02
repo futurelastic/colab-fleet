@@ -595,6 +595,16 @@ establish from its own record that the composer holds the text it delivered, the
 resume submits it — send the *same* text: this finishes one delivery, it does
 not start another.
 
+**A `queued` answer is not a promise that a turn started.** When the receiving
+session was busy, the runtime may only have queued the text, and can hand it back
+to the composer unsent (a queued message returned after the running turn was
+interrupted or failed). The receipt's `reason` says when this applies. The session
+then reads `waiting_input` with `waitingOn: "unsent-input"` and
+`strandedDelivery: true` — the service's own record says that text is a message it
+delivered, not a person's draft. Finish it the same way as an `unknown`: send the
+same text, with the same `from`, and `resumeIfStranded: true`. A sender that wants
+to be sure of an important message watches for that state after a `queued`.
+
 **If it answers `unknown` on `delivery.route: "inbox"`, do not retry — wait and
 read the transcript.** Nothing is sitting in a composer: the message was written
 to the session's inbox and the receiver's transcript has not recorded it yet, so

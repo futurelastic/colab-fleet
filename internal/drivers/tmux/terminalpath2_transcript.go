@@ -543,13 +543,23 @@ func transcriptTailMatches(path string, offset int64, sent string) (bool, error)
 // about something else, not about this delivery — so it is skipped
 // entirely: neither a match nor a disagreement.
 func transcriptTailScan(path string, offset int64, sent string) (transcriptScanResult, error) {
+	result, _, err := transcriptTailScanKind(path, offset, sent)
+	return result, err
+}
+
+// transcriptTailScanKind is transcriptTailScan plus WHICH entry matched
+// (#240). A match on a queue-operation enqueue says the runtime accepted the
+// text into its queue — not that it started a turn on it — and a queue can be
+// handed back to the composer. A match on a command entry or on a user entry
+// says a turn exists. viaEnqueue is true only for the first.
+func transcriptTailScanKind(path string, offset int64, sent string) (result transcriptScanResult, viaEnqueue bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return transcriptScanSilent, err
+		return transcriptScanSilent, false, err
 	}
 	defer f.Close()
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return transcriptScanSilent, err
+		return transcriptScanSilent, false, err
 	}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), recordLineLimit)
@@ -568,7 +578,7 @@ func transcriptTailScan(path string, offset int64, sent string) (transcriptScanR
 			// #180 M3: a command entry confirms a sent slash command and is
 			// otherwise not a turn at all — never a "different turn".
 			if commandMatches(text, sent) {
-				return transcriptScanMatched, nil
+				return transcriptScanMatched, false, nil
 			}
 			continue
 		}
@@ -580,7 +590,7 @@ func transcriptTailScan(path string, offset int64, sent string) (transcriptScanR
 			// construction, a NEW event; there is no earlier-turn ambiguity
 			// to anchor against here the way there is for its dequeue).
 			if matches {
-				return transcriptScanMatched, nil
+				return transcriptScanMatched, true, nil
 			}
 			queueDepth++
 			continue
@@ -596,17 +606,50 @@ func transcriptTailScan(path string, offset int64, sent string) (transcriptScanR
 			queueDepth--
 		}
 		if matches {
-			return transcriptScanMatched, nil
+			return transcriptScanMatched, false, nil
 		}
 		sawDifferent = true
 	}
 	if err := sc.Err(); err != nil {
-		return transcriptScanSilent, err
+		return transcriptScanSilent, false, err
 	}
 	if sawDifferent {
-		return transcriptScanDifferentTurn, nil
+		return transcriptScanDifferentTurn, false, nil
 	}
-	return transcriptScanSilent, nil
+	return transcriptScanSilent, false, nil
+}
+
+// transcriptUserTurnSince reports whether the transcript, after offset, holds
+// a user turn carrying exactly this text — the runtime having started a turn
+// on it (#240). An enqueue does not count: that is the very evidence a hand-back
+// leaves behind. A transcript that cannot be read reports false, which is the
+// safe direction for its one caller: nothing is then shown to have consumed
+// the text, and the draft rule's other requirements still apply.
+func transcriptUserTurnSince(path string, offset int64, sent string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return false
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), recordLineLimit)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(strings.TrimSpace(string(line))) == 0 {
+			continue
+		}
+		kind, text, _, ok := extractTranscriptCandidate(line)
+		if !ok || kind != "user" {
+			continue
+		}
+		if transcriptTurnMatches(text, sent) {
+			return true
+		}
+	}
+	return false
 }
 
 // processSessionRecord is the shape of one `~/.claude/sessions/<pid>.json`
@@ -1041,26 +1084,43 @@ func (d *Driver) resolveTranscriptSource(ctx context.Context, ref fleet.SessionR
 // Returns the same bool confirmSubmitted always has, plus which family of
 // evidence decided it, for the receipt to quote.
 func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow, sent string, key pasteKey, atCount int, src transcriptSource, srcOK bool) (bool, string, delivery.Signal) {
+	confirmed, evidence, signal, _ := d.confirmSubmittedFromSourceTurn(ctx, target, sent, key, atCount, src, srcOK)
+	return confirmed, evidence, signal
+}
+
+// confirmSubmittedFromSourceTurn is confirmSubmittedFromSource plus whether the
+// evidence shows a TURN exists for this text (#240). Only a transcript entry
+// of a started turn (a user entry, or a command entry) does. The runtime
+// queueing the text (an enqueue), the composer emptying, or a paste marker
+// clearing each show the text left the composer — and a runtime that queued it
+// can hand it back. Callers keep a provisional record for a confirmation that
+// is not turnProven.
+func (d *Driver) confirmSubmittedFromSourceTurn(ctx context.Context, target *paneRow, sent string, key pasteKey, atCount int, src transcriptSource, srcOK bool) (confirmed bool, evidence string, signal delivery.Signal, turnProven bool) {
 	if !srcOK {
 		confirmed := d.confirmSubmitted(ctx, target.paneID, key, atCount)
 		signal := delivery.SignalNone
 		if confirmed {
 			signal = delivery.SignalScreen
 		}
-		return confirmed, "no transcript could be resolved for this session; fell back to the screen-based signal (composer emptying or this delivery's own paste marker clearing)", signal
+		return confirmed, "no transcript could be resolved for this session; fell back to the screen-based signal (composer emptying or this delivery's own paste marker clearing)", signal, false
 	}
 
 	start := d.now()
 	deadline := start.Add(submitConfirmWindow)
 	for {
-		result, err := transcriptTailScan(src.path, src.offset, sent)
+		result, viaEnqueue, err := transcriptTailScanKind(src.path, src.offset, sent)
 		if err != nil {
 			d.counters.incr(counterTranscriptScannerUnreadable)
 		}
 		switch result {
 		case transcriptScanMatched:
 			d.recordConfirmed(counterSubmitConfirmedByTranscript, d.now().Sub(start))
-			return true, "the runtime's own transcript recorded this exact text as a turn (" + src.evidence + ")", delivery.SignalTranscript
+			if viaEnqueue {
+				// #240: queued is not consumed. The runtime accepted the text into
+				// its queue; a queue can be handed back to the composer.
+				d.counters.incr(counterSubmitConfirmedByEnqueue)
+			}
+			return true, "the runtime's own transcript recorded this exact text as a turn (" + src.evidence + ")", delivery.SignalTranscript, !viaEnqueue
 		case transcriptScanDifferentTurn:
 			// Review fix: a transcript that recorded a DIFFERENT turn is not
 			// silence, and must not be handed to the screen-based fallback
@@ -1077,13 +1137,13 @@ func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow
 			// is unknown.
 			if sc, ok := d.captureForClassify(ctx, target.paneID); ok {
 				if pending, scan := composerText(sc); scan == composerFound && pending == "" {
-					return false, differentTurnComposerEmptied + " (" + src.evidence + ")", delivery.SignalNone
+					return false, differentTurnComposerEmptied + " (" + src.evidence + ")", delivery.SignalNone, false
 				}
 			}
 			return false, "a transcript was resolved (" + src.evidence + ") but recorded a DIFFERENT " +
 				"turn instead of this delivery's own text within the confirmation window — not " +
 				"falling back to the screen signal, which could report this as queued for text " +
-				"that, per the transcript's own account, never arrived", delivery.SignalNone
+				"that, per the transcript's own account, never arrived", delivery.SignalNone, false
 		}
 		if d.now().After(deadline) || ctx.Err() != nil {
 			break
@@ -1091,7 +1151,7 @@ func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow
 		select {
 		case <-ctx.Done():
 			d.counters.incr(counterSubmitConfirmTimeout)
-			return false, "context cancelled while waiting for the transcript to confirm this delivery", delivery.SignalNone
+			return false, "context cancelled while waiting for the transcript to confirm this delivery", delivery.SignalNone, false
 		case <-time.After(submitConfirmInterval):
 		}
 	}
@@ -1106,12 +1166,12 @@ func (d *Driver) confirmSubmittedFromSource(ctx context.Context, target *paneRow
 		d.recordConfirmed(counterSubmitConfirmedByScreenAfterSilentTranscript, d.now().Sub(start))
 		return true, "a transcript was resolved (" + src.evidence + ") but recorded no matching turn " +
 			"within the confirmation window; confirmed instead by the composer emptying or this " +
-			"delivery's own paste marker clearing", delivery.SignalScreen
+			"delivery's own paste marker clearing", delivery.SignalScreen, false
 	}
 	d.counters.incr(counterSubmitConfirmTimeout)
 	return false, "a transcript was resolved (" + src.evidence + ") but recorded no matching turn " +
 		"within the confirmation window, and the screen shows neither the composer emptying nor this " +
-		"delivery's own paste marker clearing either", delivery.SignalNone
+		"delivery's own paste marker clearing either", delivery.SignalNone, false
 }
 
 // uuidShaped reports whether s is 8-4-4-4-12 hexadecimal, the shape of the

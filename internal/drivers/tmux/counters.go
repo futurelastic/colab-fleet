@@ -294,6 +294,22 @@ const (
 
 	counterSubmitConfirmedByTranscript = "submit_confirm.by_transcript"
 
+	// #240: a submit confirmed by evidence that does not show a turn started,
+	// and what became of the text afterwards. by_enqueue counts a transcript
+	// confirmation that was only the runtime queueing the text;
+	// provisional_kept counts a confirmation (of either weak kind: enqueue, or
+	// the screen) that left a provisional record behind;
+	// provisional_handed_back counts the composer later holding that text again
+	// with the provisional record as the only proof it is the driver's own;
+	// unexplained_labelled_composer counts an unsent composer that opens with a
+	// sender label this driver writes and that nothing it remembers explains —
+	// diagnostic only, never proof, and a nonzero rate after #240 means a hop
+	// other than the one #240 closed.
+	counterSubmitConfirmedByEnqueue         = "submit_confirm.by_enqueue"
+	counterStrandedProvisionalKept          = "stranded.provisional_kept"
+	counterStrandedProvisionalHandedBack    = "stranded.provisional_handed_back"
+	counterStrandedUnexplainedLabelledInput = "stranded.unexplained_labelled_composer"
+
 	// counterBracketPasteFlagUnknown/Off count pasteBracketed's two refusal
 	// reasons separately (terminalpath2.go) — the query itself failing is a
 	// different fact from the query answering "no", and round-1 measured

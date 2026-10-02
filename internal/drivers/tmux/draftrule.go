@@ -37,6 +37,22 @@ type strandedTombstone struct {
 	Cwd            string    `json:"cwd"`
 	ComposerDigest string    `json:"composerDigest,omitempty"`
 	At             time.Time `json:"at"`
+
+	// Provisional (#240) marks the one tombstone that is NOT left by a lapsed
+	// record: it is left by a delivery whose submit was confirmed by evidence
+	// that does not show a turn started (the runtime queueing the text, or the
+	// composer reading empty). Such text is not certainly gone — a runtime that
+	// queued it can hand it back to the composer, unsent, with nothing in this
+	// driver's memory to say whose it is. The entry is the memory.
+	//
+	// It proves the composer's text is this driver's own under the same two
+	// tests as any tombstone, with one more condition: when a transcript was
+	// resolved, it must not show a user turn carrying the text since TranscriptOffset
+	// (see tombstoneProves) — text the runtime ran is gone, and a person
+	// recalling it from history is not this driver's delivery.
+	Provisional      bool   `json:"provisional,omitempty"`
+	TranscriptPath   string `json:"transcriptPath,omitempty"`
+	TranscriptOffset int64  `json:"transcriptOffset,omitempty"`
 }
 
 // buryLocked records rec as a tombstone for id. d.mu must be held.
@@ -77,19 +93,98 @@ func (d *Driver) sweepTombstonesLocked() {
 // the same composer digest it recorded, or the composer rendering exactly
 // the text it recorded.
 func (d *Driver) tombstoneProves(id, cwd, pending string, sc screen) bool {
+	ok, _ := d.tombstoneProvesKind(id, cwd, pending, sc)
+	return ok
+}
+
+// tombstoneProvesKind is tombstoneProves plus whether the proof was a
+// provisional entry (#240) — a delivery confirmed only weakly, whose text has
+// since come back to the composer.
+func (d *Driver) tombstoneProvesKind(id, cwd, pending string, sc screen) (proved, provisional bool) {
 	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.tombstoneProvesKindLocked(id, cwd, pending, sc)
+}
+
+// tombstoneProvesKindLocked is tombstoneProvesKind for a caller already
+// holding d.mu (List and State read state under it).
+func (d *Driver) tombstoneProvesKindLocked(id, cwd, pending string, sc screen) (proved, provisional bool) {
 	d.sweepTombstonesLocked()
-	list := append([]strandedTombstone(nil), d.tombstones[id]...)
-	d.mu.Unlock()
-	for _, t := range list {
+	for _, t := range d.tombstones[id] {
 		if t.Cwd != cwd {
 			continue
 		}
-		if composerDigestMatches(t.ComposerDigest, pending) || composerMatchesText(sc, t.Text, false) {
-			return true
+		// A provisional digest is empty by construction: the composer was empty
+		// when it was made. composerDigestMatches never matches an empty digest
+		// against text, so such an entry proves by its text alone.
+		if !(composerDigestMatches(t.ComposerDigest, pending) || composerMatchesText(sc, t.Text, false)) {
+			continue
 		}
+		if t.Provisional && t.TranscriptPath != "" &&
+			transcriptUserTurnSince(t.TranscriptPath, t.TranscriptOffset, t.Text) {
+			// The runtime ran this text. What the composer holds now is the same
+			// words typed or recalled again, and nothing here says whose.
+			continue
+		}
+		return true, t.Provisional
 	}
-	return false
+	return false, false
+}
+
+// ownDeliveryLocked reports whether this driver's own memory proves the text
+// in this session's composer is a message it delivered (#240): the live
+// stranded record, or a tombstone — provisional or lapsed. It is the
+// read-side twin of the draft rule's proof (a), for a caller that wants to SAY
+// so (SessionState.StrandedDelivery) rather than act on it. d.mu must be held.
+func (d *Driver) ownDeliveryLocked(id, cwd string, c paneCapture, captured bool) bool {
+	if !captured {
+		return false
+	}
+	sc := c.screen()
+	pending, scan := composerText(sc)
+	if scan != composerFound || pending == "" {
+		return false
+	}
+	d.sweepStrandedLocked()
+	if rec, ok := d.stranded[id]; ok && rec.Cwd == cwd && recordProves(rec, pending, sc) {
+		return true
+	}
+	ok, _ := d.tombstoneProvesKindLocked(id, cwd, pending, sc)
+	return ok
+}
+
+// noteProvisional records a delivery whose submit was confirmed without proof
+// that a turn started (#240). See strandedTombstone.Provisional. src/srcOK is
+// the transcript resolved BEFORE the submit keystroke, as at every other
+// submit site; an unresolved one leaves the entry without its "was it run"
+// check, which makes it proof for the draft rule on the composer's words
+// alone — the same strength as a lapsed record's tombstone.
+func (d *Driver) noteProvisional(id, cwd, text string, src transcriptSource, srcOK bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.tombstones == nil {
+		d.tombstones = map[string][]strandedTombstone{}
+	}
+	t := strandedTombstone{Text: text, Cwd: cwd, At: d.now(), Provisional: true}
+	if srcOK {
+		t.TranscriptPath, t.TranscriptOffset = src.path, src.offset
+	}
+	// One entry per (cwd, text): a repeat of the same message moves the entry
+	// forward instead of crowding earlier tombstones out.
+	list := make([]strandedTombstone, 0, len(d.tombstones[id])+1)
+	for _, old := range d.tombstones[id] {
+		if old.Provisional && old.Cwd == cwd && old.Text == text {
+			continue
+		}
+		list = append(list, old)
+	}
+	list = append(list, t)
+	if len(list) > tombstonesPerSession {
+		list = list[len(list)-tombstonesPerSession:]
+	}
+	d.tombstones[id] = list
+	d.counters.incr(counterStrandedProvisionalKept)
+	d.saveStrandedLocked()
 }
 
 // draftProof is which half of the draft rule allowed touching a composer.
