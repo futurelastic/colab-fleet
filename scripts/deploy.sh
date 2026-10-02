@@ -320,6 +320,42 @@ if [ -n "${FLEET_MODULE_SOURCES:-}" ]; then
 			run "chmod 0755 $2.incoming && mv $2.incoming $2"
 	}
 
+	# muster #246. The same, but the module must pass a health check ON THE HOST
+	# before it is put in place: a module that cannot answer `health` is never
+	# enabled, and what was there before is left alone. It runs on the host, not
+	# here, because the staged file is built for the target's platform.
+	#
+	# The probe is the real protocol, not a stand-in: start `<file> serve`,
+	# send one `health` request, and require the hello line and an ok answer.
+	# stdin is held open for MOD_HEALTH_GRACE seconds (FLEET_MODULE_HEALTH_GRACE,
+	# default 5) so the answer can be
+	# written before the module sees end-of-input; bounded to 30 more seconds
+	# when `timeout` exists on the host. Nothing the module prints is shown.
+	MOD_HEALTH_GRACE=${FLEET_MODULE_HEALTH_GRACE:-5}
+	case "$MOD_HEALTH_GRACE" in
+	'' | *[!0123456789]*) MOD_HEALTH_GRACE=5 ;;
+	esac
+	module_healthy() {
+		run "f=$1; t=; command -v timeout >/dev/null 2>&1 && t='timeout 30'; \
+out=\$( { printf '%s\\n' '{\"id\":\"probe\",\"op\":\"health\",\"args\":{}}'; sleep ${MOD_HEALTH_GRACE}; } | \$t \"\$f\" serve 2>/dev/null ); \
+printf '%s\\n' \"\$out\" | grep -q '\"event\" *: *\"hello\"' || exit 1; \
+printf '%s\\n' \"\$out\" | grep '\"id\" *: *\"probe\"' | grep -q '\"ok\" *: *true' || exit 1; \
+printf '%s\\n' \"\$out\" | grep '\"id\" *: *\"probe\"' | grep -q '\"ok\" *: *false' && exit 1; exit 0"
+	}
+
+	# Returns 0 installed, 1 not installed (put failed), 2 installed nothing
+	# because the health check failed.
+	module_install_checked() {
+		run "mkdir -p -m 0755 ${MODULES_DIR}" &&
+			put "$1" "$2.incoming" &&
+			run "chmod 0755 $2.incoming" || return 1
+		if ! module_healthy "$2.incoming"; then
+			run "rm -f $2.incoming" 2>/dev/null || true
+			return 2
+		fi
+		run "mv $2.incoming $2"
+	}
+
 	if [ -n "${FLEET_MODULES_DIR:-}" ]; then
 		MODULES_DIR=$FLEET_MODULES_DIR
 		if [ "$HOST" = "local" ]; then
@@ -385,8 +421,17 @@ if [ -n "${FLEET_MODULE_SOURCES:-}" ]; then
 				continue
 			fi
 
-			if module_install "$MOD_OUT" "${MODULES_DIR}/${MOD_NAME}"; then
+			# An npx source comes from a launcher this script did not build, so
+			# it is also asked to prove it runs before it is enabled (#246).
+			MOD_RC=0
+			case "$MOD_SRC" in
+			npx:*) module_install_checked "$MOD_OUT" "${MODULES_DIR}/${MOD_NAME}" || MOD_RC=$? ;;
+			*) module_install "$MOD_OUT" "${MODULES_DIR}/${MOD_NAME}" || MOD_RC=$? ;;
+			esac
+			if [ "$MOD_RC" -eq 0 ]; then
 				echo "deploy: installed delivery module ${MOD_NAME} to ${HOST}:${MODULES_DIR}/${MOD_NAME}"
+			elif [ "$MOD_RC" -eq 2 ]; then
+				echo "deploy: WARNING delivery module ${MOD_NAME} failed its health check on ${HOST}; not installed." >&2
 			else
 				run "rm -f ${MODULES_DIR}/${MOD_NAME}.incoming" 2>/dev/null || true
 				echo "deploy: WARNING delivery module ${MOD_NAME} was fetched but could not be installed to ${HOST}:${MODULES_DIR}; skipped." >&2
