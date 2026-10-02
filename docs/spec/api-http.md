@@ -1751,7 +1751,7 @@ from silence is the failure mode this whole specification is organised against.
 
 **`session.state` fires on any material change**, which is every structured
 field a caller branches on: `status`, `confidence`, `waitingOn`,
-`composerDigest`, the prompt (its options, highlight and **nonce**), `quota`,
+`composerDigest`, `strandedDelivery`, the prompt (its options, highlight and **nonce**), `quota`,
 `lastTurn`, `turns`, `credentialGeneration`. It began firing on `status` alone, and
 everything else then moved underneath a silent feed — including the nonce,
 whose entire job is to make an answer submitted against a replaced question

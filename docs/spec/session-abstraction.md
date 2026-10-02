@@ -206,6 +206,7 @@ SessionState {
   prompt?         : SessionPrompt // the question this session is blocked on (§2.7)
   waitingOn?      : WaitingReason // WHY status is waiting_input
   composerDigest? : string        // fingerprint of unsent composer text
+  strandedDelivery? : boolean     // true only with waitingOn unsent-input: the unsent text is a message THIS driver delivered and reported queued, handed back by the runtime (#240)
   screenDigest?   : string        // fingerprint of the screen read — corroborates `keys` (§3); only from a driver declaring deliversRawKeys (§4.3)
   quota?          : QuotaBlock    // set when status is quota_blocked
   lastTurn?       : TurnEnd       // how the most recent turn ended, if the driver knows
@@ -1551,6 +1552,16 @@ When either proof holds and no live record backs the composer, both flags
 converge on one door (muster #135): clear the composer, then deliver THIS
 call's text. The foreign text itself is never submitted, and a caller that sets
 neither flag still gets the original, unqualified refusal.
+
+**A `queued` receipt is not proof a turn started (#240).** A submit confirmed
+by the runtime queueing the text, or by the composer reading empty, shows the
+text left the composer; a runtime that queued it can hand it back, unsent. For
+such a confirmation the driver keeps a provisional record of the delivery — the
+same kind the draft rule keeps for a lapsed strand, and proof only while the
+runtime's own transcript does not show a turn started on the text. If the text
+returns, the session reports `waiting_input` with `waitingOn: unsent-input` and
+`strandedDelivery: true`, and the sender's own `resumeIfStranded` (same text,
+same `from`) finishes it. See `docs/adr/240-a-queued-delivery-is-not-gone.md`.
 
 `discard` removes unsent composer text **without submitting it** — the verb
 between "run it" and "destroy the session holding it", which was missing. `send`

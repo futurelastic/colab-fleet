@@ -391,6 +391,20 @@ type SessionState struct {
 	// what it believes, and the driver refuses if the world has moved.
 	ComposerDigest string `json:"composerDigest,omitempty"`
 
+	// StrandedDelivery is true only while WaitingOn is WaitingUnsentInput and
+	// the driver's own memory proves the text in the composer is a message IT
+	// delivered into this session — one it reported `queued` and that the
+	// runtime has since handed back to the composer unsent (#240). It is the
+	// receiving side's half of what the sender was told: the sender may finish
+	// the delivery by sending the same text (and the same `from`) again with
+	// resumeIfStranded, with no composer digest and no screen reading.
+	//
+	// Absent is not "a person typed this". It also covers a driver with no
+	// such memory — a restarted one, a peer built before the field existed, a
+	// delivery older than the memory's retention — and the text may still be
+	// anyone's; ComposerDigest and discard remain the way to deal with it.
+	StrandedDelivery bool `json:"strandedDelivery,omitempty"`
+
 	// WaitingOn says why the session is `waiting_input`, when the driver can
 	// tell. Empty for every other status, and empty on waiting_input means
 	// unclassified — see WaitingReason.
@@ -668,6 +682,7 @@ func (s SessionState) MateriallyDiffers(other SessionState) bool {
 		s.Confidence != other.Confidence,
 		s.WaitingOn != other.WaitingOn,
 		s.ComposerDigest != other.ComposerDigest,
+		s.StrandedDelivery != other.StrandedDelivery,
 		s.PermissionMode != other.PermissionMode:
 		return true
 	}

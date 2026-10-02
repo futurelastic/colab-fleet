@@ -2129,6 +2129,9 @@ func (d *Driver) State(ctx context.Context, req fleet.Request, ref fleet.Session
 		st, carried := d.stampSinceLocked(r.session, raw, now)
 		st.CredentialGeneration = d.credentialGeneration() // #12, same as List's per-session stamp
 		st.ScreenDigest = digest                           // see List's stamp of the same field
+		if st.WaitingOn == fleet.WaitingUnsentInput {      // #240, same as List
+			st.StrandedDelivery = d.ownDeliveryLocked(r.session, r.cwd, c, captured)
+		}
 		d.observed[r.session] = observation{
 			created: r.created, cwd: r.cwd, at: now,
 			status: st.Status, statusSince: *st.Since, digest: digest,
@@ -2835,7 +2838,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			// marker clearing. Delivering a receipt this driver did not earn
 			// is the exact conflation delivery.go's OutcomeSubmitted doc
 			// forbids.
-			confirmed, evidence, signal := d.confirmSubmittedFromSource(ctx, target, text, key, atCount, src, srcOK)
+			confirmed, evidence, signal, turnProven := d.confirmSubmittedFromSourceTurn(ctx, target, text, key, atCount, src, srcOK)
 			tr.confirmedBy = signal
 			if !confirmed {
 				// The record is KEPT, deliberately unlike the old behaviour: a
@@ -2851,6 +2854,9 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 				}, nil
 			}
 			d.forgetStranded(ref.ID)
+			if !turnProven {
+				d.noteProvisional(ref.ID, target.cwd, text, src, srcOK) // #240
+			}
 			tr.resumed = true
 			return fleet.DeliveryReceipt{
 				// Queued, not submitted — matching the first-attempt path's
@@ -2935,7 +2941,14 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 				flag = "resumeIfStranded"
 			}
 			proof, mismatch := d.mayClearUnrecorded(ref.ID, target.cwd, pending, screenNow, opts.ExpectComposerDigest)
+			if proof == proofTombstone {
+				// #240: was it a provisional entry — a delivery reported queued, now back?
+				if _, provisional := d.tombstoneProvesKind(ref.ID, target.cwd, pending, screenNow); provisional {
+					d.counters.incr(counterStrandedProvisionalHandedBack)
+				}
+			}
 			if proof == proofNone {
+				d.noteUnexplainedLabelled(ref.ID, target.cwd, pending)
 				tr.draftKept = true
 				if opts.ResumeIfStranded {
 					d.counters.incr(counterSendRefusedResumeNoRecord)
@@ -2966,6 +2979,23 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 			// the ordinary delivery path below.
 		} else {
 			tr.draftKept = true
+			// #240: no live record, but a delivery this driver reported queued
+			// may have been handed back. Say whose it is, so the sender need not
+			// read the screen to find out.
+			if proved, provisional := d.tombstoneProvesKind(ref.ID, target.cwd, pending, screenNow); proved {
+				if provisional {
+					d.counters.incr(counterStrandedProvisionalHandedBack)
+				}
+				return fleet.DeliveryReceipt{
+					Outcome: fleet.OutcomeRefused,
+					Reason: "composer holds a message this driver delivered into this session and " +
+						"reported queued; the runtime has handed it back unsent, so it is this " +
+						"service's own text, not a person's draft (strandedDelivery on the session's " +
+						"state). Send the same text again with resumeIfStranded to finish it, or " +
+						"replaceIfStranded to discard it and deliver this text instead; nothing was written",
+				}, nil
+			}
+			d.noteUnexplainedLabelled(ref.ID, target.cwd, pending)
 			return fleet.DeliveryReceipt{
 				Outcome: fleet.OutcomeRefused,
 				Reason: "composer holds unsent input; delivering would concatenate " +
@@ -3190,7 +3220,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// was only written when the text failed to RENDER, so a submit that went
 	// nowhere left nothing behind, the resume was refused for lack of a
 	// record, and every later send was refused for a busy composer.
-	submitConfirmed, submitEvidence, submitSignal := d.confirmSubmittedFromSource(ctx, target, text, key, atCount, src, srcOK)
+	submitConfirmed, submitEvidence, submitSignal, submitTurnProven := d.confirmSubmittedFromSourceTurn(ctx, target, text, key, atCount, src, srcOK)
 	tr.confirmedBy = submitSignal
 	if !submitConfirmed {
 		d.noteStrandedLanding(ref.ID, target.cwd, text, d.currentComposerDigest(ctx, target.paneID), src, srcOK, land, false)
@@ -3217,6 +3247,21 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 	// Discard's own two Accepted:true returns for the matching fix there).
 	d.forgetStranded(ref.ID)
 
+	// #240: a confirmation that does not show a turn started leaves the text
+	// possibly still in the runtime's queue, and a queue can be handed back to
+	// the composer — unsent, with this driver's memory of the delivery just
+	// dropped above. Keep a provisional record so that, if the text comes
+	// back, it is known to be this driver's own and its sender can resume it.
+	reason := "text rendered in the composer and the submit registered; " + submitEvidence
+	if !submitTurnProven {
+		d.noteProvisional(ref.ID, target.cwd, text, src, srcOK)
+		reason += ". This shows the runtime took the text off the composer, not that it " +
+			"started a turn on it: if it is handed back to the composer unsent (a queued " +
+			"message returned after the running turn was interrupted or failed), the session " +
+			"will report waiting_input with strandedDelivery true, and sending the same text " +
+			"again with resumeIfStranded finishes it"
+	}
+
 	return fleet.DeliveryReceipt{
 		Outcome: fleet.OutcomeQueued,
 		// Still queued, not submitted: an emptied composer says the SUBMIT
@@ -3224,7 +3269,7 @@ func (d *Driver) deliverViaPane(ctx context.Context, ref fleet.SessionRef, text 
 		// ConfirmsDelivery stays false for exactly that distinction. What the
 		// confirmation buys is that this receipt no longer covers the case
 		// where nothing was submitted at all.
-		Reason: "text rendered in the composer and the submit registered; " + submitEvidence,
+		Reason: reason,
 	}, nil
 }
 
@@ -6289,6 +6334,27 @@ func (d *Driver) noteStrandedLanding(id, cwd, text, composerDigest string, src t
 	}
 	d.stranded[id] = rec
 	d.saveStrandedLocked()
+}
+
+// noteUnexplainedLabelled counts an unsent composer that opens with the sender
+// label this driver writes on the terminal path and that nothing the driver
+// remembers explains (#240). Diagnostic only — a person can type the same
+// opening — and never a reason to touch the composer. A nonzero rate after
+// #240 means a hop other than the queue hand-back leaves a labelled delivery
+// unrecorded; the log line says whether a record exists under a different
+// working directory, the one other way a record is hidden from this lookup.
+func (d *Driver) noteUnexplainedLabelled(id, cwd, pending string) {
+	if !strings.HasPrefix(strings.TrimSpace(pending), panePrefix) {
+		return
+	}
+	d.counters.incr(counterStrandedUnexplainedLabelledInput)
+	d.mu.Lock()
+	rec, hasRec := d.stranded[id]
+	tombs := len(d.tombstones[id])
+	d.mu.Unlock()
+	log.Printf("tmux: session %q holds unsent text opening with a sender label that no record explains "+
+		"(live record for the id: %v, under a different working directory: %v; tombstones for the id: %d)",
+		id, hasRec, hasRec && rec.Cwd != cwd, tombs)
 }
 
 // strandedRecordFor reports the stranded record for this session, if a live
