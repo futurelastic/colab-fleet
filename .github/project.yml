@@ -1,15 +1,16 @@
 production: null
 # production: supplied by --production, --deploy, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17)
-deploy: manual
-# deploy: supplied by --production, --deploy, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17)
+deploy: none
+# deploy: none (2026-10-02, #250) — nothing deploys from a tag; the tag publishes to npm. Was `manual`.
 room: public
 # room: supplied by --room, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17)
 writes: serial-direct
 # writes: supplied by --writes, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17)
 channels: [procedure]
 # channels: supplied by --channels, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17)
-exposure: self
-# exposure: supplied by --exposure, COLAB_HUMAN=1, --answered-by "maintainer" (2026-08-17) — merging to trunk reaches nothing by itself; the service changes only when a human runs the documented build-install-restart procedure on each machine
+exposure: released
+# exposure: released (2026-10-02, #250) — adopters install tagged versions from public npm. Was `self`.
+# A merge still reaches nothing by itself; the tag does.
 autonomy: auto-trunk
 # autonomy: granted by the maintainer in a live session (2026-09-14, #164)
 trunk: main
@@ -20,3 +21,21 @@ gate: scripts/gate.sh
 # gate: the repo's declared quality gate — gofmt -l, go build, go vet, go test
 # -race. ci.yml's `go` job calls this exact file, so a session's local run and
 # CI answer the same question by construction and cannot drift apart (#233).
+
+release:
+  # (2026-10-02, #250) public-tool: every green trunk head gets a candidate (rc -> npm `next`),
+  # and the newest clean candidate finalizes automatically after 3 days (-> npm `latest`).
+  # The npm publish is NOT the template's single-package `npm:` job: muster ships five packages,
+  # so .github/workflows/release-auto.yml calls release-npm.yml with the tag instead.
+  route: public-tool
+  candidates: auto
+  test-period: 3d
+  final: auto
+  # No manifest carries a version (npm/**/package.json hold 0.0.0): the tag is the version and
+  # scripts/assemble-npm.mjs stamps it at publish time.
+  version-source: tag
+  # Route choice (#251): `public-tool`, not `rapid-app`. Their policy is identical today
+  # (automatic candidate per green trunk head, 3d test period, automatic final), but the
+  # handbook permits the npm publish on `public-tool` alone, and npm is how this repo ships.
+  # `deploy: none` stays: a merge reaches the fleet machines through the fleet updater
+  # following trunk (not a tag), and no workflow, script or LaunchAgent acts on an `-rc` tag.

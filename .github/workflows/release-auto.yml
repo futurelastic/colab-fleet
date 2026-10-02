@@ -1,0 +1,176 @@
+name: Release (auto)
+
+# Adopted from the handbook's templates/release-auto.yml (#250); this repository
+# owns this copy. Route: public-tool (see .github/project.yml `release:`).
+#
+#   CI finished green on main        colab release cut --auto       -> vX.Y.Z-rc.N
+#   the daily schedule               colab release cut --auto       (a head held back by a window)
+#                                    colab release finalize --auto  -> vX.Y.Z after the test period
+#   workflow_dispatch                both, in that order
+#
+# Every decision (is a candidate owed, which bump, did the test period stay
+# clean) is the colab CLI's, read from .github/project.yml. This file schedules
+# it and publishes what it tagged.
+#
+# PUBLISHING HAPPENS IN THIS RUN. A tag pushed with GITHUB_TOKEN triggers no
+# other workflow, so a tag-push listener would never fire. The `publish-*` jobs
+# call release-npm.yml (a reusable workflow) with the tag this run just created:
+# a candidate goes to npm `next`, a final to `latest`.
+#
+# NO GITHUB RELEASE. Nothing is attached to a Release and nothing installs from
+# one: npx is the one install surface (see release-npm.yml).
+#
+# TRUSTED PUBLISHING. npm matches the CALLING workflow, so the trusted publisher
+# on each of the five packages must name `release-auto.yml`. A manual
+# `release-npm.yml` dispatch needs it to name `release-npm.yml` instead; the
+# package setting holds one workflow name, so see #250 for which is configured.
+#
+# IT NEVER WRITES A COMMIT. The only refs pushed are the annotated tags
+# `colab release cut` / `finalize` create.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+# One release run at a time; never cancelled mid-run (a half-finished run may
+# have pushed a tag without publishing it).
+concurrency:
+  group: release-auto
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  # The handbook branch whose colab CLI makes the release decisions: `next`, its
+  # newest-candidate channel (operator ruling 2026-10-02, #251). It moves, so a
+  # run may pick up a newer CLI; the job needs #433 (npm) and #443 (a candidate
+  # always names trunk's head), both on `next`.
+  HANDBOOK_REF: "next"
+  HANDBOOK_REPO: "https://github.com/futurelastic/colab-handbook.git"
+
+jobs:
+  release:
+    name: Cut and finalize
+    # A red CI run on main is not a candidate; skip rather than refuse.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the tags
+      issues: write # finalize opens / comments on / closes the "release: vX.Y.Z" tracking issue
+      actions: write # read the runs at a commit (ci-green, trunk-green)
+    outputs:
+      cut-tag: ${{ steps.cut.outputs.tag }}
+      final-tag: ${{ steps.finalize.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: main
+          # Versions, bumps and "previous final" are read from git history and tags.
+          fetch-depth: 0
+          # `release cut` / `finalize` push their tag over the checkout's origin.
+          persist-credentials: true
+
+      - name: Fetch the colab CLI
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 --branch "$HANDBOOK_REF" "$HANDBOOK_REPO" "$RUNNER_TEMP/colab-handbook"
+          echo "COLAB=$RUNNER_TEMP/colab-handbook/tools/colab" >> "$GITHUB_ENV"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Cut a candidate (colab release cut --auto)
+        id: cut
+        run: |
+          set -uo pipefail
+          OUT="$RUNNER_TEMP/cut.json"
+          rc=0
+          node "$COLAB" release cut --auto --json > "$OUT" || rc=$?
+          # A verdict is JSON carrying `ok`; anything else is a run that never decided.
+          if ! jq -e 'has("ok")' "$OUT" > /dev/null 2>&1; then
+            echo "::error::colab release cut produced no verdict (exit $rc)"
+            cat "$OUT"
+            exit 1
+          fi
+          {
+            echo "### colab release cut --auto"
+            echo
+            jq -r '.checks[]? | "- \(if .ok then "✓" else "✗" end) **\(.condition)** — \(.detail)"' "$OUT"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$(jq -r '.created' "$OUT")" = "true" ]; then
+            TAG="$(jq -r '.tag' "$OUT")"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "Cut $TAG" | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$(jq -r '.noop' "$OUT")" = "true" ]; then
+            echo "No-op: nothing owed, head already a candidate, or inside a declared cadence window." | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$(jq -r '.ok' "$OUT")" = "true" ]; then
+            echo "Verdict ok but nothing created." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            # A refusal is the ordinary output of most runs, not a failure.
+            echo "::warning::colab release cut refused: $(jq -r '[.checks[]? | select(.ok | not) | .condition] | join(", ")' "$OUT")"
+          fi
+
+      - name: Finalize the newest clean candidate (colab release finalize --auto)
+        id: finalize
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -uo pipefail
+          OUT="$RUNNER_TEMP/finalize.json"
+          rc=0
+          node "$COLAB" release finalize --auto --json > "$OUT" || rc=$?
+          if ! jq -e 'has("state")' "$OUT" > /dev/null 2>&1; then
+            echo "::error::colab release finalize produced no verdict (exit $rc)"
+            cat "$OUT"
+            exit 1
+          fi
+          STATE="$(jq -r '.state' "$OUT")"
+          {
+            echo "### colab release finalize --auto — $STATE"
+            echo
+            jq -r '.checks[]? | "- \(if .ok then "✓" else "✗" end) **\(.condition)** — \(.detail)"' "$OUT"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$(jq -r '.tagged' "$OUT")" = "true" ]; then
+            TAG="$(jq -r '.finalTag' "$OUT")"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "Finalized $TAG" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            case "$STATE" in
+              refused|needs-new-candidate|held) echo "::warning::colab release finalize: $STATE" ;;
+              *) echo "Finalize: $STATE" ;;
+            esac
+          fi
+
+  # Publishes what the release job tagged, in this same run: the candidate to
+  # `next`, then the final to `latest` (a run can create both). Each is a call
+  # to release-npm.yml, which skips a version already on npm, so re-running a
+  # failed run finishes the publish.
+  publish-candidate:
+    name: Publish the candidate
+    needs: release
+    if: needs.release.outputs.cut-tag != ''
+    permissions:
+      contents: read
+      id-token: write # the OIDC token npm trusted publishing exchanges
+    uses: ./.github/workflows/release-npm.yml
+    with:
+      tag: ${{ needs.release.outputs.cut-tag }}
+
+  publish-final:
+    name: Publish the final
+    needs: [release, publish-candidate]
+    # always(): publish-candidate is skipped on a run that cut nothing.
+    if: always() && needs.release.outputs.final-tag != '' && needs.publish-candidate.result != 'failure'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/release-npm.yml
+    with:
+      tag: ${{ needs.release.outputs.final-tag }}
