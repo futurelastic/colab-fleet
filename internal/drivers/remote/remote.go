@@ -1449,9 +1449,10 @@ func (d *Driver) doWithKey(ctx context.Context, req fleet.Request, method, path 
 // other thing the service lets through — and travels verbatim. The owning
 // machine, which holds the lane, makes the real decision; a peer built before
 // #185 answers an unknown route with a 400, which is the right answer to a
-// forced request and never a silent downgrade. driver.SendOptions.
-// TerminalFromAuto is deliberately NOT forwarded: a relayed human send reaches
-// the owner as an explicit "terminal", so it stays on the built-in path there.
+// forced request and never a silent downgrade. #257: a human relay's auto
+// crosses as auto (no field) together with the human-relay assertion, and the
+// owner decides. driver.SendOptions.LiveLaneOnly is deliberately NOT forwarded:
+// the owner's own service sets it for the /input it receives.
 func routeWireValue(r fleet.Route) string {
 	if r == "" || r == fleet.RouteAuto {
 		return ""
@@ -1476,11 +1477,11 @@ func (d *Driver) Send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// (a human-facing relay, entering on one machine for a session on another) was
 	// evaluated for inbox-eligibility on the OWNING machine as if
 	// route:"terminal" had never been asked for — exactly what D7 exists to
-	// prevent. Since #184 the ENTERING service has already turned a human
-	// relay's auto into "terminal" before this driver sees the call, so an
-	// owning peer that predates #184 never weighs a human's message for the
-	// inbox; and "inbox" is forwarded verbatim, so an owner that cannot honour
-	// it answers, rather than this driver deciding for it.
+	// prevent. Since #257 a human relay's auto is NOT rewritten on the entering
+	// machine: it crosses as auto with the human-relay assertion header, and the
+	// owner (which alone can see the session's lane) decides. "inbox" is
+	// forwarded verbatim, so an owner that cannot honour it answers, rather than
+	// this driver deciding for it.
 	body := struct {
 		Text              string             `json:"text"`
 		Submit            bool               `json:"submit"`

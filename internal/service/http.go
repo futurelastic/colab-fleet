@@ -1272,8 +1272,10 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		runtimeHint := fleet.RuntimeId(r.URL.Query().Get("runtime"))
 
 		var body struct {
-			Text   string `json:"text"`
-			Submit bool   `json:"submit"`
+			Text string `json:"text"`
+			// Submit (#257): absent or null means true. An explicit false
+			// keeps its meaning (stage the text, do not submit it).
+			Submit *bool `json:"submit"`
 			// ResumeIfStranded completes a delivery this service already made
 			// and could not confirm. It never submits text the service did not
 			// place there — see driver.SendOptions.
@@ -1307,6 +1309,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		}
 		from := svc.stampSender(r, body.From)
 		humanRelay := svc.humanRelay(r)
+		submit := body.Submit == nil || *body.Submit
 
 		if ferr := rejectOverLength("text", body.Text, machine, svc.MaxInputBytes()); ferr != nil {
 			writeError(w, ferr)
@@ -1322,31 +1325,11 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		switch fleet.Route(body.Route) {
 		case "", fleet.RouteAuto:
 		case fleet.RouteTerminal:
-			// Review fix (#180 review): route:"terminal" is not honoured
-			// unconditionally from any caller holding the fleet token. A
-			// principal configured as a human relay (GrantHumanRelay) may set
-			// it with no further condition: its own channel IS the
-			// human-identifying fact route:"terminal" exists to preserve.
-			// Every other caller must ALSO carry a `from` label — refusing an
-			// unlabelled agent send from opting out of the inbox and having it
-			// recorded as human-typed input, which is exactly the separation
-			// D7 exists to create.
-			//
-			// #180 M8: the requirement is a label that PRINTS, not a `from`
-			// object — `{}`, or a name the label normalisation drops whole,
-			// satisfied the old check and reached the pane unlabelled. The
-			// human-relay fact is the grant here, or a trusted relay's
-			// assertion of it (L3).
-			if !humanRelay && inboxclient.SenderName(driver.SenderLabel(from)) == "" {
-				writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
-					Message: "route \"terminal\" requires a \"from\" label that prints — a " +
-						"non-empty agent, session or machine that survives label normalisation — " +
-						"unless the caller is a principal configured as a human relay (the " +
-						"human-relay grant); an unlabelled terminal-routed send would be recorded " +
-						"as human-typed input",
-					Machine: machine})
-				return
-			}
+			// #257: an explicit terminal route from a caller with no printable
+			// `from` and no human-relay grant is labelled with the
+			// authenticated principal below (labelledSender), not refused: the
+			// #180 M8 guarantee that an agent's send is never recorded as
+			// human-typed input holds because the label prints.
 			route = fleet.RouteTerminal
 		case fleet.RouteInbox:
 			// The inbox has no composer: a text that is not submitted, or a
@@ -1354,7 +1337,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			// concept it cannot honour. Refused as the request's own shape, not
 			// discovered per session — an explicit route is never quietly
 			// downgraded, and this is the same fact stated up front.
-			if !body.Submit || body.ResumeIfStranded || body.ReplaceIfStranded {
+			if !submit || body.ResumeIfStranded || body.ReplaceIfStranded {
 				writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
 					Message: "route \"inbox\" delivers a message as a turn: it cannot be combined with " +
 						"submit:false, resumeIfStranded or replaceIfStranded, which name a composer " +
@@ -1370,23 +1353,13 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			// unknown name is a 400 whatever session or runtime it targets.
 			if svc.isDeliveryModuleRoute(body.Route) {
 				// A module carries the user's own turn exactly as the
-				// terminal path does, so the terminal path's authority rule
-				// applies unchanged: an unlabelled agent send must not be
-				// recorded as human-typed input just because it named a lane.
-				if !humanRelay && inboxclient.SenderName(driver.SenderLabel(from)) == "" {
-					writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
-						Message: fmt.Sprintf("route %q requires a \"from\" label that prints — a non-empty "+
-							"agent, session or machine that survives label normalisation — unless the caller "+
-							"is a principal configured as a human relay (the human-relay grant); a "+
-							"module-routed send arrives as the user's own turn and an unlabelled one would "+
-							"be recorded as human-typed input", body.Route),
-						Machine: machine})
-					return
-				}
+				// terminal path does; a caller with no printable `from` and no
+				// human-relay grant is labelled with its principal below
+				// (#257), not refused.
 				// A module has no composer: submit:false, or a resume/replace
 				// of a delivery stranded in one, names a concept it cannot
 				// honour. Refused up front, never discovered per session.
-				if !body.Submit || body.ResumeIfStranded || body.ReplaceIfStranded {
+				if !submit || body.ResumeIfStranded || body.ReplaceIfStranded {
 					writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid,
 						Message: fmt.Sprintf("route %q delivers a message as a turn: it cannot be combined with "+
 							"submit:false, resumeIfStranded or replaceIfStranded, which name a composer a "+
@@ -1411,25 +1384,15 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 			return
 		}
 
-		// #184: who is sending decides what auto means, and the service is the
-		// only place that can see it. A human relay's message is the user's own
-		// words: it goes through the terminal, unlabelled, so it arrives as the
-		// user. Anyone else's is a peer's: it is labelled — with what the
-		// service actually knows when the caller said nothing — and the driver
-		// then prefers the inbox, where the runtime itself marks it as not from
-		// the user. The decision reads the principal's own grant (or a trusted
-		// relay's assertion of it), never a header or a `from` a caller set.
-		terminalFromAuto := false
-		if humanRelay {
-			if route == fleet.RouteAuto {
-				route = fleet.RouteTerminal
-				// #185: remembered because a delivery module carries a user
-				// turn too, so this call's auto may use a live module lane
-				// where an EXPLICIT terminal never does. Never a caller's
-				// field, and never forwarded to a peer.
-				terminalFromAuto = true
-			}
-		} else {
+		// #184, #257: the service decides who is sending and labels; the driver
+		// decides lane, inbox and terminal. A human relay's message is the
+		// user's own words: it stays unlabelled and keeps its route (an auto
+		// stays auto and crosses a peer as auto, the machine that owns the
+		// session decides). Anyone else's is labelled, with what the service
+		// actually knows when the caller said nothing, on every route. The
+		// decision reads the principal's own grant (or a trusted relay's
+		// assertion of it), never a header or a `from` a caller set.
+		if !humanRelay {
 			from = svc.labelledSender(r, from)
 		}
 
@@ -1445,7 +1408,7 @@ func handleSendInput(svc *Service) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
-		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: body.Submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, ExpectComposerDigest: body.Expect, From: from, Route: route, HumanRelay: humanRelay, TerminalFromAuto: terminalFromAuto})
+		receipt, err := d.Send(ctx, req, fleet.SessionRef{Machine: machine, ID: id}, body.Text, driver.SendOptions{Submit: submit, ResumeIfStranded: body.ResumeIfStranded, ReplaceIfStranded: body.ReplaceIfStranded, ExpectComposerDigest: body.Expect, From: from, Route: route, HumanRelay: humanRelay, LiveLaneOnly: true})
 		if err != nil {
 			// A refusal from the driver is not this branch — Send returns
 			// it as a DeliveryReceipt value, not an error. Only a

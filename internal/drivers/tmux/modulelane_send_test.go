@@ -106,8 +106,7 @@ func TestModuleSend_TerminalNeverTouchesModule(t *testing.T) {
 	if got.RouteOf() != fleet.RouteTerminal {
 		t.Fatalf("receipt = %+v, want terminal", got)
 	}
-	// Nor a human relay's explicit terminal: only the service's own conversion
-	// of `auto` (TerminalFromAuto) makes a human eligible.
+	// Nor a human relay's explicit terminal: only `auto` (#257) is eligible for the lane.
 	got = r.send(id, "a person typed this too", driver.SendOptions{Route: fleet.RouteTerminal, HumanRelay: true})
 	if got.RouteOf() != fleet.RouteTerminal {
 		t.Fatalf("receipt = %+v, want terminal", got)
@@ -121,7 +120,7 @@ func TestModuleSend_TerminalNeverTouchesModule(t *testing.T) {
 // message stays UNLABELLED — it is the user's own words.
 func TestModuleSend_HumanRelayAutoUsesModule(t *testing.T) {
 	r, id := liveRig(t, modtest.Behaviour{})
-	got := r.send(id, "approve it", driver.SendOptions{HumanRelay: true, Route: fleet.RouteTerminal, TerminalFromAuto: true})
+	got := r.send(id, "approve it", driver.SendOptions{HumanRelay: true})
 	if got.RouteOf() != fleet.RouteModule {
 		t.Fatalf("receipt = %+v", got)
 	}
@@ -476,14 +475,14 @@ func TestModuleSend_LabelAppliedBeforeSend(t *testing.T) {
 // allowLeadingSlash is the slash policy's and only a human relay's.
 func TestModuleSend_AllowLeadingSlashOnlyForHumanRelay(t *testing.T) {
 	r, id := liveRig(t, modtest.Behaviour{})
-	got := r.send(id, "/status", driver.SendOptions{HumanRelay: true, Route: fleet.RouteTerminal, TerminalFromAuto: true})
+	got := r.send(id, "/status", driver.SendOptions{HumanRelay: true})
 	if got.RouteOf() != fleet.RouteModule {
 		t.Fatalf("receipt = %+v", got)
 	}
 	if a := r.lastSendArgs(); a.Text != "/status" || !a.AllowLeadingSlash {
 		t.Errorf("human relay: args = %+v, want the slash allowed", a)
 	}
-	got = r.send(id, "plain words", driver.SendOptions{HumanRelay: true, Route: fleet.RouteTerminal, TerminalFromAuto: true})
+	got = r.send(id, "plain words", driver.SendOptions{HumanRelay: true})
 	if a := r.lastSendArgs(); a.AllowLeadingSlash {
 		t.Errorf("allowLeadingSlash set for text with no slash: %+v", a)
 	}
@@ -518,17 +517,21 @@ func TestModuleSend_StrandedTerminalTextSkipsModule(t *testing.T) {
 	_ = pastes
 }
 
-// The inbox only ever sees auto and inbox: a module route never tries it.
+// Since #257 the inbox only ever sees a named inbox: the unset route, auto,
+// terminal and a module route never try it.
 func TestModuleSend_InboxEligibilityIgnoresModuleRoutes(t *testing.T) {
 	for _, tc := range []struct {
 		route fleet.Route
 		want  bool
 	}{
-		{"", true}, {fleet.RouteAuto, true}, {fleet.RouteInbox, true},
+		{"", false}, {fleet.RouteAuto, false}, {fleet.RouteInbox, true},
 		{fleet.RouteTerminal, false}, {modName, false},
 	} {
 		if got := inboxEligible(driver.SendOptions{Submit: true, Route: tc.route}); got != tc.want {
 			t.Errorf("route %q: inboxEligible = %v, want %v", tc.route, got, tc.want)
+		}
+		if got := inboxEligible(driver.SendOptions{Submit: false, Route: tc.route}); got {
+			t.Errorf("route %q without submit: inboxEligible = true, want false", tc.route)
 		}
 	}
 }

@@ -2331,6 +2331,47 @@ func (d *Driver) send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 		}.WithRoute(fleet.RouteInbox)), nil
 	}
 
+	// #257: a live delivery lane is the session's only input path. For a
+	// caller's /input (LiveLaneOnly) on a session whose lane is usable right
+	// now, a shape that would reach the terminal instead is refused with
+	// nothing written. A named inbox keeps its own rules; a forced module was
+	// judged above. pinned remembers the live module so the module step below
+	// refuses, instead of falling back to the terminal, if the lane is lost
+	// between here and the write.
+	pinned := ""
+	if opts.LiveLaneOnly && (route == fleet.RouteAuto || route == fleet.RouteTerminal) {
+		if module, _, _, why := d.mods.liveLane(ref.ID, ""); why == "" {
+			var asked []string
+			if route == fleet.RouteTerminal {
+				asked = append(asked, "terminal")
+			}
+			if !opts.Submit {
+				asked = append(asked, "submit_false")
+			}
+			if opts.ResumeIfStranded {
+				asked = append(asked, "resume")
+			}
+			if opts.ReplaceIfStranded {
+				asked = append(asked, "replace")
+			}
+			if len(asked) > 0 {
+				d.counters.incr(counterRouteRefusedLaneLive)
+				for _, f := range asked {
+					d.counters.incr(counterRouteRefusedLaneLivePrefix + f)
+				}
+				return d.observeEarly(delivery.Refused, fleet.DeliveryReceipt{
+					Outcome: fleet.OutcomeRefused,
+					Reason: fmt.Sprintf("this session's delivery lane (module %q) is live, and while it is the lane is the "+
+						"session's only input path: route \"terminal\", submit:false, resumeIfStranded and "+
+						"replaceIfStranded are not honoured on a live lane. Send again without them and the text "+
+						"goes through the lane; to clear text left in the composer use discard with expect. "+
+						"Nothing was written", module),
+				}), nil
+			}
+			pinned = module
+		}
+	}
+
 	// #184: the cross-path ledger, before any path is chosen. An earlier inbox
 	// write of this same text that could not be confirmed may already be in the
 	// receiver's hands: nothing is written on EITHER path, whatever the flags —
@@ -2380,17 +2421,13 @@ func (d *Driver) send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 			if res.Final {
 				return res.Receipt, nil
 			}
-			// Declined with nothing written.
-			if route == fleet.RouteInbox {
-				return fleet.DeliveryReceipt{
-					Outcome: fleet.OutcomeRefused,
-					Reason: "route \"inbox\" was requested but the session cannot take it: " + res.Why +
-						". Nothing was written",
-				}.WithRoute(fleet.RouteInbox), nil
-			}
-			if res.Tried {
-				d.counters.incr(counterRouteAutoFallback)
-			}
+			// Declined with nothing written: a named inbox is refused, never
+			// quietly sent to the terminal (#257: auto never reaches here).
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason: "route \"inbox\" was requested but the session cannot take it: " + res.Why +
+					". Nothing was written",
+			}.WithRoute(fleet.RouteInbox), nil
 		}
 	}
 
@@ -2399,7 +2436,7 @@ func (d *Driver) send(ctx context.Context, req fleet.Request, ref fleet.SessionR
 	// been written when it hands the send back, so the built-in module below
 	// carries it — for `auto` only; a forced module route is refused instead.
 	if forced, ok := d.moduleRouteChoice(route, opts); ok {
-		if receipt, handled := d.sendViaModule(ctx, req, ref, text, labelled, opts, forced); handled {
+		if receipt, handled := d.sendViaModule(ctx, req, ref, text, labelled, opts, forced, pinned); handled {
 			return receipt, nil
 		}
 	}

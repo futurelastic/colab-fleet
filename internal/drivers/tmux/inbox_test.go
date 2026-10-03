@@ -130,7 +130,9 @@ func TestSend_NoInboxResolverConfigured_BehavesExactlyAsBeforeIssue119(t *testin
 	assertNoInboxCounters(t, d)
 }
 
-func TestSend_InboxCapabilityAbsent_FallsBackToPane(t *testing.T) {
+// A NAMED inbox that the index has no entry for is refused, nothing written
+// anywhere (#257): the send never reaches the terminal on the inbox's behalf.
+func TestSend_InboxCapabilityAbsent_NamedInboxRefused(t *testing.T) {
 	f := twoSessions()
 	ps := &fakePS{}
 	ps.set(100, time.Now())
@@ -141,17 +143,34 @@ func TestSend_InboxCapabilityAbsent_FallsBackToPane(t *testing.T) {
 	d := newInboxTestDriver(f, ps, resolver, nil)
 
 	got, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", routeOpts(fleet.RouteInbox))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != fleet.OutcomeQueued {
-		t.Errorf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
-	}
+	assertNamedInboxRefused(t, got, f)
 	assertInboxExit(t, d, counterInboxFallbackResolverDeclined, 0, 0)
 }
 
-func TestSend_InboxResolverError_TreatedAsCapabilityAbsent(t *testing.T) {
+// assertNamedInboxRefused is the shape every declined named-inbox send must
+// have (#257): refused, on the inbox route, saying nothing was written, and the
+// pane untouched — a named inbox is never quietly carried by the terminal.
+func assertNamedInboxRefused(t *testing.T, got fleet.DeliveryReceipt, f *fakeMux) {
+	t.Helper()
+	if got.Outcome != fleet.OutcomeRefused {
+		t.Fatalf("outcome = %q (%s), want refused — a named inbox that cannot take the send is refused", got.Outcome, got.Reason)
+	}
+	if got.RouteOf() != fleet.RouteInbox {
+		t.Errorf("receipt route = %q, want inbox", got.RouteOf())
+	}
+	if !strings.Contains(got.Reason, "Nothing was written") {
+		t.Errorf("reason = %q, want it to say nothing was written", got.Reason)
+	}
+	if paneTouched(f) {
+		t.Fatalf("a refused named inbox must leave the pane untouched, saw: %v", f.callsSnapshot())
+	}
+}
+
+func TestSend_InboxResolverError_NamedInboxRefused(t *testing.T) {
 	f := twoSessions()
 	ps := &fakePS{}
 	ps.set(100, time.Now())
@@ -162,13 +181,13 @@ func TestSend_InboxResolverError_TreatedAsCapabilityAbsent(t *testing.T) {
 	d := newInboxTestDriver(f, ps, resolver, nil)
 
 	got, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", routeOpts(fleet.RouteInbox))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != fleet.OutcomeQueued {
-		t.Errorf("outcome = %q, want queued — a resolver error is capability-absent, not a refusal", got.Outcome)
-	}
+	// A resolver error is capability-absent, not a verdict on the session: the
+	// named inbox cannot take the send, so it is refused with nothing written.
+	assertNamedInboxRefused(t, got, f)
 	assertInboxExit(t, d, counterInboxFallbackResolverError, 0, 0)
 }
 
@@ -195,7 +214,7 @@ func TestSend_InboxIdentityVerificationFails_RefusesWithoutTouchingThePane(t *te
 	d := newInboxTestDriver(f, ps, resolver, nil)
 
 	got, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", routeOpts(fleet.RouteInbox))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +271,7 @@ func TestMapInboxOutcome_EveryValueSurfacesDistinctly(t *testing.T) {
 func TestSend_InboxDeliverySucceeds_ReportsDeliveredWithoutTouchingPane(t *testing.T) {
 	// #148: the address now carries the target's permission-mode class. Without
 	// it there is nothing to attest and this path is unavailable by design —
-	// see TestSend_InboxWithoutModeClass_FallsBackToPane below.
+	// see TestSend_InboxWithoutModeClass_NamedInboxRefused below.
 	//
 	// #184: and a delivery is reported delivered only when the receiver's own
 	// transcript records it, so this receiver does.
@@ -260,7 +279,7 @@ func TestSend_InboxDeliverySucceeds_ReportsDeliveredWithoutTouchingPane(t *testi
 	d, f := newRoutedDriver(t, rcv, attestableResolver(inboxclient.ModeBypass), rcv.dialer(receiverRecordsEnvelope))
 
 	start := time.Now()
-	got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", driver.SendOptions{Submit: true})
+	got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", routeOpts(fleet.RouteInbox))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,12 +301,11 @@ func TestSend_InboxDeliverySucceeds_ReportsDeliveredWithoutTouchingPane(t *testi
 	}
 }
 
-// TestSend_InboxDialFails_FallsBackToPane is #144's fix for the gap #143's
-// investigation named by exact quote: "the call site returns as soon as
-// sendViaInbox reports ok=true, so a dial that succeeds then fails never
-// reaches the pane." This covers the dial-failure half — before #144 this
-// was a final, permanent OutcomeRefused with no pane attempt at all.
-func TestSend_InboxDialFails_FallsBackToPane(t *testing.T) {
+// TestSend_InboxDialFails_NamedInboxRefused covers the dial-failure half of
+// #144's gap: a dial that fails wrote nothing, so it is a decline. Since #257 a
+// decline on a NAMED inbox is a refusal with nothing written — the terminal is
+// never used on the inbox's behalf.
+func TestSend_InboxDialFails_NamedInboxRefused(t *testing.T) {
 	f := twoSessions()
 	ps := &fakePS{}
 	ps.set(100, time.Now())
@@ -308,23 +326,19 @@ func TestSend_InboxDialFails_FallsBackToPane(t *testing.T) {
 	d := newInboxTestDriverWith(f, ps, resolver, dial, rcv.options()...)
 
 	got, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", routeOpts(fleet.RouteInbox))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != fleet.OutcomeQueued {
-		t.Fatalf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
-	}
-	if got.RouteOf() != fleet.RouteTerminal {
-		t.Errorf("receipt route = %q, want terminal", got.RouteOf())
-	}
+	assertNamedInboxRefused(t, got, f)
 	assertInboxExit(t, d, counterInboxFallbackDialFailed, 1, 0)
 }
 
-// TestSend_InboxWriteFails_FallsBackToPane covers #143's other half of the
-// same gap: a dial that succeeds and a write that then fails. Before #144
-// this was a final, permanent OutcomeUnknown with no pane attempt at all.
-func TestSend_InboxWriteFails_FallsBackToPane(t *testing.T) {
+// TestSend_InboxWriteFails_NamedInboxRefused covers #143's other half of the
+// same gap: a dial that succeeds and a write that puts not one byte on the
+// connection. Nothing was written, so it is a decline; since #257 a decline on
+// a named inbox is a refusal, never a terminal send.
+func TestSend_InboxWriteFails_NamedInboxRefused(t *testing.T) {
 	f := twoSessions()
 	ps := &fakePS{}
 	ps.set(100, time.Now())
@@ -342,31 +356,39 @@ func TestSend_InboxWriteFails_FallsBackToPane(t *testing.T) {
 	d := newInboxTestDriverWith(f, ps, resolver, pipeDialer(t, closeBeforeReading), rcv.options()...)
 
 	got, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", routeOpts(fleet.RouteInbox))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != fleet.OutcomeQueued {
-		t.Fatalf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
-	}
+	assertNamedInboxRefused(t, got, f)
 	// #184: a write that put not one byte on the connection is the only write
-	// failure that may fall back; see TestSend_InboxPartialWrite_UnknownNoPane
-	// for the one that may not.
+	// failure that is a plain decline; see TestSend_InboxPartialWrite_UnknownNoPane
+	// for the one that is not.
 	assertInboxExit(t, d, counterInboxFallbackWriteFailed, 1, 0)
 }
 
-// TestSend_InboxSkippedForPaneOnlyShapes proves inboxEligible's own three
+// TestSend_InboxSkippedForPaneOnlyShapes proves inboxEligible's own
 // exclusions actually gate the driver call, not just the helper in
-// isolation: a resolver that records whether it was ever invoked, for each
-// of the three flag shapes #119 excludes.
+// isolation: a resolver that records whether it was ever invoked.
+//
+// Since #257 the inbox is used only when named, so the case that matters is a
+// NAMED inbox combined with a composer-only flag: it is refused up front with
+// nothing written, and the resolver is never asked. The three shapes under
+// route auto never reach the inbox either, and a plain auto send does not
+// either (that is #257's contract: auto never tries the inbox).
 func TestSend_InboxSkippedForPaneOnlyShapes(t *testing.T) {
 	cases := []struct {
-		name string
-		opts driver.SendOptions
+		name        string
+		opts        driver.SendOptions
+		wantRefused bool // a named inbox with a composer-only flag
 	}{
-		{"land-without-submit", driver.SendOptions{Submit: false}},
-		{"resume-if-stranded", driver.SendOptions{Submit: true, ResumeIfStranded: true}},
-		{"replace-if-stranded", driver.SendOptions{Submit: true, ReplaceIfStranded: true}},
+		{"auto-plain-submit", driver.SendOptions{Submit: true}, false},
+		{"land-without-submit", driver.SendOptions{Submit: false}, false},
+		{"resume-if-stranded", driver.SendOptions{Submit: true, ResumeIfStranded: true}, false},
+		{"replace-if-stranded", driver.SendOptions{Submit: true, ReplaceIfStranded: true}, false},
+		{"inbox-land-without-submit", driver.SendOptions{Submit: false, Route: fleet.RouteInbox}, true},
+		{"inbox-resume-if-stranded", driver.SendOptions{Submit: true, ResumeIfStranded: true, Route: fleet.RouteInbox}, true},
+		{"inbox-replace-if-stranded", driver.SendOptions{Submit: true, ReplaceIfStranded: true, Route: fleet.RouteInbox}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -384,22 +406,24 @@ func TestSend_InboxSkippedForPaneOnlyShapes(t *testing.T) {
 			// alpha's composer is empty, so a stranded-flag call has no
 			// stranded record to act on; either shape is expected to reach
 			// the pane path's own ordinary handling, never the inbox.
-			_, _ = d.Send(context.Background(), testCaller,
+			got, _ := d.Send(context.Background(), testCaller,
 				fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", tc.opts)
 			if called {
-				t.Errorf("%s: the inbox resolver was called; #119 excludes this shape entirely", tc.name)
+				t.Errorf("%s: the inbox resolver was called; this shape never reaches the inbox", tc.name)
+			}
+			if tc.wantRefused {
+				assertNamedInboxRefused(t, got, f)
 			}
 			assertNoInboxCounters(t, d)
 		})
 	}
 }
 
-// TestSend_InboxNoSuchSession_FallsThroughToTheSamePaneRefusal proves
-// sendViaInbox does not duplicate the pane path's own "no session"/"dead
-// pane" reporting: when #116 cannot resolve an identity at all, Send falls
-// through and the caller sees exactly the refusal the pane path already
-// gives — never a second, differently-worded one from this file.
-func TestSend_InboxNoSuchSession_FallsThroughToTheSamePaneRefusal(t *testing.T) {
+// TestSend_InboxNoSuchSession_NamedInboxRefused: when #116 cannot resolve an
+// identity at all, the resolver is never consulted and a NAMED inbox is refused
+// with nothing written (#257) — it does not fall through to the pane path's own
+// "no session" reporting.
+func TestSend_InboxNoSuchSession_NamedInboxRefused(t *testing.T) {
 	f := twoSessions()
 	ps := &fakePS{}
 	ps.set(100, time.Now())
@@ -412,17 +436,15 @@ func TestSend_InboxNoSuchSession_FallsThroughToTheSamePaneRefusal(t *testing.T) 
 	d := newInboxTestDriver(f, ps, resolver, nil)
 
 	got, _ := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "does-not-exist"}, "hello", driver.SendOptions{Submit: true})
-	if got.Outcome != fleet.OutcomeRefused {
-		t.Fatalf("outcome = %q, want refused", got.Outcome)
-	}
+		fleet.SessionRef{Machine: "testbox", ID: "does-not-exist"}, "hello", routeOpts(fleet.RouteInbox))
+	assertNamedInboxRefused(t, got, f)
 	if called {
 		t.Error("the inbox resolver was called for an identity #116 never resolved")
 	}
 	assertInboxExit(t, d, counterInboxFallbackIdentityUnresolved, 0, 0)
 }
 
-// TestSend_InboxWithoutModeClass_FallsBackToPane is muster #148's own
+// TestSend_InboxWithoutModeClass_NamedInboxRefused is muster #148's own
 // regression test, and the one that actually proves the bug fixed.
 //
 // Before this change the resolver's address carried no permission-mode class,
@@ -435,9 +457,10 @@ func TestSend_InboxNoSuchSession_FallsThroughToTheSamePaneRefusal(t *testing.T) 
 // The fix is not a better receipt: there is no reply address to read one over
 // (#120). It is refusing to claim the capability at all when the one fact that
 // makes it work is missing. So the assertion here is deliberately about the
-// PANE being used — an outcome of `delivered` on this test would mean the
-// regression is back.
-func TestSend_InboxWithoutModeClass_FallsBackToPane(t *testing.T) {
+// send being refused with nothing written (#257: a named inbox never falls to
+// the pane) — an outcome of `delivered` on this test would mean the regression
+// is back.
+func TestSend_InboxWithoutModeClass_NamedInboxRefused(t *testing.T) {
 	f := twoSessions()
 	ps := &fakePS{}
 	ps.set(100, time.Now())
@@ -453,7 +476,7 @@ func TestSend_InboxWithoutModeClass_FallsBackToPane(t *testing.T) {
 	d := newInboxTestDriver(f, ps, resolver, dial)
 
 	got, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true})
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", routeOpts(fleet.RouteInbox))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,19 +486,18 @@ func TestSend_InboxWithoutModeClass_FallsBackToPane(t *testing.T) {
 	if dialled {
 		t.Error("dialled the inbox for a send that could never be attested")
 	}
-	if got.Outcome != fleet.OutcomeQueued {
-		t.Errorf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
-	}
+	assertNamedInboxRefused(t, got, f)
 	assertInboxExit(t, d, counterInboxFallbackNoModeClass, 1, 0)
 }
 
-// TestSend_InboxUnattestableText_FallsBackToPane covers the second half of
+// TestSend_InboxUnattestableText_NamedInboxRefused covers the second half of
 // Attest's refusal: a class IS known, but the text cannot be wrapped in a form
 // guaranteed to survive the receiver's byte-for-byte rebuild check. The
 // receiver discards an envelope that does not rebuild identically, which loses
 // the asserted class and lands the message right back in the held state — so
-// an unwrappable body has to take the pane path too.
-func TestSend_InboxUnattestableText_FallsBackToPane(t *testing.T) {
+// an unwrappable body is a decline: a named inbox is refused with nothing
+// written (#257), never sent to the pane.
+func TestSend_InboxUnattestableText_NamedInboxRefused(t *testing.T) {
 	f := twoSessions()
 	ps := &fakePS{}
 	ps.set(100, time.Now())
@@ -494,7 +516,7 @@ func TestSend_InboxUnattestableText_FallsBackToPane(t *testing.T) {
 	d := newInboxTestDriver(f, ps, resolver, dial)
 
 	got, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "compare a < b first", driver.SendOptions{Submit: true})
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "compare a < b first", routeOpts(fleet.RouteInbox))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,9 +526,7 @@ func TestSend_InboxUnattestableText_FallsBackToPane(t *testing.T) {
 	if dialled {
 		t.Error("dialled the inbox for a send that could never be attested")
 	}
-	if got.Outcome != fleet.OutcomeQueued {
-		t.Errorf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
-	}
+	assertNamedInboxRefused(t, got, f)
 	assertInboxExit(t, d, counterInboxFallbackBodyUnattestable, 1, 1)
 }
 
@@ -519,7 +539,7 @@ func TestSend_InboxAttestedEnvelopeReachesTheWire(t *testing.T) {
 	rcv := newInboxReceiver(t)
 	d, _ := newRoutedDriver(t, rcv, attestableResolver(inboxclient.ModePrompting), rcv.dialer(receiverRecordsEnvelope))
 
-	if _, err := d.Send(context.Background(), testCaller, alphaRef, "hello", driver.SendOptions{Submit: true}); err != nil {
+	if _, err := d.Send(context.Background(), testCaller, alphaRef, "hello", routeOpts(fleet.RouteInbox)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -543,7 +563,7 @@ func TestSend_InboxCarriesTheSenderLabel(t *testing.T) {
 	d, _ := newRoutedDriver(t, rcv, attestableResolver(inboxclient.ModeBypass), rcv.dialer(receiverRecordsEnvelope))
 
 	from := &fleet.MessageFrom{Agent: "agent-a", Session: "s-158", Machine: "entrybox", RelayOfHuman: true}
-	got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", driver.SendOptions{Submit: true, From: from})
+	got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", driver.SendOptions{Submit: true, From: from, Route: fleet.RouteInbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,13 +726,11 @@ func TestSend_InboxNoClassAndLookalikeBody_CountsBothFacts(t *testing.T) {
 	d := newInboxTestDriver(f, ps, resolver, dial)
 
 	got, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "compare a < b first", driver.SendOptions{Submit: true})
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "compare a < b first", routeOpts(fleet.RouteInbox))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != fleet.OutcomeQueued {
-		t.Errorf("outcome = %q, want queued (fell through to the pane path)", got.Outcome)
-	}
+	assertNamedInboxRefused(t, got, f)
 	assertInboxExit(t, d, counterInboxFallbackNoModeClass, 1, 1)
 }
 
@@ -735,7 +753,7 @@ func TestSend_InboxRelayDeclaration_DoesNotCountAsLookalike(t *testing.T) {
 
 	from := &fleet.MessageFrom{Agent: "agent-a", Session: "s-150", Machine: "entrybox", RelayOfHuman: true}
 	got, err := d.Send(context.Background(), testCaller,
-		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true, From: from})
+		fleet.SessionRef{Machine: "testbox", ID: "alpha💬"}, "hello", driver.SendOptions{Submit: true, From: from, Route: fleet.RouteInbox})
 	if err != nil {
 		t.Fatal(err)
 	}

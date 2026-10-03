@@ -522,7 +522,7 @@ dropdown on it:
 ## 7. Driving a session
 
 ```
-POST   /v1/machines/{machine}/sessions/{id}/input       { "text": "...", "submit": true }
+POST   /v1/machines/{machine}/sessions/{id}/input       { "text": "..." }   (submit defaults to true)
 POST   /v1/machines/{machine}/sessions/{id}/interrupt
 DELETE /v1/machines/{machine}/sessions/{id}?startedAt=<from the read>
 POST   /v1/machines/{machine}/sessions                  (create; see below)
@@ -570,24 +570,42 @@ input with no automated way back in — re-reading state and calling `discard`
 yourself was the only move. Colab-fleet #135 closed that gap, and #180 bounded
 it with the draft rule, described below.
 
-**Choosing a route (#184).** `input` takes an optional `route`: `auto` (the
-default — send nothing and you get it), `terminal` or `inbox`. Under `auto` the
-service decides by who is sending: a principal holding the `human-relay` grant
-goes through the terminal, unlabelled, and arrives as the user's own turn;
-everyone else goes through the session's inbox when it can take it, and arrives as
-a **peer message** the runtime itself marks as not from the user — which is the
-authority an agent's message should have. When the inbox cannot take it, `auto`
-sends it through the terminal **with a `[from: …]` line**; a message from anyone
-but a human relay is always labelled, and if you send no `from` the service
-labels it with the principal you authenticated as. Read `delivery.route` on the
+**A live lane is the session's only input path (#257).** Read the session
+first if you can: `delivery.clientConnected: true` means its lane is live, and
+then every `input` is delivered through that lane or refused with nothing
+written. It never falls back to the terminal. So on such a session **send the
+text and nothing else**: `{"text": "…"}` is delivered (and `submit` defaults to
+`true`, so it is submitted). Do **not** add `route: "terminal"`, `submit: false`,
+`resumeIfStranded` or `replaceIfStranded`: each is `refused`, and the `reason`
+names the lane. If text from an earlier terminal delivery is still in the
+composer, clear it with `discard` (with `expect`) and send again; `discard`,
+`keys` and `respond` are unchanged and are how you handle dialogs. A refusal
+here is information, never a cue to drive the terminal yourself: a caller that
+types into the multiplexer when this service refuses defeats the rule and can
+double-deliver.
+
+**Choosing a route (#184, #257).** `input` takes an optional `route`: `auto`
+(the default — send nothing and you get it), `terminal` or `inbox`. Under `auto`
+the service labels a sender that is not a human relay (`[from: …]`, with the
+principal you authenticated as if you send no `from`), and the session's own
+state decides the path: its live lane when it has one, else the terminal. A
+principal holding the `human-relay` grant arrives unlabelled, as the user's own
+turn, and its `auto` crosses a peer relay as `auto` so the machine that owns the
+session decides. `auto` never tries the inbox. Read `delivery.route` on the
 receipt to see which path carried it. Reach for `route: "inbox"` only when the
-message must not go through the composer: it is **refused, with nothing written**,
-when the session cannot take it — never downgraded. And do not try to look like a
-human: no header, no `from` and no `relayOfHuman` changes which path a message
-takes; only the principal's own grant does.
+message must not go through the composer: it is **refused, with nothing
+written**, when the session cannot take it — never downgraded. And do not try to
+look like a human: no header, no `from` and no `relayOfHuman` changes which path
+a message takes; only the principal's own grant does.
+
+**Two behaviours changed in #257 (breaking for some callers).** An absent
+`submit` used to mean `false`: a caller that relied on that to stage text
+without submitting must now send `"submit": false`. And a caller that asks for
+the terminal, `submit: false`, or a resume or replace on a session with a live
+lane is now refused.
 
 **If `send` answers `unknown` on `delivery.route: "terminal"` (or with no
-route), retry it with `resumeIfStranded: true`.** That
+route), retry it with `resumeIfStranded: true`** (on a session with no live lane; a live lane refuses it, above). That
 outcome means the text reached the composer but could not be confirmed in time,
 so it is sitting there unsent — and a plain retry is refused, correctly, by the
 rule that stops anything appending to a busy composer. When the service can

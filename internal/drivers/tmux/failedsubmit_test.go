@@ -117,7 +117,9 @@ func TestResumeFinishesAStrandCreatedByAFailedSubmitKeystroke(t *testing.T) {
 
 // #184's guard, which the record is what feeds: after the failed keystroke the
 // same text is not ALSO sent as a peer message. Asserted on the receivers, not
-// the receipts — how many times the message reached a session.
+// the receipts — how many times the message reached a session. A named inbox is
+// refused and counted by the guard; since #257 route auto never reaches the
+// inbox, so it is answered by the terminal path and never trips that guard.
 func TestFailedSubmitKeystroke_FollowUpNeverTakesInbox(t *testing.T) {
 	rcv := newInboxReceiver(t)
 	f := twoSessions()
@@ -142,7 +144,7 @@ func TestFailedSubmitKeystroke_FollowUpNeverTakesInbox(t *testing.T) {
 			t.Fatalf("route %s: the inbox was used for text already sitting in the composer (%+v)", route, got)
 		}
 	}
-	if n := d.Counters()[counterRouteGuardTerminalUnconfirm]; n != 2 {
-		t.Errorf("route.guard.terminal_unconfirmed = %d, want 2", n)
+	if n := d.Counters()[counterRouteGuardTerminalUnconfirm]; n != 1 {
+		t.Errorf("route.guard.terminal_unconfirmed = %d, want 1 (the named inbox only; auto never reaches the inbox)", n)
 	}
 }

@@ -38,32 +38,34 @@ func TestSendForwardsModuleRoute(t *testing.T) {
 	}
 }
 
-// TerminalFromAuto is a fact this machine's SERVICE established about ITS
-// principal; it is not forwarded. A relayed human send reaches the owner as an
-// explicit "terminal", so it stays on the built-in path there — a documented
-// limitation, cheaper than a wire field a peer built earlier would not know.
-func TestSendDoesNotForwardTerminalFromAuto(t *testing.T) {
+// #257: a human relay's auto crosses a peer as auto (no route field) together
+// with the human-relay assertion, and the owner decides. LiveLaneOnly is the
+// owner's own service's fact and is not forwarded.
+func TestSendForwardsHumanRelayAutoAsAuto(t *testing.T) {
 	var rec capture
 	srv := peerServing(t, 200, fleet.DeliveryReceipt{Outcome: fleet.OutcomeQueued}, &rec)
 	d := New("peerbox", srv.URL)
 
 	if _, err := d.Send(context.Background(), caller, fleet.SessionRef{ID: "s1"}, "a human's message",
-		driver.SendOptions{Submit: true, Route: fleet.RouteTerminal, HumanRelay: true, TerminalFromAuto: true}); err != nil {
+		driver.SendOptions{Submit: true, Route: fleet.RouteAuto, HumanRelay: true, LiveLaneOnly: true}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(strings.ToLower(rec.body), "fromauto") {
-		t.Fatalf("body = %q: the from-auto marker crossed the peer boundary", rec.body)
+	if strings.Contains(strings.ToLower(rec.body), "livelane") {
+		t.Fatalf("body = %q: the live-lane marker crossed the peer boundary", rec.body)
 	}
 	var body map[string]any
 	if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["route"] != "terminal" {
-		t.Fatalf("body = %q, want route:\"terminal\"", rec.body)
+	if _, has := body["route"]; has {
+		t.Fatalf("body = %q, want no route field (auto)", rec.body)
+	}
+	if body["submit"] != true {
+		t.Fatalf("body = %q, want submit:true", rec.body)
 	}
 	for k := range body {
 		switch k {
-		case "text", "submit", "route":
+		case "text", "submit":
 		default:
 			t.Errorf("unexpected field %q in the relayed body %s", k, rec.body)
 		}

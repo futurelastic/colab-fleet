@@ -135,21 +135,22 @@ type SendOptions struct {
 	From *fleet.MessageFrom
 
 	// Route (#184) is the delivery path the caller asked for. The zero value
-	// and fleet.RouteAuto both mean "the driver chooses": on a driver with an
-	// inbox path, a call that is eligible for it goes there, and anything else
-	// takes the terminal path. fleet.RouteTerminal forces the terminal path.
+	// and fleet.RouteAuto both mean "the driver chooses": the session's live
+	// delivery lane when it has one, else the terminal path (#257: never the
+	// inbox, which is used only when named). fleet.RouteTerminal forces the
+	// terminal path.
 	// fleet.RouteInbox insists on the inbox and is REFUSED — nothing written —
 	// when the session cannot take it; a driver never quietly downgrades an
 	// explicit request.
 	//
 	// # Who decides what
 	//
-	// The service decides everything that depends on WHO is asking: a human
-	// relay's auto becomes fleet.RouteTerminal before a driver sees it, because
-	// a driver cannot see principals and a peer built earlier would re-decide
-	// it wrongly. The driver decides everything that depends on the SESSION:
-	// whether the inbox is reachable, what to do when it is not, and what was
-	// actually confirmed.
+	// The service decides everything that depends on WHO is asking: it labels a
+	// non-human sender and marks a human relay (HumanRelay). A human relay's
+	// auto stays auto (#257) and crosses a peer as auto: the machine that owns
+	// the session decides. The driver decides everything that depends on the
+	// SESSION: whether its lane is live, whether the inbox is reachable when it
+	// was named, and what was actually confirmed.
 	//
 	// A driver with a single delivery path treats fleet.RouteInbox as a request
 	// it cannot honour and refuses it; the other values it may ignore, since
@@ -159,16 +160,16 @@ type SendOptions struct {
 	// driver's hand-built body forwards it (#33).
 	Route fleet.Route
 
-	// TerminalFromAuto says the service turned this call's `auto` into
-	// fleet.RouteTerminal because the caller is a human relay (#184), rather
-	// than the caller having asked for the terminal path by name (#185). The
-	// two differ for exactly one reason: a delivery module carries the user's
-	// own turn just as the terminal path does, so a human relay's `auto` may
-	// use a live module lane, while an EXPLICIT `terminal` never does. Set by
-	// the service, never by a caller's body, and never forwarded to a peer —
-	// the machine that owns the session re-derives it from its own principal
-	// table, and a peer built earlier would not know the field.
-	TerminalFromAuto bool
+	// LiveLaneOnly (#257) says this call is a caller's /input, to which the
+	// live-lane contract applies: while the session's delivery lane is live it
+	// is the session's ONLY input path, so a send that would reach the terminal
+	// instead (an explicit terminal route, submit:false, resumeIfStranded or
+	// replaceIfStranded) is refused with nothing written. Set by the service on
+	// every /input and never by a caller's body. Never forwarded to a peer: the
+	// machine that owns the session sets it again for itself. Internal callers
+	// (the create-time prompt, the title sync, /discard, /keys, /respond) leave
+	// it false and keep their terminal path.
+	LiveLaneOnly bool
 }
 
 // SenderLabel renders from as "agent · session · machine", skipping empty

@@ -351,50 +351,55 @@ has enabled an optional external delivery module (#185) — that module's name.
 Anything else is a `400` naming every accepted value, before any driver is
 resolved.
 
-- **`auto` decides by who is sending.** A principal holding the `human-relay`
-  grant (a human-facing relay) goes through the **terminal, unlabelled** — the
-  message arrives as the user's own turn. Anyone else goes through the
-  **inbox** when the session can take it: the runtime marks the message as a
-  cross-session **peer message**, carrying the sender's name and its own warning
-  that the text did not come from the user. When the session cannot take the
-  inbox, the message goes through the terminal **with the label**.
-- **The label is mandatory for everyone but a human relay.** If you send no
-  `from`, the service labels the message with the one fact it holds — the
-  principal you authenticated as, and the machine your request entered — so an
-  agent's text is never indistinguishable from a person's. A `from` you send is
-  kept as you wrote it.
+- **A live lane is the session's only input path (#257).** A session whose
+  `delivery.clientConnected` reads `true` has a live lane: every `/input` is
+  delivered by its module or refused with nothing written, and never reaches the
+  terminal. `auto` goes to that module for every sender (labelled, except a human
+  relay's). `route: "terminal"`, `submit: false`, `resumeIfStranded` and
+  `replaceIfStranded` are **`refused`** on such a session, with a `reason` that
+  names the lane; send again without them. If the composer holds text that was
+  left there, clear it with `discard` (with `expect`) and send again.
+  `/discard`, `/keys` and `/respond` are unchanged. On a session with no live
+  lane, `auto` goes to the terminal: with the sender label, except from a human
+  relay (the message arrives as the user's own turn).
+- **`submit` defaults to `true` (#257).** Leave it out and the text is
+  submitted; send `"submit": false` only to stage text in the composer, which a
+  session with a live lane refuses.
+- **`auto` never tries the inbox (#257).** The inbox is used only when you name
+  it with `route: "inbox"`.
+- **The label is mandatory for everyone but a human relay, on every route.** If
+  you send no `from`, the service labels the message with the one fact it holds —
+  the principal you authenticated as, and the machine your request entered — so
+  an agent's text is never indistinguishable from a person's. A `from` you send
+  is kept as you wrote it. This holds for `route: "terminal"` and a module route
+  too: they are labelled, not refused.
 - **The human-relay fact is never inferred from anything you set.** No header, no
   `from`, no `relayOfHuman` moves your send onto the human-relay path; it is the
-  principal's own configured grant. (Across a peer relay it is an assertion the
+  principal's own configured grant. Across a peer relay it is an assertion the
   owning machine honours only from one of its configured peers — or from anyone,
   on a machine with no principal table, where nothing distinguishes a relay from
-  any other bearer. Such a machine cannot have the inbox route on, so there the
-  assertion can only choose the terminal path.)
-- **`route: "terminal"`** forces the composer. Without the `human-relay` grant it
-  needs a `from` that actually prints — a non-empty agent, session or machine
-  that survives label normalisation — or it is a `400` (#180 M8). A caller
-  holding the grant needs no label.
+  any other bearer. A human relay's `auto` crosses the peer as `auto` and the
+  machine that owns the session decides.
+- **`route: "terminal"`** forces the composer. It is refused on a session with a
+  live lane (above). A caller holding the `human-relay` grant is not labelled; any
+  other caller is labelled with its principal when it sends no `from` that prints.
 - **`route: "inbox"`** insists on the inbox. When the session cannot take it the
   receipt is **`refused`**, `delivery.route` is `inbox`, and the `reason` says
   why and that **nothing was written** — the request is never quietly downgraded
   to the terminal. `route: "inbox"` combined with `submit: false`,
   `resumeIfStranded` or `replaceIfStranded` is a `400`: those name a composer the
   inbox does not have.
-- **`route: "<module>"`** (#185) forces one enabled external delivery module. A
-  module delivers the user's own turn, so it follows the terminal's rules: a
-  caller without the `human-relay` grant needs a `from` that prints, or it is a
-  `400`; `submit: false`, `resumeIfStranded` or `replaceIfStranded` is a `400`; and
-  when the session's module lane is not live right now the receipt is
-  **`refused`**, says why and that **nothing was written** — never a quiet
-  fall back to the terminal. Under `auto` the same reasons hand the send to the
-  built-in path for that one send.
+- **`route: "<module>"`** (#185) forces one enabled external delivery module.
+  `submit: false`, `resumeIfStranded` or `replaceIfStranded` is a `400`, and when
+  the session's module lane is not live right now the receipt is **`refused`**,
+  says why and that **nothing was written** — never a quiet fall back to the
+  terminal.
 - **A session is inbox-eligible** only when the machine has an inbox configured
   and an index entry for the session, the entry names its permission-mode class
   (#148), the text can be carried in a peer-message envelope that is guaranteed
   to arrive intact, and the session's transcript can be located to confirm a
-  delivery against. None of this is a caller's business under `auto` — the
-  terminal carries what the inbox cannot — but `deliversToInbox` on
-  `GET /v1/runtimes` is a statement about wiring, not a promise about a send.
+  delivery against. `deliversToInbox` on `GET /v1/runtimes` is a statement about
+  wiring, not a promise about a send.
 
 **`delivery.route`** names the path that produced the receipt: `inbox`,
 `terminal`, or `module` (#185) — in which case `delivery.module` names which. A
@@ -403,18 +408,12 @@ module that confirmed the runtime took the message answers **`queued`**, never
 **`unknown` and is never followed by a second send of the same text on any
 path**, for the same 30 minutes the inbox holds. It is **absent** when the receipt names no path — a refusal made
 before any path was chosen (a busy composer, the runtime-syntax guard,
-contradictory flags), or a peer built before the field. Treat absent as "not
-stated"; it is never either value.
+contradictory flags, a live lane refusing a composer shape), or a peer built
+before the field. Treat absent as "not stated"; it is never either value.
 
-**Fallback happens only before any byte is written.** An inbox that declines
-under `auto` sends the message to the terminal; an inbox that has written *any*
-byte and cannot confirm the message ends `unknown` and is **never followed by a
-terminal send of the same text.** See the `unknown` row below.
-
-Use `route: "terminal"` — or simply hold the `human-relay` grant — when the
-caller is relaying a **human's** own message and wants the path a human's own
-typed message would take. A driver with no inbox capability at all is unaffected
-either way.
+**Nothing is sent down a second path.** An inbox that has written *any* byte and
+cannot confirm the message ends `unknown` and is **never followed by a terminal
+send of the same text.** See the `unknown` row below.
 
 `from` (optional) labels the message with who it comes from, so the receiving
 session sees `agent · session · machine` instead of an anonymous peer. Leave it

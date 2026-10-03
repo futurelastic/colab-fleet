@@ -7,8 +7,8 @@ package tmux
 // # The rule the ledger exists to keep
 //
 // A send goes down ONE path. The inbox may decline before it has written a
-// byte and the terminal then carries the message — that is a fallback, and it
-// is safe because nothing was sent. Once ANY byte has reached the inbox the
+// byte (a NAMED inbox, since #257, is then refused rather than carried by the
+// terminal; `auto` never tries the inbox). Once ANY byte has reached the inbox the
 // message may be in the receiver's hands, and from then on the same text must
 // not be sent down the other path. Inside a single Send that is a matter of
 // control flow. Across Sends it is not: a send that ends `unknown` invites its

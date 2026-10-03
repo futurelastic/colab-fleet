@@ -50,7 +50,7 @@ func TestSendInput_ModuleRouteValues(t *testing.T) {
 		{"a named module with a label", "agent-token", map[string]any{"text": "x", "submit": true, "route": "relay-a", "from": label}, 200, "relay-a"},
 		{"the second module", "agent-token", map[string]any{"text": "x", "submit": true, "route": "relay-b", "from": label}, 200, "relay-b"},
 		{"a human relay needs no label", "human-token", map[string]any{"text": "x", "submit": true, "route": "relay-a"}, 200, "relay-a"},
-		{"an unlabelled agent is refused like terminal", "agent-token", map[string]any{"text": "x", "submit": true, "route": "relay-a"}, 400, ""},
+		{"an unlabelled agent is labelled with its principal (#257)", "agent-token", map[string]any{"text": "x", "submit": true, "route": "relay-a"}, 200, "relay-a"},
 		{"a module nobody enabled", "agent-token", map[string]any{"text": "x", "submit": true, "route": "relay-c", "from": label}, 400, ""},
 		{"the receipt's own word is not a request", "agent-token", map[string]any{"text": "x", "submit": true, "route": "module", "from": label}, 400, ""},
 		{"a module name in the wrong case", "agent-token", map[string]any{"text": "x", "submit": true, "route": "Relay-A", "from": label}, 400, ""},
@@ -128,11 +128,10 @@ func TestSendInput_ForcedModuleShapeIs400(t *testing.T) {
 	d, srv := moduleOwner(t, "relay-a")
 	label := map[string]any{"agent": "a"}
 	for name, body := range map[string]map[string]any{
-		"submit false":      {"text": "x", "route": "relay-a", "from": label},
+		"submit false":      {"text": "x", "submit": false, "route": "relay-a", "from": label},
 		"resume stranded":   {"text": "x", "submit": true, "resumeIfStranded": true, "route": "relay-a", "from": label},
 		"replace stranded":  {"text": "x", "submit": true, "replaceIfStranded": true, "route": "relay-a", "from": label},
 		"both stranded":     {"text": "x", "submit": true, "resumeIfStranded": true, "replaceIfStranded": true, "route": "relay-a", "from": label},
-		"submit omitted":    {"text": "x", "route": "relay-a", "from": label},
 		"unsubmitted human": {"text": "x", "submit": false, "route": "relay-a"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -152,45 +151,51 @@ func TestSendInput_ForcedModuleShapeIs400(t *testing.T) {
 	}
 }
 
-// A human relay's auto becomes terminal before a driver sees it (#184). It is
-// marked, because a module carries the user's own turn too and that call's
-// auto may use a live lane; an explicit terminal never does.
-func TestSendInput_HumanRelayAutoMarksTerminalFromAuto(t *testing.T) {
+// #257: a human relay's auto stays auto when a driver sees it; the owner of the
+// session decides. It is marked HumanRelay (unlabelled, its own words) and every
+// /input is marked LiveLaneOnly, by the service and never by a caller's body.
+func TestSendInput_HumanRelayAutoStaysAuto(t *testing.T) {
 	d, srv := moduleOwner(t, "relay-a")
 	for _, body := range []map[string]any{
 		{"text": "x", "submit": true},
 		{"text": "x", "submit": true, "route": ""},
 		{"text": "x", "submit": true, "route": "auto"},
+		{"text": "x"},
 	} {
 		mustOK(t, postInput(t, srv, "human-token", nil, body))
 		got := d.last(t)
-		if got.Route != fleet.RouteTerminal || !got.TerminalFromAuto || !got.HumanRelay {
-			t.Errorf("body %v: driver got %+v, want terminal + TerminalFromAuto + HumanRelay", body, got)
+		if got.Route != fleet.RouteAuto || !got.HumanRelay || !got.Submit || !got.LiveLaneOnly || got.From != nil {
+			t.Errorf("body %v: driver got %+v, want auto + HumanRelay + Submit + LiveLaneOnly, unlabelled", body, got)
 		}
 	}
 }
 
-func TestSendInput_ExplicitTerminalNeverFromAuto(t *testing.T) {
+func TestSendInput_ExplicitTerminalStaysTerminalAndAgentAutoIsLabelled(t *testing.T) {
 	d, srv := moduleOwner(t, "relay-a")
 	mustOK(t, postInput(t, srv, "human-token", nil, map[string]any{"text": "x", "submit": true, "route": "terminal"}))
-	if got := d.last(t); got.Route != fleet.RouteTerminal || got.TerminalFromAuto {
-		t.Errorf("a human's EXPLICIT terminal was marked from-auto: %+v", got)
+	if got := d.last(t); got.Route != fleet.RouteTerminal || !got.HumanRelay {
+		t.Errorf("a human's EXPLICIT terminal reached the driver as %+v", got)
 	}
-	mustOK(t, postInput(t, srv, "agent-token", nil,
-		map[string]any{"text": "x", "submit": true, "route": "terminal", "from": map[string]any{"agent": "a"}}))
-	if got := d.last(t); got.TerminalFromAuto {
-		t.Errorf("an agent's explicit terminal was marked from-auto: %+v", got)
-	}
-	// An agent's auto is never marked: only the human-relay decision is.
 	mustOK(t, postInput(t, srv, "agent-token", nil, map[string]any{"text": "x", "submit": true}))
-	if got := d.last(t); got.Route != fleet.RouteAuto || got.TerminalFromAuto {
+	if got := d.last(t); got.Route != fleet.RouteAuto || got.HumanRelay || got.From == nil {
 		t.Errorf("an agent's auto reached the driver as %+v", got)
 	}
-	// The field is the service's, never a caller's: a body naming it is ignored.
+	// LiveLaneOnly is the service's, never a caller's: a body naming it changes nothing.
 	mustOK(t, postInput(t, srv, "agent-token", nil,
-		map[string]any{"text": "x", "submit": true, "route": "inbox", "terminalFromAuto": true}))
-	if got := d.last(t); got.TerminalFromAuto {
-		t.Errorf("a caller set TerminalFromAuto through the body: %+v", got)
+		map[string]any{"text": "x", "submit": true, "route": "inbox", "liveLaneOnly": false}))
+	if got := d.last(t); !got.LiveLaneOnly {
+		t.Errorf("a caller cleared LiveLaneOnly through the body: %+v", got)
+	}
+}
+
+// An absent or null submit means true (#257); an explicit false keeps its meaning.
+func TestSendInput_AbsentSubmitMeansTrue(t *testing.T) {
+	d, srv := moduleOwner(t, "relay-a")
+	for body, want := range map[string]bool{`{"text":"x"}`: true, `{"text":"x","submit":null}`: true, `{"text":"x","submit":true}`: true, `{"text":"x","submit":false}`: false} {
+		mustOK(t, postInputRaw(t, srv, "agent-token", body))
+		if got := d.last(t); got.Submit != want {
+			t.Errorf("body %s: Submit = %v, want %v", body, got.Submit, want)
+		}
 	}
 }
 
@@ -253,4 +258,19 @@ func TestCreateSession_ReservedPrefixIs400(t *testing.T) {
 	if other.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("an unreserved name reached status %d, want the stub's own 501", other.StatusCode)
 	}
+}
+
+// postInputRaw posts a hand-written JSON body, for the cases a map cannot say
+// (a field that is absent versus one that is null).
+func postInputRaw(t *testing.T, srv *httptest.Server, token, body string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/machines/owner/sessions/s1/input", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
 }

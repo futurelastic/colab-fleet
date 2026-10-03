@@ -195,9 +195,19 @@ const (
 	// (a refusal made before any path was chosen) or "error" when Send returned
 	// an error. route.outcome.<path>.<outcome> is the same delivery by outcome.
 	//
-	// auto_fallback is the subset of decided.auto.terminal where the inbox was
-	// TRIED and declined before any byte was written — the fallback rate an
-	// operator reads: auto_fallback / (decided.auto.inbox + auto_fallback).
+	// (#257: the auto-to-inbox fallback, and with it route.auto_fallback, is
+	// retired: the inbox is tried only when a caller names it.)
+	//
+	// refused.lane_live (#257) counts a /input refused because the session's
+	// delivery lane is live and the call asked for a path that would bypass it
+	// (an explicit terminal route, submit:false, resumeIfStranded,
+	// replaceIfStranded) or because the lane holds text this driver stranded.
+	// refused.lane_live.<field> splits it by what was asked for (terminal,
+	// submit_false, resume, replace, stranded_text); a call asking for several
+	// things counts once in the total and once per field. A deploy watches it
+	// for callers still asking for the terminal. refused.lane_lost counts a send
+	// whose lane read live at the gate and stopped being usable before a byte was
+	// written: refused, not sent to the terminal.
 	//
 	// The guard counters are the cross-path ledger's (docs/adr/184-route-by-sender.md):
 	// inbox_unconfirmed — a follow-up was answered from an earlier unconfirmed
@@ -205,7 +215,9 @@ const (
 	// was skipped (auto) or refused (route inbox) because the same text is
 	// stranded in the composer; late_confirmed — a follow-up found the earlier
 	// inbox write recorded after all.
-	counterRouteAutoFallback           = "route.auto_fallback"
+	counterRouteRefusedLaneLive        = "route.refused.lane_live"
+	counterRouteRefusedLaneLivePrefix  = "route.refused.lane_live."
+	counterRouteRefusedLaneLost        = "route.refused.lane_lost"
 	counterRouteGuardInboxUnconfirmed  = "route.guard.inbox_unconfirmed"
 	counterRouteGuardTerminalUnconfirm = "route.guard.terminal_unconfirmed"
 	counterRouteGuardLateConfirmed     = "route.guard.late_confirmed"

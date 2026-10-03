@@ -1,5 +1,7 @@
 # 185 — optional external delivery modules: discovery, a switch, a fallback that never loses a message
 
+> Superseded in part by [257](257-a-live-lane-is-the-only-input-path.md): the routing table (`auto` is module-first for every sender, the inbox only when named) and the `TerminalFromAuto` rule.
+
 **Issue:** #185
 **Status:** decided; the parts that need a person's ratification are listed at
 the end.
