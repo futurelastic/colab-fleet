@@ -115,8 +115,9 @@ type DeliveryReceipt struct {
 // of one (POST …/input's `route`, #184).
 //
 // Two of the values name a path a delivery can actually take. RouteAuto is
-// only ever a REQUEST: it asks the service to pick by who is sending, and a
-// receipt never carries it, because a receipt reports what happened.
+// only ever a REQUEST: it asks for the session's live delivery lane when it
+// has one and the terminal otherwise (never the inbox, #257), and a receipt
+// never carries it, because a receipt reports what happened.
 type Route string
 
 const (
@@ -125,7 +126,8 @@ const (
 	RouteAuto Route = "auto"
 	// RouteTerminal is the terminal module: the text is typed into the
 	// session's composer and arrives as the user's own turn (labelled, unless
-	// the sender is a human relay).
+	// the sender is a human relay). Asked for by name on a session with a live
+	// delivery lane it is refused (#257).
 	RouteTerminal Route = "terminal"
 	// RouteInbox is the runtime's own messaging socket: the text arrives as a
 	// cross-session peer message, marked by the runtime as not from the user.

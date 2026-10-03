@@ -71,20 +71,21 @@ func TestSend_InboxFaultMatrix_AtMostOneDelivery(t *testing.T) {
 	}
 
 	rows := []faultRow{
-		// --- faults BEFORE any byte is written: the terminal may carry it ---
-		{"the index has no entry", faultKnobs{resolver: declined, dial: record}, fleet.OutcomeQueued, fleet.RouteTerminal, 1, false},
-		{"the index cannot be read", faultKnobs{resolver: resolverErr, dial: record}, fleet.OutcomeQueued, fleet.RouteTerminal, 1, false},
-		{"no inbox configured", faultKnobs{noResolver: true, dial: record}, fleet.OutcomeQueued, fleet.RouteTerminal, 1, false},
-		{"the process cannot be identified", faultKnobs{noProcess: true, dial: record}, fleet.OutcomeQueued, fleet.RouteTerminal, 1, false},
-		{"the index names no class", faultKnobs{resolver: attestableResolver(""), dial: record}, fleet.OutcomeQueued, fleet.RouteTerminal, 1, false},
-		{"the text cannot be attested", faultKnobs{text: "has a ＜ lookalike", dial: record}, fleet.OutcomeQueued, fleet.RouteTerminal, 1, false},
-		{"no transcript to confirm against", faultKnobs{noTranscript: true, dial: record}, fleet.OutcomeQueued, fleet.RouteTerminal, 1, false},
+		// --- faults BEFORE any byte is written: the named inbox is refused, and
+		// the terminal does not carry it either (#257) ---
+		{"the index has no entry", faultKnobs{resolver: declined, dial: record}, fleet.OutcomeRefused, fleet.RouteInbox, 0, false},
+		{"the index cannot be read", faultKnobs{resolver: resolverErr, dial: record}, fleet.OutcomeRefused, fleet.RouteInbox, 0, false},
+		{"no inbox configured", faultKnobs{noResolver: true, dial: record}, fleet.OutcomeRefused, fleet.RouteInbox, 0, false},
+		{"the process cannot be identified", faultKnobs{noProcess: true, dial: record}, fleet.OutcomeRefused, fleet.RouteInbox, 0, false},
+		{"the index names no class", faultKnobs{resolver: attestableResolver(""), dial: record}, fleet.OutcomeRefused, fleet.RouteInbox, 0, false},
+		{"the text cannot be attested", faultKnobs{text: "has a ＜ lookalike", dial: record}, fleet.OutcomeRefused, fleet.RouteInbox, 0, false},
+		{"no transcript to confirm against", faultKnobs{noTranscript: true, dial: record}, fleet.OutcomeRefused, fleet.RouteInbox, 0, false},
 		{"the socket cannot be dialled", faultKnobs{dial: func(*inboxReceiver, context.CancelFunc) inboxDialFunc {
 			return func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("refused") }
-		}}, fleet.OutcomeQueued, fleet.RouteTerminal, 1, false},
+		}}, fleet.OutcomeRefused, fleet.RouteInbox, 0, false},
 		{"the write puts nothing on the socket", faultKnobs{dial: func(*inboxReceiver, context.CancelFunc) inboxDialFunc {
 			return pipeDialer(t, closeBeforeReading)
-		}}, fleet.OutcomeQueued, fleet.RouteTerminal, 1, false},
+		}}, fleet.OutcomeRefused, fleet.RouteInbox, 0, false},
 
 		// --- identity faults: final refusals, nothing sent on either path ---
 		{"identity fails the first verification", faultKnobs{flipAt: 2, dial: record}, fleet.OutcomeRefused, fleet.RouteInbox, 0, false},
@@ -146,7 +147,7 @@ func TestSend_InboxFaultMatrix_AtMostOneDelivery(t *testing.T) {
 				d.psRun = (&flipPS{flipAt: k.flipAt, before: time.Unix(1785700000, 0), after: time.Unix(1785700999, 0)}).exec
 			}
 
-			got, err := d.Send(ctx, testCaller, alphaRef, text, routeOpts(fleet.RouteAuto))
+			got, err := d.Send(ctx, testCaller, alphaRef, text, routeOpts(fleet.RouteInbox))
 			if err != nil {
 				t.Fatal(err)
 			}

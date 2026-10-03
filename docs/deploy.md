@@ -142,6 +142,35 @@ The counters are in memory: a reading covers only the window since that
 machine's `startedAt`. `inbox.fallback_no_mode_class` is the same class rollout
 seen per send rather than per index entry.
 
+**Rolling out the live-lane input contract (muster #257) — read this before
+the inbox section below.** Since #257 a session's live delivery lane is its only
+input path for `/input`, and `auto` never tries the inbox: the inbox is used only
+when a caller names it (`route: "inbox"`). Where the section below says an `auto`
+send goes through the inbox or falls back from it, read it as superseded by this
+paragraph; the rest of the inbox mechanics (the gate, the counters, the ledger)
+apply to a **named** inbox send.
+
+- **Before this reaches a machine:** change any caller that falls back to
+  driving the multiplexer **directly** whenever this service answers with a
+  refusal. Each new refusal (a terminal, `submit: false`, resume or replace
+  request on a session with a live lane) would otherwise turn into a raw
+  keystroke into the same session, the opposite of the contract. That caller
+  lives outside this repository; its change must be running on every machine
+  first. Upgrade peers together too: an entering machine built before #257 still
+  sends a human relay's `auto` as `terminal`, which a new owner refuses on a live
+  lane.
+- **Release notes carry two behaviour changes:** an absent `submit` now means
+  `true`, and a caller that asks for the terminal, `submit: false`, or a resume
+  or replace on a session with a live lane is refused.
+- **What to watch on `GET /v1/health`** (terminal runtime's `counters`, in
+  memory since `startedAt`): `route.refused.lane_live` and its split
+  `route.refused.lane_live.{terminal,submit_false,resume,replace,stranded_text}`
+  — a total that keeps growing means callers still ask for the terminal;
+  `route.refused.lane_lost` — sends whose lane stopped being usable in flight;
+  `route.decided.auto.module` against `route.decided.auto.terminal` — the share
+  of `auto` sends the lane carries (it should approach the share of sessions
+  holding a live lane); and `route.auto_fallback`, which no longer exists.
+
 **Turning the inbox route on (muster #184) — what has to be true first, in
 this order.** Since #184 a send with no `route` is `auto`: anyone who does not
 hold the `human-relay` grant goes through the inbox whenever the session can take
@@ -183,17 +212,18 @@ the inbox is the operator step that follows, and it has an order:
    the grant is deliberately outside the supervisor set); and in single-token mode
    there is no grant to hold, so with an index set the row **fails** instead —
    see step 0.
-2. **Have the index writer emit `mode_class`** (above). Until it does, every
-   `auto` send falls back and this is a no-op.
+2. **Have the index writer emit `mode_class`** (above). Until it does, a named
+   `route: "inbox"` send is refused and this is a no-op.
 3. **Take one live look** on throwaway sessions, from the receiver's side, before
    trusting the counters — the things below are precisely what no offline test can
    establish:
-   - an agent's message arrives as a peer message carrying the sender's name and
-     the runtime's own warning, and the receipt says `delivered` on
-     `delivery.route: "inbox"`;
-   - a human relay's message arrives as a plain, unlabelled user turn, receipt
-     `delivery.route: "terminal"`;
-   - an agent's message to a session the inbox cannot take arrives through the
+   - an agent's message sent with `route: "inbox"` arrives as a peer message
+     carrying the sender's name and the runtime's own warning, and the receipt
+     says `delivered` on `delivery.route: "inbox"`;
+   - a human relay's `auto` message arrives as a plain, unlabelled user turn,
+     receipt `delivery.route: "module"` on a session with a live lane and
+     `"terminal"` otherwise;
+   - an agent's `auto` message to a session with no live lane arrives through the
      terminal with its `[from: …]` line, receipt `terminal`;
    - which of `inbox.confirmed_by_envelope` and `inbox.confirmed_by_origin_body`
      moved — that is the transcript shape the runtime actually writes for a peer
@@ -203,9 +233,10 @@ the inbox is the operator step that follows, and it has an order:
 4. **Then read the counters** on `GET /v1/health`, under the terminal runtime's
    entry, summed across machines and remembering they are in memory since that
    machine's `startedAt`:
-   - the **fallback rate** — `route.auto_fallback / (route.decided.auto.inbox +
-     route.auto_fallback)`. Every `auto` send the inbox was tried for and declined
-     before writing a byte. Read the reasons in the `inbox.*` exits
+   - the **decline rate** — `inbox.attempted` minus the sends that wrote. Every
+     named inbox send the inbox declined before writing a byte (since #257 `auto`
+     does not try the inbox, so `route.auto_fallback` is gone). Read the reasons
+     in the `inbox.*` exits
      (`fallback_no_mode_class`, `fallback_no_transcript`, `fallback_dial_failed`,
      …); they sum to `inbox.attempted`, per ADR 150, with two more exits since
      #184 (`fallback_no_transcript`, `unknown_partial_write`);

@@ -423,22 +423,16 @@ func mapInboxOutcome(o inboxclient.Outcome) fleet.Outcome {
 	}
 }
 
-// inboxEligible reports whether opts describes a call the inbox path can
-// even attempt. Three flags all name a pane-composer shape the inbox path
-// has no analogue for — Submit=false asks to land text without submitting,
-// which presumes a composer to land it in; ResumeIfStranded and
-// ReplaceIfStranded both ask to finish or discard a PANE delivery that
-// stranded earlier, which the inbox path cannot have done (it has no
-// composer to strand in — see the #119 issue body's own "the failure mode
-// ... stops existing"). A caller asking for any of these is explicitly
-// asking for the pane, so Send skips the inbox attempt entirely rather than
-// let sendViaInbox reinterpret a pane-shaped request. A forced terminal route
-// (#184) is the fourth: the caller has asked for the terminal by name.
+// inboxEligible reports whether opts describes a call the inbox path may
+// attempt. Since #257 the inbox is used ONLY when a caller names it
+// (route "inbox"): `auto` goes to the session's live lane or the terminal and
+// never tries the inbox. Three flags name a pane-composer shape the inbox has
+// no analogue for — Submit=false asks to land text without submitting,
+// ResumeIfStranded and ReplaceIfStranded ask to finish or discard a PANE
+// delivery that stranded earlier — so a named inbox with any of them is not
+// attempted (Send refuses that shape up front).
 func inboxEligible(opts driver.SendOptions) bool {
-	// #185: only auto and inbox itself ever reach the inbox; a forced terminal
-	// or a forced delivery module names another path by name.
-	inboxRoute := opts.Route == "" || opts.Route == fleet.RouteAuto || opts.Route == fleet.RouteInbox
-	return opts.Submit && !opts.ResumeIfStranded && !opts.ReplaceIfStranded && inboxRoute
+	return opts.Route == fleet.RouteInbox && opts.Submit && !opts.ResumeIfStranded && !opts.ReplaceIfStranded
 }
 
 // panePrefix opens the first line the terminal path adds for a labelled send.

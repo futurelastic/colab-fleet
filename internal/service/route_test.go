@@ -12,6 +12,7 @@ import (
 	fleet "github.com/futurelastic/muster"
 	"github.com/futurelastic/muster/internal/driver"
 	"github.com/futurelastic/muster/internal/drivers/stub"
+	"github.com/futurelastic/muster/internal/inboxclient"
 )
 
 // #184: the service's half of routing — everything that depends on WHO is
@@ -132,7 +133,7 @@ func TestSendInput_RouteValues(t *testing.T) {
 func TestSendInput_RouteInboxShapeIs400(t *testing.T) {
 	d, srv := routeOwner(t)
 	for name, body := range map[string]map[string]any{
-		"submit false": {"text": "x", "route": "inbox"},
+		"submit false": {"text": "x", "submit": false, "route": "inbox"},
 		"resume":       {"text": "x", "submit": true, "route": "inbox", "resumeIfStranded": true},
 		"replace":      {"text": "x", "submit": true, "route": "inbox", "replaceIfStranded": true},
 	} {
@@ -169,14 +170,15 @@ func TestSendInput_ReceiptDeliveryRoutePassesThrough(t *testing.T) {
 	}
 }
 
-// A human relay's message is the user's own words: auto becomes the terminal
-// and it arrives unlabelled — nothing is synthesised, `from` stays absent.
-func TestSendInput_HumanRelayAutoGoesTerminalUnlabelled(t *testing.T) {
+// A human relay's message is the user's own words: it stays unlabelled —
+// nothing is synthesised, `from` stays absent — and (#257) its auto stays auto:
+// the machine that owns the session decides lane or terminal.
+func TestSendInput_HumanRelayAutoStaysAutoUnlabelled(t *testing.T) {
 	d, srv := routeOwner(t)
 	mustOK(t, postInput(t, srv, "human-token", nil, map[string]any{"text": "a person's message", "submit": true}))
 	got := d.last(t)
-	if got.Route != fleet.RouteTerminal || !got.HumanRelay {
-		t.Fatalf("driver got route %q humanRelay=%v, want terminal and a human relay", got.Route, got.HumanRelay)
+	if got.Route != fleet.RouteAuto || !got.HumanRelay {
+		t.Fatalf("driver got route %q humanRelay=%v, want auto and a human relay", got.Route, got.HumanRelay)
 	}
 	if got.From != nil {
 		t.Errorf("driver got from = %+v, want none: a human relay's message is not labelled", got.From)
@@ -184,15 +186,15 @@ func TestSendInput_HumanRelayAutoGoesTerminalUnlabelled(t *testing.T) {
 }
 
 // The human-relay fact also crosses a peer relay, under the same trust bound as
-// the on-behalf-of assertion, and lands the same way.
-func TestSendInput_HumanRelayCrossesAPeerAndGoesTerminal(t *testing.T) {
+// the on-behalf-of assertion, and lands the same way: auto stays auto.
+func TestSendInput_HumanRelayCrossesAPeerAndStaysAuto(t *testing.T) {
 	d, srv := routeOwner(t)
 	mustOK(t, postInput(t, srv, "peer-token",
 		map[string]string{onBehalfOfHeader: "human-relay", humanRelayHeader: "1"},
 		map[string]any{"text": "a person's message", "submit": true}))
 	got := d.last(t)
-	if got.Route != fleet.RouteTerminal || !got.HumanRelay || got.From != nil {
-		t.Fatalf("driver got %+v, want an unlabelled human-relay terminal send", got)
+	if got.Route != fleet.RouteAuto || !got.HumanRelay || got.From != nil {
+		t.Fatalf("driver got %+v, want an unlabelled human-relay auto send", got)
 	}
 }
 
@@ -329,7 +331,7 @@ func TestSendInput_CallerSetClaimsNeverMakeAHumanRelay(t *testing.T) {
 // route on: muster refuses to start with FLEET_INBOX_INDEX and no table
 // (cmd/muster/inboxgate.go, pinned by TestRequireTableForInbox), so a
 // person's message is never diverted into a peer message, whether it carried the
-// header or not. If this test starts failing because the headers stopped being
+// header or not (and since #257 no auto send reaches the inbox at all). If this test starts failing because the headers stopped being
 // honoured, that is a different decision from #196's and it strands unlabelled
 // relay on single-token machines: read #195 before flipping it.
 func TestSendInput_WithoutAPrincipalTableRelayHeadersAreHonoured(t *testing.T) {
@@ -344,20 +346,22 @@ func TestSendInput_WithoutAPrincipalTableRelayHeadersAreHonoured(t *testing.T) {
 	mustOK(t, postInputTo(t, srv, "test-machine", testToken,
 		map[string]string{onBehalfOfHeader: "someone", humanRelayHeader: "1"},
 		map[string]any{"text": "x", "submit": true}))
-	if got := d.last(t); !got.HumanRelay || got.Route != fleet.RouteTerminal {
-		t.Fatalf("driver got humanRelay=%v route=%q; a single-token machine's terminal relay (#195) no longer holds", got.HumanRelay, got.Route)
+	if got := d.last(t); !got.HumanRelay || got.Route != fleet.RouteAuto {
+		t.Fatalf("driver got humanRelay=%v route=%q; a single-token machine's relay (#195) no longer holds", got.HumanRelay, got.Route)
 	}
 }
 
-// route:"terminal" without a label that prints is still refused for a caller
-// that is not a human relay (#180 M8), even now that auto labels for them.
-func TestSendInput_ForcedTerminalUnlabelledStillRefused(t *testing.T) {
+// route:"terminal" from a caller with no printable label and no human-relay
+// grant is no longer refused (#257): it is labelled with the authenticated
+// principal, so it is never recorded as human-typed input (#180 M8).
+func TestSendInput_ForcedTerminalUnlabelledIsLabelled(t *testing.T) {
 	d, srv := routeOwner(t)
-	resp := postInput(t, srv, "agent-token", nil, map[string]any{"text": "x", "submit": true, "route": "terminal"})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	mustOK(t, postInput(t, srv, "agent-token", nil, map[string]any{"text": "x", "submit": true, "route": "terminal"}))
+	got := d.last(t)
+	if got.Route != fleet.RouteTerminal || got.HumanRelay {
+		t.Fatalf("driver got %+v, want a terminal send that is not a human relay", got)
 	}
-	if d.sends() != 0 {
-		t.Error("a refused terminal request reached the driver")
+	if got.From == nil || inboxclient.SenderName(driver.SenderLabel(got.From)) == "" {
+		t.Errorf("driver got from = %+v, want a label that prints", got.From)
 	}
 }

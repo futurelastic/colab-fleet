@@ -1017,13 +1017,13 @@ func TestSendInput_RouteTerminalAndEmptyAreAccepted(t *testing.T) {
 	}
 }
 
-// TestSendInput_RouteTerminalWithoutFromOrHumanRelayGrantIs400 is the
-// #180 review fix itself: route:"terminal" from a caller that is neither
-// configured as a human relay NOR carries a `from` label must be rejected —
-// otherwise an agent could opt an unlabelled delivery out of the (paused
-// today, "for agents only" tomorrow) inbox path and have it recorded as
-// human-typed input, undoing the separation D7 exists to create.
-func TestSendInput_RouteTerminalWithoutFromOrHumanRelayGrantIs400(t *testing.T) {
+// TestSendInput_RouteTerminalWithoutFromOrHumanRelayGrantIsNotA400: route
+// "terminal" from a caller that is neither a human relay nor carries a `from`
+// label was a 400 (#180 review fix). Since #257 it is labelled with the
+// authenticated principal instead (see route_test.go's
+// TestSendInput_ForcedTerminalUnlabelledIsLabelled), so the request shape is no
+// longer rejected: the stub driver here simply cannot send (501).
+func TestSendInput_RouteTerminalWithoutFromOrHumanRelayGrantIsNotA400(t *testing.T) {
 	_, srv := newTestServer(t)
 	body, _ := json.Marshal(map[string]interface{}{"text": "hello", "route": "terminal"})
 	req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions/some-id/input", body)
@@ -1032,12 +1032,8 @@ func TestSendInput_RouteTerminalWithoutFromOrHumanRelayGrantIs400(t *testing.T) 
 		t.Fatalf("Do: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for route:terminal with no from label and no human-relay grant", resp.StatusCode)
-	}
-	env := decodeError(t, resp)
-	if !strings.Contains(env.Error.Message, "human relay") && !strings.Contains(env.Error.Message, "from") {
-		t.Fatalf("message = %q, want it to name the human-relay grant or the from requirement", env.Error.Message)
+	if resp.StatusCode == http.StatusBadRequest {
+		t.Fatalf("status = 400: an unlabelled terminal route is labelled with its principal now, not refused (#257)")
 	}
 }
 

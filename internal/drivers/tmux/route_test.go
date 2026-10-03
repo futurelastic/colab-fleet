@@ -105,8 +105,8 @@ func TestSend_RouteInboxIneligible_RefusedNothingWritten(t *testing.T) {
 			} else {
 				assertInboxExit(t, d, tc.exit, tc.checked, tc.lookalike)
 			}
-			if c := d.Counters(); c[counterRouteAutoFallback] != 0 {
-				t.Errorf("route.auto_fallback = %d for an explicit inbox request; that counter is auto's", c[counterRouteAutoFallback])
+			if c := d.Counters(); c["route.auto_fallback"] != 0 {
+				t.Errorf("route.auto_fallback = %d: that counter was retired in #257", c["route.auto_fallback"])
 			}
 		})
 	}
@@ -192,27 +192,43 @@ func TestSend_RouteTerminalNeverConsultsTheInbox(t *testing.T) {
 	}
 }
 
-// Auto tries the inbox and, when it declines before writing anything, the
-// terminal carries the message. The receipt says which path that was, and the
-// fallback is counted where an operator can see the rate.
-func TestSend_AutoFallbackNamesTheTerminalAndCountsTheFallback(t *testing.T) {
+// #257: auto never tries the inbox. Even where the inbox would take the
+// message, auto goes to the terminal (no live lane here), and the retired
+// route.auto_fallback counter never appears.
+func TestSend_AutoNeverTriesTheInbox(t *testing.T) {
 	rcv := newInboxReceiver(t)
-	declined := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) { return InboxAddress{}, false, nil }
-	d, f := newRoutedDriver(t, rcv, declined, rcv.dialer(receiverRecordsEnvelope))
-
-	got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", routeOpts(fleet.RouteAuto))
-	if err != nil {
-		t.Fatal(err)
+	resolverCalls := 0
+	resolver := func(context.Context, ProcessIdentity) (InboxAddress, bool, error) {
+		resolverCalls++
+		return InboxAddress{Network: "unix", Socket: "/x", Token: "t", ModeClass: inboxclient.ModeBypass}, true, nil
 	}
-	if got.Outcome != fleet.OutcomeQueued || got.RouteOf() != fleet.RouteTerminal {
-		t.Fatalf("got %+v, want queued via the terminal", got)
+	d, f := newRoutedDriver(t, rcv, resolver, rcv.dialer(receiverRecordsEnvelope))
+
+	for _, opts := range []driver.SendOptions{routeOpts(fleet.RouteAuto), func() driver.SendOptions {
+		o := routeOpts(fleet.RouteAuto)
+		o.HumanRelay = true
+		return o
+	}()} {
+		got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Outcome != fleet.OutcomeQueued || got.RouteOf() != fleet.RouteTerminal {
+			t.Fatalf("got %+v, want queued via the terminal", got)
+		}
 	}
 	if !paneTouched(f) {
-		t.Error("the fallback did not reach the pane")
+		t.Error("auto did not reach the pane")
+	}
+	if resolverCalls != 0 {
+		t.Errorf("the inbox resolver was called %d times for auto sends", resolverCalls)
 	}
 	c := d.Counters()
-	if c[counterRouteAutoFallback] != 1 || c["route.decided.auto.terminal"] != 1 {
-		t.Errorf("route.auto_fallback=%d route.decided.auto.terminal=%d, want 1 and 1", c[counterRouteAutoFallback], c["route.decided.auto.terminal"])
+	if _, ok := c["route.auto_fallback"]; ok {
+		t.Errorf("route.auto_fallback is present: %v", c)
+	}
+	if c["route.decided.auto.terminal"] != 2 {
+		t.Errorf("route.decided.auto.terminal = %d, want 2", c["route.decided.auto.terminal"])
 	}
 }
 
@@ -241,9 +257,9 @@ func TestSend_RouteCountersExactlyOncePerSend(t *testing.T) {
 		}
 		return got
 	}
-	send("one", routeOpts(fleet.RouteAuto))      // auto → inbox, delivered
+	send("one", routeOpts(fleet.RouteInbox))     // inbox, delivered
 	setDecline(true)                             //
-	send("two", routeOpts(fleet.RouteAuto))      // auto → declined → terminal
+	send("two", routeOpts(fleet.RouteAuto))      // auto → terminal (the inbox is never tried)
 	send("three", routeOpts(fleet.RouteInbox))   // inbox → refused
 	setDecline(false)                            //
 	send("four", routeOpts(fleet.RouteInbox))    // inbox → delivered
@@ -252,15 +268,13 @@ func TestSend_RouteCountersExactlyOncePerSend(t *testing.T) {
 
 	c := d.Counters()
 	want := map[string]int64{
-		"route.decided.auto.inbox":        1,
 		"route.decided.auto.terminal":     1,
-		"route.decided.inbox.inbox":       2,
+		"route.decided.inbox.inbox":       3,
 		"route.decided.terminal.terminal": 1,
 		"route.decided.auto.none":         1,
 		"route.outcome.inbox.delivered":   2,
 		"route.outcome.inbox.refused":     1,
 		"route.outcome.terminal.queued":   2,
-		counterRouteAutoFallback:          1,
 	}
 	var decided int64
 	for name, n := range c {
@@ -308,8 +322,9 @@ func (p *flipPS) exec(_ context.Context, _ string, _ ...string) ([]byte, error) 
 
 // Identity is verified twice: where ADR 148 needs it (before attestation, so a
 // fallback can never mask it) and immediately before the dial (#116), after the
-// work that takes time. Either failing is the same FINAL refusal — on auto as
-// well as on an explicit inbox request — with nothing dialled and no fallback.
+// work that takes time. Either failing is the same FINAL refusal on the named
+// inbox, with nothing dialled and no fallback. (Route auto no longer reaches
+// the inbox since #257, so there is no auto variant of this failure to test.)
 func TestSend_InboxIdentityVerifiedTwice_EitherFailureIsFinal(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -319,7 +334,7 @@ func TestSend_InboxIdentityVerifiedTwice_EitherFailureIsFinal(t *testing.T) {
 		{"the first verification fails", 2, 0},
 		{"the second verification fails", 3, 1},
 	} {
-		for _, route := range []fleet.Route{fleet.RouteAuto, fleet.RouteInbox} {
+		for _, route := range []fleet.Route{fleet.RouteInbox} {
 			t.Run(tc.name+"/"+string(route), func(t *testing.T) {
 				rcv := newInboxReceiver(t)
 				ps := &flipPS{flipAt: tc.flipAt, before: time.Unix(1785700000, 0), after: time.Unix(1785700999, 0)}
@@ -364,7 +379,7 @@ func TestSend_InboxPartialWrite_UnknownNoPane(t *testing.T) {
 			rcv := newInboxReceiver(t)
 			d, f := newRoutedDriver(t, rcv, attestableResolver(inboxclient.ModeBypass), rcv.budgetDialer(tc.budget))
 
-			got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", routeOpts(fleet.RouteAuto))
+			got, err := d.Send(context.Background(), testCaller, alphaRef, "hello", routeOpts(fleet.RouteInbox))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -306,22 +306,30 @@ func TestSendRefusesRatherThanFallingBackWhenBracketPasteUnavailable(t *testing.
 
 // --- inboxEligible / terminal route (D7, #184) ---------------------------
 
+// Since #257 only a NAMED inbox (route "inbox", submitting, no resume or
+// replace) is inbox-eligible; the unset route, auto and terminal never are.
 func TestInboxEligibleRespectsRouteTerminal(t *testing.T) {
 	base := driver.SendOptions{Submit: true}
-	if !inboxEligible(base) {
-		t.Fatal("sanity: an ordinary submit-only send should be inbox-eligible")
+	named := base
+	named.Route = fleet.RouteInbox
+	if !inboxEligible(named) {
+		t.Fatal("sanity: a named inbox, submit-only send should be inbox-eligible")
 	}
-	for _, route := range []fleet.Route{"", fleet.RouteAuto, fleet.RouteInbox} {
+	for _, route := range []fleet.Route{"", fleet.RouteAuto, fleet.RouteTerminal} {
 		o := base
 		o.Route = route
-		if !inboxEligible(o) {
-			t.Fatalf("route %q must stay inbox-eligible", route)
+		if inboxEligible(o) {
+			t.Fatalf("route %q must not be inbox-eligible: the inbox is used only when named (#257)", route)
 		}
 	}
-	forced := base
-	forced.Route = fleet.RouteTerminal
-	if inboxEligible(forced) {
-		t.Fatal("inboxEligible must return false once Route is terminal (D7)")
+	for name, o := range map[string]driver.SendOptions{
+		"no submit": {Route: fleet.RouteInbox},
+		"resume":    {Submit: true, ResumeIfStranded: true, Route: fleet.RouteInbox},
+		"replace":   {Submit: true, ReplaceIfStranded: true, Route: fleet.RouteInbox},
+	} {
+		if inboxEligible(o) {
+			t.Fatalf("a named inbox with %s must not be inbox-eligible (composer-only shape)", name)
+		}
 	}
 }
 

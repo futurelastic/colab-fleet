@@ -1,5 +1,7 @@
 # 184 — route a send by who is sending it, and never let two paths carry one message
 
+> Superseded in part by [257](257-a-live-lane-is-the-only-input-path.md): a human relay's `auto` is no longer rewritten to `terminal` on the entering machine, and `auto` no longer tries the inbox.
+
 **Issue:** #184
 **Status:** decided and ratified (#193, 2026-09-24); each of the six choices that
 needed a person's ruling is listed at the end with its outcome.

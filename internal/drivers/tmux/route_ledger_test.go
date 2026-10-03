@@ -18,8 +18,13 @@ import (
 // a forced terminal send, an explicit inbox request — puts the same text in
 // front of the receiver again. Every follow-up here asserts on the receivers,
 // not on the receipts: how many times the message reached a session.
+//
+// Since #257 only a named inbox (route "inbox") writes to the inbox, so the
+// first send in every rig below names it. Route auto never writes to the inbox,
+// but it is still a follow-up the ledger must hold: the ledger is consulted
+// before any path is chosen.
 
-// unconfirmedRig sends "hello" to a receiver that reads it and records nothing,
+// unconfirmedRig sends "hello" over the named inbox to a receiver that reads it and records nothing,
 // so the send ends unknown with a ledger entry.
 func unconfirmedRig(t *testing.T, extra ...Option) (*Driver, *fakeMux, *inboxReceiver) {
 	t.Helper()
@@ -31,7 +36,7 @@ func unconfirmedRigFrom(t *testing.T, from *fleet.MessageFrom, extra ...Option) 
 	t.Helper()
 	rcv := newInboxReceiver(t)
 	d, f := newRoutedDriver(t, rcv, attestableResolver(inboxclient.ModeBypass), rcv.dialer(receiverSilent), extra...)
-	opts := routeOpts(fleet.RouteAuto)
+	opts := routeOpts(fleet.RouteInbox)
 	opts.From = from
 	first, err := d.Send(context.Background(), testCaller, alphaRef, "hello", opts)
 	if err != nil {
@@ -87,7 +92,7 @@ func TestLedger_DifferentTextOrSender_NotBlocked(t *testing.T) {
 	rcv2 := rcv // the same receiver: it stays silent, so both sends end unknown
 	_ = rcv2
 
-	got, err := d.Send(context.Background(), testCaller, alphaRef, "something else entirely", routeOpts(fleet.RouteAuto))
+	got, err := d.Send(context.Background(), testCaller, alphaRef, "something else entirely", routeOpts(fleet.RouteInbox))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +104,7 @@ func TestLedger_DifferentTextOrSender_NotBlocked(t *testing.T) {
 	}
 
 	from := &fleet.MessageFrom{Agent: "another-agent"}
-	got, err = d.Send(context.Background(), testCaller, alphaRef, "hello", driver.SendOptions{Submit: true, From: from})
+	got, err = d.Send(context.Background(), testCaller, alphaRef, "hello", driver.SendOptions{Submit: true, From: from, Route: fleet.RouteInbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +245,7 @@ func TestLedger_BoundEvictsTheOldest(t *testing.T) {
 
 	total := unconfirmedPerSession + 1
 	for i := 0; i < total; i++ {
-		got, err := d.Send(context.Background(), testCaller, alphaRef, fmt.Sprintf("message %d", i), routeOpts(fleet.RouteAuto))
+		got, err := d.Send(context.Background(), testCaller, alphaRef, fmt.Sprintf("message %d", i), routeOpts(fleet.RouteInbox))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -316,7 +321,7 @@ func TestLedger_SurvivesARestartAndExpires(t *testing.T) {
 	}
 
 	lapsed := build(now.Add(strandedRetention + time.Minute))
-	got, err = lapsed.Send(context.Background(), testCaller, alphaRef, "hello", routeOpts(fleet.RouteAuto))
+	got, err = lapsed.Send(context.Background(), testCaller, alphaRef, "hello", routeOpts(fleet.RouteInbox))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +357,9 @@ func TestLedger_RecycledSessionIsNotBlocked(t *testing.T) {
 // The other direction. A terminal delivery that could not be confirmed leaves the
 // text in the composer with a stranded record, and the same text must not ALSO
 // be sent as a peer message: it would arrive once, and again when the composer is
-// submitted.
+// submitted. A named inbox is refused (and counted); since #257 route auto never
+// reaches the inbox at all, so it never trips that guard and the terminal path's
+// own stranded-record rules answer it.
 func TestSend_TerminalUnknown_FollowUpNeverTakesInbox(t *testing.T) {
 	rcv := newInboxReceiver(t)
 	d, f := newRoutedDriver(t, rcv, attestableResolver(inboxclient.ModeBypass), rcv.dialer(receiverRecordsEnvelope))
@@ -385,7 +392,7 @@ func TestSend_TerminalUnknown_FollowUpNeverTakesInbox(t *testing.T) {
 			}
 		}
 	}
-	if n := d.Counters()[counterRouteGuardTerminalUnconfirm]; n != 2 {
-		t.Errorf("route.guard.terminal_unconfirmed = %d, want 2", n)
+	if n := d.Counters()[counterRouteGuardTerminalUnconfirm]; n != 1 {
+		t.Errorf("route.guard.terminal_unconfirmed = %d, want 1 (the named inbox only; auto never reaches the inbox)", n)
 	}
 }

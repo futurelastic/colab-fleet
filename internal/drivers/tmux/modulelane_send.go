@@ -17,10 +17,12 @@ package tmux
 // # Which sends may use a module
 //
 //	route            who                          module?
-//	auto             a non-human sender           yes, after the inbox declined
-//	terminal         a human relay's auto (the    yes — it is the user's own
-//	                 service marks it)            turn, which a module carries
-//	terminal         anyone's explicit terminal   never
+//	auto             any sender (#257)            yes — the live lane first; the
+//	                                              built-in path only when the
+//	                                              lane was not live (the inbox
+//	                                              is never tried for auto)
+//	terminal         anyone                       never; refused on a live lane
+//	                                              for a caller's /input
 //	inbox            —                            never
 //	<module name>    anyone eligible for it       that module or a refusal
 //
@@ -261,20 +263,15 @@ func (d *Driver) moduleRouteChoice(route fleet.Route, opts driver.SendOptions) (
 		return string(route), true
 	}
 	composerFree := opts.Submit && !opts.ResumeIfStranded && !opts.ReplaceIfStranded
-	switch {
-	case route == fleet.RouteAuto && composerFree:
-		return "", true
-	case route == fleet.RouteTerminal && opts.TerminalFromAuto && composerFree:
-		return "", true
-	}
-	return "", false
+	// #257: auto is eligible for every sender; an explicit terminal never is.
+	return "", route == fleet.RouteAuto && composerFree
 }
 
 // sendViaModule is Send's module step, run after the inbox and before the
 // built-in path. handled=false means the built-in path carries this send:
 // nothing was written. text is the caller's sanitised text (the ledger's key is
 // computed from it, as the inbox's is); labelled is what the module receives.
-func (d *Driver) sendViaModule(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text, labelled string, opts driver.SendOptions, forced string) (fleet.DeliveryReceipt, bool) {
+func (d *Driver) sendViaModule(ctx context.Context, req fleet.Request, ref fleet.SessionRef, text, labelled string, opts driver.SendOptions, forced, pinned string) (fleet.DeliveryReceipt, bool) {
 	h := d.mods
 	refuse := func(module, why string) fleet.DeliveryReceipt {
 		return fleet.DeliveryReceipt{
@@ -293,6 +290,19 @@ func (d *Driver) sendViaModule(ctx context.Context, req fleet.Request, ref fleet
 		if forced != "" {
 			return refuse(forced, "an earlier terminal delivery of this same text is unconfirmed and still in the session's composer, so it was not also sent through the module"), true
 		}
+		if pinned != "" {
+			// #257: the lane is live, so the terminal is not a path for this send
+			// either, and resumeIfStranded is refused on a live lane. The text is
+			// sitting in the composer; the caller clears it and sends again.
+			d.counters.incr(counterRouteRefusedLaneLive)
+			d.counters.incr(counterRouteRefusedLaneLivePrefix + "stranded_text")
+			return fleet.DeliveryReceipt{
+				Outcome: fleet.OutcomeRefused,
+				Reason: fmt.Sprintf("this session's delivery lane (module %q) is live, but an earlier terminal delivery "+
+					"of this same text is unconfirmed and still in the session's composer, so it was not also sent "+
+					"through the lane. Clear the composer with discard (expect) and send again. Nothing was written", pinned),
+			}, true
+		}
 		return fleet.DeliveryReceipt{}, false
 	}
 
@@ -310,12 +320,19 @@ func (d *Driver) sendViaModule(ctx context.Context, req fleet.Request, ref fleet
 	res, err := mod.deliver(ctx, delivery.Delivery{Req: req, Ref: ref, Text: labelled, Opts: opts}, &tr)
 	if err != nil {
 		d.counters.incr(delivery.CounterPrefix + name + ".error")
+		if pinned != "" {
+			return laneLost(d, pinned, "the lane returned an error"), true
+		}
 		return fleet.DeliveryReceipt{}, false
 	}
 	if res.Declined != "" {
 		if forced != "" {
 			h.count(name, "send_refused_no_live_lane")
 			return refuse(forced, "the session's lane cannot take it: "+sanitizeModuleText(res.Declined, 240)), true
+		}
+		if pinned != "" {
+			h.count(name, "send_refused_lane_lost")
+			return laneLost(d, pinned, sanitizeModuleText(res.Declined, 240)), true
 		}
 		h.count(name, "fallback_to_builtin")
 		return fleet.DeliveryReceipt{}, false
@@ -329,6 +346,20 @@ func (d *Driver) sendViaModule(ctx context.Context, req fleet.Request, ref fleet
 		})
 	}
 	return res.Receipt.WithModule(name), true
+}
+
+// laneLost is the refusal for a send that read a live lane at the gate (#257)
+// and then found it unusable before a byte was written. The lane is the
+// session's only input path while it is live, so the send is refused, not
+// carried by the terminal; whatever degraded the lane makes the next send see
+// no live lane and take the terminal honestly.
+func laneLost(d *Driver, module, why string) fleet.DeliveryReceipt {
+	d.counters.incr(counterRouteRefusedLaneLost)
+	return fleet.DeliveryReceipt{
+		Outcome: fleet.OutcomeRefused,
+		Reason: fmt.Sprintf("this session's delivery lane (module %q) stopped being usable while this send was in "+
+			"flight (%s). Send again. Nothing was written", module, why),
+	}.WithModule(module)
 }
 
 // laneModule is the module that holds a usable-in-principle lane for this

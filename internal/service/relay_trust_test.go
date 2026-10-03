@@ -12,6 +12,7 @@ import (
 	fleet "github.com/futurelastic/muster"
 	"github.com/futurelastic/muster/internal/driver"
 	"github.com/futurelastic/muster/internal/drivers/stub"
+	"github.com/futurelastic/muster/internal/inboxclient"
 )
 
 // sendCapturingDriver is stub.Driver that accepts every send and remembers
@@ -89,14 +90,17 @@ func TestHumanRelayCrossesAPeerRelay(t *testing.T) {
 
 // The same headers from a caller that is not a configured peer assert
 // authority it was never given: ignored, so the unlabelled terminal send is
-// refused, and a label's machine is stamped rather than blanked.
+// labelled with its principal (#257, not refused), and a label's machine is stamped rather than blanked.
 func TestRelayAssertionsFromAnUntrustedCallerAreIgnored(t *testing.T) {
 	d, srv := relayOwner(t)
 	resp := postInput(t, srv, "agent-token",
 		map[string]string{onBehalfOfHeader: "human-relay", humanRelayHeader: "1"},
 		map[string]any{"text": "hello", "submit": true, "route": "terminal"})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := d.opts[len(d.opts)-1]; got.HumanRelay || got.From == nil {
+		t.Fatalf("driver got %+v, want the untrusted relay claim ignored (not a human relay) and the agent labelled", got)
 	}
 
 	resp = postInput(t, srv, "agent-token", map[string]string{onBehalfOfHeader: "someone"},
@@ -109,26 +113,31 @@ func TestRelayAssertionsFromAnUntrustedCallerAreIgnored(t *testing.T) {
 	}
 }
 
-// #180 M8: route:"terminal" needs a label that PRINTS. `{}` with a blanked
-// machine, or a name label normalisation drops whole, prints nothing.
-func TestRouteTerminalRefusesALabelThatPrintsAsNothing(t *testing.T) {
-	_, srv := newTestServer(t) // no principal table: relay assertions are honoured
+// #180 M8, #257: a forced terminal route whose `from` prints as nothing (`{}`
+// with a blanked machine, or a name label normalisation drops whole) is no
+// longer refused: it is labelled with something that prints, so it can never
+// be recorded as human-typed input.
+func TestRouteTerminalLabelsAFromThatPrintsAsNothing(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		headers map[string]string
-		from    map[string]any
+		name string
+		from map[string]any
 	}{
-		{"empty from under a relay claim", map[string]string{onBehalfOfHeader: "x"}, map[string]any{}},
-		{"an unassigned character", nil, map[string]any{"agent": "͸"}},
+		{"empty from", map[string]any{}},
+		{"an unassigned character", map[string]any{"agent": "͸"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := postInputTo(t, srv, "test-machine", testToken, tc.headers,
+			d, srv := relayOwner(t)
+			resp := postInput(t, srv, "agent-token", nil,
 				map[string]any{"text": "hello", "route": "terminal", "from": tc.from})
-			if resp.StatusCode != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
 			}
-			if msg := decodeError(t, resp).Error.Message; !strings.Contains(msg, "prints") {
-				t.Fatalf("message = %q", msg)
+			got := d.opts[len(d.opts)-1]
+			if got.Route != fleet.RouteTerminal || got.HumanRelay {
+				t.Fatalf("driver got %+v, want a terminal send that is not a human relay", got)
+			}
+			if inboxclient.SenderName(driver.SenderLabel(got.From)) == "" {
+				t.Fatalf("from = %+v prints as nothing", got.From)
 			}
 		})
 	}
