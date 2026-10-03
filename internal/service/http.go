@@ -89,6 +89,7 @@ func NewMux(svc *Service, cfg Config) *http.ServeMux {
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions", withAuth(cfg, mutating(svc, cfg, handleCreateSession(svc))))
 	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}", withAuth(cfg, reading(handleGetSession(svc))))
 	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}/environment", withAuth(cfg, reading(handleSessionEnvironment(svc))))
+	mux.HandleFunc("GET /v1/machines/{machine}/sessions/{id}/turns", withAuth(cfg, revealing(handleTurns(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/input", withAuth(cfg, mutating(svc, cfg, handleSendInput(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/respond", withAuth(cfg, mutating(svc, cfg, handleRespond(svc))))
 	mux.HandleFunc("POST /v1/machines/{machine}/sessions/{id}/interrupt", withAuth(cfg, mutating(svc, cfg, handleInterrupt(svc))))
@@ -398,6 +399,10 @@ func writeDriverError(w http.ResponseWriter, machine fleet.MachineId, deadline t
 		// fleet.ErrorUnreachable's comment for why conflating them is the
 		// worst mistake a client of this API can make.
 		writeError(w, &fleet.Error{Kind: fleet.ErrorNotFound, Message: err.Error(), Machine: machine})
+	case errors.Is(err, fleet.ErrNoTurnRecord):
+		// The session exists; the source of its turns does not (yet). Retryable,
+		// because the usual cause is a record the runtime has not written.
+		writeError(w, &fleet.Error{Kind: fleet.ErrorNotFound, Message: err.Error(), Machine: machine, Retryable: true})
 	case errors.Is(err, fleet.ErrAmbiguousTarget):
 		// §5.4: the caller's belief and the world disagree. Well-formed
 		// request, conflicting state — 409, not 400.

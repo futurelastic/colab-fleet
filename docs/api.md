@@ -82,6 +82,7 @@ every configured peer, exactly one hop — peers never recurse.
 | `POST` | `/v1/machines/{machine}/sessions` | Start a session | `create` | yes |
 | `GET` | `/v1/machines/{machine}/sessions/{id}` | Read one session | — ⚠️ | yes |
 | `GET` | `…/{id}/environment` | What environment the process actually got | — ⚠️ | yes |
+| `GET` | `…/{id}/turns` | What the session's agent wrote — assistant turns only | `send` | yes |
 | `POST` | `…/{id}/input` | Deliver text to the composer | `send` | yes |
 | `POST` | `…/{id}/respond` | Answer a prompt the session is blocked on | `send` | yes |
 | `POST` | `…/{id}/keys` | Deliver one raw key to the screen (incl. `BTab`: cycles the permission mode) | `keys` ⚠️ | yes |
@@ -245,6 +246,37 @@ What environment variables and `PATH` the session's process actually received �
 names only, never values. `{known: false}` is an ordinary `200`, not an error.
 This exists because a session that inherits the wrong `PATH` fails in a way
 nothing else in the API can explain.
+
+### `GET /v1/machines/{machine}/sessions/{id}/turns`
+
+What the session's own agent wrote — **assistant turns only**, oldest first:
+`{"turns": [{"at", "text"}], "next": "<cursor>"}`. This is the one place the API
+returns content a session produced, and it is narrow on purpose: tool calls and
+results, file contents, the messages a human or another session sent in, system
+and hook output and reasoning are never in it, and a turn that cannot be
+classified with certainty is left out. It carries no `status` or `result` — a turn
+is what the agent said, not the service vouching for it; whether the session
+finished is `state`. Not to be confused with `state.turns`, the liveness count.
+
+| Query | |
+|---|---|
+| `since` | A `next` from an earlier page. Omit it for the most recent `limit` turns. |
+| `limit` | 1–100, default 20. Over 100 is refused, not clamped. |
+| `startedAt` | The `startedAt` you saw. A recycled id is `409` instead of someone else's words. |
+
+`next` is returned even when `turns` is empty, so a poller always has a place to
+resume; call again until it stops moving. A cursor from another conversation (a
+`/clear`, a relaunch) is `409` — read without `since` to start again. A session
+whose conversation record cannot be identified yet is `404` with `retryable`,
+which is not the same as an agent that has said nothing (`200`, `turns: []`).
+A turn over 64 KiB is cut and marked `"truncated": true`.
+
+Needs the `send` grant under a principal table (the one `input` and `respond`
+use; there is no separate grant) and not `relay` for a peer target. Each read is
+audited — who, which session, how many turns, never the text. **The text is
+whatever the agent chose to write**: an agent that echoes a secret into its own
+prose has put it where this route can return it. Reason it is allowed, and what
+it costs: `docs/adr/258-assistant-turns-read.md`.
 
 ---
 
@@ -927,11 +959,14 @@ service, or this service has begun growing into a second supervisor.
 > **muster knows a session has a working directory.
 > It does not know what a worktree is.**
 
-Nor does any endpoint return a session's screen text, transcript, or other
-content the session itself produced — no "give me the result" route, and
-nothing stores one on a session's behalf (muster #82). A dispatched
-agent's answer travels the way its input did: the caller names a reply
-address at dispatch time, and the worker delivers its answer there itself.
+Nor does any endpoint return a session's screen text, a raw transcript, or
+content a session produced — with **one** exception: `GET …/{id}/turns` returns
+what the session's own agent wrote and nothing else (muster #258, narrowing
+#82). There is still no "give me the result" route, and nothing stores a result
+on a session's behalf. A dispatched agent's answer can still travel the way its
+input did — the caller names a reply address at dispatch time and the worker
+delivers its answer there itself — and a coordinator can also read it back with
+`turns`. One pushes, one pulls.
 
 ---
 

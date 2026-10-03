@@ -1,7 +1,7 @@
 # ADR: a session's result is delivered by the session, not returned by this API
 
 **Issue:** #82
-**Status:** decided
+**Status:** decided — narrowly superseded by #258, which permits reading a session's assistant turns (and nothing else); every other part of this decision stands. See [`258-assistant-turns-read.md`](258-assistant-turns-read.md).
 
 ## Context
 

@@ -718,6 +718,45 @@ will start normally and fail at its first tool call.
 "we never found out" are opposite answers, and a driver must not collapse them.
 
 ```
+GET /v1/machines/{machine}/sessions/{id}/turns?since=&limit=&startedAt=&runtime=
+→ 200 { "turns": [ { "at": "...", "text": "..." } ],     ← oldest first
+        "next": "<opaque cursor>" }
+→ 200 { "turns": [], "next": "..." }      ← nothing (new): a normal answer to a poll
+→ 400 invalid        limit outside 1..100 (refused, not clamped); startedAt not RFC 3339
+→ 401 unauthorized   a principal table is configured and the caller lacks `send`
+→ 404 not_found      no such session; or the session exists but no readable record
+                     of its conversation could be identified (retryable: true)
+→ 409 conflict       startedAt disagrees with the live session; or `since` was issued
+                     for another conversation / points past the end of the record
+→ 501 unsupported    the runtime, or the peer's build, cannot read turns
+```
+
+What the session's own agent wrote — **assistant turns only** (muster #258;
+session-abstraction.md §5.8 as narrowed by
+`docs/adr/258-assistant-turns-read.md`). A turn is the text of one entry the
+runtime recorded as a top-level assistant message. **Never returned, whatever the
+record holds:** tool calls and tool results, file contents, the messages a human
+or another session sent in, system and hook output, reasoning, a sub-agent's
+entries, and the runtime's own synthetic notices. An entry that cannot be
+classified with certainty is left out. The wire type has no `status`, `kind` or
+`result`: a turn is what the agent said, not the service vouching for it, and
+whether the session finished is `state`.
+
+Without `since` the most recent `limit` turns (default 20, at most 100) are
+returned. `next` resumes after what was returned — also when `turns` is empty, so
+a poller always has a place to resume. A page may be empty while `next` still
+moves forward when a long stretch of the record held no agent text; call again
+until `next` stops moving. A turn longer than 64 KiB is cut and carries
+`"truncated": true`.
+
+`startedAt` is corroborated against the live session before anything is read, as
+on `DELETE`; omitted, the read has the weaker id-only guarantee. **Authority:**
+with a principal table the `send` grant — the one `input` and `respond` require —
+and not `relay` for a peer target; the owning machine applies its own table to the
+asserted caller. Each read is audited (caller, session, number of turns, outcome),
+never the text. Unrelated to `SessionState.turns`, the liveness count.
+
+```
 GET /v1/machines/{machine}/sessions/{id}?runtime=
 → 200 { "machine": "...", "id": "...", "name": "...", "runtime": "...",
         "cwd": "...", "agent": "...", "model": "...", "startedAt": "...",
@@ -1997,10 +2036,15 @@ planning (§1 non-goals). If such an endpoint ever looks necessary, the
 supervisor is asking the wrong service, or this service has begun to grow into
 a second supervisor.
 
-No endpoint returns a session's screen text, transcript, or other content the
-session itself produced, and none stores a result on a session's behalf
-(session-abstraction.md §5.8, muster #82). This is a different kind of
-absence from the paragraph above — not a domain this service doesn't
-understand, but a data class it declines to carry regardless of domain. A
-dispatched agent's answer is delivered by the agent, to a reply address the
-caller supplied at dispatch, over `input` — never read back through this API.
+No endpoint returns a session's screen text, a raw transcript, or content a
+session produced, **except one narrow, owner-ruled route**:
+`GET …/{id}/turns` (§3.3, muster #258) returns what the session's own agent
+wrote — its assistant turns — and nothing else: no tool output, no inbound
+message, no system text. None stores a result on a session's behalf
+(session-abstraction.md §5.8, muster #82, as narrowed by
+`docs/adr/258-assistant-turns-read.md`). The data class is still one this
+service declines to carry in general, not a domain it doesn't understand; the
+exception is bounded by provenance, not by sensitivity. A dispatched agent's
+answer may still be delivered by the agent, to a reply address the caller
+supplied at dispatch, over `input`; the two are complementary — one pushes, one
+pulls.
