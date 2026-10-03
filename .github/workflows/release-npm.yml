@@ -14,25 +14,17 @@ name: Release npm
 # launcher pins the platform packages to that exact version and refuses to run
 # a mismatched one. Platform packages are published first, the launcher last.
 #
-# TWO ENTRY POINTS, ONE PIPELINE
-#
-#   workflow_call      for a release workflow to call from the SAME run that
-#                      creates the tag. This is the reason this is a reusable
-#                      workflow and not `on: push: tags` / `on: release`: a tag
-#                      created with GITHUB_TOKEN does not trigger other
-#                      workflows, so a listener would never fire for an
-#                      automated release. release-auto.yml calls this file from
-#                      the run that cuts or finalizes the tag (#250).
-#   workflow_dispatch  publish (or dry-run) an existing tag by hand — also how
-#                      a tag cut before this workflow existed is backfilled.
+# ONE ENTRY POINT: workflow_dispatch. release-auto.yml dispatches it with the tag
+# it just cut (a tag created with GITHUB_TOKEN triggers no listener, but
+# GITHUB_TOKEN may dispatch a workflow), and a person dispatches it to publish or
+# dry-run an existing tag by hand. It is deliberately NOT a reusable workflow:
+# npm matches the OIDC token's workflow_ref, and a called workflow reports its
+# caller, so a call would need the caller named as trusted publisher (#250).
 #
 # TRUSTED PUBLISHING (OIDC) ONLY. No npm token is stored, read or accepted, and
 # the job refuses to run if one is in its environment. One-time setup on
 # npmjs.com, for EACH of the five packages: Settings -> Trusted publishing ->
-# GitHub Actions, this repository, workflow file name = the file that STARTS the
-# run. For a manual dispatch that is `release-npm.yml`; when release-auto.yml
-# calls this one it is `release-auto.yml` — npm is expected to check the caller,
-# not the called workflow (#250 records what the first real publish showed).
+# GitHub Actions, this repository, workflow file name = `release-npm.yml`.
 #
 # GITHUB-HOSTED, ALWAYS. npm trusted publishing does not support self-hosted
 # runners. The repo is public, so this costs nothing.
@@ -46,17 +38,6 @@ name: Release npm
 # `npm publish --dry-run` on every package. It needs no npm identity and
 # publishes nothing, so it is how a change to this file is proven.
 on:
-  workflow_call:
-    inputs:
-      tag:
-        description: Existing tag to build and publish (e.g. v0.2.0)
-        required: true
-        type: string
-      dry_run:
-        description: Build and `npm publish --dry-run`; publish nothing
-        required: false
-        type: boolean
-        default: false
   workflow_dispatch:
     inputs:
       tag:
