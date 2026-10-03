@@ -475,7 +475,13 @@ func handleHealth(svc *Service) http.HandlerFunc {
 			// is refused against an older build rather than forwarded and
 			// silently dropped there.
 			"supportsLaunchSettings": true,
-			"drivers":                svc.driverSummaries(),
+			// The keys a session NOT in bypass mode may carry in `settings`
+			// (muster #254). Absent on a peer that carries only #247, whose
+			// `settings` is bypass-only, so a relaying peer reads absence as
+			// "refuse a non-bypass create" rather than forwarding it into a
+			// 400 — or, worse, into an older build that drops the field.
+			"launchSettingsOutsideBypass": fleet.LaunchSettingsOutsideBypass(),
+			"drivers":                     svc.driverSummaries(),
 			// counters is the read path #9 asked for onto the registry #44
 			// built (internal/drivers/tmux/counters.go): an integer per
 			// named fact, keyed by runtime. It is deliberately read here
@@ -863,7 +869,8 @@ type createSessionBody struct {
 	McpConfig []fleet.AbsolutePath `json:"mcpConfig"`
 
 	// Settings is launch-time runtime configuration for the agent CLI
-	// (muster #247), bypass-mode only. See fleet.SessionSpec.Settings.
+	// (muster #247). Any key in bypass mode; only the allow-listed keys
+	// outside it (muster #254). See fleet.SessionSpec.Settings.
 	Settings json.RawMessage `json:"settings"`
 
 	// Labels are stored by the service against the created session
@@ -893,8 +900,10 @@ func createNeedsSend(body createSessionBody) string {
 		// authorities, and only the second needs saying out loud.
 		return "mcpConfig"
 	case len(bytes.TrimSpace(body.Settings)) > 0 && !bytes.Equal(bytes.TrimSpace(body.Settings), []byte("null")):
-		// Runtime settings for a session that acts without asking (#247); the
-		// same step up as permissionMode, which it can only accompany.
+		// Launch-time runtime settings (#247): a step up from plain create like
+		// permissionMode. Still needs `send` outside bypass (#254) — the
+		// allow-listed key widens nothing, but the field's grant is by field, not
+		// by key, so a client's authority does not depend on what it put in it.
 		return "settings"
 	}
 	return ""
@@ -986,7 +995,7 @@ func handleCreateSession(svc *Service) http.HandlerFunc {
 			writeError(w, &fleet.Error{Kind: fleet.ErrorInvalid, Message: err.Error() + " (#153)", Machine: machine})
 			return
 		}
-		// muster #247: shape and the bypass-only pairing, refused here with a
+		// muster #247/#254: shape and the mode/key pairing, refused here with a
 		// reason before a driver — or a peer — is involved. A driver checks
 		// again (Create is a public method), so this is the cheap early answer.
 		if _, err := fleet.ValidateLaunchSettings(body.PermissionMode, body.Settings); err != nil {

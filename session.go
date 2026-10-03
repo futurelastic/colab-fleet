@@ -237,19 +237,23 @@ type SessionSpec struct {
 	// client that needs the switch has to start the process itself, and a session
 	// started that way misses everything this service wires in at launch.
 	//
-	// # Scoped to bypass, deliberately
+	// # Scoped by key outside bypass (#254)
 	//
-	// Accepted only with PermissionMode "bypass" and refused otherwise (see
-	// ValidateLaunchSettings): it cannot widen a session that still asks before
-	// acting. The alternative recorded for #247 — writing the value into the
-	// machine-wide settings file — was rejected because it changes every session
-	// on the machine, not only bypass ones; the other shape considered, this
-	// service emitting the one cross-session switch itself whenever the mode is
-	// bypass, was passed over because it would hard-code one setting of someone
-	// else's CLI into this API and need a new release for the next switch.
+	// With PermissionMode "bypass" any key is carried (#247). Without it only
+	// the keys on the allow-list ValidateLaunchSettings enforces are — today
+	// `crossSessionInbound` — and any other key is refused naming it, so a
+	// session that still asks before acting cannot be widened by accident. #247
+	// first scoped the whole field to bypass; that left a client relaunching a
+	// default-mode session through `resume` unable to reproduce its argv. An
+	// allow-list rather than a deny-list, because this service holds no opinion
+	// about which of the CLI's settings widen a session: a deny-list is a claim
+	// it cannot keep, and it fails open when the CLI adds a key. The
+	// alternatives recorded for #247 — writing the value into the machine-wide
+	// settings file, or this service emitting the one cross-session switch
+	// itself — remain rejected for the reasons given there.
 	//
-	// It requires the `send` grant on top of `create`, like PermissionMode: it is
-	// configuration for a session that acts without asking.
+	// It requires the `send` grant on top of `create`, like PermissionMode, in
+	// every mode: the grant is by field, not by key.
 	//
 	// # Not for secrets
 	//

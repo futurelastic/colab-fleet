@@ -276,21 +276,34 @@ bypass-mode session that must accept inbound cross-session messages:
 `{"permissionMode": "bypass", "settings": {"crossSessionInbound": "accept"}}`.
 Rules:
 
-- **Bypass only.** `settings` without `permissionMode: "bypass"` is `400`, with
-  the reason. It cannot widen a session that still asks before acting.
+- **Any key in bypass; an allow-list outside it** (#254). With
+  `permissionMode: "bypass"` every key is carried. Without it only
+  `crossSessionInbound` is; any other key is `400`, naming the first offender,
+  so a session that still asks before acting cannot be widened by accident. The
+  list is allow, not deny, because this service holds no opinion about which of
+  the CLI's settings widen a session — a new key is refused until someone adds
+  it on purpose. It exists so that a client relaunching a default-mode session
+  with `create` + `resume` can reproduce the argv the session booted with:
+  `{"resume": "<conversation id>", "settings": {"crossSessionInbound": "accept"}}`.
+  A non-bypass session with `settings` is still not a bypass session — no
+  `--dangerously-skip-permissions` is added.
 - **A JSON object, at most 4096 bytes once compacted.** Invalid JSON, an array,
   a scalar, or an oversize value is `400` naming which. `null` is the same as
   absent. Keys are not interpreted: the CLI owns what its settings may switch on.
 - **Not for secrets.** The compacted JSON is one argv element, readable from any
   process table on the machine. Launch-time switches only; credentials go in
   `env` or a file named by `mcpConfig`.
-- **Needs `send`** on top of `create`, like `permissionMode`.
-- A session without `settings` is created exactly as before, and a non-bypass
-  session never carries `--settings`. A runtime with no CLI to hand it to
+- **Needs `send`** on top of `create`, like `permissionMode` — in every mode:
+  the grant is by field, not by key.
+- A session without `settings` is created exactly as before. A runtime with no CLI to hand it to
   (the opencode driver) answers `unsupported`.
 - Relayed to a peer that predates the field, the create is refused
   `unsupported` before anything is started there (`GET /v1/health` on the peer
-  reports `supportsLaunchSettings: true` when it carries it).
+  reports `supportsLaunchSettings: true` when it carries it). The two
+  behaviours are told apart on the same endpoint: `launchSettingsOutsideBypass`
+  lists the keys the peer accepts on a non-bypass session (`["crossSessionInbound"]`).
+  A peer that carries only #247 lacks the list, and a non-bypass create is
+  refused `unsupported` before it is sent there rather than relayed into a `400`.
 
 Replaying a spent `Idempotency-Key` against a session that has since ended is
 `409` (`reason: "replay-of-ended-session"`), not `201` — muster #234. The

@@ -191,6 +191,11 @@ type Driver struct {
 	// `settings` create field (muster #247), cached and re-asked exactly as
 	// supportsConversationId is — see requireLaunchSettings.
 	supportsLaunchSettings *bool
+	// launchSettingsOutsideBypass is the key list the peer's /v1/health
+	// advertised for `settings` on a session NOT in bypass mode (muster #254).
+	// Nil means the peer has not answered or predates #254 — whose `settings`
+	// is bypass-only — see requireLaunchSettings.
+	launchSettingsOutsideBypass []string
 
 	// self is this machine's own id, named to the peer when asking whether it
 	// is listed there (muster #154). Empty means the standing probe is
@@ -449,6 +454,7 @@ func (d *Driver) RefreshCapabilities(ctx context.Context, req fleet.Request) err
 			d.labelLimits = h.Labels
 			d.supportsConversationId = h.SupportsConversationId
 			d.supportsLaunchSettings = h.SupportsLaunchSettings
+			d.launchSettingsOutsideBypass = h.LaunchSettingsOutsideBypass
 			d.mu.Unlock()
 		}
 		return nil
@@ -477,6 +483,11 @@ type peerHealthBody struct {
 	// create field (muster #247); the same bare-flag shape as
 	// SupportsConversationId, for the same reason.
 	SupportsLaunchSettings *bool `json:"supportsLaunchSettings"`
+	// LaunchSettingsOutsideBypass lists the `settings` keys the peer accepts on
+	// a session that is not in bypass mode (muster #254). Absent on a peer that
+	// carries only #247, where `settings` outside bypass is a 400 — or on a
+	// peer older still, where it is dropped.
+	LaunchSettingsOutsideBypass []string `json:"launchSettingsOutsideBypass"`
 }
 
 // requireLabels refuses a labelled write to a peer that would drop the labels
@@ -543,6 +554,7 @@ func (d *Driver) requireConversationId(ctx context.Context, req fleet.Request) e
 	d.labelLimits = h.Labels
 	d.supportsConversationId = h.SupportsConversationId
 	d.supportsLaunchSettings = h.SupportsLaunchSettings
+	d.launchSettingsOutsideBypass = h.LaunchSettingsOutsideBypass
 	d.mu.Unlock()
 	if h.SupportsConversationId == nil || !*h.SupportsConversationId {
 		return &fleet.Error{
@@ -565,11 +577,38 @@ func (d *Driver) requireConversationId(ctx context.Context, req fleet.Request) e
 // holds inbound cross-session messages. Only a positive cached answer is
 // trusted; anything else is asked again, so an upgraded peer is not refused on
 // stale evidence.
-func (d *Driver) requireLaunchSettings(ctx context.Context, req fleet.Request) error {
+func (d *Driver) requireLaunchSettings(ctx context.Context, req fleet.Request, spec fleet.SessionSpec) error {
+	// muster #254: outside bypass the peer must also carry the keys asked for.
+	// A peer that carries only #247 answers `supportsLaunchSettings: true` and
+	// then refuses a non-bypass create with a 400; refusing here, before
+	// anything crosses, gives the same verdict with the reason named on this
+	// side instead of a relayed one.
+	var need []string
+	if spec.PermissionMode != fleet.PermissionModeBypass {
+		need = fleet.LaunchSettingsKeys(spec.Settings)
+	}
+	ok := func(supported *bool, keys []string) bool {
+		if supported == nil || !*supported {
+			return false
+		}
+		if len(need) == 0 {
+			return true
+		}
+		have := make(map[string]bool, len(keys))
+		for _, k := range keys {
+			have[k] = true
+		}
+		for _, k := range need {
+			if !have[k] {
+				return false
+			}
+		}
+		return true
+	}
 	d.mu.RLock()
-	supported := d.supportsLaunchSettings
+	supported, keys := d.supportsLaunchSettings, d.launchSettingsOutsideBypass
 	d.mu.RUnlock()
-	if supported != nil && *supported {
+	if ok(supported, keys) {
 		return nil
 	}
 	h, err := d.peerHealth(ctx, req)
@@ -582,16 +621,25 @@ func (d *Driver) requireLaunchSettings(ctx context.Context, req fleet.Request) e
 	d.labelLimits = h.Labels
 	d.supportsConversationId = h.SupportsConversationId
 	d.supportsLaunchSettings = h.SupportsLaunchSettings
+	d.launchSettingsOutsideBypass = h.LaunchSettingsOutsideBypass
 	d.mu.Unlock()
-	if h.SupportsLaunchSettings == nil || !*h.SupportsLaunchSettings {
+	if ok(h.SupportsLaunchSettings, h.LaunchSettingsOutsideBypass) {
+		return nil
+	}
+	if h.SupportsLaunchSettings != nil && *h.SupportsLaunchSettings && len(need) > 0 {
 		return &fleet.Error{
 			Kind: fleet.ErrorUnsupported,
-			Message: fmt.Sprintf("peer %s does not carry launch settings (older build); the create was not sent, "+
-				"because that peer would accept it and silently start the session without them", d.machine),
+			Message: fmt.Sprintf("peer %s carries launch settings only for bypass sessions (it predates #254, or does not list %s); "+
+				"the create was not sent, because that peer would refuse it or start the session without them", d.machine, strings.Join(need, ", ")),
 			Machine: d.machine,
 		}
 	}
-	return nil
+	return &fleet.Error{
+		Kind: fleet.ErrorUnsupported,
+		Message: fmt.Sprintf("peer %s does not carry launch settings (older build); the create was not sent, "+
+			"because that peer would accept it and silently start the session without them", d.machine),
+		Machine: d.machine,
+	}
 }
 
 // peerHealth reads the subset of the peer's health endpoint this driver
@@ -1228,7 +1276,7 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 		}
 	}
 	if len(spec.Settings) > 0 {
-		if err := d.requireLaunchSettings(ctx, req); err != nil {
+		if err := d.requireLaunchSettings(ctx, req, spec); err != nil {
 			return fleet.Session{}, err
 		}
 	}
