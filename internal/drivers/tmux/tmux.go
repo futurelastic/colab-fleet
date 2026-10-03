@@ -4626,8 +4626,8 @@ func (d *Driver) Create(ctx context.Context, req fleet.Request, key string, spec
 	if err := validateMcpConfig(spec.McpConfig); err != nil {
 		return fleet.Session{}, fmt.Errorf("create: %w", err)
 	}
-	// muster #247: launch-time settings are bypass-only and must be a JSON
-	// object. Checked here as well as in the HTTP handler — Create is a public
+	// muster #247/#254: launch-time settings must be a JSON object, and outside
+	// bypass may carry only the allow-listed keys. Checked here as well as in the HTTP handler — Create is a public
 	// method and must not trust that another layer already validated.
 	if _, err := fleet.ValidateLaunchSettings(spec.PermissionMode, spec.Settings); err != nil {
 		return fleet.Session{}, &fleet.Error{Kind: fleet.ErrorInvalid, Message: "create: " + err.Error(), Machine: d.machine}
@@ -4960,14 +4960,14 @@ func claudeCodeCommand(spec fleet.SessionSpec, contextFile string) []string {
 	}
 	if spec.PermissionMode == fleet.PermissionModeBypass {
 		argv = append(argv, "--dangerously-skip-permissions")
-		// muster #247: launch-time settings ride only with bypass — the
-		// pairing ValidateLaunchSettings enforces at Create, repeated here so
-		// this builder can never emit the flag for a session that is not in
-		// that posture even if called with an unvalidated spec. Compact JSON
-		// is one argv element beginning with "{", so it cannot be read as a flag.
-		if settings, err := fleet.ValidateLaunchSettings(spec.PermissionMode, spec.Settings); err == nil && settings != "" {
-			argv = append(argv, "--settings", settings)
-		}
+	}
+	// muster #247/#254: launch-time settings, for any mode. The pairing of mode
+	// and keys ValidateLaunchSettings enforces at Create is repeated here, so
+	// this builder can never emit keys outside the boundary even if called with
+	// an unvalidated spec — an invalid pairing emits nothing. Compact JSON is
+	// one argv element beginning with "{", so it cannot be read as a flag.
+	if settings, err := fleet.ValidateLaunchSettings(spec.PermissionMode, spec.Settings); err == nil && settings != "" {
+		argv = append(argv, "--settings", settings)
 	}
 	for _, path := range spec.McpConfig {
 		// Repeated rather than joined: the flag takes one path per occurrence,

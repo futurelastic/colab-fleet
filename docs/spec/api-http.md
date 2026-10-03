@@ -76,6 +76,7 @@ GET /v1/health
         "labels": { "maxKeys": 16, "maxKeyBytes": 128, "maxValueBytes": 128 },
         "supportsConversationId": true,
         "supportsLaunchSettings": true,
+        "launchSettingsOutsideBypass": ["crossSessionInbound"],
         "drivers": [...] }
 
 GET /v1/machines[?verify=1]
@@ -667,16 +668,20 @@ exists for the settings the CLI reads only at boot and from no environment
 variable, so `env` cannot carry them — without a field a client that needs one
 starts the process itself and misses everything the service wires in at launch.
 
-It is accepted **only with `permissionMode: "bypass"`**: `settings` on any other
-session is refused `invalid` with the reason, so it cannot widen a session that
-still asks before acting. It must be a JSON object (invalid JSON, `[…]`, a
-scalar, or more than 4096 bytes compacted is `invalid`; `null` means absent); its
-keys are not interpreted. It requires the **`send` grant in addition to
+With `permissionMode: "bypass"` any key is carried. **Without it only the keys on
+an allow-list are** (#254; today `crossSessionInbound`, advertised as §3.1's
+`launchSettingsOutsideBypass`): any other key is refused `invalid`, naming it, so
+a session that still asks before acting cannot be widened by accident — and a
+default-mode session relaunched with `resume` can still carry the setting it
+booted with. It must be a JSON object (invalid JSON, `[…]`, a scalar, or more
+than 4096 bytes compacted is `invalid`; `null` means absent); outside the
+allow-list, keys are not interpreted. It requires the **`send` grant in addition to
 `create`**, like `permissionMode`. Because the value is an argv element, it is
 for launch-time switches only — never a credential; those go in `env` or a file
 named by `mcpConfig`. A runtime with no CLI to hand it to answers `unsupported`,
-and so does a peer that predates the field (§3.1's `supportsLaunchSettings`),
-before anything is started there.
+and so does a peer that predates the field (§3.1's `supportsLaunchSettings`) —
+or, for a non-bypass create, one whose `launchSettingsOutsideBypass` does not
+list every key sent — before anything is started there.
 
 Caller-supplied values that land in the agent's argv (`agent`, `model`, `effort`,
 `resume`, `mcpConfig`) may not begin with `-`: the CLI would read them as flags,

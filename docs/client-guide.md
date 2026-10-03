@@ -998,8 +998,10 @@ also starts those is a larger authority than starting a session.
 environment variable — so `env` cannot carry it. The case it exists for: a
 bypass session that must accept inbound cross-session messages,
 `"permissionMode": "bypass", "settings": {"crossSessionInbound": "accept"}`.
-It is accepted **only with `permissionMode: "bypass"`** (anything else is a
-`400` with the reason), must be a JSON object of at most 4096 bytes, and needs
+Any key is accepted with `permissionMode: "bypass"`; without it only
+`crossSessionInbound` is (any other key is a `400` naming it), which is what lets
+a relaunch through `resume` keep the setting a default-mode session booted with.
+It must be a JSON object of at most 4096 bytes, and needs
 the `send` grant like `permissionMode`. It lands on a command line, so it is for
 launch-time switches, never a credential.
 

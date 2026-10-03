@@ -118,12 +118,35 @@ func TestHealth_ReportsSupportsLaunchSettings(t *testing.T) {
 	}
 }
 
+// muster #254: what separates a peer that carries non-bypass settings from one
+// that carries only #247's bypass-only field is this list on /v1/health.
+func TestHealth_ReportsLaunchSettingsOutsideBypass(t *testing.T) {
+	_, srv := newTestServer(t)
+	resp, err := http.DefaultClient.Do(authedRequest(t, http.MethodGet, srv.URL+"/v1/health", nil))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Keys []string `json:"launchSettingsOutsideBypass"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Keys) != 1 || body.Keys[0] != "crossSessionInbound" {
+		t.Errorf("launchSettingsOutsideBypass = %v, want [crossSessionInbound]", body.Keys)
+	}
+}
+
 // muster #247: bad shape and the bypass-only pairing are 400s that name the
 // problem, before any driver is resolved.
 func TestCreate_RefusesInvalidLaunchSettings(t *testing.T) {
 	_, srv := newTestServer(t)
 	for _, tc := range []struct{ name, body, want string }{
 		{"no bypass", `{"cwd":"/w","settings":{"a":1}}`, "permissionMode"},
+		// muster #254: outside bypass the refusal names the key that is out of bounds.
+		{"no bypass names the key", `{"cwd":"/w","settings":{"crossSessionInbound":"accept","zzz":1}}`, `key \"zzz\"`},
+		{"no bypass not an object", `{"cwd":"/w","settings":["a"]}`, "JSON object"},
 		{"not an object", `{"cwd":"/w","permissionMode":"bypass","settings":["a"]}`, "JSON object"},
 	} {
 		req := authedRequest(t, http.MethodPost, srv.URL+"/v1/machines/test-machine/sessions", []byte(tc.body))

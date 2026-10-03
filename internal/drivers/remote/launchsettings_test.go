@@ -17,7 +17,7 @@ import (
 // mixed-version rule conversationId follows — a peer that predates the field
 // must never silently drop it.
 
-func launchSettingsPeer(t *testing.T, supports bool) (*httptest.Server, *atomic.Int32, *atomic.Value) {
+func launchSettingsPeer(t *testing.T, supports bool, outsideBypass ...string) (*httptest.Server, *atomic.Int32, *atomic.Value) {
 	t.Helper()
 	var creates atomic.Int32
 	var last atomic.Value
@@ -28,6 +28,9 @@ func launchSettingsPeer(t *testing.T, supports bool) (*httptest.Server, *atomic.
 			h := map[string]any{"build": fleet.Build{}, "maxInputBytes": 1024}
 			if supports {
 				h["supportsLaunchSettings"] = true
+			}
+			if outsideBypass != nil {
+				h["launchSettingsOutsideBypass"] = outsideBypass
 			}
 			_ = json.NewEncoder(w).Encode(h)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sessions"):
@@ -84,5 +87,48 @@ func TestCreateRefusesASettingsCreateToAPeerThatWouldDropIt(t *testing.T) {
 	}
 	if creates.Load() != 1 {
 		t.Fatal("plain create did not reach the peer")
+	}
+}
+
+// muster #254: a non-bypass create reaches a peer only if that peer advertises
+// the keys outside bypass. A #247-only peer says supportsLaunchSettings:true and
+// would refuse (or an older one drop) the field, so the refusal is made here.
+func TestNonBypassSettingsNeedAPeerThatListsTheKey(t *testing.T) {
+	spec := fleet.SessionSpec{Cwd: "/work", Settings: json.RawMessage(`{"crossSessionInbound":"accept"}`)}
+
+	old, oldCreates, _ := launchSettingsPeer(t, true) // #247 only: no list
+	_, err := New("peerbox", old.URL).Create(context.Background(), caller, "k1", spec)
+	if kindOf(err) != fleet.ErrorUnsupported || !strings.Contains(err.Error(), "bypass") {
+		t.Fatalf("err = %v, want unsupported naming the bypass-only peer", err)
+	}
+	if oldCreates.Load() != 0 {
+		t.Fatalf("the refused create reached the peer %d time(s)", oldCreates.Load())
+	}
+
+	other, otherCreates, _ := launchSettingsPeer(t, true, "somethingElse")
+	if _, err := New("peerbox", other.URL).Create(context.Background(), caller, "k2", spec); kindOf(err) != fleet.ErrorUnsupported {
+		t.Fatalf("err = %v, want unsupported when the peer does not list the key", err)
+	}
+	if otherCreates.Load() != 0 {
+		t.Fatal("the refused create reached the peer")
+	}
+
+	ok, okCreates, last := launchSettingsPeer(t, true, "crossSessionInbound")
+	if _, err := New("peerbox", ok.URL).Create(context.Background(), caller, "k3", spec); err != nil {
+		t.Fatal(err)
+	}
+	if okCreates.Load() != 1 {
+		t.Fatalf("creates = %d, want 1", okCreates.Load())
+	}
+	if body, _ := last.Load().(string); !strings.Contains(body, `"settings":{"crossSessionInbound":"accept"}`) {
+		t.Errorf("create body %s does not carry the settings", body)
+	}
+
+	// A bypass create is unchanged by the list: #247's flag alone suffices.
+	bp, _, _ := launchSettingsPeer(t, true)
+	if _, err := New("peerbox", bp.URL).Create(context.Background(), caller, "k4", fleet.SessionSpec{
+		Cwd: "/work", PermissionMode: fleet.PermissionModeBypass, Settings: spec.Settings,
+	}); err != nil {
+		t.Fatalf("bypass create against a #247 peer: %v", err)
 	}
 }
