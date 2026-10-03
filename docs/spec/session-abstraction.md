@@ -1941,6 +1941,20 @@ failure to observe will report its ignorance as the world's.*
 
 ### 5.8 Report facts about content, never content the session produced
 
+> **Narrowed once, by one ruling (muster #258, 2026-10-04).** The owner ruled
+> that a caller holding the credential `input`/`respond` already require may
+> read **what the session's own agent wrote — its assistant turns — and
+> nothing else**, through `GET …/{id}/turns` (api-http.md §3.3). Everything
+> below still holds for every other class of session content: tool calls and
+> results, file contents, the messages sent in by a human or another session,
+> system and hook output, reasoning, and the screen. The exception is bounded
+> by provenance and by an allow-list at the point the record is read, not by
+> sensitivity, and it adds no result field, slot or status: a turn is what the
+> agent said, and whether the session finished is still what the runtime
+> reports about itself. The premises below were not outweighed; the thing they
+> were applied to was narrowed. Full argument and what it costs:
+> `docs/adr/258-assistant-turns-read.md`.
+
 **The boundary this API draws around content is provenance, not
 sensitivity.** A field may carry the runtime's own words about itself —
 `ControlChannel.reason`, `TurnEnd.reason`, `QuotaBlock.resetHint` all do this
@@ -1976,7 +1990,8 @@ re-litigated from nothing:
 A "result" a caller wants back from a dispatched session is definitionally
 session-authored. It does not become the runtime's own account of itself by
 being written to a field or a slot instead of a screen, so this API does not
-carry one. See `docs/adr/82-session-result-belongs-above-this-layer.md` for
+carry one — and the assistant-turns route above is not one: it returns turns,
+not a result, and a reader decides what a turn means. See `docs/adr/82-session-result-belongs-above-this-layer.md` for
 the alternatives this ruled out and why.
 
 **`SessionState.turns` (§2.3, muster #111) was measured against this
@@ -2183,6 +2198,13 @@ adopts them. Anything it finds but cannot confidently identify is surfaced as
 `unknown`, never dropped from listings and never destroyed. See §12.
 
 ### 7.6 A session's result is delivered by the session, not by this service
+
+> **Amended by muster #258.** The decision below stands as written for a result
+> *slot* and for any result-carrying field. What changed is the separate question
+> of whether a caller may *read back* what a session's agent said: it may, for
+> assistant turns only (§5.8's note; `docs/adr/258-assistant-turns-read.md`).
+> The reply-address convention remains the way to push an answer; the turns
+> route is the way to pull one.
 
 Dispatching a named agent to a peer through this API is a complete round
 trip for everything except the answer: create, drive, answer a dialog,

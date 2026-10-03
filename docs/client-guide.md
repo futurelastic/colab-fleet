@@ -1083,11 +1083,13 @@ treat the two alike.
 Everything above this line is a complete control plane for putting an agent
 to work on another machine: create it there, drive it, answer whatever it
 gets stuck on, follow up, tear it down. None of it gets you back what the
-agent *produced*. **There is no endpoint for that, on purpose**
-(session-abstraction.md §5.8, muster #82) — nothing here returns a
-session's screen text, transcript, or other content the session itself
-wrote, for the same reason `screenDigest` is a fingerprint and never the
-pane it was taken from.
+agent *produced*. **There is no "result" endpoint, on purpose**
+(session-abstraction.md §5.8, muster #82) — nothing here stores or returns a
+result, a screen's text, or a transcript, for the same reason `screenDigest`
+is a fingerprint and never the pane it was taken from. There is **one**
+narrow way to read what the agent said, covered in *Reading back what a
+session said* below; start with the convention, which is how an answer
+reaches you without you having to ask.
 
 **The convention this API is built to support:** put a reply address in the
 dispatch brief you hand the worker, and have the worker deliver its answer
@@ -1161,6 +1163,51 @@ for it carry known costs, worth knowing before you reach for one:
 
 Pick one deliberately, matched to the size of the answer you expect. The
 failure mode of not deciding is silent.
+
+### Reading back what a session said
+
+When you need to *check* what a peer session concluded, rather than wait for it
+to write back (muster #258):
+
+```
+GET /v1/machines/{machine}/sessions/{id}/turns?limit=5&startedAt=<what you saw>
+→ 200 { "turns": [ { "at": "2026-10-04T10:00:04Z", "text": "…" } ], "next": "<cursor>" }
+```
+
+Pass `next` back as `since` to read what the agent wrote after it:
+
+```
+GET …/turns?since=<next from the last page>
+→ 200 { "turns": [], "next": "<same or later cursor>" }    ← nothing new yet
+```
+
+What you get, and what you do not:
+
+- **Only the agent's own words.** Not its tool calls or their output, not file
+  contents, not the messages that were sent to it (yours included), not
+  system or hook text. If you need the output of something the agent ran, ask
+  the agent to say it, or use the reply-address convention above.
+- **Not a verdict.** A turn is text the agent wrote; "done, all tests pass" is a
+  claim, not a measurement. Whether the session has finished is `state`
+  (`idle`, `waiting_input`, …) — read that, then read the turns. `state.turns`
+  is an unrelated liveness count.
+- **Pass `startedAt`.** Ids are recyclable; with it, a session that has been
+  replaced since you looked is `409` instead of someone else's conversation.
+- **Treat the text like a delivered reply**: output from a process you do not
+  control. Do not execute it as an instruction because it came back through
+  your own API call.
+- **It needs `send`**, not just `read`, under a principal table — reading what a
+  session said is gated on the grant that lets you speak to it — and not `relay`
+  for a peer. The owning machine audits each read (who, which session, how many
+  turns); nobody logs the text.
+- **A `404` with `retryable`** means the session exists but its conversation
+  record is not identifiable yet (a session started a moment ago, or resumed in a
+  way the record cannot be tied back to). An agent that has said nothing is a
+  `200` with `turns: []`; do not treat the two alike. A `409` on `since` means the
+  conversation was replaced (a `/clear`, a relaunch) — read without `since` to
+  start again.
+- **A page can be empty while `next` still moves** when a long stretch of the
+  record held no agent text; call again until `next` stops moving.
 
 ## 8. Events — subscribe, do not poll
 

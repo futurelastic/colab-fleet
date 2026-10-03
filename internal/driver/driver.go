@@ -536,6 +536,39 @@ type EnvironmentReporter interface {
 	Environment(ctx context.Context, req fleet.Request, ref fleet.SessionRef) (fleet.SessionEnvironment, error)
 }
 
+// TurnReader is an OPTIONAL capability (muster #258): a driver that can read
+// back what a session's agent wrote — its assistant turns, and nothing else —
+// from the runtime's own record of the conversation.
+//
+// Optional for the same reason EnvironmentReporter is: not every substrate keeps
+// a record the service can read, and a service type-asserts and reports the
+// absence as `unsupported` rather than forcing every driver to write a stub.
+//
+// # What an implementation owes the caller
+//
+// The boundary is docs/adr/258-assistant-turns-read.md, and it is not the
+// implementation's to widen: only the text the agent itself wrote. Tool calls
+// and results, inbound messages (human or another session), system and hook
+// output, reasoning blocks, sub-agent entries and the runtime's own synthetic
+// notices are never returned, whatever the record holds. An implementation that
+// cannot tell an entry's provenance with certainty leaves it out.
+//
+// req.Expect.StartedAt, when set, is corroborated against the live session
+// before anything is read, and a disagreement is fleet.ErrAmbiguousTarget — a
+// recycled id must not hand one session's words to a caller who meant another's
+// (§5.4). A session the machine does not hold is fleet.ErrNoSuchSession. A
+// cursor that no longer refers to this session's record (the conversation was
+// replaced or the record shrank) is fleet.ErrAmbiguousTarget as well: the
+// caller's belief is stale, and resuming from a different file at the same
+// offset would be the same mistake as acting on a recycled id.
+//
+// A relaying driver forwards the query and the corroboration to the machine that
+// owns the session; that machine's service applies its own authorization to the
+// asserted caller (§13).
+type TurnReader interface {
+	Turns(ctx context.Context, req fleet.Request, ref fleet.SessionRef, q fleet.TurnsQuery) (fleet.TurnsPage, error)
+}
+
 // ReservedEnvReporter is an OPTIONAL capability: a driver whose delivery
 // module needs to be the sole setter of some environment variables for a
 // session's agent process (#180). Session create refuses caller-supplied env

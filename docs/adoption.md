@@ -70,11 +70,14 @@ deliberately. The failure mode is silent.
 **The same shape recurs on the read side, once dispatch is a real use of this
 API rather than a demonstration of it: this service can hand you a session on
 another machine long before it can hand you back what that session
-produced.** Nothing here stores or returns a session's own output
-(session-abstraction.md §5.8, muster #82) — again, correctly, and again
-a consequence the adoption plan must answer rather than a defect to file.
-The available answers are the same shape as above and equally outside this
-repository: put a reply address in the dispatch brief and have the worker
+produced.** Nothing here stores a session's result or returns its tool
+output or screen (session-abstraction.md §5.8, muster #82) — again,
+correctly, and again a consequence the adoption plan must answer rather than
+a defect to file. One narrow read exists since #258: what the session's agent
+itself wrote (`GET …/turns`, assistant turns only), for a coordinator that
+needs to check rather than be told. For the rest the available answers are
+the same shape as above and equally outside this repository: put a reply
+address in the dispatch brief and have the worker
 deliver its answer over `input`, for anything that fits in a prompt; build a
 transport of your own — a synced directory, a small HTTP server on the
 worker's machine — for anything that does not, knowing each carries the
